@@ -10,13 +10,12 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        // In memory: the projection holds only directories on a filesystem
-        // with a proven local permission model, which a test environment's
-        // temporary root need not be (a container's FUSE overlay is not).
+        // In memory: the projection holds only directories on a filesystem with a proven local
+        // permission model, which a test environment's temporary root need not be (a container's FUSE
+        // overlay is not).
         let root = tilo_test_env::memory_tempdir().unwrap();
-        // The fixture stands under a sticky world-writable directory, as a
-        // test environment's temporary root does: nobody else can move or
-        // replace the home held below it.
+        // The fixture stands under a sticky world-writable directory, as a test environment's
+        // temporary root does: nobody else can move or replace the home held below it.
         let shared = root.path().join("shared");
         fs::create_dir(&shared).unwrap();
         fs::set_permissions(&shared, fs::Permissions::from_mode(0o1777)).unwrap();

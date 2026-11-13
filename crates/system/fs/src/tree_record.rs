@@ -1,25 +1,13 @@
 //! The mounted workspace tree, published as the Files app's record.
 //!
-//! The namespace is one Automerge document ([`crate::namespace`]), and
-//! `fs_protocol::tree` reads that same document as a resource. This module is
-//! the writer that joins the record's route on the session: a device that
-//! mounts a tree publishes it whole as the record's first publication, and
-//! every change the mount makes afterwards as an increment. A device that
-//! mounts nothing yet is given the tree whole by a device that holds it,
-//! rather than creating a second empty tree beside it, and answers the
-//! session's ask when a device joins and needs the tree whole again.
+//! The namespace is one Automerge document, and `fs_protocol::tree` reads that same document as a
+//! resource. This module joins the record's route on the session: a device that mounts a tree
+//! publishes it whole as the record's first publication and every later change as an increment; a
+//! device that mounts nothing yet is given the tree whole by one that holds it.
 //!
-//! The filesystem daemon is the windowless endpoint of the Files app: the
-//! launcher names the app and workspace on the connection it dials, and the
-//! session admits it against the launch it recorded for this process. Files
-//! change where the files are, so nothing here carries an action: a change
-//! is the namespace's own edit, made by the mount.
-//!
-//! A shared workspace seals its records, so this endpoint seals and opens the
-//! tree the way every app of the workspace does: it asks the session's
-//! identity service for the record's content keys and seals each change under
-//! them before the session admits it, and opens the changes others publish
-//! under the same keys.
+//! The filesystem daemon is the Files app's windowless endpoint, admitted by the session against the
+//! launch it recorded for this process. A workspace that seals its records hands this endpoint the
+//! record's content keys, and each change is sealed or opened under them.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -44,26 +32,24 @@ use tilo_lock::MutexRecover as _;
 use crate::identity::PeerCredentials;
 use crate::namespace::Namespace;
 
-/// The app whose person record a workspace's tree is: it declares the kind,
-/// and the daemon is its endpoint.
+/// The app whose person record a workspace's tree is: it declares the kind, and the daemon is its
+/// endpoint.
 pub use fs_protocol::tree::FILES_APP;
 
-/// How long the writer waits before dialing the session again after its
-/// connection ended: the session may restart under a daemon that outlives it.
+/// How long the writer waits before dialing the session again after its connection ended: the session
+/// may restart under a daemon that outlives it.
 const RECONNECT: Duration = Duration::from_secs(2);
 
-/// The most changes of a sealed record this device holds unopened while it
-/// waits for the record's keys. Past it the tree is read whole instead, which
-/// settles every change at once.
+/// The most changes of a sealed record this device holds unopened while it waits for the keys. Past it
+/// the tree is read whole instead, which settles every change at once.
 const MAX_UNOPENED: usize = 16;
 
-/// Publish `namespace` on `cluster` as the Files app's record, for as long as
-/// the daemon serves it, on the collaboration socket at `socket`. The
-/// identity service at `identity` is where a workspace that seals its records
-/// hands this endpoint their content keys.
+/// Publish `namespace` on `cluster` as the Files app's record, for as long as the daemon serves it, on
+/// the collaboration socket at `socket`. The identity service at `identity` is where a workspace that
+/// seals its records hands this endpoint their content keys.
 ///
-/// The writer rejoins whenever that connection ends; a session that is not up
-/// yet is waited for, not given up on, since the daemon starts beside it.
+/// The writer rejoins whenever that connection ends; a session that is not up yet is waited for, since
+/// the daemon starts beside it.
 #[must_use = "the handle is how a daemon stops publishing before it unmounts"]
 pub fn spawn(
     namespace: Arc<Mutex<Namespace>>,
@@ -85,8 +71,7 @@ pub fn spawn(
     })
 }
 
-/// One connection to the session, joined and publishing `namespace` until the
-/// connection ends.
+/// One connection to the session, joined and publishing `namespace` until the connection ends.
 async fn serve_once(
     namespace: &Arc<Mutex<Namespace>>,
     cluster: &str,
@@ -109,9 +94,9 @@ async fn serve_once(
     tokio::spawn(carrying);
 
     let mut publisher = TreePublisher::join(&client, cluster, credentials, identity).await?;
-    // A workspace's keys arrive when a commit brings this device into the
-    // record's group, possibly after the join: the tree is published, and the
-    // changes that waited for them opened, on the change itself.
+    // A workspace's keys arrive when a commit brings this device into the record's group, possibly
+    // after the join: the tree is published, and the changes that waited for them opened, on the
+    // change itself.
     let keys = publisher.handle.clone();
     let mut keys_after = 0;
     let mut changes = namespace.lock_recover().subscribe_changes();
@@ -126,18 +111,16 @@ async fn serve_once(
         .await
         .context("the session tells this device what it is asked for")?;
     if namespace.lock_recover().holds_tree() {
-        // This device mounts a tree: the record holds it whole from here on.
         publisher.publish_whole(namespace).await?;
     } else {
-        // This device mounts nothing yet: it is given the tree a device that
-        // has one publishes, rather than creating a second empty one.
+        // This device mounts nothing yet: it is given the tree a device that has one publishes, rather
+        // than creating a second empty one.
         publisher.ask_for_the_tree().await;
     }
     loop {
         tokio::select! {
             moved = changes.changed() => {
                 if moved.is_err() {
-                    // The namespace is gone; nothing is left to publish.
                     return Ok(());
                 }
                 publisher.publish(namespace).await?;
@@ -149,8 +132,7 @@ async fn serve_once(
             asked = context.read() => {
                 let asked = asked.context("the session's asks reach this device")?;
                 if asked.snapshot_requested && namespace.lock_recover().holds_tree() {
-                    // A device joined and the session asked a holder for the
-                    // tree whole: this one holds it.
+                    // A device joined and the session asked a holder for the tree whole: this one holds it.
                     publisher.publish_whole(namespace).await?;
                 }
             }
@@ -162,83 +144,63 @@ async fn serve_once(
     }
 }
 
-/// Whether `cluster` is the store of the person `root` belongs to: records
-/// there are kept in the store and reach their other devices over the link
-/// those devices prove themselves to each other on, so no workspace channel
-/// seals them.
+/// Whether `cluster` is the store of the person `root` belongs to: records there are kept in the store
+/// and reach their other devices over the link those devices prove themselves to each other on, so no
+/// workspace channel seals them.
 fn in_person_store(root: &[u8; 32], cluster: &str) -> bool {
     uuid::Uuid::parse_str(cluster)
         .is_ok_and(|cluster| collab_types::is_personal_cluster(root, &cluster))
 }
 
-/// What became of one change of the record this device was handed.
 enum Open {
-    /// The change's payload, opened.
     Opened(Vec<u8>),
-    /// This device's keys cannot open it yet: newer ones may.
     Later,
-    /// It never opens here: it is not this record's, or not this channel's.
     Never,
 }
 
-/// This device's participation in one workspace's tree record.
 struct TreePublisher {
     cluster: String,
     handle: ChannelHandle,
     credentials: PeerCredentials,
-    /// The namespace heads this device has published: every change after them
-    /// is the next increment. Empty until this device published the tree
-    /// whole, which is how the record's first publication goes out.
+    /// The namespace heads this device has published: every change after them is the next increment.
+    /// Empty until the tree was published whole, which is how the record's first publication goes out.
     sent: Vec<ChangeHash>,
-    /// The typed mutation a segmented transfer is arriving as.
     reassembler: DocumentReassembler,
-    /// Where this device asks for the record's content keys, when the
-    /// workspace seals its records.
+    /// Where this device asks for the record's content keys, when the workspace seals its records.
     identity: PathBuf,
-    /// The identity service connection, opened the first time keys are
-    /// needed.
     signer: Option<Arc<BrokerSigningIdentity>>,
-    /// What this device may do with the record's content: seal it, wait for
-    /// its keys, or write it unsealed.
+    /// What this device may do with the record's content: seal it, wait for its keys, or write it
+    /// unsealed.
     access: Access,
-    /// The record's content keys, while this device holds them.
     keys: Option<ChannelContentKeys>,
-    /// The service generation the keys were answered at: what this device
-    /// asks from when it asks again, so the answer is keys only when they
-    /// changed.
+    /// The service generation the keys were answered at: what this device asks from when it asks
+    /// again, so an unchanged answer means no new keys.
     generation: u64,
-    /// Changes of a sealed record that arrived before its keys did, in the
-    /// order they came.
+    /// Changes of a sealed record that arrived before its keys did, in the order they came.
     unopened: Vec<SignedOp>,
-    /// Changes of the record that arrived before the tree did, in the order
-    /// they came: they change the tree a holder publishes, and apply once
-    /// this device holds it.
+    /// Changes of the record that arrived before the tree did, in the order they came: they change the
+    /// tree a holder publishes, and apply once this device holds it.
     waiting_for_the_tree: Vec<SignedOp>,
 }
 
 /// What this device may do with the record's content.
 ///
-/// A workspace that seals its records holds every change until it hands the
-/// keys over, as an app of the workspace holds its edits. The person's own
-/// cluster seals nothing: its records are kept in the person's store and reach
-/// their other devices over the link those devices authenticate each other
-/// with.
+/// A workspace that seals its records holds every change until it hands the keys over, as an app of
+/// the workspace holds its edits. The person's own cluster seals nothing: its records are kept in the
+/// person's store and reach their other devices over the link those devices authenticate with.
 #[derive(Clone, Copy)]
 enum Access {
-    /// The workspace hands this endpoint the record's keys: every change it
-    /// makes is sealed under them, and every change that arrives must open.
+    /// The workspace hands this endpoint the record's keys: every change it makes is sealed under
+    /// them, and every change that arrives must open.
     Sealed,
-    /// Its keys are not here yet: the tree waits for them rather than going
-    /// out in the clear into a workspace that seals.
+    /// Its keys are not here yet: the tree waits for them rather than going out in the clear into a
+    /// workspace that seals.
     Waiting,
-    /// The tree is the person's own, kept in their store: their devices
-    /// reach it over the link they prove themselves to each other on, and no
-    /// workspace channel seals it.
+    /// The tree is the person's own, kept in their store: no workspace channel seals it.
     Unsealed,
 }
 
 impl TreePublisher {
-    /// Join `cluster`'s tree record as this device.
     async fn join(
         client: &CollabClient,
         cluster: &str,
@@ -272,8 +234,8 @@ impl TreePublisher {
             )
             .await
             .context("the session admits this device to the workspace tree")?;
-        // The kind the join named is the record the session founds for this
-        // endpoint's first write, as it founds every app's record on open.
+        // The kind the join named is the record the session founds for this endpoint's first write, as
+        // it founds every app's record on open.
         let person = credentials.cert().user_public_key;
         let mut publisher = Self {
             cluster: cluster.to_owned(),
@@ -297,8 +259,8 @@ impl TreePublisher {
         Ok(publisher)
     }
 
-    /// The record's keys changed: take them, publish the tree this device
-    /// holds if the wait is over, and open the changes that waited with it.
+    /// The record's keys changed: take them, publish the tree this device holds if the wait is over, and
+    /// open the changes that waited with it.
     async fn keys_changed(&mut self, namespace: &Arc<Mutex<Namespace>>) -> Result<()> {
         self.refresh_keys().await;
         if !matches!(self.access, Access::Sealed) {
@@ -311,10 +273,9 @@ impl TreePublisher {
         Ok(())
     }
 
-    /// Whether the tree may go out: the person's own store takes it as it is,
-    /// and a workspace that seals its records hands this device their keys
-    /// when it is admitted. Until they are here the tree waits rather than
-    /// going out in the clear.
+    /// Whether the tree may go out: the person's own store takes it as it is, and a workspace that seals
+    /// its records hands this device their keys when it is admitted. Until then the tree waits rather
+    /// than going out in the clear.
     fn keys_here(&self) -> bool {
         !matches!(self.access, Access::Waiting)
     }
@@ -327,8 +288,8 @@ impl TreePublisher {
         }
     }
 
-    /// Publish the tree whole: what the record holds from this device from now
-    /// on, and what a device joining it gets.
+    /// Publish the tree whole: what the record holds from this device from now on, and what a device
+    /// joining it gets.
     async fn publish_whole(&mut self, namespace: &Arc<Mutex<Namespace>>) -> Result<()> {
         if !self.keys_here() {
             return Ok(());
@@ -343,8 +304,8 @@ impl TreePublisher {
         Ok(())
     }
 
-    /// Publish what this device changed: the tree whole when it has published
-    /// nothing yet, everything since it last did afterwards.
+    /// Publish what this device changed: the tree whole when nothing was published yet, everything since
+    /// it last did afterwards.
     async fn publish(&mut self, namespace: &Arc<Mutex<Namespace>>) -> Result<()> {
         if !self.keys_here() {
             return Ok(());
@@ -365,18 +326,16 @@ impl TreePublisher {
         Ok(())
     }
 
-    /// Take one change another device published, and publish what resolving
-    /// it wrote.
+    /// Take one change another device published, and publish what resolving it wrote.
     async fn receive(&mut self, event: OpEvent, namespace: &Arc<Mutex<Namespace>>) -> Result<()> {
         let op: SignedOp = postcard::from_bytes(&event.op).context("a signed change decodes")?;
         if op.author.as_bytes() == &self.credentials.device_public_key() {
-            // This device's own change: the namespace holds it already.
             return Ok(());
         }
         self.unopened.push(op);
         if self.unopened.len() > MAX_UNOPENED {
-            // The keys still are not here: read the tree whole from a holder
-            // instead of holding changes this device cannot open.
+            // The keys still are not here: read the tree whole from a holder instead of holding changes
+            // this device cannot open.
             self.unopened.clear();
             self.ask_for_the_tree().await;
             return Ok(());
@@ -384,23 +343,21 @@ impl TreePublisher {
         self.take_unopened(namespace).await
     }
 
-    /// Apply every change this device holds the keys for, in the order they
-    /// arrived, asking for the record's keys once when one of them needs
-    /// them; then the changes that waited for the tree, once it is here.
+    /// Apply every change this device holds the keys for, in the order they arrived, asking for the
+    /// record's keys once when one of them needs them; then the changes that waited for the tree.
     async fn take_unopened(&mut self, namespace: &Arc<Mutex<Namespace>>) -> Result<()> {
         loop {
             self.apply_unopened(namespace).await?;
             if self.waiting_for_the_tree.is_empty() || !namespace.lock_recover().holds_tree() {
                 return Ok(());
             }
-            // The tree came: the changes that waited for it apply now, in the
-            // order they came.
+            // The tree came: the changes that waited for it apply now, in the order they came.
             self.unopened = std::mem::take(&mut self.waiting_for_the_tree);
         }
     }
 
-    /// Apply the changes whose keys are here, in the order they arrived; the
-    /// rest wait for the keys that open them ([`Self::keys_changed`]).
+    /// Apply the changes whose keys are here, in the order they arrived; the rest wait for the keys that
+    /// open them.
     async fn apply_unopened(&mut self, namespace: &Arc<Mutex<Namespace>>) -> Result<()> {
         let mut asked = false;
         loop {
@@ -429,23 +386,19 @@ impl TreePublisher {
             if asked {
                 return Ok(());
             }
-            // The keys this device holds may have moved on since the changes
-            // arrived, as a workspace that re-keys hands out new ones: ask
-            // once, and open what they reach.
+            // The keys this device holds may have moved on since the changes arrived, as a workspace that
+            // re-keys hands out new ones: ask once, and open what they reach.
             asked = true;
             self.refresh_keys().await;
         }
     }
 
-    /// The change `op` carries, opened when the workspace seals it.
     fn opened(&self, op: &SignedOp) -> Open {
         match (&op.encryption, self.access) {
             (None, Access::Unsealed) => Open::Opened(op.payload.clone()),
-            // Sealed or not, the workspace's answer is not here yet.
             (_, Access::Waiting) => Open::Later,
-            // A change that does not go as this device's route does is another
-            // workspace's: cleartext into a workspace that seals is the
-            // downgrade the gate refuses, and sealed content on a route with
+            // A change that does not go as this device's route does is another workspace's: cleartext into
+            // a workspace that seals is the downgrade the gate refuses, and sealed content on a route with
             // no keys to open it is not this tree's.
             (None, Access::Sealed) | (Some(_), Access::Unsealed) => Open::Never,
             (Some(metadata), Access::Sealed) => {
@@ -453,22 +406,19 @@ impl TreePublisher {
                     return Open::Later;
                 };
                 if keys.channel_id() != metadata.channel {
-                    // Sealed under another of the record's channels, as a
-                    // workspace that re-keys hands out: the keys that open
-                    // it are newer than the ones here.
+                    // Sealed under another of the record's channels: the keys that open it are newer than
+                    // the ones here.
                     return Open::Later;
                 }
                 if !keys.holds_epoch(metadata.epoch) {
-                    // Sealed under an epoch this device's keys have moved
-                    // past: newer keys open it.
+                    // Sealed under an epoch this device's keys have moved past: newer keys open it.
                     return Open::Later;
                 }
                 match keys.open_content(self.artifact(), metadata, &op.payload) {
                     Ok(opened) => Open::Opened(opened.to_vec()),
                     Err(_) => {
-                        // Sealed under a key from another branch of the
-                        // record's group, as a workspace that re-keys hands
-                        // out: the ones that open it are newer than these.
+                        // Sealed under a key from another branch of the record's group: the ones that open it
+                        // are newer than these.
                         Open::Later
                     }
                 }
@@ -476,7 +426,6 @@ impl TreePublisher {
         }
     }
 
-    /// Apply one opened change, and publish what resolving it wrote.
     async fn apply(
         &mut self,
         op: &SignedOp,
@@ -489,9 +438,8 @@ impl TreePublisher {
         if matches!(mutation, DocumentMutation::Incremental(_))
             && !namespace.lock_recover().holds_tree()
         {
-            // A change of a tree this device was never given: it waits for
-            // the whole of it rather than merging one root beside another,
-            // and applies once the tree here is that one.
+            // A change of a tree this device was never given waits for the whole of it rather than
+            // merging one root beside another.
             if self.waiting_for_the_tree.len() > MAX_UNOPENED {
                 // The tree is not coming: this device reads it whole instead.
                 self.waiting_for_the_tree.clear();
@@ -518,8 +466,8 @@ impl TreePublisher {
         Ok(())
     }
 
-    /// The change `payload` carries, once every segment of it arrived. `None`
-    /// for a segment of a transfer still arriving.
+    /// The change `payload` carries, once every segment of it arrived; `None` for a segment of a
+    /// transfer still arriving.
     fn mutation_of(&mut self, op: &SignedOp, payload: &[u8]) -> Result<Option<DocumentMutation>> {
         match DocumentFrame::decode(payload).context("a published change is a document frame")? {
             DocumentFrame::Whole(mutation) => Ok(Some(mutation)),
@@ -538,8 +486,8 @@ impl TreePublisher {
         }
     }
 
-    /// Sign `mutation` as this device and publish every frame of it, sealed
-    /// under the record's content keys when the workspace seals its records.
+    /// Sign `mutation` as this device and publish every frame of it, sealed under the record's content
+    /// keys when the workspace seals its records.
     async fn send(&mut self, mutation: DocumentMutation) -> Result<()> {
         let frames = mutation
             .encode_frames()
@@ -583,8 +531,8 @@ impl TreePublisher {
         Ok(())
     }
 
-    /// `frame` as the session admits it: sealed under the record's keys when
-    /// the workspace seals its records, and as it is otherwise.
+    /// `frame` as the session admits it: sealed under the record's keys when the workspace seals its
+    /// records, as it is otherwise.
     async fn seal(&mut self, frame: Vec<u8>) -> Result<(Vec<u8>, Option<EncryptionMetadata>)> {
         if matches!(self.access, Access::Waiting) {
             // The record's keys may have been handed over since the join.
@@ -618,13 +566,11 @@ impl TreePublisher {
         bail!("the record's keys do not cover the channel's current epoch")
     }
 
-    /// Ask the session's identity service for the record's content keys, at
-    /// the generation this device holds: it is answered the keys when they
-    /// changed, and with none when they did not.
+    /// Ask the session's identity service for the record's content keys, at the generation this device
+    /// holds: it is answered the keys when they changed, and with none when they did not.
     ///
-    /// A service that is not there yet, or has not handed the keys over,
-    /// keeps them waiting: a workspace that seals its records never has this
-    /// tree published in the clear.
+    /// A service that is not there yet, or has not handed the keys over, keeps them waiting: a
+    /// workspace that seals its records never has this tree published in the clear.
     async fn refresh_keys(&mut self) {
         if matches!(self.access, Access::Unsealed) {
             return;
@@ -638,9 +584,8 @@ impl TreePublisher {
                     signer
                 }
                 Err(error) => {
-                    // Not there yet, or refused this device: the workspace
-                    // seals this record either way, so the tree waits rather
-                    // than going out in the clear.
+                    // Not there yet, or refused this device: the workspace seals this record either way, so
+                    // the tree waits rather than going out in the clear.
                     tracing::debug!(%error, "the identity service is not here for the tree's keys yet");
                     return;
                 }
@@ -667,8 +612,7 @@ impl TreePublisher {
                         }
                     }
                 }
-                // Keys reported unchanged: the ones held still open the
-                // record, and a caller holding none never gets this answer.
+                // Keys reported unchanged: the ones held still open the record.
                 (ChannelAccess::Ready, None) => {
                     self.access = if self.keys.is_some() {
                         Access::Sealed
@@ -688,9 +632,8 @@ impl TreePublisher {
                 }
             },
             Ok(Err(error)) => {
-                // The service answered and refused: it may answer differently
-                // once this device is admitted, so the tree waits rather than
-                // going out in the clear.
+                // The service answered and refused: it may answer differently once this device is
+                // admitted, so the tree waits rather than going out in the clear.
                 tracing::debug!(%error, "the identity service withholds the tree's keys");
             }
             Err(error) => {
@@ -699,8 +642,8 @@ impl TreePublisher {
         }
     }
 
-    /// This device's connection to the session's identity service, bound to
-    /// the workspace whose tree it publishes, as an app's connection is.
+    /// This device's connection to the session's identity service, bound to the workspace whose tree it
+    /// publishes, as an app's connection is.
     fn connect_identity(&self) -> Result<BrokerSigningIdentity> {
         let mut stream =
             tilo_files::native::socket::connect(&self.identity).with_context(|| {
@@ -729,12 +672,10 @@ impl TreePublisher {
             .context("the identity service answers this device")
     }
 
-    /// The artifact this device's changes are of.
     fn artifact(&self) -> collab_types::ArtifactId {
         document_artifact_id(FILES_APP, &self.cluster, &Self::record())
     }
 
-    /// The attestation this device's changes are made under.
     fn attestation(&self) -> collab_types::AttestationId {
         document_attestation_id(FILES_APP, &self.cluster, &Self::record())
     }

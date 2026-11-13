@@ -6,7 +6,6 @@ use super::{SeedDocument, SeedState};
 use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
 use collab_types::Ed25519PublicKey;
 use collab_types::caps::Principal;
-use tilo_action_policy::Subject;
 use tilo_user_identity::DeviceCert;
 
 /// A new workspace governed by `authority`: its governance
@@ -70,19 +69,6 @@ pub fn seed_workspace(
         .map_err(err)?;
     let owner = Principal::person_from_key(Ed25519PublicKey::from_bytes(authority.user_public_key));
     doc.put(ROOT, "owner", owner.id()).map_err(err)?;
-    doc.put_object(ROOT, "members", ObjType::Map).map_err(err)?;
-    let grants = doc.put_object(ROOT, "grants", ObjType::Map).map_err(err)?;
-    for grant in tilo_action_policy::roles::workspace_role_grants(
-        workspace,
-        &Subject::Person(owner.id().to_owned()),
-    ) {
-        doc.put(
-            &grants,
-            grant.id.as_str(),
-            automerge::ScalarValue::Bytes(serde_json::to_vec(&grant).map_err(err)?),
-        )
-        .map_err(err)?;
-    }
     doc.put_object(ROOT, "invitation_receipts_v1", ObjType::Map)
         .map_err(err)?;
     let names = doc.put_object(ROOT, "peers", ObjType::Map).map_err(err)?;

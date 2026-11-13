@@ -1,31 +1,10 @@
-//! Persistent browsing history + fuzzy address-bar ranking.
+//! Browsing history: a flat list of [`HistoryEntry`] rows keyed by URL, and the
+//! fuzzy ranking behind the address bar's suggestions.
 //!
-//! The store is a flat list of [`HistoryEntry`] rows keyed by URL. Every
-//! navigation calls [`History::record_at`], which de-duplicates by URL
-//! (bumping the visit count and refreshing the title + timestamp) so the
-//! list stays one-row-per-page. It is the person's own record
-//! ([`BrowsingHistory`]): it follows them to their other devices and never
-//! reaches a collaborator, whatever workspace the browser is open in.
-//!
-//! [`History::suggest`] powers the address-bar overlay. It fuzzy-matches
-//! the query as a case-insensitive *subsequence* of each entry's title
-//! and URL, then ranks survivors by a blend of three signals:
-//!
-//! 1. **match quality** — a contiguous run (or a prefix / word-boundary
-//!    start) scores higher than the same characters scattered with gaps,
-//!    so typing `git` surfaces `github.com` above `go-i-t.example`; a
-//!    match inside a word needs four letters (`code` finds `barcode`);
-//! 2. **recency** — a half-life decay on `last_visit`, so a page seen
-//!    minutes ago outranks a stale one of equal match quality;
-//! 3. **frequency** — a saturating function of `visit_count`, so a
-//!    frequently-visited page edges out a one-off.
-//!
-//! Match quality dominates (it carries the largest weight) so a clearly
-//! better textual match always wins; recency and frequency only break
-//! ties between comparable matches. An empty query skips the fuzzy filter
-//! and ranks the whole history by recency + frequency alone — the
-//! "most-recent / most-visited" default the overlay shows the moment the
-//! address bar is focused.
+//! It is the person's own record ([`BrowsingHistory`]): it follows them to their
+//! other devices and never reaches a collaborator. [`History::suggest`] matches
+//! the query as a case-insensitive subsequence of the title and URL, then ranks
+//! survivors on match quality first, then recency, then frequency.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -33,50 +12,38 @@ use tilo_clock::unix_now;
 use ui::search::{FieldWeight, ListIndex, MAX_FIELD_RANK};
 use ui::tilo_resource::{self, Atom, Counter, Model, NonBlank, Refusal, resource};
 
-/// Keep history useful without letting a long-lived profile turn every
-/// address-bar query, resource snapshot, or persisted JSON write into an
-/// unbounded operation.
+/// Keeps the address-bar query, the snapshot and the persisted write bounded.
 pub const MAX_HISTORY_ENTRIES: usize = 10_000;
 pub const MAX_HISTORY_URL_BYTES: usize = 8 * 1024;
 pub const MAX_HISTORY_TITLE_BYTES: usize = 4 * 1024;
 
-/// One visited page. De-duplicated by [`HistoryEntry::url`] in the store.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryEntry {
-    /// Canonical URL as navigated (the store's dedup key).
     pub url: String,
-    /// Last-seen page title. Refreshed on re-visit when non-empty so a
-    /// later `TitleChanged` doesn't wipe a good title with a blank one.
+    /// A re-visit with no title keeps this one.
     pub title: String,
-    /// Unix-epoch seconds of the most recent visit — the recency signal.
+    /// Unix epoch seconds.
     pub last_visit: u64,
-    /// Number of times this URL has been recorded — the frequency signal.
     pub visit_count: u32,
 }
 
-/// The full browsing history: a flat, URL-keyed list of [`HistoryEntry`].
 #[derive(Clone, Debug, Default)]
 pub struct History {
     entries: Vec<HistoryEntry>,
-    /// Changes only when the durable corpus changes.  Consumers such as the
-    /// global-search index can therefore make an unchanged sync O(1).
+    /// Changes only when the corpus does, so an unchanged sync stays O(1).
     revision: u64,
-    /// Titles and URLs, indexed while they stay the same.
     search: Arc<ListIndex>,
 }
 
-// The revision is an in-memory cache token rather than part of history's
-// durable model value.
+// A cache token, not part of the durable value.
 impl PartialEq for History {
     fn eq(&self, other: &Self) -> bool {
         self.entries == other.entries
     }
 }
 
-// --- Ranking weights ----------------------------------------------------
-// Match quality carries the largest weight so a clearly better textual
-// match always outranks a worse one regardless of recency/frequency;
-// recency and frequency only order comparable matches.
+// Match quality carries the largest weight, so a better textual match always
+// wins; recency and frequency only order comparable matches.
 struct Weights {
     matching: f64,
     recency: f64,
@@ -88,13 +55,10 @@ const WEIGHTS: Weights = Weights {
     frequency: 0.2,
 };
 
-/// Recency half-life: a page loses half its recency weight every this
-/// many seconds (3 days). Long enough that yesterday's pages still rank,
-/// short enough that today's clearly win.
+/// A page loses half its recency weight every this many seconds (three days).
 const RECENCY_HALF_LIFE_SECS: f64 = 3.0 * 24.0 * 60.0 * 60.0;
 
 impl History {
-    /// An empty history (no persistence side-effects).
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
@@ -103,7 +67,6 @@ impl History {
         }
     }
 
-    /// Drop all history (the settings "clear history" action).
     pub fn clear(&mut self) {
         if !self.entries.is_empty() {
             self.entries.clear();
@@ -111,35 +74,25 @@ impl History {
         }
     }
 
-    /// All entries, unordered (insertion order). Mostly for inspection
-    /// and tests — the address bar goes through [`History::suggest`].
     pub fn entries(&self) -> &[HistoryEntry] {
         &self.entries
     }
 
-    /// Number of distinct URLs recorded.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Whether no page has been recorded yet.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    /// Monotonic-in-practice change token for cached projections.
     pub fn revision(&self) -> u64 {
         self.revision
     }
 
-    /// Record a visit to `url` with `title`, stamped at `now` (Unix
-    /// seconds), so ranking/recency behaviour is unit-testable without
-    /// touching the wall clock.
-    ///
-    /// De-dup rule: if `url` already exists, bump its `visit_count`,
-    /// set `last_visit = now`, and replace the title *only when the new
-    /// one is non-empty*. Otherwise append a fresh entry with count 1.
-    /// Blank/whitespace URLs are ignored.
+    /// Record a visit to `url` with `title` at `now` (Unix seconds), so ranking
+    /// stays testable. A known URL bumps its count and visit time and takes a
+    /// non-empty title; a blank URL is ignored.
     pub fn record_at(&mut self, url: &str, title: &str, now: u64) {
         let url = url.trim();
         if url.is_empty() || url.len() > MAX_HISTORY_URL_BYTES {
@@ -164,31 +117,19 @@ impl History {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// Fuzzy-ranked address-bar suggestions for `query`, best first,
-    /// capped at `limit`. Stamped at the current wall clock — see
-    /// [`History::suggest_at`] for the deterministic core.
+    /// Ranked suggestions for `query`, best first, at the current clock.
     pub fn suggest(&self, query: &str, limit: usize) -> Vec<HistoryEntry> {
         self.suggest_at(query, limit, unix_now())
     }
 
-    /// Deterministic core of [`History::suggest`]: rank against `now`
-    /// (Unix seconds, drives the recency decay) so ordering is testable.
+    /// [`History::suggest`] against `now`, so ordering is testable.
     ///
-    /// A non-empty `query` keeps only entries whose title *or* URL
-    /// contains the query as a case-insensitive subsequence; each
-    /// survivor's match score is the better of its title/URL match. An
-    /// empty query keeps everything with a neutral match score, so the
-    /// result is pure recency + frequency (the focus-time default).
-    ///
-    /// Ties (equal blended score) fall back to most-recent, then
-    /// most-visited, then URL — a total order so results never jitter
-    /// between frames for the same inputs.
+    /// Ties fall back to most recent, then most visited, then URL, so results
+    /// never jitter between frames for the same inputs.
     pub fn suggest_at(&self, query: &str, limit: usize, now: u64) -> Vec<HistoryEntry> {
         let needle = query.trim();
         let mut scored: Vec<(f64, &HistoryEntry)> = Vec::new();
-        // Title and URL are both things a person types from memory, so they
-        // weigh the same. An empty needle ranks every entry 0: purely on
-        // recency and frequency.
+        // A title and a URL are both typed from memory, so they weigh the same.
         let ranks = self.search.ranks(
             needle,
             self.entries.iter().map(|entry| {
@@ -199,7 +140,6 @@ impl History {
             }),
         );
         for (entry, rank) in self.entries.iter().zip(ranks) {
-            // An entry matching neither field is dropped.
             let Some(rank) = rank else {
                 continue;
             };
@@ -212,10 +152,8 @@ impl History {
         }
 
         scored.sort_by(|a, b| {
-            // Primary: blended score, descending.
             b.0.partial_cmp(&a.0)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                // Deterministic tie-breaks: recent, then frequent, then URL.
                 .then(b.1.last_visit.cmp(&a.1.last_visit))
                 .then(b.1.visit_count.cmp(&a.1.visit_count))
                 .then(a.1.url.cmp(&b.1.url))
@@ -228,7 +166,6 @@ impl History {
             .collect()
     }
 
-    /// The history of `entries`, as the person's record holds them.
     pub(crate) fn from_entries(entries: Vec<HistoryEntry>) -> History {
         let mut history = History {
             entries,
@@ -262,8 +199,8 @@ impl History {
         if self.entries.len() <= MAX_HISTORY_ENTRIES {
             return;
         }
-        // Drop the least useful entry first.  The URL tie-break keeps the
-        // retained corpus deterministic even when timestamps are identical.
+        // Drop the least useful first; the URL tie-break keeps the corpus
+        // deterministic.
         self.entries.sort_by(|a, b| {
             b.last_visit
                 .cmp(&a.last_visit)
@@ -274,9 +211,7 @@ impl History {
     }
 }
 
-/// Copy at most `limit` bytes without splitting a UTF-8 code point.  Labels
-/// cross the accessibility and global-search boundaries, so this protects
-/// more than the on-disk representation.
+/// At most `limit` bytes, without splitting a UTF-8 code point.
 pub(crate) fn bounded_text(value: &str, limit: usize) -> String {
     if value.len() <= limit {
         return value.to_string();
@@ -288,23 +223,20 @@ pub(crate) fn bounded_text(value: &str, limit: usize) -> String {
     value.get(..end).unwrap_or_default().to_string()
 }
 
-/// Recency weight in `[0, 1]`: `1.0` for a page visited *now*, halving
-/// every [`RECENCY_HALF_LIFE_SECS`]. `now` before `last_visit` (clock
-/// skew) clamps to `1.0`.
+/// `[0, 1]`, halving every [`RECENCY_HALF_LIFE_SECS`]; a clock before
+/// `last_visit` clamps to `1.0`.
 fn recency_score(last_visit: u64, now: u64) -> f64 {
     let age = now.saturating_sub(last_visit) as f64;
     0.5_f64.powf(age / RECENCY_HALF_LIFE_SECS)
 }
 
-/// Frequency weight in `[0, 1)`: saturating so early visits matter most
-/// and a very popular page can't dwarf match quality. `1 → 0.5`,
-/// `4 → 0.8`, `9 → 0.9`.
+/// `[0, 1)` and saturating, so early visits matter most: `1 → 0.5`, `4 → 0.8`,
+/// `9 → 0.9`.
 fn frequency_score(visit_count: u32) -> f64 {
     let n = f64::from(visit_count.max(1));
     1.0 - 1.0 / (1.0 + n)
 }
 
-/// The visits the address suggestions show in a screenshot.
 pub(crate) fn sample_entries() -> Vec<HistoryEntry> {
     vec![
         HistoryEntry {
@@ -328,29 +260,22 @@ pub(crate) fn sample_entries() -> Vec<HistoryEntry> {
     ]
 }
 
-/// One visited page in the person's record.
 #[derive(Model, Clone, Debug, PartialEq)]
 pub struct Visit {
-    /// Title: the last page title seen. Written whole.
     #[model(label)]
     pub title: Atom,
-    /// When it was last visited, in Unix seconds.
     pub last: u64,
-    /// How often it was visited: visits on two devices add up.
+    /// Visits on two devices add up.
     pub count: Counter,
 }
 
-/// The browsing history, a record of Browser's in the workspace it is open
-/// in: each visited page, keyed by URL, with its title, last visit and
-/// visit count. It syncs with the workspace.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 #[model(check = BrowsingHistory::valid_imports)]
 pub struct BrowsingHistory {
-    /// Visited pages, by URL. Only visiting and forgetting change them.
     #[model(readonly)]
     pub visits: BTreeMap<String, Visit>,
-    /// Immutable imported contributions, keyed by source and URL. Import receipts
-    /// and tombstones stay in the person's record when visits are forgotten.
+    /// Imported contributions by source and URL; their receipts and tombstones
+    /// outlive a forgotten visit.
     #[model(readonly)]
     pub imported: BTreeMap<String, ImportedVisit>,
     #[model(readonly)]
@@ -419,13 +344,7 @@ impl BrowsingHistory {
 }
 
 impl BrowsingHistory {
-    /// What the record holds: each visited page by URL, with its title, last visit and how
-    /// often it was visited.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// Each visited page by URL, with its title, last visit and visit count.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -446,10 +365,8 @@ impl BrowsingHistory {
         self.entries().is_empty()
     }
 
-    /// Record a visit to a page.
-    ///
-    /// Recording a visit is the browser keeping its history, not an edit of
-    /// the person's to take back.
+    /// Recording a visit is the browser keeping its history, not an edit the
+    /// person takes back.
     #[action(housekeeping)]
     pub fn visit(
         &mut self,
@@ -480,7 +397,6 @@ impl BrowsingHistory {
                 },
             );
         }
-        // Keep the most useful pages; the rest fall off.
         if self.visits.len() > MAX_HISTORY_ENTRIES {
             let kept: std::collections::BTreeSet<String> = History::from_entries(
                 self.visits
@@ -502,8 +418,8 @@ impl BrowsingHistory {
         Ok(())
     }
 
-    /// Import a complete reviewed private history snapshot. All conflicts and
-    /// capacity checks precede edits; an identical retry never recounts visits.
+    /// Import a reviewed history snapshot; an identical retry never recounts
+    /// visits.
     #[action]
     pub fn import_history_bundle(
         &mut self,
@@ -592,12 +508,8 @@ impl BrowsingHistory {
         Ok(())
     }
 
-    /// Name a visited page recorded before its title was known: a page a
-    /// web app moved to without loading one, or one that names itself once
-    /// it has loaded. A page that has a title keeps it.
-    ///
-    /// Like recording the visit, this is the browser keeping its history,
-    /// not an edit of the person's to take back.
+    /// Name a page recorded before its title was known; a page that has a title
+    /// keeps it.
     #[action(housekeeping)]
     pub fn name_visit(
         &mut self,
@@ -613,7 +525,6 @@ impl BrowsingHistory {
         Ok(())
     }
 
-    /// Forget one page.
     #[action(keywords = "remove from history, delete page from history")]
     pub fn forget(&mut self, #[param("The page's address")] url: String) {
         self.visits.remove(&url);
@@ -624,7 +535,6 @@ impl BrowsingHistory {
         }
     }
 
-    /// Forget every page.
     #[action(keywords = "clear browsing data, delete history, forget history, privacy")]
     pub fn clear_history(&mut self) {
         self.visits.clear();
@@ -635,7 +545,6 @@ impl BrowsingHistory {
 }
 
 impl History {
-    /// The history the person's record holds.
     pub fn of(record: &BrowsingHistory) -> History {
         let mut rows: BTreeMap<String, HistoryEntry> = record
             .visits
@@ -765,7 +674,6 @@ mod tests {
         }
     }
 
-    /// Recording visits.
     #[test]
     fn record_dedups_keeps_titles_and_evicts_at_the_bound() {
         {
@@ -822,7 +730,6 @@ mod tests {
         }
     }
 
-    /// Matching: substrings and typos match, others do not, prefixes score higher.
     #[test]
     fn matching_is_case_insensitive_and_tolerates_typos() {
         let matches = |needle: &str, row: HistoryEntry| {
@@ -851,7 +758,6 @@ mod tests {
         );
     }
 
-    /// Suggestion filtering, ranking signals and tie-breaks.
     #[test]
     fn suggestions_rank_by_match_recency_frequency_and_limit() {
         struct Case {
@@ -863,8 +769,6 @@ mod tests {
             first: Option<&'static str>,
         }
         let cases = [
-            // `suggest` folds case for the whole pipeline, so an uppercase
-            // query still matches a mixed-case title/URL.
             Case {
                 name: "'GIT' matches 'GitHub' case-insensitively",
                 rows: &[("https://GitHub.com", "GitHub", 1_000, 1)],
@@ -873,8 +777,6 @@ mod tests {
                 len: Some(1),
                 first: None,
             },
-            // Equal recency + frequency isolates the match-quality signal;
-            // both hold 'code'.
             Case {
                 name: "the prefix match ranks first",
                 rows: &[
@@ -919,7 +821,6 @@ mod tests {
                 len: None,
                 first: Some("https://popular.test"),
             },
-            // Same URL shape so 'test' matches identically; recency decides.
             Case {
                 name: "equal match quality → the more-recent page leads",
                 rows: &[
@@ -954,8 +855,6 @@ mod tests {
         assert_eq!(out.len(), 3, "the result is capped at the limit");
     }
 
-    /// The person's record keeps one row per page, merges devices by page
-    /// and refuses what a visit cannot name.
     #[test]
     fn browsing_history_record_counts_visits_and_merges_devices() {
         use ui::tilo_resource::Replica;

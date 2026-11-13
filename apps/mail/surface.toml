@@ -1,5 +1,7 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "mail.mailbox"
 label = "Mail"
@@ -31,7 +33,7 @@ fields = [
   { path = "draft.html_body", type = { option = "text" } },
   { path = "draft.calendar_ics", type = { option = "text" } },
   { path = "draft.attachments", type = { list = "any" } },
-  { path = "draft.rich_body", type = { option = "rich_text" }, ops = "sha256:10bf507639fdd4f3" },
+  { path = "draft.rich_body", type = { option = "rich_text" }, ops = "sha256:aceedec5a9b08d74" },
   { path = "draft.shown_as", type = { option = "text" }, readonly = true },
   { path = "draft.drafted", type = { option = "text" }, readonly = true },
   { path = "draft.in_reply_to", type = { option = "text" } },
@@ -50,7 +52,7 @@ fields = [
   { path = "drafts.*.html_body", type = { option = "text" } },
   { path = "drafts.*.calendar_ics", type = { option = "text" } },
   { path = "drafts.*.attachments", type = { list = "any" } },
-  { path = "drafts.*.rich_body", type = { option = "rich_text" }, ops = "sha256:10bf507639fdd4f3" },
+  { path = "drafts.*.rich_body", type = { option = "rich_text" }, ops = "sha256:aceedec5a9b08d74" },
   { path = "drafts.*.shown_as", type = { option = "text" }, readonly = true },
   { path = "drafts.*.drafted", type = { option = "text" }, readonly = true },
   { path = "drafts.*.in_reply_to", type = { option = "text" } },
@@ -100,7 +102,7 @@ id = "move-messages"
 kind = "outside"
 params = [
   { name = "messages", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
-  { name = "to", type = { named = "Folder" }, required = true, schema = { oneOf = [{ type = "string", const = "inbox" }, { type = "string", const = "starred" }, { type = "string", const = "sent" }, { type = "string", const = "drafts" }, { type = "string", const = "archive" }, { type = "string", const = "trash" }, { type = "string", const = "junk" }] } },
+  { name = "to", type = { named = "Folder" }, required = true, schema = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] } },
 ]
 
 [[resources.verbs]]
@@ -122,7 +124,7 @@ params = [
 id = "server-applied"
 kind = "outside"
 params = [
-  { name = "update", type = { named = "ServerUpdate" }, required = true, schema = { oneOf = [{ type = "object", additionalProperties = false, properties = { Flags = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, folder = { oneOf = [{ type = "string", const = "inbox" }, { type = "string", const = "starred" }, { type = "string", const = "sent" }, { type = "string", const = "drafts" }, { type = "string", const = "archive" }, { type = "string", const = "trash" }, { type = "string", const = "junk" }] }, id = { type = "string" }, locator = { type = "string" }, read = { type = "boolean" }, starred = { type = "boolean" } }, required = ["id", "account", "locator", "folder", "read", "starred"] } }, required = ["Flags"] }, { type = "object", additionalProperties = false, properties = { Move = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, from = { oneOf = [{ type = "string", const = "inbox" }, { type = "string", const = "starred" }, { type = "string", const = "sent" }, { type = "string", const = "drafts" }, { type = "string", const = "archive" }, { type = "string", const = "trash" }, { type = "string", const = "junk" }] }, id = { type = "string" }, locator = { type = "string" }, to = { oneOf = [{ type = "string", const = "inbox" }, { type = "string", const = "starred" }, { type = "string", const = "sent" }, { type = "string", const = "drafts" }, { type = "string", const = "archive" }, { type = "string", const = "trash" }, { type = "string", const = "junk" }] } }, required = ["id", "account", "locator", "from", "to"] } }, required = ["Move"] }, { type = "object", additionalProperties = false, properties = { Remove = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, folder = { oneOf = [{ type = "string", const = "inbox" }, { type = "string", const = "starred" }, { type = "string", const = "sent" }, { type = "string", const = "drafts" }, { type = "string", const = "archive" }, { type = "string", const = "trash" }, { type = "string", const = "junk" }] }, id = { type = "string" }, locator = { type = "string" } }, required = ["id", "account", "locator", "folder"] } }, required = ["Remove"] }, { type = "object", additionalProperties = false, properties = { SaveDraft = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, draft = { type = "object", additionalProperties = false, properties = { attachments = { type = "array", items = { type = "object", additionalProperties = false, properties = { content_id = { type = "string" }, filename = { type = "string" }, mime = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["content_id", "filename", "mime", "size"] } }, bcc = { type = "string" }, body = { type = "string" }, calendar_ics = { type = ["string", "null"] }, cc = { type = "string" }, html_body = { type = ["string", "null"] }, sender = { type = ["object", "null"], additionalProperties = false, properties = { account = { type = "string" }, email = { type = "string" } }, required = ["account", "email"] }, subject = { type = "string" }, to = { type = "string" } }, required = ["to", "cc", "bcc", "subject", "body"] }, id = { type = "string" }, in_reply_to = { type = ["string", "null"] }, locator = { type = "string" }, written = { type = "string" } }, required = ["id", "account", "locator", "written", "draft"] } }, required = ["SaveDraft"] }] } },
+  { name = "update", type = { named = "ServerUpdate" }, required = true, schema = { oneOf = [{ type = "object", additionalProperties = false, properties = { Flags = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, folder = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] }, id = { type = "string" }, locator = { type = "string" }, read = { type = "boolean" }, starred = { type = "boolean" } }, required = ["id", "account", "locator", "folder", "read", "starred"] } }, required = ["Flags"] }, { type = "object", additionalProperties = false, properties = { Move = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, from = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] }, id = { type = "string" }, locator = { type = "string" }, to = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] } }, required = ["id", "account", "locator", "from", "to"] } }, required = ["Move"] }, { type = "object", additionalProperties = false, properties = { Remove = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, folder = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] }, id = { type = "string" }, locator = { type = "string" } }, required = ["id", "account", "locator", "folder"] } }, required = ["Remove"] }, { type = "object", additionalProperties = false, properties = { SaveDraft = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, draft = { type = "object", additionalProperties = false, properties = { attachments = { type = "array", items = { type = "object", additionalProperties = false, properties = { content_id = { type = "string" }, filename = { type = "string" }, mime = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["content_id", "filename", "mime", "size"] } }, bcc = { type = "string" }, body = { type = "string" }, calendar_ics = { type = ["string", "null"] }, cc = { type = "string" }, html_body = { type = ["string", "null"] }, sender = { type = ["object", "null"], additionalProperties = false, properties = { account = { type = "string" }, email = { type = "string" } }, required = ["account", "email"] }, subject = { type = "string" }, to = { type = "string" } }, required = ["to", "cc", "bcc", "subject", "body"] }, id = { type = "string" }, in_reply_to = { type = ["string", "null"] }, locator = { type = "string" }, written = { type = "string" } }, required = ["id", "account", "locator", "written", "draft"] } }, required = ["SaveDraft"] }] } },
 ]
 
 [[resources.verbs]]
@@ -203,7 +205,7 @@ params = [
   { name = "subject", type = "text", required = true, schema = { type = "string" } },
   { name = "body", type = "text", required = true, schema = { type = "string" } },
   { name = "date", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "folder", type = { option = "any" }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "inbox" }, { type = "string", const = "starred" }, { type = "string", const = "sent" }, { type = "string", const = "drafts" }, { type = "string", const = "archive" }, { type = "string", const = "trash" }, { type = "string", const = "junk" }] }] } },
+  { name = "folder", type = { option = "text" }, required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] }] } },
   { name = "read", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
   { name = "reply_to", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "conversation", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
@@ -634,7 +636,7 @@ fields = [
 id = "keep-copies"
 kind = "undoable"
 params = [
-  { name = "copies", type = { list = { named = "NewCopy" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, content = { type = "string" }, folder = { oneOf = [{ type = "string", const = "inbox" }, { type = "string", const = "starred" }, { type = "string", const = "sent" }, { type = "string", const = "drafts" }, { type = "string", const = "archive" }, { type = "string", const = "trash" }, { type = "string", const = "junk" }] }, id = { type = "string" }, minutes = { type = "integer" }, uid = { type = "integer", maximum = 4294967295, minimum = 0 }, uid_validity = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["id", "account", "content", "minutes", "folder", "uid", "uid_validity"] } } },
+  { name = "copies", type = { list = { named = "NewCopy" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, content = { type = "string" }, folder = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] }, id = { type = "string" }, minutes = { type = "integer" }, uid = { type = "integer", maximum = 4294967295, minimum = 0 }, uid_validity = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["id", "account", "content", "minutes", "folder", "uid", "uid_validity"] } } },
 ]
 
 [[resources.verbs]]

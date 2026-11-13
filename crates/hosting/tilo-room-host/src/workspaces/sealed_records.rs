@@ -781,6 +781,7 @@ impl Workspaces {
     /// for their record, they kept every reader from the record, and no fold since left them
     /// out. Each such record's channel is folded without them now, as its next fold would
     /// ([`crate::compaction::Compactor::repair`]). Runs once as the host starts.
+    #[cfg(any(feature = "agents", feature = "web"))]
     pub(crate) async fn fold_away_unsent(&self, compactor: &crate::compaction::Compactor) {
         let workspaces: Vec<_> = self
             .inner

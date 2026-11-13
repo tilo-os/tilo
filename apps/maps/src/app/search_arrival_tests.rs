@@ -1,10 +1,5 @@
-//! A committed search's places on their way from the geocoder.
-
 use super::*;
 
-/// A committed search's places from the geocoder wait in rows of a
-/// result's kind, which step on at their deadlines with no frames between
-/// and go when the geocoder answers that search.
 #[test]
 fn a_committed_searchs_places_wait_in_rows_until_the_geocoder_answers() {
     let mut app = MapsApp::offline();

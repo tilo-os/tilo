@@ -1,14 +1,4 @@
-//! The Applications place: every app in the person's app list, as items.
-//!
-//! The list is the shell's applications model, not one of Files' own: Files
-//! asks for it (`ToolIntent::Applications`), opens an app through the shell
-//! (`ToolIntent::OpenApplication`) and hands Uninstall to the shell's one
-//! Uninstall action (`ToolIntent::UninstallApplication`), which asks the
-//! person in its own sheet. Files never removes an app itself.
-//!
-//! `~/Applications`, where an `AppImage` is moved to, is part of the same
-//! place: going there opens this place, and a file in it that is not one of
-//! the listed apps is shown here too, as the file it is.
+//! The Applications place: every app the person has, and the files of `~/Applications`.
 
 use std::path::{Path, PathBuf};
 
@@ -16,24 +6,17 @@ use runtime_portal::tools::{AppEntry, AppKind, AppRemoval};
 
 use crate::model::Entry;
 
-/// The pseudo-location the Applications place navigates to. Like Recent's,
-/// it is relative and scheme-like, so it never names a real directory.
 pub const APPLICATIONS_LOCATION: &str = "applications://";
 
-/// The type an app item carries, so views and rows tell it from a file.
 pub const APP_MIME: &str = "application/x-desktop";
 
-/// What an app item shows beyond its name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppFacts {
-    /// Its icon file.
     pub icon: Option<PathBuf>,
     pub kind: AppKind,
-    /// Bytes on disk, where the applications model knows them.
     pub size: Option<u64>,
 }
 
-/// The kind column's words for `kind`.
 #[must_use]
 pub fn kind_label(kind: AppKind) -> String {
     crate::i18n::t(match kind {
@@ -55,19 +38,16 @@ pub fn is_location(path: &Path) -> bool {
     path.as_os_str() == APPLICATIONS_LOCATION
 }
 
-/// The folder in the person's files that belongs to this place.
 #[must_use]
 pub fn folder(home: &Path) -> PathBuf {
     home.join("Applications")
 }
 
-/// The item path of the app with this id.
 #[must_use]
 pub fn app_path(id: &str) -> PathBuf {
     PathBuf::from(format!("{APPLICATIONS_LOCATION}{id}"))
 }
 
-/// The app id an item path names, when it names one.
 #[must_use]
 pub fn app_id(path: &Path) -> Option<&str> {
     path.to_str()?
@@ -75,13 +55,11 @@ pub fn app_id(path: &Path) -> Option<&str> {
         .filter(|id| !id.is_empty())
 }
 
-/// Whether `path` is an app item rather than a file.
 #[must_use]
 pub fn is_app(path: &Path) -> bool {
     app_id(path).is_some()
 }
 
-/// One app as an item of the listing.
 #[must_use]
 pub fn app_entry(app: &AppEntry) -> Entry {
     Entry {
@@ -106,8 +84,6 @@ pub fn app_entry(app: &AppEntry) -> Entry {
     }
 }
 
-/// The place's items: every app, then each file of `~/Applications` that is
-/// not one of those apps' programs.
 #[must_use]
 pub fn listing(apps: &[AppEntry], folder_files: &[Entry]) -> Vec<Entry> {
     let programs: Vec<&Path> = apps
@@ -125,8 +101,6 @@ pub fn listing(apps: &[AppEntry], folder_files: &[Entry]) -> Vec<Entry> {
         .collect()
 }
 
-/// What "remove" means for the app at `path` among `apps`: Uninstall, Remove
-/// from apps, or nothing.
 #[must_use]
 pub fn removal_of(apps: &[AppEntry], path: &Path) -> AppRemoval {
     app_id(path)

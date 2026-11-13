@@ -1,14 +1,7 @@
-//! A device reached as its owner's account rather than as root.
-//!
-//! The installer's dev SSH setup lets only the owner's account in
-//! (`PermitRootLogin no`, `AllowUsers <owner>`), so on such a device tilo-vm
-//! logs in as that account and runs every remote command through `sudo -n`
-//! ([`crate::remote::as_root`]). `vm add --ssh <user>@<host>` checks what the
-//! other commands rely on (SSH, root through sudo, tilo-vmd and its protocol;
-//! the toolchain and bootc for builds and upgrades), names each fix, and
-//! registers the device only once the required ones pass. `--grant-sudo`
-//! writes the one sudoers drop-in that allows it, with the user's password
-//! typed on this terminal.
+//! A device reached as its owner's account rather than as root: every remote
+//! command runs through `sudo -n`. `vm add --ssh <user>@<host>` checks what the
+//! other commands rely on and registers the device only once the required
+//! checks pass.
 
 use std::fmt::Write as _;
 
@@ -24,20 +17,15 @@ use crate::hypervisor::{CommandLine, DEVICE, Runner as _, SshEndpoint};
 use crate::remote::{self, Remote};
 use crate::vmbuild::sh_quote;
 
-/// What `add-device` reads as the SSH user, before anything runs as root.
-/// The login shell may be any shell, so the script runs under `sh -c`.
 pub const PROBE: &str = r#"echo "user=$(id -un)"; if [ "$(id -u)" = 0 ]; then echo sudo=root; elif out=$(sudo -n true 2>&1); then echo sudo=ok; else echo "sudo=no $(printf %s "$out" | head -n 1)"; fi; if command -v tilo-vmd >/dev/null 2>&1; then echo tilo-vmd=yes; else echo tilo-vmd=no; fi; if command -v bootc >/dev/null 2>&1; then echo bootc=yes; else echo bootc=no; fi; echo "arch=$(uname -m)"; echo @@board; cat /usr/lib/tilo/hardware-profile.json 2>/dev/null"#;
 
-/// [`PROBE`]'s answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Probe {
     pub user: Option<String>,
-    /// `Ok(true)`: root itself; `Ok(false)`: passwordless sudo; `Err`: why not.
     pub root: Result<bool, String>,
     pub tilo_vmd: bool,
     pub bootc: bool,
     pub arch: Option<String>,
-    /// The board the image was built for, on a board dev image.
     pub board: Option<String>,
 }
 
@@ -81,10 +69,6 @@ pub fn parse_probe(output: &str) -> Probe {
     probe
 }
 
-/// The remote line `--grant-sudo` runs: a sudoers drop-in that lets `user`
-/// run commands as root without a password, checked by visudo before it is
-/// moved in place (sudo skips the `.new` file meanwhile). sudo asks for the
-/// user's password on the terminal.
 pub fn grant_sudo_line(user: &str) -> Result<String, CliError> {
     let valid = !user.is_empty()
         && user.len() <= 32
@@ -107,14 +91,10 @@ pub fn grant_sudo_line(user: &str) -> Result<String, CliError> {
     Ok(format!("sudo -- sh -c {}", sh_quote(&inner)))
 }
 
-/// The drop-in [`grant_sudo_line`] writes; removing it revokes the grant.
 pub fn sudoers_file(user: &str) -> String {
     format!("/etc/sudoers.d/tilo-vm-{user}")
 }
 
-/// The checks behind `add-device`. `hello` is tilo-vmd's handshake, when
-/// it got that far. The first three are required: without them no command
-/// can work.
 pub fn device_checks(
     endpoint: &SshEndpoint,
     probe: &Probe,
@@ -163,7 +143,6 @@ pub fn device_checks(
                 hello.daemon_version, hello.protocol, hello.arch
             ),
         ),
-        // An older image: register anyway, so vm upgrade can move it on.
         (
             true,
             Some(Err(error @ CliError::ProtocolMismatch {
@@ -218,7 +197,6 @@ pub fn device_checks(
     checks
 }
 
-/// Did the required checks pass?
 pub fn usable(checks: &[Check]) -> bool {
     checks
         .iter()
@@ -227,7 +205,6 @@ pub fn usable(checks: &[Check]) -> bool {
 }
 
 impl App {
-    /// `vm add` for a device reached as `endpoint.user`, not root.
     #[expect(
         clippy::too_many_lines,
         reason = "one registration sequence: probe, checks, net facts, record"
@@ -345,8 +322,6 @@ impl App {
 }
 
 impl App {
-    /// Its name, MAC and wake setting, so the device is found again when
-    /// its address changes and can be woken (tilo-vm vm wake).
     fn add_net_facts(&mut self, endpoint: &SshEndpoint, entry: &mut VmEntry, text: &mut String) {
         let Some(facts) = self.net_facts(endpoint, entry.key.as_deref()) else {
             return;
@@ -357,8 +332,6 @@ impl App {
         }
     }
 
-    /// `--grant-sudo`: write the sudoers drop-in over an interactive SSH
-    /// session, where sudo asks for the user's password.
     fn grant_sudo(&mut self, endpoint: &SshEndpoint, key: Option<&str>) -> Result<(), CliError> {
         let mut line = remote::ssh_transport(endpoint, key, true);
         line.args.push(grant_sudo_line(&endpoint.user)?);
@@ -381,7 +354,6 @@ impl App {
     }
 }
 
-/// The checks as `vm add` prints them, each failure with its fix.
 fn checks_text(name: &str, endpoint: &SshEndpoint, checks: &[Check]) -> String {
     let mut text = format!("device {name} ({})", endpoint.ssh_spec());
     for check in checks {
@@ -397,7 +369,6 @@ fn checks_text(name: &str, endpoint: &SshEndpoint, checks: &[Check]) -> String {
     text
 }
 
-/// `ssh ... <user>@<host> sh -c <probe>`, as the login user.
 pub fn probe_command(endpoint: &SshEndpoint, key: Option<&str>) -> CommandLine {
     let mut line = remote::ssh_transport(endpoint, key, false);
     line.args.push(format!("sh -c {}", sh_quote(PROBE)));
@@ -428,11 +399,8 @@ mod tests {
         .unwrap()
     }
 
-    /// The probe reads who answered, whether root is reachable without a password, and what the
-    /// image carries; the checks require SSH, root and tilo-vmd, and name each fix.
     #[test]
     fn add_device_checks_root_daemon_and_toolchain_and_names_each_fix() {
-        // Phase: the_probe_parses_a_board_device.
         let board = r#"{"schema_version": 1, "id": "lenovo-83ed", "architecture": "aarch64"}"#;
         let output = format!(
             "motd line\nuser=me\nsudo=no sudo: a password is required\ntilo-vmd=yes\nbootc=yes\narch=aarch64\n@@board\n{board}\n"
@@ -449,7 +417,6 @@ mod tests {
         );
         assert_eq!(parse_probe("user=me\nsudo=ok\n@@board\n").board, None);
 
-        // Phase: without_root_it_is_not_registered_and_says_how_to_grant_it.
         let checks = device_checks(&endpoint("me"), &probe, None);
         assert!(!usable(&checks));
         let root = checks.iter().find(|c| c.check == "root").unwrap();
@@ -463,7 +430,6 @@ mod tests {
         let daemon = checks.iter().find(|c| c.check == "tilo-vmd").unwrap();
         assert_eq!(daemon.state, "fail");
 
-        // Phase: with_sudo_and_a_daemon_it_is_usable.
         let probe = Probe {
             root: Ok(false),
             ..probe
@@ -486,7 +452,6 @@ mod tests {
             "ok"
         );
 
-        // Phase: a_missing_toolchain_or_daemon_is_named.
         let mut thin = hello();
         thin.tools.cargo = false;
         let checks = device_checks(&endpoint("me"), &probe, Some(&Ok(thin)));
@@ -505,7 +470,6 @@ mod tests {
             daemon: 5,
             bootc: Some(true),
         });
-        // An older daemon still registers, so vm upgrade can bring a newer one.
         let checks = device_checks(&endpoint("me"), &probe, Some(&refused));
         assert!(usable(&checks));
         let daemon = checks.iter().find(|c| c.check == "tilo-vmd").unwrap();
@@ -530,8 +494,6 @@ mod tests {
         )));
     }
 
-    /// The sudo grant is one validated drop-in, checked by visudo before it is used; odd names
-    /// are refused rather than written into sudoers.
     #[test]
     fn granting_sudo_writes_one_checked_drop_in() {
         let line = grant_sudo_line("bob").unwrap();
@@ -541,7 +503,6 @@ mod tests {
             line.contains("visudo -cqf /etc/sudoers.d/tilo-vm-bob.new && mv /etc/sudoers.d/tilo-vm-bob.new /etc/sudoers.d/tilo-vm-bob"),
             "{line}"
         );
-        // No single quote inside: the line survives any login shell's quoting.
         assert_eq!(line.matches('\'').count(), 2, "{line}");
         for bad in ["", "Root", "a b", "x;rm", "a'b", &"x".repeat(33)] {
             assert!(grant_sudo_line(bad).is_err(), "{bad}");

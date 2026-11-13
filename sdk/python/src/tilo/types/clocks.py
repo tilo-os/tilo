@@ -18,18 +18,48 @@ from typing import Any, Literal, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
+    "Alarm",
+    "Stopwatch",
+    "Timer",
+    "WeekdayKey",
+    "WorldClock",
     "Collection",
     "OnDevices",
 ]
 
+class Alarm(TypedDict):
+    label: str
+    hour: int
+    minute: int
+    repeat: int
+    enabled: bool
+    enabled_at_ms: int
+
+class Stopwatch(TypedDict):
+    accumulated_ms: int
+    started_at_ms: int | None
+    laps_ms: list[int]
+
+class Timer(TypedDict):
+    label: str
+    duration_ms: int
+    ends_at_ms: int | None
+    paused_remaining_ms: int | None
+
+WeekdayKey = Literal["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+class WorldClock(TypedDict):
+    city: str
+    timezone: str
+
 class Collection(Resource):
     """Clocks — `clocks.collection`."""
-    __surface__ = "so.tilo.clocks@d3069d6f03debbee"
-    world_clocks: Any
-    alarms: Any
-    timers: Any
+    __surface__ = "so.tilo.clocks@de9ae8048fcfe612"
+    world_clocks: list[WorldClock]
+    alarms: list[Alarm]
+    timers: list[Timer]
     @property
-    def stopwatch(self) -> Any:
+    def stopwatch(self) -> Stopwatch:
         """Read only."""
         return self.fields["stopwatch"]
 
@@ -50,7 +80,7 @@ class Collection(Resource):
         label: str,
         hour: int,
         minute: int,
-        weekdays: list[str],
+        weekdays: list[WeekdayKey],
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("add-alarm", label=label, hour=hour, minute=minute, weekdays=weekdays)
@@ -69,7 +99,7 @@ class Collection(Resource):
         label: str,
         hour: int,
         minute: int,
-        weekdays: list[str],
+        weekdays: list[WeekdayKey],
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("edit-alarm", alarm=alarm, label=label, hour=hour, minute=minute, weekdays=weekdays)
@@ -121,8 +151,8 @@ class Collection(Resource):
 
 class OnDevices(Resource):
     """Clocks on each device — `clocks.on-devices`."""
-    __surface__ = "so.tilo.clocks@d3069d6f03debbee"
-    devices: Any
+    __surface__ = "so.tilo.clocks@de9ae8048fcfe612"
+    devices: dict[str, Any]
 
     def keep(self,
         *,

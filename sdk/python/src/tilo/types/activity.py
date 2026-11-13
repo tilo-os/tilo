@@ -23,7 +23,7 @@ __all__ = [
 
 class Filter(Resource):
     """Workspace activity — `activity.filter`."""
-    __surface__ = "so.tilo.activity@e0b48ca6887742be"
+    __surface__ = "so.tilo.activity@f7fe2955835947ba"
     period: str
     author: str
     lens: str

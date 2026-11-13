@@ -1,8 +1,5 @@
 //! How a person shows the calendars of their accounts: which are hidden,
 //! the colour each is drawn in, which accounts are folded in the sidebar.
-//! These are display choices of one person, not calendar content, so they
-//! are Personal settings that follow the person to every device and are
-//! never seen by collaborators.
 
 use std::collections::BTreeMap;
 
@@ -11,18 +8,12 @@ use ui::storage::{Scope, SettingsSchema};
 
 use crate::account::AccountStore;
 
-/// The person's display choices for their calendars, by calendar and
-/// account id. A calendar or account they made no choice about shows as its
-/// account says.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CalendarDisplay {
-    /// Whether a calendar's events are shown.
     #[serde(default)]
     pub visible: BTreeMap<String, bool>,
-    /// The palette slot a calendar is drawn in.
     #[serde(default)]
     pub colors: BTreeMap<String, u8>,
-    /// Whether an account's calendars are folded in the sidebar.
     #[serde(default)]
     pub collapsed: BTreeMap<String, bool>,
 }
@@ -32,7 +23,6 @@ impl SettingsSchema for CalendarDisplay {
 }
 
 impl CalendarDisplay {
-    /// `accounts` as this person shows them.
     #[must_use]
     pub fn applied_to(&self, accounts: &AccountStore) -> AccountStore {
         let mut shown = accounts.clone();

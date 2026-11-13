@@ -1,10 +1,8 @@
 //! Validated host-to-live-installer profile handoff.
 //!
-//! The raw media block is extracted by `tilo-installer-profile-extract` before
-//! greetd starts. This module treats the JSON as untrusted even after its
-//! corruption checksum passed. Each non-secret field is validated separately:
-//! sound values seed the installer, while missing or invalid values remain
-//! unset so the graphical flow asks for only those repairs.
+//! The JSON is untrusted even after its corruption checksum passed: each non-secret field is
+//! validated separately, and sound values seed the installer while missing or invalid ones stay
+//! unset so the graphical flow asks only for those repairs.
 
 use serde::Deserialize;
 use std::path::Path;
@@ -37,15 +35,13 @@ impl MediaProfileField {
     }
 }
 
-/// Independently validated, secret-free values recovered from the medium.
-/// `None` means that field must be completed on this device.
+/// Secret-free values recovered from the medium, each validated independently; `None` means that
+/// field must be completed on this device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MediaProfile {
     pub purpose: String,
     pub device_label: String,
     pub prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
-    /// Public, TPM-sealed sidecar carried from the Imager's same-computer
-    /// preparation. Its only secret is a TPM private blob.
     pub tpm_handoff: Option<String>,
     pub windows_preparation: Option<account_custody::hints::media::Expectation>,
     pub hostname: Option<String>,
@@ -178,9 +174,6 @@ impl RawMediaProfile {
             &mut repairs,
             install_profile_model::valid_username,
         );
-        // Full name is optional in both the imager and installer. Omitting it
-        // is therefore a valid configured choice; only a supplied bad value
-        // needs an on-device repair.
         let full_name = match self.full_name {
             None => Some(String::new()),
             value => retain_valid(
@@ -239,13 +232,9 @@ impl RawMediaProfile {
     }
 }
 
-/// Load and independently validate a profile extracted from the live medium.
-///
-/// # Errors
-///
-/// Returns an error only when the envelope cannot be trusted as a profile at
-/// all: unreadable/oversized input, malformed JSON, an unsupported schema, or
-/// unexpected fields. Missing and semantically invalid setup values instead
+/// Returns an error only when the envelope cannot be trusted as a profile: unreadable or oversized
+/// input, malformed JSON, an unsupported schema or unexpected fields. Missing and invalid setup
+/// values become explicit on-device repairs instead.
 /// become explicit on-device repairs.
 pub fn load_from(path: &Path) -> Result<Option<MediaProfile>, String> {
     load_from_with_zoneinfo(path, Path::new("/usr/share/zoneinfo"))
@@ -269,9 +258,8 @@ fn load_from_with_zoneinfo(
         .map(Some)
 }
 
-/// Validate the secret-free profile object carried by a staged (USB-free)
-/// installation handoff. It is the same object Tilo Imager writes to media;
-/// `schema` may be omitted there because the handoff has its own schema.
+/// The same object Tilo Imager writes to media; `schema` may be omitted here because the handoff has
+/// its own schema.
 pub fn validate_object(
     object: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<MediaProfile, String> {
@@ -291,19 +279,12 @@ pub(crate) fn validate_object_with_zoneinfo(
         .validate(zoneinfo_root)
 }
 
-/// Load and validate the profile extracted at [`PROFILE_PATH`].
-///
-/// # Errors
-///
-/// Returns an error when the profile cannot be read or its envelope is
-/// malformed. Individual missing or invalid setup fields are retained as
-/// repair requests in the returned profile rather than failing the envelope.
+/// Returns an error when the profile cannot be read or its envelope is malformed; individual missing
+/// or invalid setup fields stay repair requests.
 pub fn load() -> Result<Option<MediaProfile>, String> {
     load_from(Path::new(PROFILE_PATH))
 }
 
-/// Why boot could not extract the medium's profile, as it recorded
-/// it: what the wizard tells the person instead of using it.
 pub fn boot_error() -> Option<String> {
     std::fs::read_to_string(PROFILE_ERROR_PATH)
         .ok()
@@ -379,8 +360,6 @@ mod tests {
                 (
                     "locale",
                     MediaProfileField::Locale,
-                    // Syntactically plausible is not enough: the installed image
-                    // must actually carry the selected locale data.
                     serde_json::json!("zz_ZZ.UTF-8"),
                 ),
                 (

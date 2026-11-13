@@ -66,9 +66,9 @@ impl RecordSet {
         // The same key [`RecordSet::canonical_key`] would have named in that
         // workspace then: the workspace's own document, or one of its records.
         let retired_key = if want.id.is_package_primary() {
-            StorageKey::workspace_index(&self.package_id, retired)
+            StorageKey::workspace_index(&self.app_id, retired)
         } else {
-            StorageKey::record(&self.package_id, retired, want.id.storage_key())
+            StorageKey::record(&self.app_id, retired, want.id.storage_key())
         };
         if backend
             .read(&retired_key)?
@@ -133,9 +133,7 @@ impl RecordSet {
         let Some(retired) = self.retired.as_deref() else {
             return Vec::new();
         };
-        backend
-            .records(&self.package_id, retired)
-            .unwrap_or_default()
+        backend.records(&self.app_id, retired).unwrap_or_default()
     }
 
     /// The [window default records](RecordId::window_default) of `kind` the
@@ -161,7 +159,7 @@ impl RecordSet {
             if kept.contains(&id) {
                 continue;
             }
-            let stored = backend.read(&StorageKey::record(&self.package_id, retired, &key));
+            let stored = backend.read(&StorageKey::record(&self.app_id, retired, &key));
             let loaded = match stored {
                 Ok(Some(stored)) if !stored.bytes.is_empty() => stored,
                 _ => continue,

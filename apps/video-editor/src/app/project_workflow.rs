@@ -9,13 +9,10 @@ type Cx = ui::framework::EffectCx<Project>;
 impl VideoEditorApp {
     // ---- project files ---------------------------------------------------
     //
-    // The project is this app's resource: every edit is kept, versioned and
-    // synced as it happens, so there is nothing to save and no unsaved state
-    // to ask about. A project file is a projection of it: Export project
-    // file writes the project as one wherever the person chooses, and Open
-    // project file brings one in as the project, one edit Undo takes back.
+    // Every edit is kept, versioned and synced as it happens, so there is nothing to save.
+    // A project file is a projection: Export writes one wherever the person chooses, and
+    // Open brings one in as the project, one edit Undo takes back.
 
-    /// The project's name, as the window bar's location says it.
     pub(super) fn project_label(&self) -> String {
         if self.project.name.trim().is_empty() {
             crate::resource::CATALOG.t("video-editor-untitled")
@@ -24,8 +21,7 @@ impl VideoEditorApp {
         }
     }
 
-    /// Invoke one of the editor's effects through its door, as the palette
-    /// or an agent does: a project file is a job only the effect's handler
+    /// As the palette or an agent does: a project file is a job only the effect's handler
     /// can run.
     pub(super) fn invoke_effect(&self, effect: &crate::actions::VideoEditorEffect) {
         if let Some(dispatch) = &self.actions {
@@ -121,9 +117,8 @@ impl VideoEditorApp {
         Ok(ui::framework::Effected::done())
     }
 
-    /// What to say after an open: how much arrived, and — if any of it cannot
-    /// be read here — which sources, in the same words the bin and the
-    /// timeline use for the same states.
+    /// How much arrived, and — if any of it cannot be read here — which sources, in the words
+    /// the bin and the timeline use for the same states.
     pub(super) fn opened_notice(path: &Path, project: &crate::model::Project) -> Notice {
         let name = crate::project_file::label(path);
         let missing = crate::project_file::missing_sources(project);
@@ -192,9 +187,9 @@ impl VideoEditorApp {
             ));
         };
         let path = path.into_path_buf();
-        // A plain write rather than write-temp-then-rename: under a strict
-        // sandbox the grant is for the file chosen, not for siblings beside
-        // it. The header's length is what catches a write cut short.
+        // A plain write rather than write-temp-then-rename: under a strict sandbox the grant
+        // is for the file chosen, not for siblings beside it. The header's length catches a
+        // write cut short.
         if let Err(e) = crate::files::save(&path, &bytes) {
             let reason = crate::resource::CATALOG.t_args(
                 "video-editor-export-failed",
@@ -214,10 +209,9 @@ impl VideoEditorApp {
         Ok(ui::framework::Effected::done())
     }
 
-    /// Ask the user where the render should land, then encode there. The
-    /// picker is the grant: under a strict sandbox it is what earns the write
-    /// to somewhere like `~/Videos`, and without it the file lands in a temp
-    /// directory the user was never told about and cannot find.
+    /// The picker is the grant: under a strict sandbox it is what earns the write to somewhere
+    /// like `~/Videos`, and without it the file lands in a temp directory the user cannot
+    /// find.
     pub(super) fn request_export(&mut self) {
         if self.export_job.is_some() {
             return; // one render at a time
@@ -232,16 +226,14 @@ impl VideoEditorApp {
         let ext = self.export.container.extension();
         self.export_notice = Some(crate::resource::CATALOG.t("video-editor-save-where"));
         if crate::export::renders_by_steps() {
-            // A page saves by contents: the file is chosen now, while the
-            // press that asked for it still lets the page open its Save
-            // dialog, and written when the render finishes.
+            // A page saves by contents: the file is chosen now, while the press still lets the
+            // page open its Save dialog, and written when the render finishes.
             self.export_save_rx = Some(portal::request_export_save(&name, ext));
             return;
         }
         self.export_dest_rx = Some(portal::request_export_destination(&name, ext));
     }
 
-    /// Begin the render at `destination` on a worker thread.
     pub(super) fn begin_export_to(&mut self, destination: PathBuf) {
         self.export_notice = None;
         self.export_status = ExportStatus::Rendering { progress: 0.0 };
@@ -252,9 +244,8 @@ impl VideoEditorApp {
         ));
     }
 
-    /// Drain the destination picker and poll the running render. Called every
-    /// frame; `needs_animation_frame` keeps frames coming while a job runs, so
-    /// the progress bar actually moves.
+    /// Every frame: `needs_animation_frame` keeps frames coming while a job runs, so the
+    /// progress bar moves.
     pub(super) fn poll_export(&mut self) {
         // Destination round-trip.
         let mut outcome = None;
@@ -354,7 +345,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// A render run a step at a time, saved to `destination`.
     #[cfg(not(any(feature = "gst", feature = "decode")))]
     fn stepped_export(
         project: &crate::model::Project,
@@ -388,24 +378,19 @@ impl VideoEditorApp {
         self.export_job.is_some()
     }
 
-    /// Whether the Export action is actually available. The dialog paints the
-    /// button from this and the press path gates on it, so the offer and the
-    /// behaviour cannot disagree — which they did: the dialog said "Export
-    /// needs the `GStreamer` build" and put an enabled Export button under it.
+    /// The dialog paints the button from this and the press path gates on it, so the offer and
+    /// the behaviour cannot disagree, as they did when the dialog said "Export needs the
+    /// `GStreamer` build" over an enabled Export button.
     ///
-    /// Footage that is not on this device refuses the offer for the same
-    /// reason: the render would stop before its first frame, naming the source
-    /// it never read, and a person does not need to choose an output file to
-    /// learn that a clip is still arriving.
+    /// Footage that is not on this device refuses for the same reason: the render would stop
+    /// before its first frame, and nobody needs to choose an output file to learn that.
     pub(super) fn export_is_offered(&self) -> bool {
         crate::export::unavailable_reason().is_none()
             && !self.export_running()
             && self.export_blocker().is_none()
     }
 
-    /// What stands between this project and a render, in the person's words,
-    /// or `None` when Export can run. The dialog's status line shows it while
-    /// idle and the Export button is withdrawn, so the two cannot disagree.
+    /// Shown while idle, and the Export button is withdrawn, so the two cannot disagree.
     pub(super) fn export_blocker(&self) -> Option<String> {
         if let Some(reason) = crate::export::unavailable_reason() {
             return Some(reason.to_string());
@@ -422,17 +407,14 @@ impl VideoEditorApp {
     }
 }
 
-/// Whether `project` holds nothing a user would mind losing.
 fn holds_nothing(project: &crate::model::Project) -> bool {
     project.clips.is_empty() && project.media.is_empty() && project.tracks.is_empty()
 }
 
-/// Replace the project with what the file at `path` held (`read`), its
-/// relative media found in `dir` when the file has one here: the project
-/// and what to say about it, or why it could not be read.
+/// The project and what to say about it, or why it could not be read.
 ///
-/// The replacement is one edit of the resource, so it is one undo step and
-/// replicates to a peer like any other.
+/// The replacement is one edit of the resource, so it is one undo step and replicates like
+/// any other.
 fn bring_in_project(
     read: Result<crate::model::Project, crate::project_file::ProjectFileError>,
     path: &Path,
@@ -443,9 +425,8 @@ fn bring_in_project(
     if let Some(dir) = dir {
         crate::project_file::anchor_media(&mut project, dir);
     }
-    // The name follows the file unless the file's own project carries a
-    // real one — a project still called "Untitled" opened from
-    // `Holiday.qvp` should read as Holiday.
+    // The name follows the file unless the file's project carries a real one: a project still
+    // called "Untitled" opened from `Holiday.qvp` should read as Holiday.
     let untitled = crate::resource::CATALOG.t("video-editor-untitled");
     if (project.name.trim().is_empty() || project.name == untitled || project.name == "Untitled")
         && let Some(n) = crate::project_file::name_from_path(path)
@@ -457,9 +438,8 @@ fn bring_in_project(
     let replaced = !holds_nothing(&cx.live().get());
     let mut notice = VideoEditorApp::opened_notice(path, &project);
     if replaced {
-        // The notice carries the way back as its Undo action; saying so in
-        // words as well would be telling a person how to use the button in
-        // front of them.
+        // The notice carries the way back as its Undo action; saying so in words would tell a
+        // person how to use the button in front of them.
         notice.action = Some(super::notices::NoticeAction::Undo);
     }
     cx.submit(crate::resource::load_project(&project));

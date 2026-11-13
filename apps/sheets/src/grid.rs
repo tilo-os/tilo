@@ -1,13 +1,7 @@
-//! The spreadsheet grid — a direct-painted view with A1 headers, a
-//! scrollable cell matrix, selection (single + range), an in-cell editor,
-//! and column/row resize handles directly into the Vello scene.
-//!
-//! This is intentionally NOT a `ui::Widget`: a spreadsheet needs custom
-//! virtualization, per-cell clipping, and pixel-level header chrome that
-//! the flexbox-driven widget primitives don't model well. The owning
-//! `SheetsApp` widget drives it: it hands the grid a `Rect` + the current
-//! cell data each frame, forwards pointer/key events, and applies the
-//! [`GridCmd`]s the grid emits back into the CRDT.
+//! The spreadsheet grid: A1 headers, a scrollable cell matrix, selection, an in-cell editor and
+//! resize handles, painted into the Vello scene. It is not a `ui::Widget`, because a grid
+//! needs its own virtualisation and per-cell clipping; the app hands it a rect and the cell
+//! data each frame and applies the [`GridCmd`]s it emits.
 
 use std::collections::{HashMap, HashSet};
 
@@ -35,17 +29,17 @@ mod accessibility;
 #[cfg(test)]
 pub(crate) use accessibility::{A11Y_FALLBACK_COLS, A11Y_FALLBACK_ROWS};
 
-/// A mutation the grid wants applied to the document by the app.
+/// A change the grid asks the app to make in the document.
 #[derive(Clone, Debug)]
 pub enum GridCmd {
-    /// Write a cell's raw input (empty string clears it).
+    /// A cell's raw input to write; an empty string clears it.
     SetCell { addr: Addr, raw: String },
-    /// Mark a logical undo checkpoint after a burst of edits.
+    /// A logical undo checkpoint after a burst of edits.
     Commit,
 }
 
-/// The formula bar's text and, while editing, the caret, selection and
-/// input-method composition as char indices into it.
+/// The formula bar's text and, while editing, its caret, selection and composition, as char
+/// indices.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FormulaBarText {
     pub text: String,
@@ -58,14 +52,11 @@ pub struct FormulaBarText {
 struct EditState {
     addr: Addr,
     text: String,
-    /// Shared caret/selection core. The grid keeps its custom cell painting
-    /// and point-mode formula insertion, but all text editing semantics come
-    /// from the same byte-safe core as the other editable surfaces.
+    /// The caret and selection core: editing semantics come from the shared byte-safe core, while
+    /// the grid keeps its own cell painting and point-mode insertion.
     core: EditCore,
-    /// Started by typing over the cell rather than by F2, double-click or the
-    /// formula bar. As in other spreadsheets, arrow keys then finish the entry
-    /// and move to the neighbouring cell instead of moving the caret; placing
-    /// the caret explicitly switches to caret editing.
+    /// Started by typing over the cell rather than by F2, double-click or the formula bar: the arrow
+    /// keys then finish the entry and move on instead of moving the caret.
     entering: bool,
 }
 
@@ -74,8 +65,7 @@ impl EditState {
         self.text.clone()
     }
 
-    /// The ordered `(start, end)` char indices of the current selection, or
-    /// `None` when nothing is selected.
+    /// The ordered `(start, end)` char indices of the selection.
     fn selection(&self) -> Option<(usize, usize)> {
         let range = self.core.range();
         if range.is_empty() {
@@ -112,26 +102,22 @@ impl EditState {
         }
     }
 
-    /// The text as drawn: the committed text with any input-method
-    /// composition shown at the caret.
+    /// The text as drawn, with any composition shown at the caret.
     fn shown(&self) -> std::borrow::Cow<'_, str> {
         self.core.display_text(&self.text)
     }
 
-    /// Char index into [`Self::shown`] of display byte `byte`.
     fn shown_chars(&self, byte: usize) -> usize {
         self.shown()
             .get(..byte)
             .map_or(0, |head| head.chars().count())
     }
 
-    /// The caret as a char index into [`Self::shown`] — inside the
-    /// composition at the input method's cursor while composing.
+    /// The caret as a char index into [`Self::shown`], inside the composition while composing.
     fn shown_caret(&self) -> usize {
         self.shown_chars(self.core.display_caret(&self.text))
     }
 
-    /// The selection as char indices into [`Self::shown`].
     fn shown_selection(&self) -> Option<(usize, usize)> {
         let range = self.core.selected_range()?;
         Some((
@@ -140,17 +126,14 @@ impl EditState {
         ))
     }
 
-    /// The composition as char indices into [`Self::shown`].
     fn shown_preedit(&self) -> Option<(usize, usize)> {
         let range = self.core.preedit_display_range(&self.text)?;
         Some((self.shown_chars(range.start), self.shown_chars(range.end)))
     }
 }
 
-/// One rectangular selection range: an `anchor` corner and the moving
-/// `active` corner. A single-cell range has them equal. The full selection
-/// is a list of these — Excel/Calc-style discontiguous multi-selection —
-/// where the last range is the live one that keyboard/drag extend.
+/// One rectangular selection range, from an anchor to the moving corner; the selection is a list
+/// of them and the last is the live one.
 #[derive(Clone, Copy, PartialEq)]
 struct SelRange {
     anchor: Addr,
@@ -158,7 +141,7 @@ struct SelRange {
 }
 
 impl SelRange {
-    /// Normalized inclusive bounds `(c0, r0, c1, r1)` with `top_left <= bottom_right`.
+    /// The normalised inclusive bounds, `top_left <= bottom_right`.
     fn bounds(&self) -> (u32, u32, u32, u32) {
         (
             self.anchor.0.min(self.active.0),
@@ -183,7 +166,6 @@ enum ResizeTarget {
     Row(u32),
 }
 
-/// A caret motion within the in-cell / formula-bar text editor.
 #[derive(Clone, Copy)]
 enum CaretMove {
     Left,
@@ -204,53 +186,42 @@ enum ScrollAxis {
     Vertical,
 }
 
-/// An in-flight fill-handle drag. The selection at grab time is the source
-/// *pattern*; `target` is the cell currently under the pointer, projected onto
-/// the dominant forward axis (down or right) to a fill region.
+/// A fill-handle drag in flight: the source pattern and the cell under the pointer, projected
+/// onto the forward axis to the region to fill.
 #[derive(Clone, Copy)]
 struct FillDrag {
-    /// Source selection bounds captured at grab, `(top_left, bottom_right)`.
     src: (Addr, Addr),
-    /// Cell currently under the pointer.
     target: Addr,
 }
 
-/// Text and band metrics for the grid, resolved from the theme and the
-/// renderer that paints it.
-///
-/// Cells are `Body`, the row and column headers `Caption` (tabular figures),
-/// so every band, row and header derives from a measured role line box plus
-/// a spacing token or the small control height, and layout, paint and
-/// hit-testing share one metric. Manual row heights and column widths are
-/// never touched.
+/// Grid metrics from the theme and the renderer that paints it: every band, row and header is a
+/// measured line box plus a spacing token, so layout, paint and hit-testing share one metric.
+/// Manual row heights and column widths are never touched.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GridMetrics {
-    /// Accessibility text scale used to grow authored interaction floors.
+    /// The accessibility text scale, which grows authored interaction floors.
     pub scale: f64,
-    /// Measured line box of the cell text (`Body`), in final pixels.
+    /// The cell text's line box (`Body`), in final pixels.
     pub cell_line_h: f64,
-    /// Measured line box of the header labels (`Caption`), in final pixels.
+    /// The header labels' line box (`Caption`), in final pixels.
     pub header_line_h: f64,
-    /// Measured width of a four-digit row label in the header role.
+    /// A four-digit row label's width in the header role.
     pub row_label_w: f64,
-    /// Theme spacing the bands pad with (`s2`, `s3`).
     pub pad: f64,
     pub header_pad: f64,
-    /// Height of the smallest control: the floor of a row and of the header.
+    /// The smallest control's height: the floor of a row and of the header.
     pub control_h: f64,
-    /// Spacing steps the column geometry is built from.
     pub s1: f64,
     pub s2: f64,
     pub s8: f64,
     pub s12: f64,
     pub s16: f64,
-    /// Room a scroll view keeps on its trailing edge for its bar.
+    /// The room a scroll view keeps for its bar.
     pub gutter: f64,
 }
 
 impl GridMetrics {
-    /// Resolve the grid metrics for `theme` against `tr`, the renderer that
-    /// will paint the grid.
+    /// The grid metrics for `theme`, measured against `tr`.
     pub fn resolve(tr: &mut TextRenderer, theme: &Theme) -> Self {
         let (_, cell_line_h) = tr.measure_style("Ag", None, &theme.text(TextRole::Body));
         let (row_label_w, header_line_h) =
@@ -273,8 +244,7 @@ impl GridMetrics {
         }
     }
 
-    /// The metrics used before the first draw has a renderer, from the
-    /// stock theme's spacing; every band lands on its floor.
+    /// The metrics used before the first draw has a renderer.
     #[must_use]
     pub fn fallback() -> Self {
         let theme = Theme::dark();
@@ -296,22 +266,19 @@ impl GridMetrics {
         }
     }
 
-    /// Height of an automatically sized row: the cell line box plus `s2`,
-    /// never below the small control height.
+    /// An automatically sized row: the cell line box plus `s2`, never below `control_h`.
     #[must_use]
     pub fn default_row_h(&self) -> f64 {
         (self.cell_line_h + self.pad).max(self.control_h)
     }
 
-    /// Height of the column-header strip: the header line box plus `s3`,
-    /// never below the small control height.
+    /// The column-header strip: the header line box plus `s3`, never below `control_h`.
     #[must_use]
     pub fn col_header_h(&self) -> f64 {
         (self.header_line_h + self.header_pad).max(self.control_h)
     }
 
-    /// Width of the row-header strip: a four-digit label plus `s2` each side,
-    /// never below `s12 + s2`.
+    /// The row-header strip: a four-digit label plus `s2` on each side.
     #[must_use]
     pub fn row_header_w(&self) -> f64 {
         (self.row_label_w + 2.0 * self.pad).max((self.s12 + self.s2) * self.scale)
@@ -323,47 +290,46 @@ impl GridMetrics {
         (self.s16 + self.s12) * self.scale
     }
 
-    /// Widest an auto-fitted column grows, so one very long value cannot
-    /// blow a column out to an unreadable width.
+    /// The widest an auto-fitted column grows, so one long value cannot blow it out.
     #[must_use]
     pub fn max_autofit_w(&self) -> f64 {
         self.default_col_w() * 3.0
     }
 
-    /// Narrowest a column can be dragged to.
+    /// The narrowest a column can be dragged to.
     #[must_use]
     pub fn min_col_w(&self) -> f64 {
         self.s12 * self.scale
     }
 
-    /// Shortest a row can be dragged to.
+    /// The shortest a row can be dragged to.
     #[must_use]
     pub fn min_row_h(&self) -> f64 {
         (self.s8 - self.s2) * self.scale
     }
 
-    /// Horizontal inset of a cell's text.
+    /// A cell's text inset from its edges.
     #[must_use]
     pub fn cell_pad(&self) -> f64 {
         self.pad * self.scale
     }
 
-    /// How far a header edge's resize grab reaches either side.
+    /// How far a header edge's resize grab reaches.
     #[must_use]
     pub fn resize_grab(&self) -> f64 {
         self.s1 * self.scale
     }
 
-    /// Side of the fill handle square at the selection's corner.
+    /// The fill handle's side at the selection's corner.
     #[must_use]
     pub fn fill_handle(&self) -> f64 {
         self.s2 * self.scale
     }
 
-    /// Margin round a scrollbar's thumb inside its gutter.
+    /// The margin round a scrollbar's thumb.
     #[must_use]
     pub fn bar_margin(&self) -> f64 {
-        // Keep a generous input gutter, but only 5–6 logical pixels of ink.
+        // A generous input gutter, but only 5–6 logical pixels of ink.
         (self.gutter - self.s1.clamp(5.0, 6.0)).max(0.0) / 2.0
     }
 }
@@ -374,32 +340,23 @@ impl Default for GridMetrics {
     }
 }
 
-/// A structural change on its way: the `count` rows (or columns) at `at`
-/// opening as they arrive or closing as they leave, and everything after
-/// them moving with the band on the standard disclosure
-/// ([`ui::motion::Disclosure`]) — a row that appears or a gap that closes
-/// arrives rather than teleporting.
-///
-/// It is a drawing offset, not layout: the rows are laid out where they now
-/// stand, and what moves is where this frame paints them (a press lands on
-/// the row that is there, as in a toolkit table's own row motion).
+/// A structural change on its way: the rows or columns at `at` opening or closing on the
+/// standard disclosure, with what follows moving with the band. It is a drawing offset, not
+/// layout: a press lands on the row that is there.
 struct Shift {
     at: u32,
     count: u32,
-    /// The band is leaving: its rows are already gone and the rows after it
-    /// close the gap.
+    /// The band is leaving: its rows are gone and the rows after close the gap.
     leaving: bool,
-    /// The band's extent when open, in content space.
+    /// The band's extent when open.
     full: f64,
-    /// It starts on the first frame it is drawn, where the theme's motion
-    /// is at hand.
+    /// It starts on the first frame it is drawn.
     started: bool,
     disclosure: ui::motion::Disclosure,
 }
 
 impl Shift {
-    /// How far the row (or column) `index` is drawn from its laid-out place,
-    /// and how much of an arriving band is open.
+    /// How far row or column `index` is drawn from its laid-out place.
     fn pose(&self, index: u32) -> f64 {
         let opened = self.open_height();
         if self.leaving {
@@ -413,9 +370,7 @@ impl Shift {
         }
     }
 
-    /// How much of an arriving band is open: the rows in it are drawn inside
-    /// this much, fading in, so they never cover a row still on its way out
-    /// of the way.
+    /// How much of an arriving band is open; its rows fade in inside it.
     fn open_height(&self) -> f64 {
         self.disclosure.reveal(self.full).height
     }
@@ -429,44 +384,35 @@ impl Shift {
     }
 }
 
-/// What a held pointer extends, one at a time.
+/// What a held pointer extends.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Dragging {
-    /// The cell selection grows to the cell under the pointer.
     Selection,
-    /// A formula's pending point-mode reference grows into a range.
     PointReference,
 }
 
 pub struct Grid {
     pub rect: Rect,
-    /// Geometry follows the active accessibility text scale. The grid is a
-    /// custom canvas rather than a toolkit table, so it must grow its rows,
-    /// headers, hit targets, and default columns alongside token typography.
+    /// Geometry follows the accessibility text scale, so the grid grows its rows, headers, hit
+    /// targets and default columns alongside token typography.
     text_scale: f64,
     scroll_x: f64,
     scroll_y: f64,
     col_widths: HashMap<u32, f64>,
-    /// Widths derived by fitting a column to its content (see
-    /// `autofit_columns`). A manual `col_widths` entry always overrides this;
-    /// columns with neither fall back to the default column width.
+    /// Widths fitted to a column's content; a manual width always overrides them.
     auto_col_w: HashMap<u32, f64>,
     row_heights: HashMap<u32, f64>,
     n_cols: u32,
     n_rows: u32,
-    /// Prefix sums of column/row extents so `col_left`/`row_top` are O(1)
-    /// instead of a per-cell accumulate loop. `col_x[c]` is the content-space
-    /// x of column `c`'s left edge; `col_x[n_cols]` is the total width.
-    /// Rebuilt only when sizes or the logical extent change.
+    /// Prefix sums of the column and row extents, so `col_left` and `row_top` are O(1); rebuilt
+    /// only when a size or the extent changes.
     col_x: Vec<f64>,
     row_y: Vec<f64>,
-    /// The live selection range's anchor + active cell. A single-cell
-    /// selection has them equal. `active` is the cell keyboard nav moves and
-    /// the formula bar reflects; it always stays visible within the selection.
+    /// The live range's anchor and active cell, equal for one cell. `active` is what the keyboard
+    /// moves and the formula bar shows.
     anchor: Addr,
     active: Addr,
-    /// Committed discontiguous ranges added via Ctrl+click / Ctrl+drag. The
-    /// full selection is these plus the live `anchor..active` range.
+    /// Ranges added by Ctrl+click or Ctrl+drag; the selection is these plus the live range.
     extra_ranges: Vec<SelRange>,
     edit: Option<EditState>,
     values: HashMap<Addr, CellValue>,
@@ -475,44 +421,31 @@ pub struct Grid {
     bold: HashSet<Addr>,
     last_cursor: Point,
     resize: Option<ResizeDrag>,
-    /// The library scroll bars' interaction state, one per axis.
+    /// The scroll bars' state, one per axis.
     hbar: Scrollbar,
     vbar: Scrollbar,
-    /// An in-flight fill-handle drag (grab the selection's bottom-right corner
-    /// and drag down/right to extend the pattern).
+    /// A fill-handle drag in flight.
     fill_drag: Option<FillDrag>,
-    /// A committed fill the app consumes on the next event: the source pattern
-    /// bounds and the destination region to fill, `(src_tl, src_br, dst_tl,
-    /// dst_br)`. Rising-edge, cleared by `take_pending_fill`.
+    /// A committed fill for the app to take: the source pattern and the region to fill.
     pending_fill: Option<(Addr, Addr, Addr, Addr)>,
-    /// Rows and columns arriving or leaving on the standard disclosure: what
-    /// this frame draws them on their way from ([`Shift`]).
+    /// The rows and columns on their way ([`Shift`]).
     row_shift: Option<Shift>,
     col_shift: Option<Shift>,
-    /// Formula "point mode": while editing a formula, clicking/dragging cells
-    /// inserts their references. `point_anchor` is the char index in the edit
-    /// buffer where the last click-inserted reference begins — a subsequent
-    /// click/drag (with nothing typed in between) replaces it, matching Excel.
-    /// Cleared to `None` the moment the user types.
+    /// Point mode: while editing a formula, clicking cells inserts their references. This is
+    /// where the last inserted reference begins, so a later click replaces it; typing clears it.
     point_anchor: Option<usize>,
-    /// The cell a point-mode drag started on, so the range grows from it.
+    /// The cell a point-mode drag started on.
     point_drag_start: Addr,
-    /// What a held pointer is extending, if anything: the selection, or the
-    /// pending point-mode reference.
+    /// What a held pointer extends: the selection, or the pending reference.
     dragging: Option<Dragging>,
-    /// "Formula view": when on, cells that hold a raw input show that raw text
-    /// (formulas verbatim) instead of their computed / formatted value.
+    /// Show raw input, formulas verbatim, instead of the computed value.
     show_formulas: bool,
-    /// Set when cell data changes so the next `draw` recomputes auto-fit
-    /// widths (needs a `TextRenderer`, only available at draw time).
+    /// The cell data changed: refit columns at the next draw, when a renderer is at hand.
     needs_autofit: bool,
     dirty: bool,
-    /// Resolved text/band metrics (see [`GridMetrics`]). Set by the app once
-    /// per draw from the renderer; `fallback()` until then.
+    /// The resolved metrics; `fallback()` until the app sets them from the renderer.
     metrics: GridMetrics,
-    /// How far down the body the window bar's search covers it while the
-    /// find's options stand open ([`Self::set_find_cover`]): what it reveals
-    /// stands clear of it.
+    /// How far down the body the window bar's search covers it, so what it reveals stands clear.
     find_cover: f64,
 }
 
@@ -565,9 +498,8 @@ impl Grid {
         g
     }
 
-    /// Adopt freshly resolved metrics. A change re-derives the automatic row
-    /// geometry (manual sizes are untouched) and re-fits columns, since both
-    /// depend on the cell text size.
+    /// Adopt freshly resolved metrics: rows and fitted columns follow the text size, manual sizes
+    /// do not.
     pub fn set_text_scale(&mut self, scale: f64) {
         let scale = if scale.is_finite() {
             scale.clamp(0.5, 4.0)
@@ -596,22 +528,20 @@ impl Grid {
         self.needs_autofit = true;
     }
 
-    /// The metrics currently driving the grid's automatic geometry.
+    /// The metrics driving the grid's automatic geometry.
     #[must_use]
     pub fn metrics(&self) -> GridMetrics {
         self.metrics
     }
 
-    /// Room the scroll bars keep along the body's right and bottom edges, so
-    /// chrome floated over the grid can stay clear of them.
+    /// The room the scroll bars keep along the body's right and bottom edges.
     #[must_use]
     pub fn scrollbar_thickness(&self) -> f64 {
         self.metrics.gutter
     }
 
-    /// Recompute the column/row offset prefix sums. Cheap (a single pass over
-    /// the logical extent) and only called when a size or the extent changes,
-    /// so per-frame geometry lookups stay O(1).
+    /// Recompute the offset prefix sums when a size or the extent changes, so per-frame lookups
+    /// stay O(1).
     fn rebuild_geom(&mut self) {
         self.col_x.clear();
         self.col_x.reserve(self.n_cols as usize + 1);
@@ -631,8 +561,7 @@ impl Grid {
         }
     }
 
-    /// The rows `at..at + count` just appeared: they arrive on the standard
-    /// disclosure, and the rows below make room for them.
+    /// The rows `at..at + count` appeared; the rows below make room.
     pub fn rows_inserted(&mut self, at: u32, count: u32) {
         self.row_shift = Some(Self::arrival(
             at,
@@ -643,7 +572,7 @@ impl Grid {
         ));
     }
 
-    /// The rows `at..at + count` just left: the rows below close the gap.
+    /// The rows `at..at + count` left; the rows below close the gap.
     pub fn rows_removed(&mut self, at: u32, count: u32) {
         self.row_shift = Some(Self::arrival(
             at,
@@ -654,8 +583,7 @@ impl Grid {
         ));
     }
 
-    /// The columns `at..at + count` just appeared, and the ones after them
-    /// make room.
+    /// The columns `at..at + count` appeared; the ones after make room.
     pub fn columns_inserted(&mut self, at: u32, count: u32) {
         self.col_shift = Some(Self::arrival(
             at,
@@ -666,8 +594,7 @@ impl Grid {
         ));
     }
 
-    /// The columns `at..at + count` just left, and the ones after them close
-    /// the gap.
+    /// The columns `at..at + count` left; the ones after close the gap.
     pub fn columns_removed(&mut self, at: u32, count: u32) {
         self.col_shift = Some(Self::arrival(
             at,
@@ -678,9 +605,7 @@ impl Grid {
         ));
     }
 
-    /// The change `at..at + count` on its way, over the prefix sums of the
-    /// layout it has now: the band is as tall as the rows in it (or as one
-    /// default row apiece, for rows past the layout's end).
+    /// The change `at..at + count` on its way, over the prefix sums of the layout it has now.
     fn arrival(at: u32, count: u32, leaving: bool, sums: &[f64], default: f64) -> Shift {
         let count = count.max(1);
         let from = sums.get(at as usize).copied();
@@ -695,8 +620,7 @@ impl Grid {
             leaving,
             full,
             started: false,
-            // A band that is leaving starts open and closes; one arriving
-            // starts closed and opens, both on the first frame it is drawn.
+            // A leaving band starts open and closes, an arriving one opens; both on their first frame.
             disclosure: if leaving {
                 ui::motion::Disclosure::opened()
             } else {
@@ -705,14 +629,13 @@ impl Grid {
         }
     }
 
-    /// Whether a row or column is still on its way: the app asks for frames.
+    /// Whether a row or column is still on its way, which keeps frames coming.
     pub fn is_animating(&self) -> bool {
         self.row_shift.as_ref().is_some_and(Shift::is_moving)
             || self.col_shift.as_ref().is_some_and(Shift::is_moving)
     }
 
-    /// Start the changes a frame draws, on this theme's motion, and forget
-    /// the ones that have come to rest.
+    /// Start the changes a frame draws, on this theme's motion, and forget those at rest.
     fn start_shifts(&mut self, theme: &Theme) {
         for shift in [&mut self.row_shift, &mut self.col_shift]
             .into_iter()
@@ -741,15 +664,14 @@ impl Grid {
         self.col_shift.as_ref().map_or(0.0, |shift| shift.pose(c))
     }
 
-    /// Replace the rendered cell data (called every frame from the app's
-    /// `sync` after recalculation).
+    /// Replace the rendered cell data, each frame after recalculation.
     pub fn set_data(
         &mut self,
         raw: HashMap<Addr, String>,
         fmt: HashMap<Addr, CellFormat>,
         values: HashMap<Addr, CellValue>,
     ) {
-        // Grow the logical extent so headers cover all populated cells.
+        // Grow the logical extent so headers cover every populated cell.
         let (mut nc, mut nr) = (self.n_cols, self.n_rows);
         for &(c, r) in raw.keys() {
             nc = nc.max(c + 4);
@@ -764,11 +686,11 @@ impl Grid {
         if grew {
             self.rebuild_geom();
         }
-        // Content changed → refit columns to it on the next draw.
+        // Content changed: refit columns at the next draw.
         self.needs_autofit = true;
     }
 
-    /// Replace the set of cells drawn in bold.
+    /// The cells drawn in bold.
     pub fn set_bold(&mut self, bold: HashSet<Addr>) {
         if self.bold != bold {
             self.bold = bold;
@@ -776,8 +698,7 @@ impl Grid {
         }
     }
 
-    /// Toggle "formula view" (show raw formulas instead of results). Returns
-    /// the new state so the caller can surface it in a status line.
+    /// Toggle formula view; whether it is now on.
     pub fn toggle_formula_view(&mut self) -> bool {
         self.show_formulas = !self.show_formulas;
         self.dirty = true;
@@ -799,9 +720,7 @@ impl Grid {
         self.active
     }
 
-    /// Set the selection rectangle directly. Used by the app's tests to drive
-    /// the real selection-summary path without synthesizing pointer events
-    /// (winit's `DeviceId` has no public constructor).
+    /// Set the selection directly, for tests that cannot build a `DeviceId`.
     #[cfg(test)]
     pub(crate) fn set_selection(&mut self, anchor: Addr, active: Addr) {
         self.extra_ranges.clear();
@@ -809,8 +728,7 @@ impl Grid {
         self.active = active;
     }
 
-    /// Collapse the selection onto a single cell (used on sheet switch and
-    /// for the seeded screenshot selection).
+    /// Collapse the selection onto one cell.
     pub fn select_only(&mut self, addr: Addr) {
         let (nc, nr) = (self.n_cols.max(addr.0 + 4), self.n_rows.max(addr.1 + 8));
         if nc != self.n_cols || nr != self.n_rows {
@@ -826,8 +744,7 @@ impl Grid {
         self.dirty = true;
     }
 
-    /// Select a rectangular range (anchor..active), replacing any existing
-    /// selection. Used by paste (to select what landed) and screenshot staging.
+    /// Select a rectangular range, replacing any selection.
     pub fn select_range_public(&mut self, anchor: Addr, active: Addr) {
         let (nc, nr) = (
             self.n_cols.max(anchor.0.max(active.0) + 4),
@@ -846,9 +763,7 @@ impl Grid {
         self.dirty = true;
     }
 
-    /// Add a discontiguous rectangular range to the current selection,
-    /// keeping the existing one(s). The new range becomes the live one.
-    /// Stages a multi-range selection (Ctrl+drag equivalent).
+    /// Add a discontiguous range, which becomes the live one.
     pub fn add_range_public(&mut self, anchor: Addr, active: Addr) {
         let (nc, nr) = (
             self.n_cols.max(anchor.0.max(active.0) + 4),
@@ -867,8 +782,7 @@ impl Grid {
         self.dirty = true;
     }
 
-    /// Keep the active cell in view after a resize, so a window opened at a
-    /// size and one resized to it show the same place in the sheet.
+    /// Keep the active cell in view after a resize.
     pub fn ensure_active_visible(&mut self) {
         // Canonical, not incremental: a resize lays the view out from the
         // active cell, so a window opened at this size and one resized to it
@@ -880,7 +794,7 @@ impl Grid {
         self.dirty = true;
     }
 
-    /// Public hit-test wrapper so the app can detect double-clicks.
+    /// The cell under a point, for the app's double-click.
     pub fn cell_at_public(&self, p: Point) -> Option<Addr> {
         self.cell_at(p)
     }
@@ -889,8 +803,7 @@ impl Grid {
         self.edit.is_some()
     }
 
-    /// What the formula bar should show: the live edit buffer if editing,
-    /// otherwise the active cell's stored raw input.
+    /// What the formula bar shows: the edit buffer while editing, else the cell's raw input.
     pub fn active_display_raw(&self) -> String {
         if let Some(e) = &self.edit
             && e.addr == self.active
@@ -900,9 +813,7 @@ impl Grid {
         self.raw.get(&self.active).cloned().unwrap_or_default()
     }
 
-    /// What the formula bar draws. While the active cell is being edited it
-    /// is the cell editor's display text, so an input-method composition shows
-    /// (and is underlined) in the bar exactly as in the cell.
+    /// What the formula bar draws: an edit's display text, so a composition shows there too.
     pub fn formula_bar(&self) -> FormulaBarText {
         let Some(e) = &self.edit else {
             return FormulaBarText {
@@ -937,7 +848,7 @@ impl Grid {
             })
     }
 
-    /// The live (in-progress / most-recent) selection range.
+    /// The live selection range.
     fn current_range(&self) -> SelRange {
         SelRange {
             anchor: self.anchor,
@@ -945,22 +856,19 @@ impl Grid {
         }
     }
 
-    /// Every selection range: the committed discontiguous ones plus the live
-    /// `anchor..active`. The live range is always last.
+    /// Every range: the committed ones plus the live `anchor..active`, which is last.
     fn all_ranges(&self) -> Vec<SelRange> {
         let mut v = self.extra_ranges.clone();
         v.push(self.current_range());
         v
     }
 
-    /// True when more than one discontiguous range is selected. Copy widens
-    /// its status hint and the name box shows a cell count in this case.
+    /// Whether more than one range is selected.
     pub fn is_multi_range(&self) -> bool {
         !self.extra_ranges.is_empty()
     }
 
-    /// Whether column `c` intersects any selected range (drives the header
-    /// highlight — a column header lights up when it holds a selected cell).
+    /// Whether column `c` intersects a selected range, which lights its header.
     fn col_in_selection(&self, c: u32) -> bool {
         self.current_range().spans_col(c) || self.extra_ranges.iter().any(|rg| rg.spans_col(c))
     }
@@ -968,13 +876,10 @@ impl Grid {
         self.current_range().spans_row(r) || self.extra_ranges.iter().any(|rg| rg.spans_row(r))
     }
 
-    /// Every cell across all selected ranges, de-duplicated so overlapping
-    /// ranges don't double-apply a format or double-count a sum. Copy, fill,
-    /// formatting, delete, and the status-bar summary all operate over this.
+    /// Every cell in the selection, de-duplicated; copy, fill, formatting and the status summary
+    /// all run over these.
     pub fn selected_cells(&self) -> Vec<Addr> {
-        // Fast path: a single contiguous range can't overlap itself, so the
-        // common case (which runs every interaction frame via the status-bar
-        // summary) skips the dedup set entirely.
+        // Fast path: one contiguous range cannot overlap itself, so the summary skips the set.
         if self.extra_ranges.is_empty() {
             let (c0, r0, c1, r1) = self.current_range().bounds();
             let mut out = Vec::with_capacity(((c1 - c0 + 1) as usize) * ((r1 - r0 + 1) as usize));
@@ -985,7 +890,6 @@ impl Grid {
             }
             return out;
         }
-        // Discontiguous selection: dedup across possibly-overlapping ranges.
         let mut seen = std::collections::HashSet::new();
         let mut out = Vec::new();
         for range in self.all_ranges() {
@@ -1001,8 +905,7 @@ impl Grid {
         out
     }
 
-    /// The bounding box over every selected range, as `(top_left,
-    /// bottom_right)`, inclusive and normalized. Drives copy/cut and fill.
+    /// The bounding box over every selected range, inclusive and normalised.
     pub fn selection_bounds(&self) -> (Addr, Addr) {
         let mut ranges = self.all_ranges().into_iter();
         let (mut c0, mut r0, mut c1, mut r1) =
@@ -1021,25 +924,22 @@ impl Grid {
         self.bold.contains(&addr)
     }
 
-    /// The stored raw input for a cell (empty when unset). Used by copy/cut.
+    /// A cell's stored raw input, empty when unset.
     pub fn cell_raw_at(&self, addr: Addr) -> String {
         self.raw.get(&addr).cloned().unwrap_or_default()
     }
 
-    /// The effective format for a cell (the propagated/explicit one the app
-    /// pushed in via `set_data`). Used by copy so paste can restore it.
+    /// A cell's effective format, so copy can restore it.
     pub fn cell_fmt_at(&self, addr: Addr) -> CellFormat {
         self.fmt.get(&addr).copied().unwrap_or_default()
     }
 
-    /// The computed value for a cell, if any. Used to build the plain-text
-    /// clipboard payload (what other apps paste as).
+    /// A cell's computed value, for the plain-text clipboard payload.
     pub fn cell_value_at(&self, addr: Addr) -> Option<CellValue> {
         self.values.get(&addr).cloned()
     }
 
-    /// Select the populated data range (the bounding box of every non-empty
-    /// cell), collapsing onto A1 when the sheet is empty. Drives Ctrl+A.
+    /// Select the populated range, or A1 when the sheet is empty.
     pub fn select_used_range(&mut self) {
         let mut it = self
             .raw
@@ -1055,8 +955,7 @@ impl Grid {
                 r1 = r1.max(r);
             }
             self.extra_ranges.clear();
-            // Keep the active cell at the top-left so the view doesn't jump to
-            // the bottom-right corner of a large used range.
+            // The active cell stays top-left, so the view does not jump to the corner.
             self.anchor = (c1, r1);
             self.active = (c0, r0);
             self.edit = None;
@@ -1067,8 +966,7 @@ impl Grid {
         }
     }
 
-    /// A1-style label for the selection (`B2`, `B2:D5`, or an `N cells` count
-    /// for a discontiguous multi-range selection — like the name box in Excel).
+    /// An A1 label for the selection, or a cell count for several ranges.
     pub fn selection_label(&self) -> String {
         if !self.extra_ranges.is_empty() {
             return format!("{} cells", self.selected_cells().len());
@@ -1089,8 +987,7 @@ impl Grid {
     }
 
     fn col_w(&self, c: u32) -> f64 {
-        // A manual resize wins; otherwise use the auto-fitted width; otherwise
-        // the default.
+        // A manual width wins, then the fitted one, then the default.
         if let Some(w) = self.col_widths.get(&c) {
             return *w * self.text_scale;
         }
@@ -1105,8 +1002,7 @@ impl Grid {
             .map_or_else(|| self.metrics.default_row_h(), |h| *h * self.text_scale)
     }
 
-    /// Content-space x (before scroll) of column `c`'s left edge. O(1) via
-    /// the cached prefix sums, with a defensive fallback past the last index.
+    /// Column `c`'s left edge before scroll, O(1) through the prefix sums.
     fn col_left(&self, c: u32) -> f64 {
         if let Some(&x) = self.col_x.get(c as usize) {
             x
@@ -1124,16 +1020,14 @@ impl Grid {
         }
     }
 
-    /// The cell area: inside the headers and the scroll bar gutters, so the
-    /// last row and the last column are never covered by a bar.
+    /// The cell area, inside the headers and the bar gutters.
     pub(crate) fn body_rect(&self) -> Rect {
         let width = (self.rect.x1 - self.grid_x0()).max(0.0);
         let height = (self.rect.y1 - self.grid_y0()).max(0.0);
         let gutter = self.metrics.gutter;
         let mut horizontal = self.total_width() > width + ui::widget::scrollbar::FIT_EPS;
         let mut vertical = self.total_height() > height + ui::widget::scrollbar::FIT_EPS;
-        // Either gutter can make the other axis overflow; settle both before
-        // reserving space, without recursive body/scroll-metric queries.
+        // Either gutter can make the other axis overflow: settle both before reserving space.
         for _ in 0..2 {
             horizontal |= self.total_width()
                 > width - if vertical { gutter } else { 0.0 } + ui::widget::scrollbar::FIT_EPS;
@@ -1156,7 +1050,7 @@ impl Grid {
         (self.total_height() - self.body_rect().height()).max(0.0)
     }
 
-    /// The gutter a bar lives in: where a press pages or grabs.
+    /// The gutter a bar lives in.
     fn bar_gutter(&self, axis: ScrollAxis) -> Rect {
         let body = self.body_rect();
         match axis {
@@ -1165,7 +1059,7 @@ impl Grid {
         }
     }
 
-    /// The thumb's track: the gutter less a margin each side across the bar.
+    /// The thumb's track.
     fn bar_track(&self, axis: ScrollAxis) -> Rect {
         let margin = self.metrics.bar_margin();
         let gutter = self.bar_gutter(axis);
@@ -1181,8 +1075,7 @@ impl Grid {
                 ScrollMetrics::new(self.total_width(), self.body_rect().width(), self.scroll_x)
             }
             ScrollAxis::Vertical => {
-                // The bar shows the sheet's own extent: scrolled up under the
-                // search's options, its thumb still starts at the track's top.
+                // The bar shows the sheet's own extent, even scrolled up under the find's options.
                 ScrollMetrics::new(
                     self.total_height(),
                     self.body_rect().height(),
@@ -1214,12 +1107,12 @@ impl Grid {
         self.clamp_scroll();
     }
 
-    /// A bar shows only while its content overflows the body.
+    /// A bar shows only while its content overflows.
     fn bar_shown(&self, axis: ScrollAxis) -> bool {
         self.bar_metrics(axis).overflows()
     }
 
-    /// The thumb of an overflowing bar, for tests.
+    /// The thumb of an overflowing bar.
     #[cfg(test)]
     fn scrollbar_thumb(&self, axis: ScrollAxis) -> Option<Rect> {
         self.bar_shown(axis)
@@ -1237,17 +1130,15 @@ impl Grid {
         self.rect.y0 + self.metrics.col_header_h()
     }
 
-    /// Screen rect for a cell, in absolute coords (may lie outside the body).
+    /// A cell's rect in absolute coordinates.
     pub(crate) fn cell_screen_rect(&self, c: u32, r: u32) -> Rect {
         let x = self.grid_x0() + self.col_left(c) + self.col_draw_shift(c) - self.scroll_x;
         let y = self.grid_y0() + self.row_top(r) + self.row_draw_shift(r) - self.scroll_y;
         Rect::new(x, y, x + self.col_w(c), y + self.row_h(r))
     }
 
-    /// Screen rect of the fill handle — a small square centred on the live
-    /// selection's bottom-right corner. Shown only for a single contiguous
-    /// selection that is not being edited, and only while the corner is on the
-    /// visible body. `None` otherwise.
+    /// The fill handle, a square on the live selection's corner: only for one contiguous range that
+    /// is not being edited and whose corner is on the visible body.
     fn fill_handle_rect(&self) -> Option<Rect> {
         if self.edit.is_some() || !self.extra_ranges.is_empty() {
             return None;
@@ -1264,11 +1155,8 @@ impl Grid {
         Some(Rect::new(cx - h, cy - h, cx + h, cy + h))
     }
 
-    /// Project a fill-handle drag onto the dominant **forward** axis (down or
-    /// right) and return `(src_tl, src_br, dst_tl, dst_br)`, or `None` when the
-    /// pointer has not left the source (no extension yet). Dragging beyond the
-    /// bottom fills down; beyond the right fills right; a diagonal snaps to the
-    /// axis with the larger overshoot.
+    /// The fill region a drag names: down or right, whichever the pointer overshoots more.
+    /// `None` while the pointer has not left the source.
     fn fill_region(src: (Addr, Addr), target: Addr) -> Option<(Addr, Addr, Addr, Addr)> {
         let ((c0, r0), (c1, r1)) = src;
         let (tc, tr) = target;
@@ -1284,16 +1172,12 @@ impl Grid {
         }
     }
 
-    /// Consume a committed fill-handle drag: `(src_tl, src_br, dst_tl, dst_br)`.
-    /// The app extends the source pattern over the destination region.
+    /// A committed fill: the source and destination bounds.
     pub fn take_pending_fill(&mut self) -> Option<(Addr, Addr, Addr, Addr)> {
         self.pending_fill.take()
     }
 
-    /// Drive a fill-handle drag from the current selection to `target` and
-    /// release, exactly as a pointer grab + drag + release would — the
-    /// production `pointer_up` path records the pending fill. Used by tests and
-    /// screenshot scenarios to exercise the real fill without a display.
+    /// Fill from the current selection to `target`, through the real pointer path.
     pub fn start_fill_to(&mut self, target: Addr) {
         let (c0, r0, c1, r1) = self.current_range().bounds();
         self.fill_drag = Some(FillDrag {
@@ -1303,7 +1187,7 @@ impl Grid {
         self.pointer_up();
     }
 
-    /// Visible column indices given the current scroll + body width.
+    /// The visible columns.
     fn visible_cols(&self) -> Vec<u32> {
         let body = self.body_rect();
         let start = self
@@ -1335,7 +1219,7 @@ impl Grid {
             .collect()
     }
 
-    /// Map a screen point to a cell, or `None` if it's over a header/corner.
+    /// The cell under a point, or `None` over a header.
     fn cell_at(&self, p: Point) -> Option<Addr> {
         let body = self.body_rect();
         if !body.contains(p) {
@@ -1366,8 +1250,7 @@ impl Grid {
         Some((col?, row?))
     }
 
-    /// If `p` is near a column/row right/bottom edge in the header strip,
-    /// return the resize target.
+    /// A column or row edge near `p` in the header strip, if any.
     fn resize_target_at(&self, p: Point) -> Option<ResizeTarget> {
         // Column edges live in the column-header strip.
         if p.y >= self.rect.y0 && p.y < self.grid_y0() && p.x >= self.grid_x0() {
@@ -1405,7 +1288,7 @@ impl Grid {
         self.row_y.last().copied().unwrap_or(0.0)
     }
 
-    /// True once the grid has a usable layout rect (post `apply_layout`).
+    /// Whether the grid has a layout rect yet.
     fn has_layout(&self) -> bool {
         self.rect.width() > self.metrics.row_header_w()
             && self.rect.height() > self.metrics.col_header_h()
@@ -1419,14 +1302,12 @@ impl Grid {
         let max_x = (self.total_width() - body.width()).max(0.0);
         let max_y = (self.total_height() - body.height()).max(0.0);
         self.scroll_x = self.scroll_x.clamp(0.0, max_x);
-        // What the window's search covers is room to scroll into: the first
-        // rows move down under its options instead of staying hidden there.
+        // What the search covers is room to scroll into.
         let covered = self.cover_inset(body);
         self.scroll_y = self.scroll_y.clamp(-covered, max_y);
     }
 
-    /// Scroll so the active cell is fully inside the body — and, while the
-    /// window's search covers the body's top, below what it covers.
+    /// Scroll so the active cell is inside the body, and below what the search covers.
     fn ensure_visible(&mut self) {
         if !self.has_layout() {
             return;
@@ -1443,8 +1324,7 @@ impl Grid {
             self.scroll_x = right - body.width();
         }
         if top - self.scroll_y < covered {
-            // The space the search's options cover is scrolled into, so a
-            // cell among the sheet's first rows comes down clear of them.
+            // The covered space is scrolled into, so a first row comes down clear of it.
             self.scroll_y = top - covered;
         } else if bottom - self.scroll_y > body.height() {
             self.scroll_y = bottom - body.height();
@@ -1452,17 +1332,14 @@ impl Grid {
         self.clamp_scroll();
     }
 
-    /// What of the body's top the window's search covers, in the body's own
-    /// coordinates: never so much that no row is left to show.
+    /// What of the body's top the search covers, in the body's own coordinates.
     fn cover_inset(&self, body: Rect) -> f64 {
         let row = self.metrics.default_row_h();
         self.find_cover.clamp(0.0, (body.height() - row).max(0.0))
     }
 
-    /// The window bar's search covers the top of the body while its find's
-    /// options stand open: what it reveals stands clear of it, the grid
-    /// scrolling up past its first row into the space the options take.
-    /// `None` uncovers the body, which scrolls back to its start.
+    /// The search covers the top of the body while its options are open; `None` uncovers it, which
+    /// scrolls back to the start.
     pub fn set_find_cover(&mut self, cover: Option<Rect>) {
         let inset = cover.map_or(0.0, |cover| {
             let body = self.body_rect();
@@ -1475,8 +1352,7 @@ impl Grid {
         self.ensure_visible();
     }
 
-    /// Begin editing the active cell. `seed` replaces the content (typed
-    /// character) or, when `None`, loads the existing raw for in-place edit.
+    /// Begin editing the active cell: `seed` replaces the content, `None` edits in place.
     pub fn begin_edit(&mut self, seed: Option<String>) {
         let entering = seed.is_some();
         let text = match seed {
@@ -1495,8 +1371,7 @@ impl Grid {
         self.dirty = true;
     }
 
-    /// End `dragging` if that is what the pointer is doing; a drag of the
-    /// other kind is left as it was.
+    /// End `dragging`; a drag of the other kind is left as it was.
     fn stop_dragging(&mut self, dragging: Dragging) {
         if self.dragging == Some(dragging) {
             self.dragging = None;
@@ -1523,27 +1398,21 @@ impl Grid {
         self.dirty = true;
     }
 
-    /// Whether the edit was started by typing a value over the cell, so the
-    /// arrow keys finish it and move on. Formulas keep the caret moving, since
-    /// they are composed piecewise.
+    /// Whether typing started the edit, so the arrow keys finish it and move on; formulas keep
+    /// the caret moving.
     fn entering_value(&self) -> bool {
         self.edit
             .as_ref()
             .is_some_and(|e| e.entering && !e.text.starts_with('='))
     }
 
-    /// Whether an in-cell edit is in progress and its buffer is a formula
-    /// (begins with `=`). Formula edits enter "point mode": clicking cells
-    /// inserts their references instead of moving the selection.
+    /// Whether an edit in progress holds a formula, which enters point mode.
     pub fn editing_formula(&self) -> bool {
         self.edit.as_ref().is_some_and(|e| e.text.starts_with('='))
     }
 
-    /// The formula body (text after `=`) whose references should be
-    /// highlighted this frame: the live edit buffer while a formula is being
-    /// edited, otherwise the active cell's stored formula when it is merely
-    /// selected. Returns `None` when neither is a formula, so plain cells stay
-    /// uncluttered. Exposed so the app's formula bar can tint the same refs.
+    /// The formula body whose references the app tints, while editing a formula or with one
+    /// selected.
     pub fn highlight_formula_body(&self) -> Option<String> {
         if let Some(e) = &self.edit {
             return e
@@ -1551,14 +1420,13 @@ impl Grid {
                 .strip_prefix('=')
                 .map(std::string::ToString::to_string);
         }
-        // Not editing: a single selected formula cell still shows its trace.
+        // Not editing: a selected formula cell still shows its trace.
         let raw = self.raw.get(&self.active)?;
         raw.strip_prefix('=').map(std::string::ToString::to_string)
     }
 
-    /// Whether a click can be absorbed as a reference insertion right now: a
-    /// formula is being edited, and either a click-inserted reference is
-    /// pending replacement or the caret sits right after an operator/opener.
+    /// Whether a click inserts a reference now: the caret sits after an operator or opener, or a
+    /// click-inserted reference waits to be replaced.
     fn can_point(&self) -> bool {
         let Some(e) = &self.edit else { return false };
         if !e.text.starts_with('=') {
@@ -1579,9 +1447,7 @@ impl Grid {
         )
     }
 
-    /// Insert (or, when a click-inserted reference is pending, replace) a
-    /// single-cell reference to `addr` at the caret, and arm a potential drag
-    /// that would grow it into a range.
+    /// Insert, or replace, a single-cell reference at the caret, and arm a drag that grows it.
     fn begin_point(&mut self, addr: Addr) {
         let insert_at = match self.point_anchor {
             Some(a) => {
@@ -1609,8 +1475,7 @@ impl Grid {
         self.dirty = true;
     }
 
-    /// Extend the pending point-mode reference into the range
-    /// `point_drag_start:addr` as the pointer is dragged.
+    /// Extend the pending reference into the range as the pointer is dragged.
     fn point_drag_to(&mut self, addr: Addr) {
         let Some(anchor) = self.point_anchor else {
             return;
@@ -1638,9 +1503,7 @@ impl Grid {
     }
 
     fn move_active(&mut self, dc: i32, dr: i32, extend: bool) {
-        // Keyboard navigation collapses a discontiguous multi-selection back to
-        // the live range (Shift+arrow extends it; a bare arrow resets it),
-        // matching desktop spreadsheets.
+        // Keyboard navigation collapses several ranges into the live one, as desktop sheets do.
         self.extra_ranges.clear();
         let nc = (self.active.0 as i32 + dc).clamp(0, self.n_cols as i32 - 1) as u32;
         let nr = (self.active.1 as i32 + dr).clamp(0, self.n_rows as i32 - 1) as u32;
@@ -1652,9 +1515,8 @@ impl Grid {
         self.dirty = true;
     }
 
-    /// Scroll by a wheel's travel, and say whether the view moved. A wheel
-    /// the sheet has no room for moves nothing, and the app leaves it to
-    /// whatever encloses the window rather than swallowing it.
+    /// Scroll by a wheel's travel; whether the view moved. A wheel the sheet has no room for
+    /// moves nothing, so the app leaves it to what encloses the window.
     pub fn on_scroll(&mut self, dx: f64, dy: f64) -> bool {
         let before = (self.scroll_x, self.scroll_y);
         self.scroll_x += dx;
@@ -1668,9 +1530,8 @@ impl Grid {
         moved
     }
 
-    /// Handle a left-press. `shift` extends the live range from its anchor;
-    /// `ctrl` starts a new discontiguous range (Ctrl+click / Ctrl+drag),
-    /// keeping the existing selection. Returns true if consumed by the grid.
+    /// A left press: `shift` extends the live range, `ctrl` starts another range. Whether the
+    /// grid took it.
     pub fn pointer_down(
         &mut self,
         p: Point,
@@ -1720,12 +1581,8 @@ impl Grid {
         false
     }
 
-    /// Formula point mode: while editing a formula, a click on another cell
-    /// inserts its reference (a drag inserts a range) rather than moving
-    /// the selection or committing the edit. Only fires when the caret is
-    /// ready for a reference (right after `=` / an operator, or replacing a
-    /// previously click-inserted one); otherwise the click falls through to
-    /// normal selection, which commits the edit.
+    /// A point-mode click: while editing a formula, a click on another cell inserts its reference,
+    /// or a drag a range. A click with the caret elsewhere falls through to selection.
     fn try_point_mode_click(&mut self, p: Point) -> bool {
         if self.editing_formula()
             && self.can_point()
@@ -1740,7 +1597,7 @@ impl Grid {
         false
     }
 
-    /// Start a resize drag if `p` is near a column/row header edge.
+    /// Start a resize drag near a header edge.
     fn try_start_resize(&mut self, p: Point) -> bool {
         if let Some(target) = self.resize_target_at(p) {
             let origin_size = match target {
@@ -1761,11 +1618,7 @@ impl Grid {
         false
     }
 
-    /// Fill handle: grab the selection's bottom-right corner and drag to
-    /// extend the pattern. A plain press only (the caller gates on
-    /// Ctrl/Shift, which keep their normal selection meaning). Checked
-    /// before the body-click so a grab near the corner starts a fill rather
-    /// than a new selection.
+    /// Grab the fill handle and drag; a plain press only, and before the body click.
     fn try_start_fill_drag(&mut self, p: Point, out: &mut Vec<GridCmd>) -> bool {
         if let Some(hr) = self.fill_handle_rect() {
             let grab = hr.inflate(self.metrics.s1, self.metrics.s1);
@@ -1783,8 +1636,7 @@ impl Grid {
         false
     }
 
-    /// Column header click → select the whole column (Ctrl adds it, Shift
-    /// extends the column span from the current anchor).
+    /// A column-header click selects the column; Ctrl adds it, Shift extends the span.
     fn try_column_header_click(
         &mut self,
         p: Point,
@@ -1816,7 +1668,7 @@ impl Grid {
         false
     }
 
-    /// Row header click → select whole row (Ctrl adds, Shift extends).
+    /// A row-header click selects the row; Ctrl adds it, Shift extends.
     fn try_row_header_click(
         &mut self,
         p: Point,
@@ -1848,7 +1700,7 @@ impl Grid {
         false
     }
 
-    /// Body click → select / extend / add.
+    /// A body click selects, extends or adds.
     fn try_body_click(
         &mut self,
         p: Point,
@@ -1859,16 +1711,14 @@ impl Grid {
         if let Some(addr) = self.cell_at(p) {
             self.commit_edit(out);
             if ctrl {
-                // Commit the live range and start a fresh one at the clicked
-                // cell; a subsequent drag grows it into a new rectangle.
+                // Commit the live range and start one at the clicked cell.
                 self.extra_ranges.push(self.current_range());
                 self.anchor = addr;
             } else if !shift {
                 self.extra_ranges.clear();
                 self.anchor = addr;
             }
-            // Shift extends the live range: it keeps its anchor and any other
-            // ranges, and only the active cell moves.
+            // Shift extends the live range: the anchor and the other ranges stay.
             self.active = addr;
             self.dragging = Some(Dragging::Selection);
             self.dirty = true;
@@ -1899,8 +1749,7 @@ impl Grid {
                 self.dirty = true;
             }
         }
-        // A held fill-handle drag tracks the pointer; the projected region is
-        // recomputed (and previewed) each frame.
+        // A held fill drag tracks the pointer, previewed each frame.
         if self.fill_drag.is_some() {
             if let Some(addr) = self.cell_at(p)
                 && let Some(fd) = &mut self.fill_drag
@@ -1951,12 +1800,9 @@ impl Grid {
         self.resize = None;
         self.hbar.release();
         self.vbar.release();
-        // Keep `point_anchor` so the next click replaces the just-inserted
-        // reference (Excel keeps a click-inserted ref "hot" until you type);
-        // only the drag itself ends here.
+        // Keep `point_anchor`, so the next click replaces the just-inserted reference.
         self.dragging = None;
-        // A fill-handle drag commits its projected region for the app to fill,
-        // then extends the visible selection over it.
+        // A fill drag commits its region to the app, then extends the selection over it.
         if let Some(fd) = self.fill_drag.take()
             && let Some((stl, sbr, dtl, dbr)) = Self::fill_region(fd.src, fd.target)
         {
@@ -1979,7 +1825,7 @@ impl Grid {
         false
     }
 
-    /// Handle a keyboard event. Returns true if consumed.
+    /// A keyboard event; whether the grid took it.
     pub fn key(&mut self, event: &WindowEvent, mods: &Modifiers, out: &mut Vec<GridCmd>) -> bool {
         let WindowEvent::KeyboardInput { event: ke, .. } = event else {
             return false;
@@ -1990,7 +1836,7 @@ impl Grid {
         let shift = mods.state().shift_key();
         let ctrl = mods.state().control_key() || mods.state().super_key();
 
-        // Editing mode owns most keys.
+        // Editing owns most keys.
         if self.edit.is_some() {
             return self.key_editing(ke, out, shift);
         }
@@ -2143,7 +1989,7 @@ impl Grid {
                 true
             }
             _ => {
-                // Fall back to the platform-resolved text (handles symbols).
+                // The platform-resolved text, which handles symbols.
                 if let Some(t) = &ke.text {
                     self.insert_text(t);
                     true
@@ -2154,14 +2000,10 @@ impl Grid {
         }
     }
 
-    /// An input-method event while a cell is being edited: the composition
-    /// shows at the caret until it is committed into the cell like typing.
-    /// Returns whether the edit took it.
+    /// An input-method event: the composition shows at the caret until it is committed. Whether
+    /// the edit took it.
     pub fn ime(&mut self, ime: &Ime) -> bool {
-        // Text can arrive through the input method while only a cell is
-        // selected (the page's text field may still hold focus from the last
-        // edit, or a composition starts on a selected cell). It starts an
-        // entry that replaces the cell, exactly like typing a key would.
+        // Text can arrive while only a cell is selected: it starts an entry that replaces the cell.
         if self.edit.is_none() {
             match ime {
                 Ime::Commit(text) if !text.is_empty() => self.begin_edit(Some(String::new())),
@@ -2189,16 +2031,14 @@ impl Grid {
         true
     }
 
-    /// The edit as drawn — text with any composition, and the caret's char
-    /// index into it.
+    /// The edit as drawn, with its composition and the caret's char index.
     #[cfg(test)]
     pub(crate) fn edit_shown(&self) -> Option<(String, usize)> {
         let e = self.edit.as_ref()?;
         Some((e.shown().into_owned(), e.shown_caret()))
     }
 
-    /// Where the input method's candidate window should sit: the cell being
-    /// edited.
+    /// Where the input method's candidate window sits.
     pub fn ime_cell_rect(&self) -> Option<Rect> {
         let (col, row) = self.edit.as_ref()?.addr;
         Some(self.cell_screen_rect(col, row))
@@ -2208,15 +2048,13 @@ impl Grid {
         if let Some(e) = &mut self.edit {
             let edit = e.core.insert(s);
             e.apply_edit(&edit);
-            // Typing commits any click-inserted reference into ordinary text,
-            // so the next click appends a fresh reference instead of replacing.
+            // Typing commits a click-inserted reference, so the next click appends a fresh one.
             self.point_anchor = None;
             self.dirty = true;
         }
     }
 
-    /// Remove the selected characters (if any), collapsing the caret to the
-    /// selection start. Returns whether anything was removed.
+    /// Remove the selected characters; whether anything was removed.
     fn delete_selection(&mut self) -> bool {
         let Some(e) = &mut self.edit else {
             return false;
@@ -2232,20 +2070,17 @@ impl Grid {
         true
     }
 
-    /// The caret's char index within the current edit buffer, if editing.
+    /// The caret's char index in the edit buffer.
     pub fn edit_caret(&self) -> Option<usize> {
         self.edit.as_ref().map(EditState::caret)
     }
 
-    /// The ordered `(start, end)` selection within the edit buffer, if any.
+    /// The ordered `(start, end)` selection in the edit buffer.
     pub fn edit_selection(&self) -> Option<(usize, usize)> {
         self.edit.as_ref().and_then(EditState::selection)
     }
 
-    /// Move the edit caret to char index `idx`. When `extend` is set, the
-    /// selection grows from its existing anchor (or the old caret); otherwise
-    /// the selection is cleared. Used by the formula bar for click, shift-click
-    /// and drag-select. A no-op when not editing.
+    /// Move the edit caret to char index `idx`; `extend` grows the selection from its anchor.
     pub fn set_edit_caret(&mut self, idx: usize, extend: bool) {
         if let Some(e) = &mut self.edit {
             e.set_caret(idx.min(e.text.chars().count()), extend);
@@ -2254,9 +2089,7 @@ impl Grid {
         }
     }
 
-    /// Move the edit caret to char index `idx` of the text the formula bar
-    /// draws ([`Self::formula_bar`]). A click inside a composition lands at
-    /// the caret it is composed at; past it, on the committed text it shows.
+    /// Move the edit caret to char index `idx` of the text the formula bar draws.
     pub fn set_edit_caret_shown(&mut self, idx: usize, extend: bool) {
         let Some(e) = &self.edit else {
             return;
@@ -2278,7 +2111,7 @@ impl Grid {
         self.set_edit_caret(idx, extend);
     }
 
-    /// Select the whole edit buffer (Ctrl+A inside the formula bar / cell).
+    /// Select the whole edit buffer.
     pub fn select_all_edit(&mut self) {
         if let Some(e) = &mut self.edit {
             let text = e.text.clone();
@@ -2288,8 +2121,7 @@ impl Grid {
         }
     }
 
-    /// The currently selected text (for Ctrl+C in the field), or `None` when
-    /// there is no selection.
+    /// The selected text, if any.
     pub fn edit_selected_text(&self) -> Option<String> {
         let e = self.edit.as_ref()?;
         let range = e.core.range();
@@ -2298,15 +2130,14 @@ impl Grid {
             .flatten()
     }
 
-    /// Cut: return the selected text and remove it from the buffer.
+    /// Cut: the selected text, removed from the buffer.
     pub fn edit_cut_text(&mut self) -> Option<String> {
         let text = self.edit_selected_text()?;
         self.delete_selection();
         Some(text)
     }
 
-    /// Paste `s` into the field, replacing any selection. Newlines collapse to
-    /// spaces so the single-line formula bar stays on one line.
+    /// Paste `s`, replacing the selection; newlines collapse so the bar stays on one line.
     pub fn edit_paste_text(&mut self, s: &str) {
         if self.edit.is_none() {
             return;
@@ -2315,9 +2146,7 @@ impl Grid {
         self.insert_text(&flat);
     }
 
-    /// Move the caret for an arrow/Home/End key while editing. `shift` extends
-    /// the selection; without it, an existing selection collapses to the edge
-    /// in the motion's direction.
+    /// Move the caret for an arrow, Home or End; `shift` extends the selection.
     fn edit_move_caret(&mut self, mv: CaretMove, shift: bool) {
         if let Some(e) = &mut self.edit {
             let motion = match mv {
@@ -2332,35 +2161,31 @@ impl Grid {
         }
     }
 
-    /// The app calls this when the user types into the formula bar / clicks
-    /// "fx" to start an edit seeded with the current cell's content.
+    /// Start an edit seeded with the cell's content.
     pub fn begin_edit_in_place(&mut self) {
         if self.edit.is_none() {
             self.begin_edit(None);
         }
     }
 
-    /// Commit any pending edit (e.g. before switching sheets).
+    /// Commit any pending edit, as before switching sheets.
     pub fn flush_edit(&mut self, out: &mut Vec<GridCmd>) {
         self.commit_edit(out);
     }
 
-    /// Shots/test hook: insert (or replace) a click-inserted reference to
-    /// `addr` while editing a formula — the point-mode click, driven by
-    /// address so it works before the grid has a laid-out geometry.
+    /// Insert, or replace, a reference to `addr`, by address rather than by pointer.
     pub fn point_click_addr(&mut self, addr: Addr) {
         self.begin_point(addr);
         self.stop_dragging(Dragging::PointReference);
     }
 
-    /// Shots/test hook: type literal text into the active edit buffer.
+    /// Type literal text into the active edit buffer.
     pub fn insert_text_public(&mut self, s: &str) {
         self.insert_text(s);
     }
 
-    /// The role a cell is set in: `Body`, or `Code` while formulas show as
-    /// the source they were typed as. A number takes tabular figures and a
-    /// bold cell the strong weight of its role.
+    /// The role a cell is set in: `Body`, or `Code` in formula view; a number takes tabular
+    /// figures and a bold cell the strong weight.
     fn cell_style(&self, theme: &Theme, addr: Addr, numeric: bool) -> TextStyle {
         let mut style = if self.show_formulas {
             theme.text(TextRole::Code)
@@ -2376,13 +2201,9 @@ impl Grid {
         style
     }
 
-    /// Fit each column to the width of its widest rendered cell so long labels
-    /// (e.g. a row title in column A) aren't clipped when the neighbouring cell
-    /// is occupied — matching the spreadsheet convention of auto-sizing a
-    /// column to its content. A column the user has manually resized keeps its
-    /// width; the rest grow to fit, clamped to the default and the autofit
-    /// ceiling so they never shrink below the default nor run away for an
-    /// extreme value. Measured in the same style the cells are drawn in.
+    /// Fit each column to its widest cell, so a long label is not clipped by an occupied
+    /// neighbour. A manually sized column keeps its width; the rest are clamped between the
+    /// default and the ceiling, measured in the style the cells are drawn in.
     fn autofit_columns(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         self.auto_col_w.clear();
         let mut widest: HashMap<u32, f64> = HashMap::new();
@@ -2390,8 +2211,7 @@ impl Grid {
             if val.is_empty() || self.col_widths.contains_key(&c) {
                 continue;
             }
-            // Fit to what's actually on screen: the raw formula in formula
-            // view, otherwise the formatted value.
+            // Fit what is on screen: the raw formula in formula view, else the value.
             let text = if self.show_formulas {
                 match self.raw.get(&(c, r)) {
                     Some(s) if !s.is_empty() => s.clone(),
@@ -2422,10 +2242,7 @@ impl Grid {
         }
     }
 
-    /// Paint the grid into `scene`, each region its own part of `parts`, so a
-    /// host repaints what changed: a typed character the editor, a
-    /// committed cell its row, a moved selection where its marks were and
-    /// are.
+    /// Paint the grid, each region its own part, so a host repaints only what changed.
     pub fn draw(
         &mut self,
         parts: &mut PaintParts,
@@ -2434,15 +2251,13 @@ impl Grid {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        // Refit columns to their content before laying anything out, so long
-        // labels aren't truncated by an occupied neighbour.
+        // Refit columns before laying anything out.
         if self.needs_autofit {
             self.autofit_columns(tr, theme);
             self.rebuild_geom();
             self.needs_autofit = false;
         }
-        // A row or column that just appeared or left starts on its way
-        // here, where the theme's motion is at hand.
+        // A row or column that appeared or left starts here, where the theme's motion is at hand.
         self.start_shifts(theme);
         let this = &*self;
         let body = this.body_rect();
@@ -2451,9 +2266,7 @@ impl Grid {
         let ink = ui::widget::focus_ring_reach(theme);
         let reach = |rect: Rect| rect.inflate(ink, ink).intersect(body);
 
-        // The cells stand on the window's own ground; the washes (selection,
-        // referenced ranges) go under the text, the outlines over it. What
-        // the body clips is clipped in each part, so every part stands alone.
+        // The cells stand on the window's ground; washes go under the text, outlines over it.
         let selection = this.selection_rects(body);
         if let Some(bounds) = union_of(&selection) {
             parts.draw(scene, "sheet-selection", bounds, |scene| {
@@ -2516,8 +2329,7 @@ impl Grid {
         self.draw_headers_and_bars(parts, scene, transform, tr, theme, (&cols, &rows));
     }
 
-    /// Each visible row's band of cells, its own part; a row of a band that
-    /// is opening is drawn only inside what has opened of it.
+    /// Each visible row's band of cells, its own part.
     fn draw_rows(
         &self,
         parts: &mut PaintParts,
@@ -2533,8 +2345,7 @@ impl Grid {
         for &r in rows {
             let row = self.cell_screen_rect(0, r);
             let mut band = Rect::new(body.x0, row.y0, body.x1, row.y1);
-            // A row of a band that is opening is drawn only inside what has
-            // opened of it, so it never covers a row still on its way.
+            // A row of an opening band is drawn only inside what has opened of it.
             let mut opacity = 1.0;
             if let Some(shift) = arriving
                 && r >= shift.at
@@ -2577,8 +2388,7 @@ impl Grid {
         }
     }
 
-    /// The fades where the body's edge cuts a column or a row, each its own
-    /// part; `visible` is the visible columns and rows.
+    /// The fades where the body's edge cuts a column or row.
     fn draw_edge_fades(
         &self,
         parts: &mut PaintParts,
@@ -2589,9 +2399,7 @@ impl Grid {
     ) {
         let (cols, rows) = visible;
         let body = self.body_rect();
-        // A column the body's edge cuts fades out there, so a number cut
-        // short reads as running on past the edge rather than as a shorter
-        // number.
+        // A column cut by the edge fades, so a cut number reads as running on.
         let ground = theme.tokens.colors.surfaces.content;
         let cut = [
             (
@@ -2616,9 +2424,7 @@ impl Grid {
         }
     }
 
-    /// The header strips, the scroll bars and the in-cell editor, each its
-    /// own part, over the body's parts; `visible` is the visible columns and
-    /// rows.
+    /// The header strips, the scroll bars and the in-cell editor, each its own part.
     fn draw_headers_and_bars(
         &self,
         parts: &mut PaintParts,
@@ -2632,7 +2438,7 @@ impl Grid {
         let body = self.body_rect();
         let ink = ui::widget::focus_ring_reach(theme);
         let reach = |rect: Rect| rect.inflate(ink, ink).intersect(body);
-        // --- headers (painted on top, never clipped by the body) ---
+        // The headers paint on top, never clipped by the body.
         let col_strip = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.grid_y0());
         parts.draw(scene, "sheet-col-headers", col_strip, |scene| {
             self.draw_col_headers(scene, transform, tr, theme, cols, col_strip);
@@ -2649,8 +2455,7 @@ impl Grid {
             self.header_rules(scene, transform, theme);
         });
 
-        // The library's thumbs, one per overflowing axis; the gutter itself
-        // is bare ground.
+        // The thumbs, one per overflowing axis; the gutter is bare ground.
         for (key, axis) in [
             ("sheet-bar-x", ScrollAxis::Horizontal),
             ("sheet-bar-y", ScrollAxis::Vertical),
@@ -2671,7 +2476,7 @@ impl Grid {
             }
         }
 
-        // --- in-cell editor overlay ---
+        // The in-cell editor overlay.
         if let Some(edit_rect) = self.editor_rect(tr, theme) {
             parts.draw(scene, "sheet-editor", reach(edit_rect), |scene| {
                 self.draw_editor(scene, transform, tr, theme, edit_rect);
@@ -2679,8 +2484,7 @@ impl Grid {
         }
     }
 
-    /// Each selection range's screen rect inside `body`: every discontiguous
-    /// range paints; overlaps are the same lift.
+    /// Each range's rect inside `body`; overlaps are the same lift.
     fn selection_rects(&self, body: Rect) -> Vec<Rect> {
         self.extra_ranges
             .iter()
@@ -2690,22 +2494,19 @@ impl Grid {
             .collect()
     }
 
-    /// Paint each visible cell's value/formula text in row `r`, elided with
-    /// an ellipsis where it does not fit the cell or the edge of the body.
+    /// Each visible cell's value in row `r`, elided at the cell's edge or the body's.
     fn draw_row_cells(&self, ctx: &mut PaintCtx<'_>, cols: &[u32], r: u32, body: Rect) {
         let theme = ctx.theme;
         let colors = &theme.tokens.colors;
         for &c in cols {
             let cell = self.cell_screen_rect(c, r);
-            // Skip while editing this exact cell — the editor overlay
-            // paints it instead.
+            // The editor paints the cell being edited.
             if let Some(e) = &self.edit
                 && e.addr == (c, r)
             {
                 continue;
             }
-            // Formula view: show the raw input verbatim, set as code, so
-            // it reads as "source" rather than a result.
+            // Formula view: the raw input, set as code.
             if self.show_formulas
                 && let Some(raw) = self.raw.get(&(c, r))
                 && !raw.is_empty()
@@ -2735,9 +2536,7 @@ impl Grid {
         }
     }
 
-    /// Grid line strokes for the visible rows/columns, plus the trailing
-    /// right/bottom edges when they fall within `body`. The line is the
-    /// ground's own derived hairline, so it registers on every theme.
+    /// Grid lines for the visible rows and columns, plus the trailing edges in `body`.
     fn draw_grid_lines(
         &self,
         scene: &mut Scene,
@@ -2809,7 +2608,7 @@ impl Grid {
         }
     }
 
-    /// The fill handle or its drag preview inside `body`, if either shows.
+    /// The fill handle or its preview inside `body`.
     fn fill_mark(&self, body: Rect) -> Option<FillMark> {
         if let Some(fd) = self.fill_drag {
             let (_, _, dtl, dbr) = Self::fill_region(fd.src, fd.target)?;
@@ -2823,9 +2622,7 @@ impl Grid {
         }
     }
 
-    /// Fill handle + drag preview. While dragging, a dashed outline shows
-    /// the region the pattern will extend into; at rest, a small solid
-    /// square sits on the selection's bottom-right corner.
+    /// The fill handle, or the dashed region a drag will fill.
     fn draw_fill_mark(scene: &mut Scene, transform: Affine, theme: &Theme, mark: FillMark) {
         let colors = &theme.tokens.colors;
         match mark {
@@ -2834,8 +2631,7 @@ impl Grid {
                 scene.stroke(&dashed, transform, colors.intent.you, None, &region);
             }
             FillMark::Handle { ring, square } => {
-                // A thin ground-coloured ring keeps the square legible on any
-                // cell fill underneath.
+                // A ground-coloured ring keeps the square legible on any cell fill.
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -2848,10 +2644,7 @@ impl Grid {
         }
     }
 
-    /// The ranges the formula being edited refers to, each with its colour:
-    /// the same colour tints the reference in the formula text, so it is
-    /// clear which cells feed the result (and, in point mode, which range a
-    /// click just inserted).
+    /// The ranges the formula refers to, each with the colour its reference is tinted in.
     fn referenced_ranges(&self, theme: &Theme) -> Vec<(Rect, Color)> {
         let Some(body_text) = self.highlight_formula_body() else {
             return Vec::new();
@@ -2872,8 +2665,7 @@ impl Grid {
             .collect()
     }
 
-    /// A faint wash of each reference's colour over its cells, under the
-    /// text; `references` are already clipped to the body.
+    /// A faint wash of each reference's colour under the text.
     fn draw_reference_washes(
         scene: &mut Scene,
         transform: Affine,
@@ -2894,16 +2686,13 @@ impl Grid {
         }
     }
 
-    /// Whether referenced ranges get an outline. Only while a formula is
-    /// being edited: on a merely selected formula cell an outline next to the
-    /// selection's own reads as a second selected cell, so the trace stays a
-    /// wash.
+    /// Whether references get an outline: only while a formula is edited, since beside a selection
+    /// it would read as a second selected cell.
     pub(crate) fn reference_outlines_visible(&self) -> bool {
         self.edit.is_some()
     }
 
-    /// Absolute screen rect spanning one selection range (may lie off-body;
-    /// the caller clips it).
+    /// The screen rect of one range, clipped by the caller.
     fn range_screen_rect(&self, range: SelRange) -> Rect {
         let (c0, r0, c1, r1) = range.bounds();
         let tl = self.cell_screen_rect(c0, r0);
@@ -2911,10 +2700,7 @@ impl Grid {
         Rect::new(tl.x0, tl.y0, br.x1, br.y1)
     }
 
-    /// One cell's text, elided with an ellipsis at the cell's edge — or at
-    /// the body's, where the cell is cut by it — and centred on its measured
-    /// line box so a cell and its row header share one baseline. `place` is
-    /// the cell's rect and the body's.
+    /// One cell's text, elided at the cell's edge or the body's and centred on its line box.
     fn draw_cell_text(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -2929,8 +2715,7 @@ impl Grid {
         let cut = cell.x1 > body.x1;
         let left = cell.x0 + pad;
         let right = if cut { body.x1 } else { cell.x1 - pad };
-        // A right-aligned number stays whole: it is anchored to the cell, and
-        // a cell cut by the body shows only what the clip leaves of it.
+        // A right-aligned number is anchored to the cell, so only what the clip leaves shows.
         let room = if right_align {
             cell.width() - 2.0 * pad
         } else {
@@ -2950,8 +2735,7 @@ impl Grid {
         ctx.text(&shown, style, color, Point::new(tx, ty), None);
     }
 
-    /// The headers' two hairlines, on the strips' own ground: under the
-    /// column labels and beside the row labels.
+    /// The headers' two hairlines.
     fn header_rules(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let rule = ui::surface::edge_on(theme.region(Region::Sidebar));
         scene.fill(
@@ -2980,7 +2764,7 @@ impl Grid {
         );
     }
 
-    /// Column header strip: letters and the selection lift.
+    /// The column header strip: letters and the selection lift.
     fn draw_col_headers(
         &self,
         scene: &mut Scene,
@@ -3016,9 +2800,7 @@ impl Grid {
             }
             let label = crate::model::col_to_letters(c);
             let (lw, lh) = tr.measure_style(&label, None, &style);
-            // A column partly scrolled under the row headers is labelled in
-            // what shows of it; when not even the label fits, it goes
-            // unlabelled rather than painted half under the corner.
+            // A column partly under the row headers is labelled in what shows of it, or not at all.
             let shown = Rect::new(
                 hrect.x0.max(self.grid_x0()),
                 hrect.y0,
@@ -3047,7 +2829,7 @@ impl Grid {
         scene.pop_layer();
     }
 
-    /// Row header strip: numbers and the selection lift.
+    /// The row header strip: numbers and the selection lift.
     fn draw_row_headers(
         &self,
         scene: &mut Scene,
@@ -3108,8 +2890,7 @@ impl Grid {
         scene.pop_layer();
     }
 
-    /// Is a cell non-empty in the current data? Used to decide how far the
-    /// in-cell editor may overflow before a neighbour blocks it.
+    /// Whether a cell is non-empty, which bounds how far the editor overflows.
     fn cell_is_occupied(&self, addr: Addr) -> bool {
         match self.values.get(&addr) {
             Some(v) => !v.is_empty(),
@@ -3117,20 +2898,16 @@ impl Grid {
         }
     }
 
-    /// The width the editor wants to display its text comfortably.
+    /// The width the editor wants for its text.
     fn editor_desired_width(&self, text: &str, tr: &mut TextRenderer, style: &TextStyle) -> f64 {
         let (tw, _) = tr.measure_style(text, None, style);
-        // Text width + padding on both sides + caret room, never narrower
-        // than the cell itself.
+        // Text, padding and caret room, never narrower than the cell.
         (f64::from(tw) + self.metrics.cell_pad() * 2.0 + self.metrics.fill_handle())
             .max(self.col_w(0))
     }
 
-    /// Compute how far the floating editor for cell `addr` may extend to the
-    /// right, in absolute screen x. It grows across **empty** neighbours
-    /// until it has `desired` width, hits an occupied cell, runs out of
-    /// columns, or reaches `body_right`. This is the pure geometry behind
-    /// the "overflow into empty cells, clip at a non-empty neighbour" rule.
+    /// How far the editor may extend right: across empty neighbours until it has the width,
+    /// hits an occupied cell, runs out of columns or reaches the body's right edge.
     fn editor_right_extent(&self, addr: Addr, desired: f64, body_right: f64) -> f64 {
         let (ec, er) = addr;
         let cell = self.cell_screen_rect(ec, er);
@@ -3143,14 +2920,12 @@ impl Grid {
             right += self.col_w(next_col);
             next_col += 1;
         }
-        // Never overrun the visible body, but always show at least the cell.
+        // Never overrun the body, but always show the cell.
         right.min(body_right).max(cell.x1.min(body_right))
     }
 
-    /// Like Excel: the active edit is a floating field aligned to the cell
-    /// that grows rightward into **empty** neighbours only, stopping at the
-    /// first occupied cell or the grid's right edge. `None` while nothing is
-    /// edited or the edited cell scrolled out from under the body.
+    /// The editor: a floating field aligned to the cell that grows rightward into empty neighbours
+    /// only. `None` while nothing is edited or the cell scrolled away.
     fn editor_rect(&self, tr: &mut TextRenderer, theme: &Theme) -> Option<Rect> {
         let e = self.edit.as_ref()?;
         let (ec, er) = e.addr;
@@ -3160,14 +2935,12 @@ impl Grid {
             return None;
         }
         let desired = self.editor_desired_width(&e.shown(), tr, &theme.text(TextRole::Body));
-        // Grow rightward across empty neighbours until we have enough room or
-        // we hit an occupied cell / the last column / the grid edge.
+        // Grow rightward across empty neighbours until there is room or one blocks it.
         let right = self.editor_right_extent((ec, er), desired, body.x1);
         Some(Rect::new(cell.x0.max(body.x0), cell.y0, right, cell.y1))
     }
 
-    /// The editor in `edit_rect` ([`Self::editor_rect`]), clipped to the
-    /// grid body so it never paints over the headers.
+    /// The editor, clipped to the body so it never paints over the headers.
     fn draw_editor(
         &self,
         scene: &mut Scene,
@@ -3182,12 +2955,10 @@ impl Grid {
         let style = theme.text(TextRole::Body);
         let text = e.shown();
 
-        // Clip everything to the body so the floating editor stays inside the
-        // grid even when it overflows past where data ends.
+        // Clip to the body, so the editor stays inside the grid.
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &body);
 
-        // A field: its raised face, so the cells under it do not bleed
-        // through, ringed in your colour while it has focus.
+        // A raised face, so the cells under it do not bleed through, ringed while it has focus.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -3203,8 +2974,7 @@ impl Grid {
             &edit_rect,
         );
 
-        // Text + caret, clipped to the editor box. A formula draws each cell
-        // reference in its own colour; anything else draws in the body colour.
+        // The text and caret, clipped to the editor box; a formula draws each reference in its colour.
         let (_, line_h) = tr.measure_style("Ag", None, &style);
         let line_h = f64::from(line_h);
         let ty = edit_rect.y0 + (edit_rect.height() - line_h) / 2.0;
@@ -3236,9 +3006,8 @@ impl Grid {
     }
 }
 
-/// One line of formula or cell text being edited, for [`draw_edit_line`]:
-/// where its line box starts, how tall it is, and the selection and caret in
-/// character indices.
+/// One line of edited text: where its line box starts, how tall it is, and the selection and
+/// caret in char indices.
 pub(crate) struct EditLine<'a> {
     pub text: &'a str,
     pub origin: Point,
@@ -3248,10 +3017,8 @@ pub(crate) struct EditLine<'a> {
     pub preedit: Option<(usize, usize)>,
 }
 
-/// Paint one editable line in `style`: the selection wash under the text, the
-/// text with every cell reference in its own colour, and the caret in your
-/// colour. The in-cell editor and the formula bar edit the same buffer, so
-/// they paint it through here.
+/// One editable line: the selection wash, the text with each reference in its colour, and the
+/// caret. The cell editor and the formula bar edit the same buffer, so they paint it here.
 pub(crate) fn draw_edit_line(
     scene: &mut Scene,
     transform: Affine,
@@ -3295,8 +3062,7 @@ pub(crate) fn draw_edit_line(
         line.caret,
     );
     if let Some((start, end)) = line.preedit {
-        // The grid cell and formula bar share the exact composed projection.
-        // Prefix measurements reuse the renderer cache used by hit mapping.
+        // The cell and the formula bar share the composed projection.
         let chars: Vec<char> = line.text.chars().collect();
         let prefix: String = chars.iter().take(start).collect();
         let through: String = chars.iter().take(end).collect();
@@ -3320,12 +3086,7 @@ pub(crate) fn draw_edit_line(
     }
 }
 
-/// The colour of the `slot`-th reference in a formula, so each referenced
-/// cell/range reads in its own colour both in the formula text and as an
-/// outline on the grid — the coloured-reference cue every desktop
-/// spreadsheet shows while editing a formula. The presence series is made
-/// legible as text on the field the formula is typed in, the lighter of the
-/// grounds the colour is drawn on.
+/// The `slot`-th reference's colour, in the formula text and as an outline on the grid.
 pub(crate) fn reference_color(theme: &Theme, slot: usize) -> Color {
     let colors = &theme.tokens.colors;
     colors.ink_on(
@@ -3335,13 +3096,8 @@ pub(crate) fn reference_color(theme: &Theme, slot: usize) -> Color {
     )
 }
 
-/// Draw a formula string in `style`, each cell/range reference tinted its
-/// assigned colour (the rest in `text_primary`), starting at `origin`
-/// (top-left of the text). When `caret` is `Some`, the returned value is the
-/// caret's x in scene space so the caller can draw a matching caret;
-/// otherwise the return is the x just past the text. Only strings beginning
-/// with `=` are scanned for references — a plain value is drawn entirely in
-/// `text_primary`.
+/// A formula with each reference tinted, from `origin`. With `caret`, the returned x is the
+/// caret's; otherwise it is just past the text. Only a string beginning with `=` is scanned.
 pub(crate) fn draw_formula_line(
     scene: &mut Scene,
     transform: Affine,
@@ -3403,10 +3159,8 @@ pub(crate) fn draw_formula_line(
     caret_x
 }
 
-/// Intersection of two rects, or `None` if they don't overlap.
-/// Where the fill handle paints: at rest a square on the selection's corner
-/// (its ring unclipped, its fill clipped to the body), while dragging the
-/// dashed outline of the region the pattern extends into.
+/// Where the fill handle paints: a square on the selection's corner at rest, the dashed
+/// outline of the region a drag will fill.
 #[derive(Clone, Copy)]
 enum FillMark {
     Preview(Rect),
@@ -3422,7 +3176,7 @@ impl FillMark {
     }
 }
 
-/// The smallest rect holding every one of `rects`; `None` with none.
+/// The smallest rect holding every one of `rects`.
 fn union_of(rects: &[Rect]) -> Option<Rect> {
     rects.iter().copied().reduce(|a, b| a.union(b))
 }

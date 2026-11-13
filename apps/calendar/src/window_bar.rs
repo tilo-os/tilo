@@ -1,10 +1,5 @@
 //! The calendar's toolbar, as slots in the window's bar
 //! ([`ui::window_toolbar`]).
-//!
-//! The bar shows the sidebar's toggle, previous, next and Today, the period
-//! as the window's location, the views (Month, Week, Day, Agenda, Tasks) as
-//! its switcher and New event (New task on Tasks); exporting and importing
-//! the calendar file are in its menu. Search is the bar's own.
 
 use chrono::NaiveDate;
 use ui::format::Period;
@@ -13,7 +8,6 @@ use ui::window_toolbar::{ToolbarLocation, ToolbarView, ToolbarViews, WindowToolb
 
 use crate::{date, model::View};
 
-/// What the person asked of the calendar in the window's bar.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum BarAction {
     Previous,
@@ -27,8 +21,6 @@ pub(crate) enum BarAction {
     Import,
 }
 
-/// The period `view` shows around `anchor` (none: Tasks, which shows no
-/// span of days).
 pub(crate) fn period(view: View, anchor: NaiveDate) -> Option<Period> {
     match view {
         View::Tasks => None,
@@ -44,9 +36,6 @@ pub(crate) fn period(view: View, anchor: NaiveDate) -> Option<Period> {
     }
 }
 
-/// The window's location for `view` around `anchor`: its period, in the
-/// widest form the bar has room for, or on Tasks the list shown
-/// (`tasks_list`).
 fn location(view: View, anchor: NaiveDate, tasks_list: &str) -> ToolbarLocation {
     period(view, anchor).map_or_else(
         || ToolbarLocation {
@@ -57,8 +46,6 @@ fn location(view: View, anchor: NaiveDate, tasks_list: &str) -> ToolbarLocation 
     )
 }
 
-/// The window bar's slots for `view` around `anchor` (on Tasks the list
-/// `tasks_list`), the sidebar shown or not.
 pub(crate) fn window_toolbar(
     bar: &BarCommands<BarAction>,
     view: View,
@@ -118,7 +105,6 @@ pub(crate) fn window_toolbar(
     };
     toolbar.actions = vec![
         bar.entry("plus", new, BarAction::New),
-        // The one-line add sits beside the full form it saves a person from.
         bar.entry(
             "zap",
             crate::resource::t("calendar-quick-title"),

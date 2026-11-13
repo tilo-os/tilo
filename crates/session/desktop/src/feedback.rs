@@ -229,6 +229,7 @@ pub fn composer_tab(tree: &DesktopTree) -> Option<(WorkspaceSlot, StripId, Group
 
 fn subject(tile: &TileContent, name: impl Fn(&str) -> Option<String>) -> Option<Subject> {
     let app = tilo_desktop_model::apps::canonical_app_id(tile)?;
+    let app = String::from(app);
     let name = match tile {
         // A built-in's kind is the app's own name.
         TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {

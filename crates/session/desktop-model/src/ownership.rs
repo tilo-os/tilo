@@ -14,7 +14,7 @@
 //! it is no longer anyone's own, and whoever writes there closes or moves
 //! it as their own, so a window of someone gone never stays stuck on
 //! everyone's desktop. Who is still in the workspace is its governance's member
-//! list ([`crate::projection::workspace_members`]).
+//! list (`tilo_peer_state::members::people`).
 //!
 //! [`foreign_acts`] names what one desktop value did to another's strips
 //! and windows that its writer did not make. A relay decides every write of

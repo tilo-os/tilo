@@ -73,6 +73,70 @@ fn typing_words_into_a_bound_field_undoes_one_word_at_a_time() {
     assert_eq!(app.state().name, "");
 }
 
+/// A bound field's typing is a splice of the field per keystroke, and one burst of typing in a
+/// word is one undo step: undo takes back the word typed into the middle of the text, not the
+/// text around it.
+#[test]
+fn typing_inside_a_bound_field_splices_it_and_undoes_the_burst() {
+    let mut app = TestApp::<MixerApp>::new().unwrap();
+    app.harness().click_named("name").unwrap();
+    app.harness().type_text("Drums bass");
+    for _ in 0.."bass".len() {
+        app.harness().key("Left");
+    }
+    app.harness().type_text("and ");
+    assert_eq!(app.state().name, "Drums and bass");
+    assert!(app.undo());
+    assert_eq!(
+        app.state().name,
+        "Drums bass",
+        "the burst typed in the middle"
+    );
+    assert!(app.undo());
+    assert_eq!(app.state().name, "Drums ");
+}
+
+/// A collaborator's edit lands in the field while the person types in it, and the caret stays
+/// with what they were typing: the person's next keystroke goes where they were.
+#[test]
+fn a_peers_edit_lands_under_the_caret_of_a_person_typing() {
+    use tilo_app::automerge::transaction::Transactable as _;
+    use tilo_app::automerge::{ObjType, ROOT, ReadDoc as _};
+    let mut app = TestApp::<MixerApp>::new().unwrap();
+    app.harness().click_named("name").unwrap();
+    app.harness().type_text("bass");
+    app.merge_peer_edit(|doc| {
+        let text = match doc.get(ROOT, "name").unwrap() {
+            Some((_, text)) => text,
+            None => doc.put_object(ROOT, "name", ObjType::Text).unwrap(),
+        };
+        doc.splice_text(&text, 0, 0, "Drums ").unwrap();
+    });
+    app.harness().type_text("line");
+    assert_eq!(app.state().name, "Drums bassline");
+    assert_eq!(
+        app.with_widget(|input: &mut TextInput| input.value().to_owned()),
+        Some("Drums bassline".to_owned())
+    );
+}
+
+/// The field shows who wrote each run of its text: a collaborator's words are theirs, the
+/// person's own their own.
+#[test]
+fn a_bound_field_shows_who_wrote_each_run() {
+    let mut app = TestApp::<MixerApp>::new().unwrap();
+    app.harness().click_named("name").unwrap();
+    app.harness().type_text("Drums");
+    let runs = app
+        .with_widget(|input: &mut TextInput| input.authored_runs().to_vec())
+        .unwrap();
+    let [(range, author)] = runs.as_slice() else {
+        panic!("one run, the person's own: {runs:?}");
+    };
+    assert_eq!(range.clone(), 0.."Drums".len());
+    assert!(!author.is_empty());
+}
+
 #[test]
 fn dragging_a_bound_slider_is_one_undo_step_and_the_next_drag_another() {
     let mut app = TestApp::<MixerApp>::new().unwrap();

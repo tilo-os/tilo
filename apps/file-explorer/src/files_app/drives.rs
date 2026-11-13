@@ -1,17 +1,5 @@
-//! NTFS drives in the places list: the Windows partition next to Tilo and
-//! external drives.
-//!
-//! Files never mounts a drive and never talks to the mount service. It asks
-//! the shell which drives there are (`ToolIntent::Drives`, answered from the
-//! shell's cache) and asks the shell to open one (`ToolIntent::OpenDrive`).
-//! The shell asks the person in its own sheet unless they chose to remember
-//! that drive, mounts it, and opens it in Files with a grant for its folder.
-//! A drive already open whose folder this window can read opens here.
-//!
-//! Files never asks on a timer: it asks for the list once when the window
-//! joins and once each time the shell says the drives changed
-//! ([`CollabEvent::DrivesChanged`](ui::collaboration::CollabEvent::DrivesChanged),
-//! which names nothing).
+//! NTFS drives in the places list: the Windows partition and external drives,
+//! asked of the shell.
 #[cfg(test)]
 #[path = "drives_tests.rs"]
 mod tests;
@@ -38,14 +26,10 @@ fn open_through_shell(drive: &str) -> Result<(), String> {
 
 pub(super) struct Drives {
     pub(super) shown: Vec<DriveEntry>,
-    /// The latest answer of a list or open request running off the UI thread.
     listed: Arc<Mutex<Option<Vec<DriveEntry>>>>,
     refused: Arc<Mutex<Option<String>>>,
     listing: bool,
-    /// The shell said the drives changed since the list was last asked
-    /// for. A change during an unanswered ask becomes one more ask.
     stale: bool,
-    /// `None` for a window whose drives are given (scenarios, tests).
     lister: Option<DriveLister>,
     opener: DriveOpener,
 }
@@ -58,7 +42,6 @@ impl Default for Drives {
             refused: Arc::default(),
             listing: false,
             stale: false,
-            // Unit tests never reach a shell; they inject what they need.
             lister: (!cfg!(test)).then_some(runtime_portal::tools::list_drives as DriveLister),
             opener: open_through_shell,
         }
@@ -66,7 +49,6 @@ impl Default for Drives {
 }
 
 impl Drives {
-    /// When the window should look again.
     pub(super) fn next_wake(&self) -> Option<Instant> {
         let answered = self.listed.lock().is_ok_and(|slot| slot.is_some())
             || self.refused.lock().is_ok_and(|slot| slot.is_some());
@@ -74,8 +56,6 @@ impl Drives {
         (answered || due).then(Instant::now)
     }
 
-    /// Take in `event`: a change the shell announced is asked about on the
-    /// next pump.
     pub(super) fn event(&mut self, event: &ui::collaboration::CollabEvent) {
         if matches!(event, ui::collaboration::CollabEvent::DrivesChanged) {
             self.stale = true;
@@ -83,7 +63,6 @@ impl Drives {
     }
 }
 
-/// The places-list row for `drive`.
 pub(super) fn drive_place(drive: &DriveEntry) -> places_sidebar::DrivePlace {
     let size = crate::i18n::format_bytes(drive.size_bytes);
     let label = if drive.label.trim().is_empty() {
@@ -109,8 +88,6 @@ pub(super) fn drive_place(drive: &DriveEntry) -> places_sidebar::DrivePlace {
 }
 
 impl FilesState {
-    /// Show `drives` and stop asking the shell: the scenario and test seam.
-    /// The live window never starts with drives of its own.
     #[doc(hidden)]
     pub fn debug_show_drives(&mut self, drives: Vec<DriveEntry>) {
         self.drives.lister = None;
@@ -119,9 +96,6 @@ impl FilesState {
         self.structure_dirty = true;
     }
 
-    /// The `drives` screenshot scenario: made-up drives, the Windows
-    /// partition next to Tilo and an external stick already open. No shell is
-    /// asked.
     pub(super) fn debug_show_sample_drives(&mut self) {
         self.debug_show_drives(vec![
             DriveEntry {
@@ -141,20 +115,16 @@ impl FilesState {
         ]);
     }
 
-    /// Ask `lister` for the drives instead of the shell.
     #[cfg(test)]
     pub(super) fn set_drive_lister(&mut self, lister: DriveLister) {
         self.drives.lister = Some(lister);
     }
 
-    /// Route opening a drive through `opener` instead of the shell.
     #[cfg(test)]
     pub(super) fn set_drive_opener(&mut self, opener: DriveOpener) {
         self.drives.opener = opener;
     }
 
-    /// Take in answers that arrived, and ask again when the shell said the
-    /// drives changed. Returns whether what the window shows changed.
     pub(super) fn poll_drives(&mut self) -> bool {
         let mut changed = false;
         if let Some(listed) = self
@@ -193,22 +163,17 @@ impl FilesState {
         let spawned = std::thread::Builder::new()
             .name("files-drives".into())
             .spawn(move || {
-                // No session to ask is no drives, not an error to show.
                 let drives = lister().unwrap_or_default();
                 if let Ok(mut slot) = slot.lock() {
                     *slot = Some(drives);
                 }
             });
         if spawned.is_err() {
-            // Asking again at once would spin; the next change asks.
             self.drives.listing = false;
         }
         changed
     }
 
-    /// Open the drive with this id: here when it is already open and this
-    /// window can read its folder, otherwise through the shell, which asks
-    /// the person first unless they chose to remember the drive.
     pub(super) fn open_drive(&mut self, id: &str) -> Result<(), String> {
         let drive = self
             .drives
@@ -239,8 +204,6 @@ impl FilesState {
             .map_err(|error| error.to_string())
     }
 
-    /// One resource per drive, so an agent or assistive tool can list them
-    /// and open one; opening still goes through the shell's sheet.
     pub(super) fn live_drive_resources(&self) -> Vec<ResourceSpec> {
         if !ui::bound_dispatch::host_person_invocation_permitted() {
             return Vec::new();

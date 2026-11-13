@@ -1,46 +1,7 @@
 //! Filtered D-Bus proxies for sandboxed apps.
 //!
-//! Two buses reach a graphical app, each only through its own
-//! `xdg-dbus-proxy`, and each filtered to an explicit allowlist:
-//!
-//! - **Session bus.** Portal-adjacent names when the manifest declares a
-//!   `via-host` portal, for every graphical app exactly the two
-//!   read-only questions an accessibility client must ask
-//!   `org.a11y.Bus`: where the AT-SPI bus is (`GetAddress`) and whether
-//!   assistive technology is on (the `org.a11y.Status` properties), and
-//!   for an app declaring `media.session` ownership of its own MPRIS name,
-//!   `org.mpris.MediaPlayer2.<package id>` and no other.
-//! - **AT-SPI bus.** Flatpak's filter, verbatim: the app may embed its
-//!   accessibility root in the registry, read which events listeners want,
-//!   and notify device-event listeners. Assistive technology then calls
-//!   *into* the app; the app cannot call any other client on that bus,
-//!   so it cannot read another app's tree or synthesise its events.
-//!
-//! Without the second proxy a sandboxed app is invisible to every screen
-//! reader; without the first it never learns accessibility is enabled.
-//!
-//! Motivation. When a manifest declares a `via-host` XDG portal, the
-//! sandboxed app needs a well-defined slice of the host session bus —
-//! the portal service and usually fd.o notifications plus MPRIS.
-//! Bind-mounting the raw session-bus socket exposes the FULL bus
-//! though — every daemon the user's session registered — reachable
-//! from inside the sandbox. Flatpak's `xdg-dbus-proxy --filter` solves
-//! this: a small forwarder that only relays messages matching an
-//! allowlist, running as a per-sandbox helper.
-//!
-//! What we do here: locate `xdg-dbus-proxy` (from `flatpak-xdg-utils`,
-//! leaving the bus unavailable if missing); spawn one proxy per
-//! sandbox allowing `org.freedesktop.DBus` (needed for the `Hello`
-//! handshake), the `org.freedesktop.portal.*` tree,
-//! `org.freedesktop.Notifications`, and `org.mpris.MediaPlayer2.*`;
-//! listen on a per-launcher socket under
-//! `/run/user/<uid>/tilo/dbus-proxy/<pid>.sock`; and return an RAII
-//! guard that `SIGTERM`s the proxy and unlinks the socket on drop.
-//!
-//! `xdg-dbus-proxy` takes the upstream bus address as its first
-//! positional arg and understands every transport libdbus does,
-//! including `unix:abstract=...` — strictly more capable than the
-//! raw-bind path, which can only mount `unix:path=...` addresses.
+//! Two buses reach a graphical app, the session bus and the accessibility bus, each
+//! through its own `xdg-dbus-proxy` filtered to an explicit allowlist.
 
 use std::io::{self, Read};
 use std::os::fd::OwnedFd;
@@ -50,15 +11,6 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 /// Filter args passed after `SOURCE DEST` to `xdg-dbus-proxy`.
-///
-/// Explicit allowlist. The only wildcard is `org.freedesktop.portal.*`,
-/// since portals are a growing family of well-known names under a
-/// stable prefix; everything else is fully-qualified: `--filter` turns
-/// on filtering, `--see=org.freedesktop.DBus` is the bus daemon itself
-/// (needed for `Hello`), `--talk=org.freedesktop.portal.*` covers every
-/// XDG portal, and `--talk=org.freedesktop.Notifications` /
-/// `--talk=org.mpris.MediaPlayer2.*` cover notifications and media
-/// control.
 pub const DEFAULT_FILTER_ARGS: &[&str] = &[
     "--filter",
     "--see=org.freedesktop.DBus",
@@ -67,12 +19,9 @@ pub const DEFAULT_FILTER_ARGS: &[&str] = &[
     "--talk=org.mpris.MediaPlayer2.*",
 ];
 
-/// The session-bus rules every graphical app gets, and the only ones a
-/// portal-less app gets: `org.a11y.Bus.GetAddress`, reading the
-/// `org.a11y.Status` properties (`IsEnabled`, `ScreenReaderEnabled`) and
-/// their change signal, all on `/org/a11y/bus`. Not `--talk`: setting those
-/// properties, or any other method of the accessibility bus launcher, stays
-/// denied.
+/// The session-bus rules every graphical app gets, and the only ones a portal-less app gets:
+/// `org.a11y.Bus.GetAddress`, reading the `org.a11y.Status` properties (`IsEnabled`,
+/// `ScreenReaderEnabled`) and their change signal, all on `/org/a11y/bus`.
 pub const A11Y_STATUS_FILTER_ARGS: &[&str] = &[
     "--call=org.a11y.Bus=org.a11y.Bus.GetAddress@/org/a11y/bus",
     "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.Get@/org/a11y/bus",
@@ -80,21 +29,12 @@ pub const A11Y_STATUS_FILTER_ARGS: &[&str] = &[
     "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
 ];
 
-/// The manifest capability that lets an app publish its player to the
-/// desktop's now-playing controls.
+/// The manifest capability that lets an app publish its player to the desktop's now-playing controls.
 pub const MEDIA_SESSION_CAPABILITY: &str = "media.session";
 
-/// The one MPRIS name an app may own on the session bus:
-/// `org.mpris.MediaPlayer2.<package id>`, the name the toolkit's media
-/// session requests for a launched package (both take it from
-/// [`tilo_process::environment::media_player_bus_name`]). `None` for a
-/// package id that does not make a valid bus name.
-///
-/// Exactly this name, never a `.*` wildcard: xdg-dbus-proxy's
-/// `--own=org.mpris.MediaPlayer2.so.tilo.music.*` would also cover the
-/// player of a package `so.tilo.music.extra`, and an app may only speak as
-/// itself. A second running instance of the same package therefore finds
-/// the name taken and publishes no second player.
+/// The one MPRIS name an app may own on the session bus: `org.mpris.MediaPlayer2.<package id>`, the
+/// name the toolkit's media session requests for a launched package (both take it from
+/// [`tilo_process::environment::media_player_bus_name`]).
 #[must_use]
 pub fn media_player_name(package_id: &str) -> Option<String> {
     let name = tilo_process::environment::media_player_bus_name(package_id);
@@ -102,9 +42,8 @@ pub fn media_player_name(package_id: &str) -> Option<String> {
     Some(name)
 }
 
-/// The MPRIS name a launch of `manifest` may own: its own player name when
-/// it declares [`MEDIA_SESSION_CAPABILITY`], otherwise none. Media sessions
-/// need no consent (`tilo_caps`), so the declaration is the grant.
+/// The MPRIS name a launch of `manifest` may own: its own player name when it declares
+/// [`MEDIA_SESSION_CAPABILITY`], otherwise none.
 #[must_use]
 pub fn media_player_for(manifest: &crate::manifest::ManifestView) -> Option<String> {
     manifest
@@ -113,12 +52,9 @@ pub fn media_player_for(manifest: &crate::manifest::ManifestView) -> Option<Stri
         .flatten()
 }
 
-/// The session-bus filter for one launch: the bus daemon for `Hello`, the
-/// portal names when the manifest declares a `via-host` portal, the
-/// accessibility status rules when the app has a display, and ownership of
-/// `media_player` (see [`media_player_for`]) when the app publishes its
-/// player. Without that ownership the bus refuses the player's name and it
-/// never reaches the desktop's now-playing controls.
+/// The session-bus filter for one launch: the bus daemon for `Hello`, the portal names when the
+/// manifest declares a `via-host` portal, the accessibility status rules when the app has a display,
+/// and ownership of `media_player` (see [`media_player_for`]) when the app publishes its player.
 #[must_use]
 pub fn session_filter_args(
     portals: bool,
@@ -139,8 +75,7 @@ pub fn session_filter_args(
     args
 }
 
-/// The AT-SPI bus filter: Flatpak's (`flatpak_run_add_a11y_dbus_args`),
-/// verbatim. Every rule names the registry and an exact object path.
+/// The AT-SPI bus filter: Flatpak's (`flatpak_run_add_a11y_dbus_args`), verbatim.
 pub const ATSPI_FILTER_ARGS: &[&str] = &[
     "--filter",
     "--sloppy-names",
@@ -155,30 +90,16 @@ pub const ATSPI_FILTER_ARGS: &[&str] = &[
     "--call=org.a11y.atspi.Registry=org.a11y.atspi.DeviceEventController.NotifyListenersAsync@/org/a11y/atspi/registry/deviceeventcontroller",
 ];
 
-/// Set to `1` in a graphical app's environment, it makes the app's AT-SPI
-/// bridge (`vendor/accesskit_unix/src/read_only.rs`) serve the accessible
-/// tree read-only to every other client on the bus.
-///
-/// The proxy above limits what the app may call, but it cannot filter calls
-/// into the app, and an AT-SPI call carries no proof that a person asked for
-/// it: any process on the bus could otherwise press the app's buttons, type
-/// into its fields or confirm its dialogs with no input the compositor sees,
-/// past the launch-gesture rule and the action broker's attribution. With the
-/// variable set, `Action.DoAction`, `EditableText`, setting
-/// `Value.CurrentValue`, selecting, `Component.GrabFocus` and moving the caret
-/// are refused, while names, roles, states, text, values and events still
-/// answer. The built-in reader runs inside the app and acts through the
-/// person's own input, so it is unaffected.
+/// Set to `1` in a graphical app's environment, it makes the app's AT-SPI bridge
+/// (`vendor/accesskit_unix/src/read_only.rs`) serve the accessible tree read-only to every other client
+/// on the bus.
 pub const ATSPI_READ_ONLY_ENV: &str = "TILO_ATSPI_READ_ONLY";
 
-/// Written only into the dev image (`os/scripts/finalize-dev-image.py`), in
-/// the sealed `/usr`.
+/// Written only into the dev image (`os/scripts/finalize-dev-image.py`), in the sealed `/usr`.
 const IMAGE_FLAVOUR: &str = "/usr/lib/tilo/image-flavour";
 
-/// Whether apps launched here serve their AT-SPI tree read-only: always,
-/// except on the dev image, whose release gates drive apps over AT-SPI
-/// (`tools/atspi_external_client.py`). Nothing running on a release device
-/// can make its sealed `/usr` say `dev`.
+/// Whether apps launched here serve their AT-SPI tree read-only: always, except on the dev image, whose
+/// release gates drive apps over AT-SPI (`tools/atspi_external_client.py`).
 #[must_use]
 pub fn atspi_read_only() -> bool {
     atspi_read_only_on(std::fs::read(IMAGE_FLAVOUR).ok().as_deref())
@@ -190,24 +111,11 @@ pub fn atspi_read_only_on(flavour: Option<&[u8]>) -> bool {
     flavour.is_none_or(|flavour| flavour.trim_ascii() != b"dev")
 }
 
-/// Env-var override for the `xdg-dbus-proxy` binary path — used by the
-/// test suite (mock fixture) and installs that ship the binary
-/// somewhere non-standard.
-///
-/// Honoured only by developer builds (see [`crate::dev_env`]): the proxy is
-/// what stands between an app and the unfiltered session bus.
+/// Env-var override for the `xdg-dbus-proxy` binary path — used by the test suite (mock fixture) and
+/// installs that ship the binary somewhere non-standard.
 pub const PROXY_BIN_ENV: &str = crate::dev_env::DBUS_PROXY_BIN_ENV;
 
-/// Locate the `xdg-dbus-proxy` binary, `None` if nothing matches. Production
-/// then leaves D-Bus unavailable; it never falls back to binding the raw
-/// session bus into an untrusted sandbox.
-///
-/// Lookup order: `$TILO_LAUNCHER_DBUS_PROXY_BIN` (test/override, developer
-/// builds only; when set it is authoritative, and an invalid or empty path
-/// leaves D-Bus unavailable rather than falling back),
-/// `xdg-dbus-proxy` on `$PATH`,
-/// `/usr/libexec/flatpak-xdg-utils/xdg-dbus-proxy` (Fedora), then
-/// `/usr/lib/flatpak-xdg-utils/xdg-dbus-proxy` (some Debian derivatives).
+/// Locate the `xdg-dbus-proxy` binary, `None` if nothing matches.
 pub fn find_proxy_binary() -> Option<PathBuf> {
     if let Some(bin) = package_store::dev_env::dev_override(PROXY_BIN_ENV) {
         let p = PathBuf::from(bin);
@@ -233,31 +141,28 @@ pub fn find_proxy_binary() -> Option<PathBuf> {
     None
 }
 
-/// The session's runtime directory, where a launcher's host-side sockets
-/// live: the one the session that launches it runs in (`XDG_RUNTIME_DIR`),
-/// so a nested session's proxies stay in its own directory and never in the
-/// host desktop's, whose launchers number their sockets by pid too.
+/// The session's runtime directory, where a launcher's host-side sockets live: the one the session that
+/// launches it runs in (`XDG_RUNTIME_DIR`), so a nested session's proxies stay in its own directory and
+/// never in the host desktop's, whose launchers number their sockets by pid too.
 #[must_use]
 pub fn session_runtime_dir() -> PathBuf {
     tilo_paths::xdg::runtime_dir_or_default()
 }
 
-/// Host-side path where the per-launcher proxy listens:
-/// `<runtime>/tilo/dbus-proxy/<pid>.sock`, in the session's runtime
-/// directory ([`session_runtime_dir`]). The `<pid>` disambiguates
-/// concurrent launches.
+/// Host-side path where the per-launcher proxy listens: `<runtime>/tilo/dbus-proxy/<pid>.sock`, in the
+/// session's runtime directory ([`session_runtime_dir`]).
 pub fn proxy_socket_path(runtime: &Path, launcher_pid: u32) -> PathBuf {
     runtime.join(format!("tilo/dbus-proxy/{launcher_pid}.sock"))
 }
 
-/// Host-side path of the per-launcher system-bus proxy socket, for the
-/// packages [`crate::system_authority`] grants it.
+/// Host-side path of the per-launcher system-bus proxy socket, for the packages
+/// [`crate::system_authority`] grants it.
 pub fn system_proxy_socket_path(runtime: &Path, launcher_pid: u32) -> PathBuf {
     runtime.join(format!("tilo/dbus-proxy/{launcher_pid}-system.sock"))
 }
 
-/// In-sandbox bus path, matching Flatpak's convention: the app looks
-/// for `$DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus`.
+/// In-sandbox bus path, matching Flatpak's convention: the app looks for
+/// `$DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus`.
 pub fn sandbox_bus_path(uid: u32) -> PathBuf {
     PathBuf::from(format!("/run/user/{uid}/bus"))
 }
@@ -282,9 +187,8 @@ pub fn sandbox_atspi_env(uid: u32) -> String {
     format!("unix:path=/run/user/{uid}/at-spi/bus")
 }
 
-/// The host AT-SPI bus address: `AT_SPI_BUS_ADDRESS` when the session set it,
-/// else `org.a11y.Bus.GetAddress` on the session bus. `None` when the session
-/// runs no accessibility bus.
+/// The host AT-SPI bus address: `AT_SPI_BUS_ADDRESS` when the session set it, else
+/// `org.a11y.Bus.GetAddress` on the session bus.
 pub fn host_atspi_address(session_bus: &str) -> Option<String> {
     if let Ok(address) = std::env::var("AT_SPI_BUS_ADDRESS")
         && !address.is_empty()
@@ -327,21 +231,6 @@ pub enum ProxyError {
 }
 
 /// Spawn `xdg-dbus-proxy` with the standard filter set.
-///
-/// `bus_addr` is the upstream address (`unix:path=...` or
-/// `unix:abstract=...`, the proxy resolves both); `socket_path` is
-/// where the proxy should listen.
-///
-/// Returns a [`DBusProxyGuard`] whose `Drop` `SIGTERM`s the child and
-/// unlinks the socket. Callers should keep it alive until the sandbox
-/// exits.
-///
-/// # Errors
-///
-/// Returns [`ProxyError::Mkdir`] if the socket's parent directory can't be
-/// created, [`ProxyError::Spawn`] if `binary` can't be spawned, or
-/// [`ProxyError::NotReady`] if its listener is not reported ready within
-/// [`PROXY_READY_TIMEOUT`].
 pub fn spawn_dbus_proxy(
     binary: &Path,
     bus_addr: &str,
@@ -350,12 +239,8 @@ pub fn spawn_dbus_proxy(
     spawn_dbus_proxy_within(binary, bus_addr, socket_path, PROXY_READY_TIMEOUT)
 }
 
-/// [`spawn_dbus_proxy`] with an explicit filter (one of this module's
-/// allowlists, never a caller-built one).
-///
-/// # Errors
-///
-/// As [`spawn_dbus_proxy`].
+/// [`spawn_dbus_proxy`] with an explicit filter (one of this module's allowlists, never a caller-built
+/// one).
 pub fn spawn_filtered_proxy(
     binary: &Path,
     bus_addr: &str,
@@ -366,11 +251,6 @@ pub fn spawn_filtered_proxy(
 }
 
 /// [`spawn_filtered_proxy`], waiting up to `ready_within` for the listener.
-///
-/// # Errors
-///
-/// As [`spawn_filtered_proxy`], with [`ProxyError::NotReady`] after
-/// `ready_within`.
 pub fn spawn_filtered_proxy_within(
     binary: &Path,
     bus_addr: &str,
@@ -381,17 +261,10 @@ pub fn spawn_filtered_proxy_within(
     spawn_proxy(binary, bus_addr, socket_path, filter, ready_within)
 }
 
-/// Maximum wait for the proxy's listener readiness notification. A launch
-/// must not stall indefinitely on a helper that never comes up.
+/// Maximum wait for the proxy's listener readiness notification.
 pub const PROXY_READY_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// [`spawn_dbus_proxy`], waiting up to `ready_within` for the listener
-/// socket.
-///
-/// # Errors
-///
-/// As [`spawn_dbus_proxy`], with [`ProxyError::NotReady`] after
-/// `ready_within`.
+/// [`spawn_dbus_proxy`], waiting up to `ready_within` for the listener socket.
 pub fn spawn_dbus_proxy_within(
     binary: &Path,
     bus_addr: &str,
@@ -420,15 +293,12 @@ fn spawn_proxy(
             source,
         })?;
     }
-    // A stale socket from a previous run would make `bind()` fail with
-    // EADDRINUSE. Remove best-effort.
+    // A stale socket from a previous run would make `bind()` fail with EADDRINUSE.
     let _ = std::fs::remove_file(socket_path);
 
     let (ready_channel, child_channel) = UnixStream::pair().map_err(ProxyError::Spawn)?;
     let mut cmd = Command::new(binary);
-    // Upstream writes `x` after all listeners start and watches this channel
-    // for HUP. Keep our endpoint alive for the entire proxy lifetime. Passing
-    // the duplex endpoint as stdin preserves stdout/stderr for diagnostics.
+    // Upstream writes `x` after all listeners start and watches this channel for HUP.
     cmd.arg("--fd=0").arg(bus_addr).arg(socket_path);
     cmd.stdin(Stdio::from(OwnedFd::from(child_channel)));
     for arg in filter {
@@ -463,9 +333,7 @@ fn wait_for_ready(channel: &mut UnixStream, path: &Path, timeout: Duration) -> i
     ))
 }
 
-/// RAII wrapper around a spawned `xdg-dbus-proxy`. `Drop` `SIGTERM`s
-/// the child, waits briefly, and unlinks the socket. Idempotent —
-/// callers can call [`Self::terminate`] explicitly before drop.
+/// RAII wrapper around a spawned `xdg-dbus-proxy`.
 pub struct DBusProxyGuard {
     child: Option<Child>,
     socket_path: PathBuf,
@@ -473,26 +341,21 @@ pub struct DBusProxyGuard {
 }
 
 impl DBusProxyGuard {
-    /// Path of the socket the proxy is listening on. Bind this into
-    /// the sandbox at [`sandbox_bus_path`].
+    /// Path of the socket the proxy is listening on.
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
     }
 
-    /// PID of the proxy child, or `None` if already reaped — used by tests
-    /// to assert the process is gone after Drop.
+    /// PID of the proxy child, or `None` if already reaped — used by tests to assert the process is
+    /// gone after Drop.
     pub fn pid(&self) -> Option<u32> {
         self.child.as_ref().map(std::process::Child::id)
     }
 
-    /// SIGTERM the proxy, wait up to 500ms, then SIGKILL if it hasn't
-    /// exited. Unlinks the socket unconditionally; safe to call more than
-    /// once.
+    /// SIGTERM the proxy, wait up to 500ms, then SIGKILL if it hasn't exited.
     pub fn terminate(&mut self) {
         if let Some(mut child) = self.child.take() {
-            // SAFETY: `kill(2)` with SIGTERM on a live pid we own
-            // is well-defined. Sending to a reaped pid returns
-            // ESRCH which we ignore.
+            // SAFETY: `kill(2)` with SIGTERM on a live pid we own is well-defined.
             unsafe {
                 libc::kill(i32::try_from(child.id()).unwrap_or(i32::MAX), libc::SIGTERM);
             }
@@ -514,8 +377,8 @@ mod tests {
 
     #[test]
     fn filters_grant_exactly_the_listed_rules() {
-        // A portal-less graphical app: the bus daemon and the accessibility
-        // status questions, nothing else.
+        // A portal-less graphical app: the bus daemon and the accessibility status questions, nothing
+        // else.
         assert_eq!(
             session_filter_args(false, true, None),
             [
@@ -557,8 +420,8 @@ mod tests {
         );
         assert_eq!(media_player_name("so tilo"), None);
         assert_eq!(media_player_name(""), None);
-        // No rule anywhere grants a whole name on the accessibility side, and
-        // nothing else ever widens to ownership or to the raw bus.
+        // No rule anywhere grants a whole name on the accessibility side, and nothing else ever widens
+        // to ownership or to the raw bus.
         for arg in session_filter_args(true, true, None)
             .iter()
             .map(String::as_str)
@@ -570,8 +433,8 @@ mod tests {
                 "{arg}"
             );
         }
-        // The AT-SPI filter is Flatpak's: every rule is a call or broadcast to
-        // the registry at an exact object path.
+        // The AT-SPI filter is Flatpak's: every rule is a call or broadcast to the registry at an
+        // exact object path.
         assert_eq!(&ATSPI_FILTER_ARGS[..2], ["--filter", "--sloppy-names"]);
         assert_eq!(ATSPI_FILTER_ARGS.len(), 11);
         for rule in &ATSPI_FILTER_ARGS[2..] {
@@ -653,16 +516,13 @@ mod tests {
         }
     }
 
-    /// Mock proxy fixture: writes a marker to `argv[2]` (the socket path)
-    /// so callers waiting on socket existence see it, then becomes a
-    /// `sleep` that the guard's SIGTERM ends. Removing the marker is left
-    /// to the guard, which is what production relies on. Returns the path
-    /// to the mock script (marked executable).
+    /// Mock proxy fixture: writes a marker to `argv[2]` (the socket path) so callers waiting on socket
+    /// existence see it, then becomes a `sleep` that the guard's SIGTERM ends.
     fn write_mock_proxy(dir: &Path) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let script = dir.join("mock-xdg-dbus-proxy");
-        // Absolute paths for coreutils — bwrap-adjacent test envs sometimes
-        // have a minimal PATH lacking /usr/bin.
+        // Absolute paths for coreutils — bwrap-adjacent test envs sometimes have a minimal PATH
+        // lacking /usr/bin.
         std::fs::write(
             &script,
             r#"#!/bin/sh
@@ -735,8 +595,8 @@ exit 1
                 "proxy pid {pid} should be running"
             );
             guard.terminate();
-            // After terminate the socket should be gone and the pid should have
-            // been reaped (no zombie).
+            // After terminate the socket should be gone and the pid should have been reaped (no
+            // zombie).
             assert!(!socket.exists(), "socket should be removed on terminate");
         }
         {
@@ -750,8 +610,8 @@ exit 1
             };
             // Drop signals and waits for the proxy before it returns.
             assert!(!socket.exists(), "socket should be removed on drop");
-            // /proc/<pid> disappears once the kernel reaps the exited process; poll
-            // briefly to avoid a schedule race.
+            // /proc/<pid> disappears once the kernel reaps the exited process; poll briefly to avoid a
+            // schedule race.
             let deadline = tilo_test_env::hang_deadline();
             while PathBuf::from(format!("/proc/{pid}")).exists()
                 && std::time::Instant::now() < deadline
@@ -765,8 +625,8 @@ exit 1
         }
     }
 
-    // The proxy binary is located through `PROXY_BIN_ENV` and `PATH`, which
-    // is the interface these two pin.
+    // The proxy binary is located through `PROXY_BIN_ENV` and `PATH`, which is the interface these two
+    // pin.
 
     #[test]
     fn find_proxy_binary_does_not_fall_back_past_an_invalid_override() {

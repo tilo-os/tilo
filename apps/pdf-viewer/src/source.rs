@@ -1,15 +1,7 @@
-//! Loading real PDF files — and writing markup back into them.
-//!
-//! Every page is rendered on demand by Tilo's PDF engine ([`tilo_pdf`]) to an
-//! RGBA bitmap at the current zoom and painted directly, so the viewer shows
-//! the document exactly as authored (fonts, figures, vector art and all). The
-//! engine parses documents in its sandboxed helper process; this module never
-//! touches PDF bytes beyond handing them over. Bitmaps are cached per page +
-//! zoom bucket so scrolling and panning never re-render. The backend also
-//! fetches the engine's analysed **text layer** ([`crate::text_layer`]) per
-//! page, so search finds text hits and text can be selected, and it can
-//! **export** the reader's markup as real PDF annotations into a saved copy
-//! reopenable in any viewer.
+//! Loading real PDF files and writing markup back into them. Pages are rendered on
+//! demand by Tilo's PDF engine ([`tilo_pdf`]) in a sandboxed helper process and cached
+//! per page and zoom bucket; the engine's text layer feeds search and selection, and
+//! the reader's markup is exported as standard PDF annotations.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -17,8 +9,6 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 use ui::time::Instant;
 
-/// Emit a per-stage open timing line to stderr when `TILO_PDF_PROFILE` is set.
-/// Zero cost when the env var is unset (the format args are only built then).
 #[inline]
 fn prof(stage: &str, since: Instant) {
     if std::env::var_os("TILO_PDF_PROFILE").is_some() {
@@ -34,18 +24,14 @@ fn profiling() -> bool {
 
 #[cfg(test)]
 thread_local! {
-    /// Calls into the PDF engine (rasterising, reading text or links) made
-    /// on this thread: a test counts the ones a frame makes on the UI thread.
     static ENGINE_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Count a call into the PDF engine on this thread (tests only).
 fn note_engine_call() {
     #[cfg(test)]
     ENGINE_CALLS.with(|calls| calls.set(calls.get() + 1));
 }
 
-/// How many calls into the PDF engine this thread has made.
 #[cfg(test)]
 pub(crate) fn engine_calls_on_this_thread() -> u64 {
     ENGINE_CALLS.with(std::cell::Cell::get)
@@ -64,25 +50,12 @@ use crate::model::{
 use crate::text_layer::PageText;
 use ui::lock::MutexRecover as _;
 
-/// Opening is intentionally bounded before either PDF parser sees the bytes.
-/// PDFs can expand dramatically while parsing, but rejecting unexpectedly
-/// large inputs up front prevents a chooser selection (or a path-based action)
-/// from first allocating an arbitrary file in the UI process.
 pub const MAX_OPEN_BYTES: usize = 128 * 1024 * 1024;
-/// Import bytes are independently capped: imports are retained in the local
-/// content store and can otherwise multiply a reader's working set.
 pub const MAX_IMPORT_BYTES: usize = 64 * 1024 * 1024;
-/// A document with more pages is not practical to materialise as an
-/// interactive reader session; the cap also bounds the page-plan projection.
 const MAX_SOURCE_PAGES: usize = 2_048;
-/// PDF page boxes are supplied by an untrusted file. These bounds leave room
-/// for large-format drawings while excluding pathological raster dimensions.
 const MAX_PAGE_EDGE_POINTS: f64 = 144_000.0;
 const MAX_PAGE_AREA_POINTS: f64 = 2_000_000_000.0;
-/// A single page image is never allowed to consume more than this many pixels.
 const MAX_RASTER_PIXELS: f64 = 32.0 * 1024.0 * 1024.0;
-/// Keep document imagery responsive without letting a long read of a large
-/// file turn the process into an unbounded bitmap cache.
 const MAX_RASTER_CACHE_BYTES: usize = 192 * 1024 * 1024;
 
 fn read_file_bounded(path: &Path, limit: usize) -> anyhow::Result<Vec<u8>> {
@@ -123,10 +96,6 @@ fn inspect_import_for_store(
     Ok((hash, kind, sizes))
 }
 
-/// An exported document waiting for the UI to commit it. `temporary`
-/// identifies the prepared save; nothing is written until the commit, which
-/// replaces the destination atomically ([`tilo_files::blocking::save_document`]:
-/// a private sibling, flushed, renamed over the destination).
 struct PrivateSave {
     temporary: PathBuf,
     bytes: Vec<u8>,
@@ -160,16 +129,12 @@ fn valid_page_size(width: f64, height: f64) -> bool {
         && width * height <= MAX_PAGE_AREA_POINTS
 }
 
-/// A document loaded from disk plus the engine-backed rasteriser for it.
 pub struct LoadedDoc {
     pub doc: Document,
     pub raster: RasterBackend,
-    /// The file's display name (for the window chrome / status bar).
     pub name: String,
 }
 
-/// Load a PDF from `path` through the shared PDF engine. Pages the shared
-/// page plan imports are read from `content` by hash.
 pub fn open(path: &Path, content: &ContentStore) -> anyhow::Result<LoadedDoc> {
     let t = ui::time::now();
     let bytes = read_file_bounded(path, MAX_OPEN_BYTES)?;
@@ -225,9 +190,6 @@ fn open_bytes_at(path: &Path, bytes: &[u8], content: &ContentStore) -> anyhow::R
     })
 }
 
-/// One document open in the PDF engine backing some of the displayed pages.
-/// Source 0 is always the originally-opened file; imports (other PDFs, or
-/// images wrapped as a one-page document) are appended as further sources.
 struct Source {
     doc: tilo_pdf::Document,
     page_sizes: Vec<(f64, f64)>,
@@ -240,60 +202,32 @@ impl Source {
     }
 }
 
-/// A displayed page: which loaded [`Source`] it comes from and the page index
-/// within that source. The ordered list of these — the *page plan* — is the
-/// editable model: reordering, deleting, duplicating and importing pages all
-/// permute this vector, and a save exports the source pages in plan order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PageSlot {
     source: usize,
     page: usize,
 }
 
-/// Engine-backed implementation. It lives on the source worker thread, which
-/// serialises page work and keeps bitmap bookkeeping off the UI thread; the
-/// PDF itself is parsed in the engine's sandboxed helper process.
 pub struct RasterBackend {
     engine: tilo_pdf::Engine,
-    /// Loaded documents; index 0 is the original file.
     sources: Vec<Source>,
-    /// The ordered, editable list of displayed pages.
     plan: Vec<Option<PageSlot>>,
-    /// Dimensions supplied by the durable plan for a not-yet-downloaded page.
-    /// This lets UI layout remain stable while the content store fetches it.
     pending_sizes: Vec<Option<(f64, f64)>>,
-    /// Recorded rotation (degrees) of each displayed page occurrence.
     rotations: Vec<i32>,
-    /// Rendered bitmaps keyed by (source, source-page, target-width bucket,
-    /// rotation).
     cache: HashMap<RasterKey, PenikoImage>,
-    /// Byte size and recency bookkeeping for the bounded raster cache.
     cache_sizes: HashMap<RasterKey, usize>,
     cache_lru: VecDeque<RasterKey>,
     cache_bytes: usize,
-    /// Per-source-page extracted text layer, filled lazily on first request.
     text_cache: HashMap<(usize, usize), Arc<PageText>>,
-    /// Rendered tiles of zoomed pages, per zoom level (see [`crate::tiles`]).
     tiles: crate::tiles::TileCache<TileKey>,
-    /// Whether the original document's own markup is drawn into its page
-    /// images. Off once the record has taken that markup over (see
-    /// [`crate::adopt`]): the reader then draws it from the records.
     reader_markup: bool,
-    /// Per-source-page link areas, filled lazily on first request.
     link_cache: HashMap<(usize, usize), Arc<Vec<PageLink>>>,
-    /// The opened bytes, as the window's content store keeps them: their
-    /// hash, and the reference that opens them.
     source_bytes: Bytes,
-    /// Where imported pages' bytes live, addressed by the hash in the plan.
     content: ContentStore,
 }
 
-/// A cached bitmap's identity: source, source page, width bucket, rotation.
 type RasterKey = (usize, usize, u32, i32);
 
-/// A cached tile's identity: source, source page, zoom level, rotation,
-/// column and row. Keyed by source page like whole-page bitmaps, so a
-/// duplicated or moved page reuses its tiles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct TileKey {
     source: usize,
@@ -310,7 +244,6 @@ impl crate::tiles::LevelKey for TileKey {
     }
 }
 
-/// A page size after an added rotation.
 fn rotated_size((w, h): (f64, f64), degrees: i32) -> (f64, f64) {
     if degrees.rem_euclid(180) == 90 {
         (h, w)
@@ -319,7 +252,6 @@ fn rotated_size((w, h): (f64, f64), degrees: i32) -> (f64, f64) {
     }
 }
 
-/// The process-wide PDF engine.
 fn engine() -> anyhow::Result<tilo_pdf::Engine> {
     tilo_pdf::Engine::shared().map_err(|e| anyhow!("{e}"))
 }
@@ -337,10 +269,8 @@ fn page_sizes_of(doc: &tilo_pdf::Document) -> Option<Vec<(f64, f64)>> {
 impl RasterBackend {
     const MAX_IMPORT_PAGES: usize = 512;
 
-    /// Validate an import before it is offered to the content store or turned
-    /// into an action. This is deliberately separate from materialisation: it
-    /// never mutates the live page plan. Images are decoded inside the engine,
-    /// never in this process.
+    /// Validate an import before it reaches the content store or an action: it never
+    /// touches the live page plan, and images are decoded inside the engine.
     pub fn inspect_import(&self, bytes: &[u8]) -> anyhow::Result<(String, Vec<(f64, f64)>)> {
         let (kind, doc) = if bytes.starts_with(b"%PDF-") {
             let doc = self
@@ -397,12 +327,6 @@ impl RasterBackend {
 
     fn open(bytes: &[u8], content: ContentStore) -> anyhow::Result<Self> {
         let engine = engine()?;
-        // The document is an immutable blob: keep the bytes in the window's
-        // content store, sealed as the record's content is, so the markup
-        // record can pin exactly what it annotates. A store that refuses
-        // (size limits) still leaves the bytes' hash as the identity.
-        // Kept as a blob, however small, so the record names a reference
-        // the store answers for.
         let source_bytes = match content.put(bytes) {
             Ok(reference) => Bytes::kept_as(bytes, &reference),
             Err(_) => Bytes::of(bytes),
@@ -441,13 +365,10 @@ impl RasterBackend {
         })
     }
 
-    /// The opened bytes, as the window's content store keeps them.
     pub fn source_bytes(&self) -> &Bytes {
         &self.source_bytes
     }
 
-    /// The opened document's form fields, their widgets mapped to displayed
-    /// pages of the original plan.
     pub fn form_fields(&self) -> Vec<tilo_pdf::FormField> {
         self.sources
             .first()
@@ -455,9 +376,6 @@ impl RasterBackend {
             .unwrap_or_default()
     }
 
-    /// Draw (or leave out) the opened document's own markup in its page
-    /// images. Changing it drops every cached image, which showed the other
-    /// choice.
     pub fn set_reader_markup(&mut self, visible: bool) {
         if self.reader_markup == visible {
             return;
@@ -470,13 +388,10 @@ impl RasterBackend {
         self.tiles = crate::tiles::TileCache::new(crate::tiles::MAX_TILE_CACHE_BYTES);
     }
 
-    /// Whether page images include the document's own markup.
     pub fn reader_markup(&self) -> bool {
         self.reader_markup
     }
 
-    /// The markup and form values already in the opened document, for the
-    /// record to take over.
     pub fn existing(&self) -> anyhow::Result<crate::adopt::Existing> {
         let source = self
             .sources
@@ -505,13 +420,10 @@ impl RasterBackend {
         })
     }
 
-    /// Number of displayed pages (the length of the editable page plan).
     pub fn page_count(&self) -> usize {
         self.plan.len()
     }
 
-    /// Hydrate a content-addressed imported source on demand. A miss is not an
-    /// error: the content store fetches it and the next sync/render retries.
     fn imported_source(&mut self, imported: &ImportedPage) -> Option<usize> {
         if let Some(index) = self
             .sources
@@ -520,7 +432,6 @@ impl RasterBackend {
         {
             return Some(index);
         }
-        // `read` verifies the bytes against the hash that named them.
         let bytes = self.content.read(&imported.hash)?;
         let mut source = if imported.kind == "pdf" {
             Self::load_source(&self.engine, &bytes)?
@@ -533,9 +444,6 @@ impl RasterBackend {
         Some(index)
     }
 
-    /// Materialise a shared plan. Imported payloads may be unavailable on this
-    /// peer; their occurrence remains in `plan` as `None` rather than being
-    /// silently replaced by an original page.
     pub fn reconcile_page_plan(&mut self, entries: &[PagePlanEntry]) -> bool {
         let source_len = self
             .sources
@@ -581,8 +489,6 @@ impl RasterBackend {
         true
     }
 
-    /// The source [`Source`] and source-page index backing displayed page
-    /// `display_idx`.
     fn slot(&self, display_idx: usize) -> Option<PageSlot> {
         self.plan.get(display_idx).copied().flatten()
     }
@@ -596,8 +502,6 @@ impl RasterBackend {
             .unwrap_or((612.0, 792.0))
     }
 
-    /// Size of displayed page `display_idx`, in PDF points, with its recorded
-    /// rotation applied.
     pub fn page_size(&self, display_idx: usize) -> (f64, f64) {
         let size = self
             .slot(display_idx)
@@ -607,19 +511,15 @@ impl RasterBackend {
         rotated_size(size, self.page_rotation(display_idx))
     }
 
-    /// The source page's own geometry for displayed page `display_idx` (its
-    /// `/Rotate`, not the occurrence's recorded rotation).
     pub fn page_geometry(&self, display_idx: usize) -> Option<tilo_pdf::PageGeometry> {
         let slot = self.slot(display_idx)?;
         self.sources.get(slot.source)?.geometry(slot.page)
     }
 
-    /// The recorded rotation (degrees) of displayed page `display_idx`.
     pub fn page_rotation(&self, display_idx: usize) -> i32 {
         self.rotations.get(display_idx).copied().unwrap_or(0)
     }
 
-    /// Own geometry and recorded rotation of every displayed page.
     pub fn page_layout(&self) -> (Vec<Option<tilo_pdf::PageGeometry>>, Vec<i32>) {
         (
             (0..self.page_count())
@@ -643,8 +543,6 @@ impl RasterBackend {
         )
     }
 
-    /// The document outline, depth-first, as the reader's two-level list.
-    /// Every entry navigates to its page.
     fn outline(&self) -> Vec<OutlineItem> {
         let Some(src) = self.sources.first() else {
             return Vec::new();
@@ -667,8 +565,6 @@ impl RasterBackend {
             .collect()
     }
 
-    /// The extracted text layer for displayed page `display_idx`, cached. Empty
-    /// when the page has no extractable text (e.g. a scanned image).
     pub fn page_text(&mut self, display_idx: usize) -> Arc<PageText> {
         let Some(slot) = self.slot(display_idx) else {
             return Arc::new(PageText::default());
@@ -682,10 +578,6 @@ impl RasterBackend {
         pt
     }
 
-    /// The link areas on displayed page `display_idx`, cached per source
-    /// page. Rectangles and destination points are in the page's display
-    /// space (the text layer's space); the reader maps them into card space.
-    /// A page whose links cannot be read has none.
     pub fn page_links(&mut self, display_idx: usize) -> Arc<Vec<PageLink>> {
         let Some(slot) = self.slot(display_idx) else {
             return Arc::default();
@@ -712,9 +604,6 @@ impl RasterBackend {
         links
     }
 
-    /// The engine's analysed text layer for a source page, as the reader's
-    /// page text. A page whose text is too large to analyse honestly yields
-    /// `None` (reported as unavailable, never as a truncated layer).
     fn extract_page_text(&self, slot: PageSlot) -> Option<PageText> {
         note_engine_call();
         let layer = self.sources.get(slot.source)?.doc.text(slot.page).ok()?;
@@ -724,8 +613,6 @@ impl RasterBackend {
         Some(PageText::from_layer(layer))
     }
 
-    /// The width bucket `render` snaps `target_w` to. Exposed so the reader
-    /// keys the worker's results with the exact bucket `render` uses.
     pub(crate) fn bucket_for(target_w: u32) -> u32 {
         tilo_page_raster::bucket_for(target_w)
     }
@@ -755,9 +642,6 @@ impl RasterBackend {
         let Some(bytes) = bytes else {
             return;
         };
-        // Rendering is already per-page bounded, but keep this guard local to
-        // the cache too so a backend change cannot create one uncacheable giant
-        // allocation followed by eviction churn.
         if bytes > MAX_RASTER_CACHE_BYTES {
             return;
         }
@@ -777,12 +661,9 @@ impl RasterBackend {
         self.cache_lru.push_back(key);
     }
 
-    /// Rasterise displayed page `display_idx` at roughly `target_w` device
-    /// pixels wide, returning a cached bitmap. Widths are snapped to a bucket so
-    /// a small zoom nudge reuses the existing render instead of re-rasterising.
-    /// The cache is keyed by source page, so a duplicated or reordered page
-    /// never re-rasterises. The bitmap's pixels are the engine's shared
-    /// buffer, wrapped without a copy.
+    /// Rasterise a displayed page `target_w` device pixels wide. Widths snap to a
+    /// bucket, so a small zoom nudge reuses the render; the cache is keyed by source
+    /// page, so a duplicated or reordered page never re-rasterises.
     pub fn render(&mut self, display_idx: usize, target_w: u32) -> Option<PenikoImage> {
         let slot = self.slot(display_idx)?;
         let rotation = self.page_rotation(display_idx);
@@ -826,11 +707,6 @@ impl RasterBackend {
         Some(img)
     }
 
-    /// Render tile `(col, row)` of displayed page `display_idx` at zoom
-    /// `level` (see [`crate::tiles`]), with the page's recorded rotation,
-    /// returning a cached tile when this level already has it. Unlike
-    /// [`Self::render`] there is no page-size cap: every tile is bounded by
-    /// the grid, however large the page is at this level.
     pub fn render_tile(
         &mut self,
         display_idx: usize,
@@ -897,25 +773,15 @@ impl RasterBackend {
         Some(image)
     }
 
-    /// Width bucket adjusted to keep the decoded raster within the per-page
-    /// pixel budget. A malformed, needle-shaped media box therefore produces
-    /// an honest unavailable-page state instead of asking the engine for a
-    /// multi-gigabyte bitmap.
     fn bucket_for_page(target_w: u32, (width, height): (f64, f64)) -> Option<u32> {
         if !valid_page_size(width, height) {
             return None;
         }
         let ratio = height / width;
         let max_width = (MAX_RASTER_PIXELS / ratio).sqrt().floor() as u32;
-        // The engine does not produce useful document imagery below this
-        // width; decline instead of silently returning a blurry or unsafe
-        // bitmap.
         (max_width >= 24).then(|| Self::bucket_for(target_w).min(max_width))
     }
 
-    /// The annotations the engine reads back from displayed page
-    /// `display_idx` of the backing document. Used by the save round-trip
-    /// tests to check that exported markup lands as real PDF annotations.
     #[cfg(test)]
     pub fn page_annotations(&self, display_idx: usize) -> Vec<tilo_pdf::AnnotationInfo> {
         self.slot(display_idx)
@@ -929,18 +795,9 @@ impl RasterBackend {
             .unwrap_or_default()
     }
 
-    /// Export the edited document — the pages in the current plan order,
-    /// including imported PDF/image pages and each page's recorded rotation —
-    /// with the reader's markup written as standard PDF annotations and the
-    /// recorded form values as the form's field values, and write it to
-    /// `out`. Highlights, underlines and strike-outs become text-markup
-    /// annotations, ink becomes ink annotations, sticky notes become text
-    /// annotations carrying their comment thread, and signatures become
-    /// stamps whose appearance is the signer's real ink (or typed name) plus
-    /// the signer name and date. The original bytes are kept as they are and
-    /// the edits appended as an incremental update; the same markup on the
-    /// same bytes always exports to the same file.
-    ///
+    /// Write the document as `out`: the pages in plan order, the reader's markup as
+    /// standard PDF annotations and the form values as field values, appended to the
+    /// original bytes so the same markup always exports to the same file.
     /// `annotations` and `signatures` must be in PDF user space.
     pub fn save_annotated(&self, markup: &ExportMarkup, out: &Path) -> anyhow::Result<()> {
         let bytes = self.export_bytes(markup)?;
@@ -953,7 +810,6 @@ impl RasterBackend {
     /// The exported PDF bytes for `markup` (see [`Self::save_annotated`]).
     ///
     /// # Errors
-    ///
     /// As [`Self::save_annotated`], without the write.
     pub fn export_bytes(&self, markup: &ExportMarkup) -> anyhow::Result<Vec<u8>> {
         let edits = self.edits_for(markup)?;
@@ -968,7 +824,6 @@ impl RasterBackend {
             .map_err(|e| anyhow!("exporting the PDF: {e}"))
     }
 
-    /// The engine edits for the current plan and markup.
     #[allow(
         clippy::too_many_lines,
         reason = "one pass from the records to the engine's edits, page by page"
@@ -978,8 +833,6 @@ impl RasterBackend {
         for (dest, slot) in self.plan.iter().enumerate() {
             let slot = slot
                 .ok_or_else(|| anyhow!("page {} is still awaiting imported content", dest + 1))?;
-            // The occurrence that keeps an original page's own markup is the
-            // original one; duplicates copy page content only.
             let primary = slot.source != 0
                 || markup
                     .page_ids
@@ -1012,9 +865,6 @@ impl RasterBackend {
         let rect = |r: &PtRect| {
             tilo_pdf::Rect::from_corners(point((r.x, r.y)), point((r.x + r.w, r.y + r.h)))
         };
-        // Threads: every comment pinned to an annotation, oldest first. The
-        // first comment's body is the annotation's text; its replies, and
-        // any later comment, are written as replies to it.
         let mut threads: HashMap<&str, Vec<&Thread>> = HashMap::new();
         for thread in &markup.comments {
             if let Some(anno) = thread.pinned() {
@@ -1023,8 +873,6 @@ impl RasterBackend {
         }
         let adopted: HashMap<&str, &crate::adopt::AdoptedEntry> =
             markup.adopted.iter().map(|e| (e.id.as_str(), e)).collect();
-        // A taken-over thread whose record still says what the original
-        // says keeps its original objects.
         let unchanged: HashSet<&str> = markup
             .annotations
             .iter()
@@ -1054,8 +902,6 @@ impl RasterBackend {
                 })
             })
             .collect();
-        // What the PDF itself should call a record: its original `/NM` when
-        // it was taken over from the file, otherwise the record id.
         let pdf_name = |id: &str| {
             adopted
                 .get(id)
@@ -1154,7 +1000,6 @@ impl RasterBackend {
                     in_reply_to: None,
                     reply_type: tilo_pdf::ReplyType::Reply,
                 });
-                // Replies, as reply annotations anchored where the thread is.
                 let mut replies: Vec<(&str, &str, &str)> = Vec::new();
                 if let Some(first) = first {
                     replies.extend(
@@ -1192,7 +1037,6 @@ impl RasterBackend {
                 edits.annotations.push(signature_stamp(idx, s));
             }
         }
-        // Values the file already holds are left as they are.
         let in_file: HashMap<String, FormEntry> = self
             .sources
             .first()
@@ -1219,22 +1063,16 @@ impl RasterBackend {
     }
 }
 
-/// Everything an export writes on top of the page plan: markup in PDF user
-/// space, the comment threads (written as the annotation's text and reply
-/// annotations), recorded form values, and where taken-over markup came
-/// from in the source bytes.
 #[derive(Clone, Debug, Default)]
 pub struct ExportMarkup {
     pub annotations: Vec<Annotation>,
     pub comments: Vec<Thread>,
     pub signatures: Vec<Signature>,
     pub form_values: Vec<(String, FormEntry)>,
-    /// The durable occurrence id of each displayed page, in order.
     pub page_ids: Vec<String>,
     pub adopted: Vec<crate::adopt::AdoptedEntry>,
 }
 
-/// A PDF date (`D:YYYYMMDDHHmmSSZ`) for unix milliseconds; empty for 0.
 fn pdf_date(ms: i64) -> String {
     if ms <= 0 {
         return String::new();
@@ -1250,12 +1088,8 @@ fn pdf_date(ms: i64) -> String {
     )
 }
 
-/// A signature (its box in PDF user space) as a stamp: its real ink (drawn
-/// strokes, or the typed name), a baseline, and the signer name and date as
-/// text, laid out top-down inside the box.
 fn signature_stamp(page: usize, s: &Signature) -> tilo_pdf::NewAnnotation {
     let r = &s.rect;
-    // Local layout coordinates run down from the box's top-left corner.
     let top = r.y + r.h;
     let at = |u: f64, v: f64| tilo_pdf::Point::new((r.x + u) as f32, (top - v) as f32);
     let area = (r.w * 0.06, r.h * 0.10, r.w * 0.88, r.h * 0.46);
@@ -1328,20 +1162,12 @@ fn signature_stamp(page: usize, s: &Signature) -> tilo_pdf::NewAnnotation {
     }
 }
 
-/// A request to open a path on the PDF owner worker.
-///
-/// `id` is monotonically increasing per handle and also becomes the opened
-/// raster document id. A newer open supersedes an open still waiting in the
-/// bounded queue; callers can therefore ignore an event whose id is no longer
-/// their current request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenRequest {
     pub id: u64,
     pub path: PathBuf,
 }
 
-/// A request for one page image. `target_width` is bucketed by the worker, so
-/// repeated requests for nearby widths coalesce before they can fill its queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderRequest {
     pub document_id: u64,
@@ -1349,7 +1175,6 @@ pub struct RenderRequest {
     pub target_width: u32,
 }
 
-/// A request for one tile of a zoomed page (see [`crate::tiles`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TileRequest {
     pub document_id: u64,
@@ -1360,7 +1185,6 @@ pub struct TileRequest {
 }
 
 impl TileRequest {
-    /// The tile this asks for, as the reader holds it.
     pub fn key(&self) -> crate::tiles::TileKey {
         crate::tiles::TileKey {
             page: self.page,
@@ -1371,67 +1195,47 @@ impl TileRequest {
     }
 }
 
-/// The tiles a viewer wants now, most important first. A batch *replaces*
-/// the viewer's queued tiles: after a scroll or zoom, tiles that left the
-/// viewport are never rendered ahead of the ones that entered it.
+/// The tiles a viewer wants now, most important first; a batch replaces the queued
+/// ones, so a tile that left the viewport is never rendered ahead of one that entered.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TileBatch {
     pub document_id: u64,
     pub tiles: Vec<TileRequest>,
 }
 
-/// The whole-page bitmaps a viewer wants now (pages on screen, the pages
-/// the scroll is heading into, rail thumbnails), most important first. Like
-/// a [`TileBatch`] it *replaces* the viewer's queued page renders, so a page
-/// that scrolled past is never rendered ahead of the one now on screen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RenderBatch {
     pub document_id: u64,
     pub renders: Vec<RenderRequest>,
 }
 
-/// A request for one page's selectable text layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TextRequest {
     pub document_id: u64,
     pub page: usize,
 }
 
-/// The text layers a viewer would like ready before anyone reaches for
-/// them (the page under the pointer, the pages a selection spans), most
-/// important first. Like a [`RenderBatch`] it replaces the viewer's
-/// previous one, and it is served after every page render, tile and asked
-/// text, so reading ahead never delays pixels.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextBatch {
     pub document_id: u64,
     pub pages: Vec<usize>,
 }
 
-/// A request for one page's link areas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LinksRequest {
     pub document_id: u64,
     pub page: usize,
 }
 
-/// Where a link on a page leads.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LinkTarget {
-    /// Page `page` (0-based) of the document the link's page comes from,
-    /// optionally at a point in that page's display space.
     Page { page: usize, at: Option<(f64, f64)> },
-    /// An external URI.
     Uri(String),
-    /// Another file, by the path the PDF names.
     File(String),
 }
 
-/// One clickable link area on a page.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PageLink {
-    /// The link area, in the page's display space until the reader maps it
-    /// into card space.
     pub rect: PtRect,
     pub target: LinkTarget,
 }
@@ -1465,42 +1269,30 @@ impl PageLink {
     }
 }
 
-/// Adopt a collaboratively-authored page plan on the owner thread.  The plan
-/// carries only durable identifiers/content hashes, never `PDFium` handles.
+/// Adopt a collaboratively authored page plan on the owner thread: durable ids and
+/// content hashes, never an engine handle.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReconcileRequest {
     pub document_id: u64,
     pub plan: Vec<PagePlanEntry>,
 }
 
-/// A fully-owned save payload. It carries durable markup and a destination,
-/// never an owner-thread `PDFium` handle.
+/// A save payload of durable markup and a destination, never an owner-thread handle.
 #[derive(Clone, Debug)]
 pub struct SaveRequest {
-    /// A non-reusable operation id. It makes cancellation and completion
-    /// exact even when a user selects the same destination twice.
     pub id: u64,
     pub document_id: u64,
-    /// The markup to export, in PDF user space.
     pub markup: ExportMarkup,
     pub path: PathBuf,
-    /// Hand the exported bytes back ([`RasterEvent::Exported`]) instead of
-    /// writing `path`: for a destination the host keeps (a browser page's
-    /// Save dialog or download), where `path` only names the file.
     pub deliver: bool,
 }
 
 impl PartialEq for SaveRequest {
     fn eq(&self, other: &Self) -> bool {
-        // The protocol id is globally non-reusable; document/path are retained
-        // as defensive checks when a stale event is observed during teardown.
         self.id == other.id && self.document_id == other.document_id && self.path == other.path
     }
 }
 
-/// A bounded import inspection. The worker owns reading and decoding the
-/// untrusted file; the UI only receives the small, durable result needed to
-/// dispatch the collaborative page-plan action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImportRequest {
     pub id: u64,
@@ -1510,89 +1302,58 @@ pub struct ImportRequest {
     pub after: Option<String>,
 }
 
-/// Work accepted by the dedicated PDF owner thread.
-///
-/// The public enum makes the protocol explicit. [`RasterHandle`] exposes
-/// typed submission helpers so callers normally do not need to construct it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RasterCommand {
     OpenPath(OpenRequest),
-    /// Make a successfully-opened source the session's active document and
-    /// release every older source only after the UI accepted its completion.
     Activate {
         document_id: u64,
     },
-    /// Release an unaccepted/replaced source. This is also how cancellation
-    /// preserves the still-readable predecessor while a native parse finishes.
     Discard {
         document_id: u64,
     },
-    /// Read the markup and form values already in the document, for the
-    /// record to take over.
     ReadExisting {
         document_id: u64,
     },
-    /// Draw (or leave out) the document's own markup in page images.
     SetReaderMarkup {
         document_id: u64,
         visible: bool,
     },
     Render(RenderRequest),
-    /// Replace the session's queued view renders with this batch.
     Renders(RenderBatch),
-    /// One page render taken off a batch by the worker.
     ViewRender(RenderRequest),
-    /// Replace the session's queued tiles with this batch.
     Tiles(TileBatch),
-    /// One tile taken off a batch by the worker.
     Tile(TileRequest),
     Text(TextRequest),
-    /// Replace the session's queued read-ahead text layers with this batch.
     Texts(TextBatch),
-    /// One read-ahead text layer taken off a batch by the worker.
     ViewText(TextRequest),
     Links(LinksRequest),
     Reconcile(ReconcileRequest),
     Save(SaveRequest),
     Import(ImportRequest),
-    /// Publish a fully-written private temporary file to the user-selected
-    /// destination.  This separate phase is what makes cancellation exact.
     CommitSave {
         request: SaveRequest,
         temporary: PathBuf,
     },
-    /// Forget a queued/prepared save without ever touching its destination.
     CancelSave {
         request: SaveRequest,
     },
     Shutdown,
 }
 
-/// Immutable raster-side facts projected to the UI after an open succeeds.
-/// No engine handles are exposed here, so this value is `Send`.
 #[derive(Clone, Debug)]
 pub struct RasterDocument {
     pub id: u64,
-    /// Displayed page sizes, recorded rotation applied.
     pub page_sizes: Vec<(f64, f64)>,
-    /// Each displayed page's own geometry (`None` while its bytes are
-    /// unavailable).
     pub geometries: Vec<Option<tilo_pdf::PageGeometry>>,
-    /// Each displayed page's recorded rotation, in degrees.
     pub rotations: Vec<i32>,
     pub form_fields: Vec<tilo_pdf::FormField>,
-    /// The opened bytes, as the window's content store keeps them.
     pub source_bytes: Bytes,
 }
 
-/// Results delivered back to the UI by [`RasterHandle::drain_events`].
-///
-/// Images and text layers are ordinary owned UI data. In particular, this enum
-/// never contains an engine document handle.
+/// Results delivered to the UI by [`RasterHandle::drain_events`]: owned images and
+/// text layers, never an engine document handle.
 #[derive(Clone, Debug)]
 pub enum RasterEvent {
-    /// Bounded result storage discarded paint work. Retry any outstanding
-    /// page requests after consuming the results that are still available.
     VisualWorkEvicted,
     Opened {
         request: OpenRequest,
@@ -1604,8 +1365,6 @@ pub enum RasterEvent {
         request: OpenRequest,
         error: String,
     },
-    /// A queued open was replaced by a newer user selection before the worker
-    /// began parsing it. Unlike paint work, accepted opens are always settled.
     OpenSuperseded {
         request: OpenRequest,
     },
@@ -1667,8 +1426,6 @@ pub enum RasterEvent {
         document_id: u64,
         error: String,
     },
-    /// The private temporary file is ready. The UI must explicitly commit it
-    /// after confirming that the originating action is still current.
     SavePrepared {
         request: SaveRequest,
         temporary: PathBuf,
@@ -1676,8 +1433,6 @@ pub enum RasterEvent {
     Saved {
         request: SaveRequest,
     },
-    /// The exported document for a save that delivers its bytes
-    /// ([`SaveRequest::deliver`]); the UI writes them where the host chose.
     Exported {
         request: SaveRequest,
         bytes: Vec<u8>,
@@ -1688,7 +1443,6 @@ pub enum RasterEvent {
     },
 }
 
-/// A failed attempt to submit owner-worker work.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RasterSubmitError {
     Stopped,
@@ -1713,16 +1467,8 @@ impl std::error::Error for RasterSubmitError {}
 const MAX_PENDING_PAGE_REQUESTS: usize = 32;
 const MAX_PENDING_EVENTS: usize = 64;
 const MAX_PENDING_OPEN_SETTLEMENTS: usize = 64;
-/// Images are shared with the backend cache, but queued events keep their
-/// blobs alive after cache eviction. Bound those references independently.
 const MAX_PENDING_RESULT_BYTES: usize = 32 * 1024 * 1024;
-/// A pathological page can expose millions of glyphs. Returning a partial text
-/// layer would make search/selection lie, so extraction declines the whole
-/// layer once it crosses this honest transport/cache limit.
 const MAX_TEXT_LAYER_GLYPHS: usize = 100_000;
-/// Link areas read from one page. Real documents carry a handful; a page
-/// claiming thousands is hostile or degenerate, and the reader need not
-/// hit-test more.
 const MAX_PAGE_LINKS: usize = 2_000;
 
 struct WorkerQueue {
@@ -1742,15 +1488,8 @@ struct QueuedEvent {
 
 #[derive(Default)]
 struct QueueState {
-    /// Bytes for opens the host answered with contents, by open request id,
-    /// with the session that asked (at most one per session).
     open_contents: HashMap<u64, (u64, String, Vec<u8>)>,
-    /// Bytes for imports the host answered with contents, by import request
-    /// id, with the session that asked (at most one per session).
     import_contents: HashMap<u64, (u64, Vec<u8>)>,
-    /// Only the most recent queued open matters. The owner may already be
-    /// reading an older one, but it cannot mutate the active document unless
-    /// it succeeds; the request id lets the UI disregard that stale result.
     open: HashMap<u64, OpenRequest>,
     open_order: VecDeque<u64>,
     controls: VecDeque<QueuedCommand>,
@@ -1758,7 +1497,6 @@ struct QueueState {
     view_renders: tilo_page_raster::queue::BatchQueue<RenderRequest>,
     tiles: tilo_page_raster::queue::BatchQueue<TileRequest>,
     texts: VecDeque<QueuedCommand>,
-    /// Each session's current read-ahead text batch.
     view_texts: tilo_page_raster::queue::BatchQueue<TextRequest>,
     reconciles: HashMap<u64, ReconcileRequest>,
     reconcile_order: VecDeque<u64>,
@@ -1767,41 +1505,25 @@ struct QueueState {
     imports: HashMap<u64, ImportRequest>,
     import_order: VecDeque<u64>,
     shutdowns: VecDeque<u64>,
-    /// Every accepted open receives exactly one settlement. These are separate
-    /// from lossy/coalesced paint results, so a full image queue can never
-    /// strand the UI in its loading state.
     open_events: VecDeque<QueuedEvent>,
     events: VecDeque<QueuedEvent>,
     event_bytes: usize,
-    /// One loss notification per session, outside the lossy payload queue.
     evicted_sessions: HashSet<u64>,
     closing_sessions: HashSet<u64>,
-    /// Each session's content store, from which its documents read imported
-    /// pages and into which its imports are stored.
     content: HashMap<u64, ContentStore>,
     start_error: Option<String>,
     prefer_text: bool,
-    /// Each session's window, woken when a result for it is queued, so a
-    /// page that finishes rendering while nothing else happens is drawn
-    /// without waiting for input.
     wakes: HashMap<u64, ui::wake::WakeHandle>,
-    /// The replies each session's window is owed and waits to take up
-    /// (an open's settlement, the markup a document already carries): what
-    /// it asked for in reply to an action is part of that action.
     owed: HashMap<(u64, OwedReply), Vec<ui::wake::Owed>>,
 }
 
-/// A reply a window is owed, by what answers it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum OwedReply {
-    /// The settlement of the open request with this id.
     Open(u64),
-    /// The markup read from the document with this id.
     Existing(u64),
 }
 
 impl OwedReply {
-    /// The reply `event` is, when it is one a window is owed.
     const fn answered_by(event: &RasterEvent) -> Option<Self> {
         match event {
             RasterEvent::Opened { request, .. }
@@ -1815,9 +1537,6 @@ impl OwedReply {
 }
 
 impl QueueState {
-    /// Owe `session`'s window the reply `reply`. Where the window's own
-    /// frames serve the queue (no thread can start), nothing answers it
-    /// meanwhile, so nothing is owed.
     fn owe(&mut self, session: u64, reply: OwedReply) {
         if !ui::rt::available(ui::rt::Feature::Threads) {
             return;
@@ -1826,7 +1545,6 @@ impl QueueState {
         self.owed.entry((session, reply)).or_default().push(owed);
     }
 
-    /// The reply `reply` owed to `session`'s window landed.
     fn answered_reply(&mut self, session: u64, reply: OwedReply) {
         if let std::collections::hash_map::Entry::Occupied(mut owed) =
             self.owed.entry((session, reply))
@@ -1847,12 +1565,6 @@ fn session_settlement_count(state: &QueueState, session_id: u64) -> usize {
         .count()
 }
 
-/// Thread-safe UI endpoint for the page-rendering backend.
-///
-/// Construction creates exactly one long-lived owner thread. It serialises all
-/// engine access, reads paths off the UI thread, keeps a bounded/coalescing
-/// work queue, and returns only UI-safe results. The old active document stays
-/// active when a replacement open fails.
 #[derive(Clone)]
 pub struct RasterHandle {
     session: Arc<SessionGuard>,
@@ -1879,14 +1591,11 @@ impl Drop for SessionGuard {
 }
 
 impl RasterHandle {
-    /// Connect a new reader session to the dedicated PDF owner thread. Its
-    /// documents read imported pages from `content`, and its imports are
-    /// stored there.
+    /// Connect a reader session to the owner thread; imported pages are read from
+    /// `content` and imports are stored there.
     ///
     /// # Errors
-    ///
-    /// Returns [`RasterSubmitError::Exhausted`] rather than reusing an id if
-    /// the process has exhausted its non-reusable session-id space.
+    /// [`RasterSubmitError::Exhausted`] once the non-reusable session ids run out.
     pub fn new(content: ContentStore) -> Result<Self, RasterSubmitError> {
         let queue = shared_worker_queue();
         let id = next_session_id()?;
@@ -1910,8 +1619,8 @@ impl RasterHandle {
             .insert(self.session.id, wake);
     }
 
-    /// Queue the newest path to open. Queued opens are deliberately coalesced:
-    /// selecting A, then B, then C never makes the worker parse all three.
+    /// Queue the newest path to open; queued opens are coalesced, so picking three
+    /// files never makes the worker parse all three.
     pub fn open_path(&self, path: impl AsRef<Path>) -> Result<OpenRequest, RasterSubmitError> {
         let request = OpenRequest {
             id: next_open_request_id(&NEXT_OPEN_REQUEST_ID)?,
@@ -1921,8 +1630,7 @@ impl RasterHandle {
         Ok(request)
     }
 
-    /// Queue a document the host handed over as bytes; otherwise as
-    /// [`Self::open_path`].
+    /// Queue a document the host handed over as bytes; otherwise as [`Self::open_path`].
     ///
     /// # Errors
     ///
@@ -1950,14 +1658,10 @@ impl RasterHandle {
         Ok(request)
     }
 
-    /// Commit a matching `Opened` event after the UI has installed its plain
-    /// document projection.
     pub fn activate_document(&self, document_id: u64) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Activate { document_id })
     }
 
-    /// Discard a result the UI did not accept (for example after cancellation
-    /// or a newer selection). It is safe before the parse completes.
     pub fn discard_document(&self, document_id: u64) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Discard { document_id })
     }
@@ -1989,56 +1693,38 @@ impl RasterHandle {
         })
     }
 
-    /// Queue a page render, coalescing the same document/page/zoom bucket.
     pub fn request_render(&self, request: RenderRequest) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Render(request))
     }
 
-    /// Replace this session's queued tiles with `batch` (most important
-    /// first; at most [`crate::tiles::MAX_TILE_BATCH`] are kept). An empty
-    /// batch cancels every queued tile.
     pub fn request_tiles(&self, batch: TileBatch) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Tiles(batch))
     }
 
-    /// Replace this viewer's queued page renders with `batch`, most
-    /// important first; an empty batch cancels them.
     pub fn request_renders(&self, batch: RenderBatch) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Renders(batch))
     }
 
-    /// Queue extraction of one page text layer, coalescing duplicate pages.
     pub fn request_text(&self, request: TextRequest) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Text(request))
     }
 
-    /// Replace this viewer's read-ahead text layers with `batch`, most
-    /// important first; an empty batch cancels them. Served after all
-    /// other page work.
     pub fn request_texts(&self, batch: TextBatch) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Texts(batch))
     }
 
-    /// Queue reading one page's link areas, coalescing duplicate pages. Link
-    /// reads share the bounded page-work queue with text extraction.
     pub fn request_links(&self, request: LinksRequest) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Links(request))
     }
 
-    /// Queue the newest durable page plan.  Reorders/duplicates/deletes are
-    /// collaborative state transitions, so unlike paint requests the worker
-    /// keeps the newest plan per viewer session and reports its settlement.
     pub fn reconcile_page_plan(&self, request: ReconcileRequest) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Reconcile(request))
     }
 
-    /// Queue the latest export for this session.
     pub fn save_annotated(&self, request: SaveRequest) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Save(request))
     }
 
-    /// Queue an import inspection without reading, parsing, or retaining the
-    /// file on the UI thread.
     pub fn import_path(
         &self,
         document_id: u64,
@@ -2098,8 +1784,6 @@ impl RasterHandle {
         Ok(request)
     }
 
-    /// Atomically publish a prepared private save after the UI has verified
-    /// the action has not been cancelled or superseded.
     pub fn commit_save(
         &self,
         request: SaveRequest,
@@ -2108,15 +1792,10 @@ impl RasterHandle {
         self.enqueue(RasterCommand::CommitSave { request, temporary })
     }
 
-    /// Cancel a save. A queued request is removed; a prepared temporary file
-    /// is deleted on the owner thread. The selected destination is untouched.
     pub fn cancel_save(&self, request: SaveRequest) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::CancelSave { request })
     }
 
-    /// Note that this viewer lost queued results, as the bounded result
-    /// queue does when it lets the oldest go, so its next drain carries
-    /// [`RasterEvent::VisualWorkEvicted`].
     #[cfg(test)]
     pub(crate) fn note_results_evicted(&self) {
         self.session
@@ -2127,8 +1806,6 @@ impl RasterHandle {
             .insert(self.session.id);
     }
 
-    /// Drain completed work without waiting. UI code should call this once per
-    /// frame/event turn and match only its current document/request id.
     pub fn drain_events(&self) -> Vec<RasterEvent> {
         pump_inline(&self.session.queue);
         let mut state = self.session.queue.state.lock_recover();
@@ -2145,9 +1822,8 @@ impl RasterHandle {
         events
     }
 
-    /// Whether the UI thread serves the PDF owner (no thread could start)
-    /// and has work queued or results waiting, so the window must keep
-    /// producing frames until they are drained.
+    /// Whether the UI thread serves the owner itself and has work queued, so the
+    /// window must keep producing frames until it is drained.
     #[must_use]
     pub fn wants_frames(&self) -> bool {
         let inline = INLINE_WORKER.lock_recover().is_some();
@@ -2170,9 +1846,6 @@ impl RasterHandle {
             && state.events.is_empty())
     }
 
-    /// Ask the owner thread to stop after its current operation. This is mainly
-    /// useful for tests and explicit app teardown; dropping a handle does not
-    /// block the UI thread waiting for a native PDF parse to finish.
     pub fn shutdown(&self) {
         self.session.close();
     }
@@ -2196,10 +1869,6 @@ impl RasterHandle {
         }
         match command {
             RasterCommand::OpenPath(request) => {
-                // Never let an unpolled window hold the shared PDF owner
-                // hostage. Keeping two slots accounts for an in-flight parse
-                // and a superseded-open settlement; events stay exact per
-                // session while unrelated windows continue to make progress.
                 if session_settlement_count(&state, self.session.id)
                     >= MAX_PENDING_OPEN_SETTLEMENTS.saturating_sub(2)
                 {
@@ -2220,9 +1889,6 @@ impl RasterHandle {
                 if !was_pending {
                     state.open_order.push_back(self.session.id);
                 }
-                // Page work from the prior document has no value once an open
-                // is pending. Clearing it also prevents a rapid file switch
-                // from retaining old bitmap/text payloads in the queue.
                 state
                     .renders
                     .retain(|queued| queued.session_id != self.session.id);
@@ -2253,9 +1919,6 @@ impl RasterHandle {
                 });
             }
             RasterCommand::Render(mut request) => {
-                // Snap prior to comparison: a continuous pinch gesture can
-                // submit hundreds of widths but only one bitmap per bucket is
-                // useful to the UI.
                 request.target_width = RasterBackend::bucket_for(request.target_width);
                 if !state.renders.iter().any(|queued| {
                     queued.session_id == self.session.id
@@ -2285,7 +1948,6 @@ impl RasterHandle {
                     .collect();
                 state.view_renders.replace(self.session.id, renders);
             }
-            // A single view render is only ever taken off a batch by the worker.
             RasterCommand::ViewRender(request) => {
                 state
                     .view_renders
@@ -2301,7 +1963,6 @@ impl RasterHandle {
                     .collect();
                 state.tiles.replace(self.session.id, tiles);
             }
-            // A single tile is only ever taken off a batch by the worker.
             RasterCommand::Tile(request) => {
                 state
                     .tiles
@@ -2321,8 +1982,6 @@ impl RasterHandle {
                     .collect();
                 state.view_texts.replace(self.session.id, texts);
             }
-            // A single read-ahead text is only ever taken off a batch by the
-            // worker.
             RasterCommand::ViewText(request) => {
                 state
                     .view_texts
@@ -2362,7 +2021,6 @@ impl RasterHandle {
                 if !was_pending {
                     state.reconcile_order.push_back(self.session.id);
                 }
-                // Old pixels/text are no longer valid after a page-plan edit.
                 state
                     .renders
                     .retain(|queued| queued.session_id != self.session.id);
@@ -2437,13 +2095,10 @@ fn next_open_request_id(counter: &std::sync::atomic::AtomicU64) -> Result<u64, R
         .map_err(|_| RasterSubmitError::Exhausted)
 }
 
-/// Allocate a protocol operation id for a caller-owned request payload.
-/// IDs are never reused, which makes late worker events inert by comparison.
+/// Allocate a request id; ids are never reused, which makes a late event inert.
 ///
 /// # Errors
-///
-/// Returns [`RasterSubmitError::Exhausted`] once the non-reusable id space is
-/// exhausted.
+/// [`RasterSubmitError::Exhausted`] once the id space runs out.
 pub fn next_worker_request_id() -> Result<u64, RasterSubmitError> {
     next_open_request_id(&NEXT_OPEN_REQUEST_ID)
 }
@@ -2453,9 +2108,6 @@ fn next_session_id() -> Result<u64, RasterSubmitError> {
 }
 
 fn shared_worker_queue() -> Arc<WorkerQueue> {
-    // The engine serialises requests to its helper anyway; one owner thread
-    // keeps the bitmap caches and page plans of every viewer window in one
-    // place. Every RasterHandle shares this one worker.
     static QUEUE: OnceLock<Arc<WorkerQueue>> = OnceLock::new();
     Arc::clone(QUEUE.get_or_init(|| {
         let queue = Arc::new(WorkerQueue {
@@ -2463,7 +2115,6 @@ fn shared_worker_queue() -> Arc<WorkerQueue> {
             ready: Condvar::new(),
         });
         if !ui::rt::available(ui::rt::Feature::Threads) {
-            // A browser page: the UI thread serves the queue between frames.
             *INLINE_WORKER.lock_recover() = Some(SourceWorker::default());
             return queue;
         }
@@ -2479,11 +2130,8 @@ fn shared_worker_queue() -> Arc<WorkerQueue> {
     }))
 }
 
-/// The owner where no thread can start: [`RasterHandle::drain_events`] serves
-/// the shared queue with it, a bounded slice of work per frame.
 static INLINE_WORKER: Mutex<Option<SourceWorker>> = Mutex::new(None);
 
-/// How long one frame may spend serving queued work on the UI thread.
 const INLINE_BUDGET: Duration = Duration::from_millis(12);
 
 #[allow(
@@ -2515,11 +2163,9 @@ fn close_session(queue: &WorkerQueue, session_id: u64) {
     queue.ready.notify_one();
 }
 
-/// The next page-level job: whole-page renders, tiles and text layers.
-/// Rendering and text work alternate so a long visible render burst cannot
-/// starve selection/search indefinitely. Whole-page renders (placeholders,
-/// thumbnails) come before tiles, so a zoomed page is never blank while its
-/// tiles arrive.
+/// The next page-level job. Rendering and text work alternate, so a render burst
+/// cannot starve selection and search; whole-page renders come before tiles, so a
+/// zoomed page is never blank while its tiles arrive.
 fn next_page_work(state: &mut QueueState) -> Option<QueuedCommand> {
     let command = if state.prefer_text {
         state
@@ -2536,7 +2182,6 @@ fn next_page_work(state: &mut QueueState) -> Option<QueuedCommand> {
             .or_else(|| pop_tile(state))
             .or_else(|| state.texts.pop_front())
     }
-    // Reading ahead waits for every pixel and every text someone asked for.
     .or_else(|| {
         state
             .view_texts
@@ -2557,7 +2202,6 @@ fn drop_session_view_renders(state: &mut QueueState, session_id: u64) {
     state.view_texts.drop_session(session_id);
 }
 
-/// The next queued page render of a viewer's batch.
 fn pop_view_render(state: &mut QueueState) -> Option<QueuedCommand> {
     state
         .view_renders
@@ -2572,7 +2216,6 @@ fn drop_session_tiles(state: &mut QueueState, session_id: u64) {
     state.tiles.drop_session(session_id);
 }
 
-/// The next queued tile of a viewer's batch.
 fn pop_tile(state: &mut QueueState) -> Option<QueuedCommand> {
     state.tiles.pop().map(|(session_id, tile)| QueuedCommand {
         session_id,
@@ -2587,7 +2230,6 @@ fn close_session_locked(state: &mut QueueState, session_id: u64) {
     state.closing_sessions.insert(session_id);
     state.evicted_sessions.remove(&session_id);
     state.wakes.remove(&session_id);
-    // A closing window takes up nothing more.
     state.owed.retain(|(owner, _), _| *owner != session_id);
     state.open.remove(&session_id);
     state
@@ -2645,8 +2287,6 @@ fn source_worker(queue: &Arc<WorkerQueue>) {
     }
 }
 
-/// The next command the owner serves, in priority order, or `None` when the
-/// queue is idle.
 fn next_command(state: &mut QueueState) -> Option<QueuedCommand> {
     if let Some(session_id) = state.shutdowns.pop_front() {
         return Some(QueuedCommand {
@@ -2695,19 +2335,9 @@ fn next_command(state: &mut QueueState) -> Option<QueuedCommand> {
     None
 }
 
-/// The owner's state: the documents each session has open and the saves it
-/// has prepared. Served by the owner thread, or pumped on the UI thread where
-/// no thread can start (a browser page).
 #[derive(Default)]
 struct SourceWorker {
-    // A session may briefly own both the visible predecessor and a parsed
-    // replacement.  We retain the former until the UI explicitly activates
-    // the latter, so a cancellation or stale result cannot turn the readable
-    // document into an unusable document-id mismatch.
     active: HashMap<u64, HashMap<u64, RasterBackend>>,
-    // PDFium writes only here until the UI explicitly commits the operation.
-    // Keeping these paths worker-local prevents an abandoned action from ever
-    // racing a later save selection on the UI thread.
     prepared_saves: HashMap<(u64, u64), (SaveRequest, PrivateSave)>,
 }
 
@@ -2834,7 +2464,6 @@ impl SourceWorker {
                 },
                 _ => RasterEvent::TileFailed { request },
             },
-            // Batches are unpacked at admission and never reach the worker.
             RasterCommand::Tiles(_) | RasterCommand::Renders(_) | RasterCommand::Texts(_) => {
                 return;
             }
@@ -2977,10 +2606,6 @@ impl SourceWorker {
     }
 }
 
-/// The content store `session_id` registered. A session always registers one
-/// before it can queue work; the empty fallback only covers a closed session.
-/// The bytes the host answered import `request` with, when it answered by
-/// contents rather than a path.
 fn take_import_contents(queue: &WorkerQueue, request: u64) -> Option<Vec<u8>> {
     let taken = queue.state.lock_recover().import_contents.remove(&request);
     taken.map(|(_, bytes)| bytes)
@@ -3024,10 +2649,6 @@ fn queue_event(state: &mut QueueState, session_id: u64, event: RasterEvent) {
             | RasterEvent::Exported { .. }
             | RasterEvent::SaveFailed { .. }
     ) {
-        // Terminal work is a state transition, never best-effort paint. The
-        // per-session admission limit above reserves room for every accepted
-        // completion, so this enqueue never blocks the sole owner thread just
-        // because another window has stopped draining its own events.
         let answered = OwedReply::answered_by(&event);
         if !state.closing_sessions.contains(&session_id) {
             state
@@ -3059,8 +2680,6 @@ fn queue_event(state: &mut QueueState, session_id: u64, event: RasterEvent) {
         || state.event_bytes.saturating_add(bytes) > MAX_PENDING_RESULT_BYTES
     {
         if state.events.is_empty() {
-            // `bound_page_event` converts any individually oversized payload
-            // into an explicit failure, so this cannot spin forever.
             break;
         }
         if let Some(discarded) = state.events.front() {

@@ -1,12 +1,7 @@
-//! `FileExplorerWidget` — the Tilo file explorer's `AppWidget`.
-//!
-//! The widget owns all app state (current dir, entries, multi-selection,
-//! sort, view mode, navigation history) and rebuilds its child widget tree
-//! from that state. Interactive children can't borrow the app back, so they
-//! push [`FileCommand`]s into a shared [`CommandSink`]; `handle_event`
-//! drains the sink after each event and applies the commands, marking the
-//! tree structurally dirty so the App rebuilds the composition on the next
-//! frame. See [`crate::command`].
+//! Files' window: the folder it shows, its listing and selection, and the
+//! changes it queues in the resource. Interactive children push
+//! [`FileCommand`]s into a [`CommandSink`], which the window applies after
+//! each event.
 
 use ui::num::i64_of_usize;
 use ui::tilo_resource::word;
@@ -70,16 +65,11 @@ mod folder_read;
 use folder_read::{Purpose, Then};
 mod shown_selection;
 
-/// A copy or move shows its progress once it has run this long.
 const TRANSFER_SHOWN_AFTER: Duration = Duration::from_millis(600);
 /// How long a drag rests on a folder before the folder opens.
 const SPRING_OPEN: Duration = Duration::from_millis(700);
-/// The accessibility target prefix of the clash sheet's choices.
 const CLASH_TARGET: &str = "files-clash-choice:";
-/// The accessibility targets of the notice's action and close buttons.
-/// The most lines a detail sheet lists.
 const COLLAB_PANEL_MAX_LINES: usize = 20;
-/// A paste's policy for names the folder already has, as callers name it.
 fn paste_conflict(
     name: Option<&str>,
 ) -> Result<ui::collaboration::file_clipboard::Conflict, String> {
@@ -97,8 +87,6 @@ fn paste_conflict(
     })
 }
 
-/// The keys that run `command` in the listing, shown beside it in menus so
-/// the menu teaches the keyboard. Only commands with a key of their own.
 fn command_shortcut(command: &FileCommand) -> Option<ui::platform::Shortcut> {
     use ui::platform::Shortcut;
     Some(match command {
@@ -118,9 +106,7 @@ fn command_shortcut(command: &FileCommand) -> Option<ui::platform::Shortcut> {
     })
 }
 
-/// Where the part of a file name to select for renaming ends: before its
-/// last extension (`report` of `report.final.pdf`). `None` selects the whole
-/// name: a folder, a dotfile, or a name with no extension.
+/// Where the part of a name the rename editor selects ends, or `None` for all of it.
 fn rename_stem_end(name: &str, is_dir: bool) -> Option<usize> {
     if is_dir {
         return None;
@@ -128,10 +114,7 @@ fn rename_stem_end(name: &str, is_dir: bool) -> Option<usize> {
     name.rfind('.').filter(|&dot| dot > 0)
 }
 
-/// Close up a menu spec: a separator stands only between two groups, and a
-/// group of one is not a group, so it joins its neighbour rather than being
-/// fenced off by a hairline. (A separator is an item with no label and no
-/// command.)
+/// A separator divides two groups only; a group of one joins its neighbour.
 fn tidy_menu(spec: Vec<(String, Option<FileCommand>)>) -> Vec<(String, Option<FileCommand>)> {
     tidy_groups(
         spec,
@@ -140,8 +123,7 @@ fn tidy_menu(spec: Vec<(String, Option<FileCommand>)>) -> Vec<(String, Option<Fi
     )
 }
 
-/// [`tidy_menu`] for any item type: `is_separator` says which items divide
-/// groups and `separator` makes one.
+/// [`tidy_menu`] for any item type.
 fn tidy_groups<T>(
     items: Vec<T>,
     is_separator: impl Fn(&T) -> bool,
@@ -188,41 +170,23 @@ fn tidy_groups<T>(
     out
 }
 
-/// Long absolute paths clip at narrow widths and obscure the recovery action.
-/// Preserve the recognisable tail here; the full location stays in the path bar
-/// and the root accessibility description.
+/// Long paths clip at narrow widths: keep their tail readable, and the whole in the path bar.
 const STATE_SURFACE_LOCATION_CHARS: usize = 36;
-/// The resource catalogue is shared with search, activity, automation, and
-/// assistive clients. Keep its eagerly enumerated current-folder projection
-/// deliberately small; an exact item is materialised from the live snapshot
-/// by [`FileExplorerWidget::resource`] when a caller addresses it directly.
+/// Eager rows are shared with search and agents, so keep them few; any other entry is read from the live listing.
 const MAX_EAGER_ENTRY_RESOURCES: usize = 128;
-/// The most entries one `move` takes.
-/// The most entry names showing a folder answers with.
 const MAX_ANSWERED_ENTRIES: usize = 64;
 
-/// What a window shows when an operation it queued settles.
 enum OpFollowUp {
-    /// Select the new folder and start naming it.
     NewFolder,
-    /// Close the rename editor (or keep it open on a failure).
     Rename,
-    /// Offer to undo the move of `count` entries to Trash.
     Trash { count: usize },
-    /// Offer to undo the move into `destination`.
     Move { destination: String },
-    /// Items a Replace moved to Trash: said only if that failed.
     Replaced,
-    /// Say how many of `count` were pasted; after Cut, take the moved ones
-    /// off the clipboard (the ones that failed stay, to retry).
     Paste { count: usize, cut: bool },
-    /// Select what extracting the archive `name` made, or say why not.
     Extract { name: String },
-    /// Select the new archive, or say why it was not made.
     Compress,
 }
 
-/// What doing an effect came to: its answer now, or a job that answers later.
 pub(crate) enum Ran {
     Done(Option<serde_json::Value>),
     Pending,
@@ -237,10 +201,6 @@ type MergePreflightResult = Arc<
         )>,
     >,
 >;
-/// A remote account's folder opens while the cloud service has it mounted.
-/// A disabled or not-yet-mounted account says why instead.
-/// What the entry `entry` is, the entry's read: its name, path, kind,
-/// size, when it last changed, and whether its content is here.
 fn entry_answer(entry: &Entry) -> serde_json::Value {
     serde_json::json!({
         "name": entry.name,
@@ -274,11 +234,6 @@ fn remote_folder_availability(account: &crate::remote_accounts::RemoteAccount) -
     Availability::Available
 }
 
-/// Build the file manager's thumbnail service. The content-addressed cache
-/// lives under the app's persistence dir (a tempdir in tests, so they stay
-/// isolated) so previews survive across launches; it falls back to a temp dir
-/// when there is no persistence dir. `None` when neither location is
-/// writable — previews then fall back to type badges (see [`ThumbCtx`]).
 fn build_thumb_service(config_dir: Option<&Path>) -> Option<ThumbnailService> {
     #[cfg(test)]
     crate::model::fixture_io_guard::ambient_io("build_thumb_service");
@@ -293,8 +248,6 @@ fn build_thumb_service(config_dir: Option<&Path>) -> Option<ThumbnailService> {
     })
 }
 
-/// PDFs get first-page previews: Files links the PDF engine, which the
-/// thumbnailer every app shares leaves out (`thumbnail::set_pdf_rasteriser`).
 pub(crate) fn enable_pdf_previews() {
     thumbnail::set_pdf_rasteriser(tilo_pdf::first_page_preview);
 }
@@ -309,7 +262,6 @@ struct CollabPanel {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum CollabPanelAction {
-    /// Look at the cloud account with this id again.
     RecheckAccount(String),
     DestructiveEviction(Vec<PathBuf>),
     PermanentDelete(Vec<PathBuf>),
@@ -326,7 +278,6 @@ enum CollabPanelAction {
     },
 }
 
-/// Lower-case hex of the first `count` bytes (all of them when shorter).
 fn hex_prefix(bytes: &[u8], count: usize) -> String {
     hex::encode(bytes.get(..count).unwrap_or(bytes))
 }
@@ -340,27 +291,14 @@ fn nearby_action_locator(kind: &str, bytes: &[u8; 16]) -> String {
     hex_prefix(&hasher.finalize(), 16)
 }
 
-/// Opaque, bounded resource identity for a local Templates entry.
-///
-/// A resource tree is searchable and may be retained in activity/history, so
-/// it must not turn an absolute local template path into an identifier. The
-/// full path remains an invocation payload only and is revalidated against the
-/// current template catalogue before it is read.
+/// An opaque resource id for a Templates entry: its path is not published.
 pub(crate) fn template_resource_id(path: &str) -> String {
-    // Resource addresses cross the action door and history, so a collision
-    // must be cryptographically infeasible rather than merely improbable. The
-    // 128-bit SHA-256 prefix is stable, opaque, and far beyond the collision
-    // bound of the small, local Templates catalogue; SHA-2 is already part of
-    // the Tilo shared cryptographic stack.
     let digest = Sha256::digest(path.as_bytes());
     format!("files.template:{}", hex_prefix(&digest, 16))
 }
 
-/// The row a failed listing offers its retry on.
 const RETRY_ROW: &str = "files.retry";
 
-/// A failed listing's way on, as a row: Try again when that may get past
-/// the failure, else going to the enclosing folder.
 fn retry_row(may_pass: bool) -> ResourceSpec {
     let (effect, label) = if may_pass {
         (crate::effects::FilesEffect::Refresh, t("files-try-again"))
@@ -371,8 +309,6 @@ fn retry_row(may_pass: bool) -> ResourceSpec {
         .with_action(crate::effects::row_action(&effect, "invoke", label))
 }
 
-/// A failed listing's state: what went wrong, and its way on bound to
-/// [`retry_row`].
 fn failure_state(title: String, detail: String, may_pass: bool) -> EmptyState {
     let row = retry_row(may_pass);
     let state = EmptyState::error(title, detail)
@@ -387,8 +323,6 @@ fn failure_state(title: String, detail: String, may_pass: bool) -> EmptyState {
     }
 }
 
-/// The bookmarked places, as [`crate::resource::FileExplorer::children`]
-/// publishes them: each opens in the window.
 pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Vec<ResourceSpec> {
     favorites
         .iter()
@@ -406,8 +340,6 @@ pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Ve
         .collect()
 }
 
-/// Template create Effects, rows of the window.
-/// The catalogue is the user's Templates directory, not the live folder listing.
 pub(crate) fn published_template_resources(templates: Vec<PathBuf>) -> Vec<ResourceSpec> {
     templates
         .into_iter()
@@ -431,8 +363,6 @@ pub(crate) fn published_template_resources(templates: Vec<PathBuf>) -> Vec<Resou
         .collect()
 }
 
-/// The favourites `places` name on this device, in order; places this device
-/// cannot resolve (a home it does not have) are left out.
 pub(crate) fn resolve_places(
     places: &[String],
     home: Option<&Path>,
@@ -473,9 +403,6 @@ fn conflict_strategy_label(strategy: fs_protocol::ConflictStrategy) -> String {
     })
 }
 
-/// Explicit initial presentation data for an embedded Files view.
-/// Paths here are data, not authorization; the host must separately enforce its grants.
-/// Injected views never discover ambient accounts, identities or workspace roots.
 #[derive(Clone)]
 pub struct StartupInputs {
     pub initial_dir: PathBuf,
@@ -485,13 +412,10 @@ pub struct StartupInputs {
     pub trusted_humans: crate::identity_directory::TrustedHumanDirectory,
 }
 
-/// Optional services supplied by an embedding host. Absence never selects
-/// the standalone thumbnail cache.
 #[derive(Clone)]
 pub struct HostedFileServices {
     pub thumbnails: Option<Arc<ThumbnailService>>,
-    /// The host supplies the existing native Files clipboard lane. This is
-    /// availability, never a filesystem grant or an invocation authority.
+    /// The host supplies the native clipboard lane; this is availability, not a grant.
     pub local_clipboard: bool,
 }
 
@@ -500,10 +424,6 @@ enum FileServices {
     Hosted(HostedFileServices),
 }
 
-/// What a Files window shows and does, shared between the window and the
-/// view's effect handler and publications: the folder shown, its entries
-/// and selection, the clipboard, the work in flight. The [`FileExplorerWidget`]
-/// lays it out in its shell.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each boolean is independent named UI state for loading, clipboard, rename, layout, or visibility"
@@ -516,274 +436,111 @@ pub struct FilesState {
     current_path: PathBuf,
     home_path: Option<PathBuf>,
     entries: Vec<Entry>,
-    /// What the window's search has been given: its words narrow the folder
-    /// open, never another folder's.
     find: String,
-    /// Multi-selection over the displayed entry list.
     selection: SelectionModel,
     shown_selection: shown_selection::ShownSelection,
     shown_folder: Option<Arc<host_fs::RetainedObject>>,
-    /// Whether the folder shown is a folder on the disk, as its last read
-    /// found: not Recent, not inside an archive, not a failed read.
     shown_is_folder: bool,
-    /// The read of the folder shown still outstanding, if any.
     folder_reads: folder_read::FolderReads,
     local_clipboard: clipboard_client::Client,
     error: Option<String>,
     is_loading: bool,
-    /// Reads the archive being browsed off the window's thread.
     archive_listing: crate::archive::Listing,
-    /// A transfer a capture shows as running, for as long as the window.
     staged_transfer: Option<crate::file_ops::Running>,
-    /// Files being read out of archives to be opened.
     archive_members: ArchiveMembers,
-    /// Archives waiting for the folder Extract to… asks for.
     extract_chooser: Option<(Vec<PathBuf>, ui::portal::PortalChannel)>,
     last_click: Option<(usize, Instant)>,
     sort_by: SortBy,
     sort_order: SortOrder,
     view_mode: ViewMode,
-    /// Back/forward navigation history (paths only).
     history: Vec<PathBuf>,
     forward: Vec<PathBuf>,
-    /// Clipboard for cut/copy → paste. `true` = cut (move on paste).
     clipboard: Vec<PathBuf>,
     clipboard_cut: bool,
-    /// The card over the file view for a change to take back or a failure
-    /// to act on ([`notice`]).
     notice: Notice,
-    /// A copy or move waiting for the answer to a name clash.
     clash: Option<PendingClash>,
-    /// The selected file shown large (Space).
     preview: Option<Preview>,
-    /// Files another app is dropping here, gathered until the drop ends.
     incoming: Vec<PathBuf>,
-    /// The window's undo, as the host publishes it: what the Undo in a
-    /// notice and in the menu asks for, the same one Ctrl+Z does.
     undo: ui::UndoAccess,
-    /// The start of a name being typed into the listing.
     typing: ui::type_ahead::TypeAhead,
-    /// The device this window changes the filesystem of, which carries out
-    /// the operations it queues; `None` outside a framework host.
+    /// The device whose filesystem this window changes; `None` outside a framework host.
     device: Option<String>,
-    /// Carries out the operations queued for this device.
     ops_drain: Option<ui::framework::Projection>,
-    /// Operations this window queued, and what it shows when they settle.
     awaiting_ops: Vec<(crate::file_ops::FileOp, OpFollowUp)>,
-    /// The callers of queued operations, each answered once its operation
-    /// settles: a Paste is done when its files are, not when it is queued.
     op_replies: Vec<(crate::file_ops::FileOp, ui::framework::EffectReply)>,
-    /// The operation the effect just started queued, for the reply
-    /// [`Self::await_effect`] is handed next.
     answering_op: Option<crate::file_ops::FileOp>,
-    /// Operations already seen carried out, so each settles once here.
     settled_ops: std::collections::HashSet<String>,
     ops_presented: bool,
-    /// What operations came to when this window carried them out itself
-    /// (no framework hosts it), for their reverts.
     local_outcomes: HashMap<String, crate::file_ops::Outcome>,
-    /// Transient status line (operation results), shown in the footer.
     status: Option<String>,
-    /// The next poll of what no change signal covers (see
-    /// [`metadata_refresh`]): a directory its watch does not fully cover,
-    /// the workspace record catalogue, an unwatched identity projection.
-    /// `None` when every source has a change signal, so an idle window with
-    /// an unchanged directory has no deadline at all.
     next_metadata_refresh: Option<Instant>,
-    /// Reports changes to the open directory's entries and wakes the window.
     directory_watch: crate::directory_watch::DirectoryWatch,
-    /// How many items each listed folder holds, counted off the UI thread;
-    /// an arrival wakes the window.
     folder_counts: Arc<crate::folder_counts::FolderCounts>,
-    /// Reports changes to the trusted-identity projection's directory, or,
-    /// while it does not exist, its creation.
     identity_watch: crate::directory_watch::AwaitedDirectoryWatch,
-    /// Reports changes to the record catalogue's roots: a mount moves a
-    /// root's catalogue generation by changing the root.
     catalog_watch: crate::directory_watch::RootsWatch,
-    /// The directory watch reported a change that has not been read yet
-    /// (held while a rename or pin drag defers the read).
     directory_changed: bool,
-    /// When the open directory was last read, for [`metadata_refresh::change_read_gap`].
     last_directory_read: Instant,
-    /// When `Some(i)`, an inline rename of displayed entry `i` is in
-    /// progress: the in-place editor is drawn over row/cell `i`. `None` = not
-    /// renaming.
     renaming: Option<usize>,
-    /// Editable name held only for the lifetime of the rename interaction;
-    /// `commit_rename` renames the file to this value. Rename text is device
-    /// local UI state, not collaborative document data or file metadata.
     rename_buffer: String,
-    /// Set when a rename just began so the next `sync` seeds the local field
-    /// with `rename_buffer` before it receives user input.
     rename_seed_pending: bool,
-    /// The in-place rename editor: a persistent, process-local `TextInput`
-    /// (so its caret/focus survive the per-frame rebuild) drawn **over the
-    /// selected row/cell** — not in a bottom bar. Filesystem observations and
-    /// a transient proposed name must never be written to the shared UI doc.
     rename_input: TextInput,
-    /// Where the file view wants the rename editor drawn: the on-screen rect of
-    /// the renaming row's name (list) or label (grid), published by `FileView`
-    /// each paint. `None` when not renaming or the row is scrolled off-screen.
     rename_rect: Rc<Cell<Option<vello::kurbo::Rect>>>,
-    /// What the rename editor painted, this frame and last: the window's
-    /// own paint over the shell, which damages where it changed.
     rename_paint: ui::own_paint::OwnPaint,
-    /// Set on `begin_rename` so the first `sync` after the seed selects the
-    /// whole name (typing then replaces it, Finder-style).
     rename_select_pending: bool,
     rect: vello::kurbo::Rect,
-    /// The app's side of the toolbar the shell's content header owns: the nav
-    /// cluster, the editable path bar and the view / sort controls. The toolbar
-    /// itself lives for the window's lifetime (the path bar carries live edit
-    /// state — the in-progress typed path and its completion popover), and
-    /// this handle feeds it the context and reads its control rects back.
     toolbar: crate::toolbar::ToolbarHandle,
-    /// The content header is in the window's bar ([`ui::window_toolbar`])
-    /// rather than in the window.
     header_in_bar: bool,
-    /// What the person is typing into the location in the window's bar, as
-    /// the bar last said; `None` while it is not edited there.
     bar_query: Option<String>,
-    /// What the bar's slots were last declared from, and the window they were
-    /// declared on ([`ui::window_toolbar::current_window`]): a window that
-    /// shows this app after it declared gets them declared on it too.
     declared_bar: Option<(Option<u64>, window_bar::BarKey)>,
-    /// The commands of the bar's entries.
     bar_entries: window_bar::BarEntries,
-    /// News ([`Self::status`], or that an archive is read-only on entering
-    /// it) said in the window's bar for a while; the item and selection
-    /// counts are the window's accessible status, not news.
     status_notice: StatusText,
-    /// What Needs you reports back: the row a Files notice raised.
     needs: ui::attention::Presses,
-    /// The status last said in the bar, so only a change is news.
     status_said: Option<String>,
-    /// The archive last said to be read-only, so entering one says it once.
     archive_said: Option<PathBuf>,
     staged_hover: Option<usize>,
     staged_move_drag: bool,
-    /// The user's template files, for the "New File" menus and the
-    /// published rows; read from memory on the frame loop.
     templates: templates::Catalog,
-    /// Set once `build_layout` has composed the panes into `nav`. Used to
-    /// detect "hosted in a `TabBar` that never ran `build_layout` for us yet" so
-    /// paint can flag a structure rebuild (replaces the old `chrome_below`
-    /// None-sentinel).
     composed_once: bool,
-    /// Command queue the interactive children push into.
     cmds: CommandSink,
-    /// Rows a search hit or an agent's `open` asked to show, by their ids.
     opened: Rc<RefCell<Vec<String>>>,
-    /// Set when applying a command changed structure; consumed by
-    /// `take_structure_dirty` so the App rebuilds the composition.
     structure_dirty: bool,
-    /// Where bookmark edits go: the resource's dispatcher. `None` for a
-    /// widget no framework hosts (a shell's embedded tile, a unit test),
-    /// whose bookmark edits stay in the window.
     dispatcher: Option<ui::framework::Dispatcher<crate::resource::FileExplorer>>,
-    /// The person's view preferences; `None` outside a framework host, where
-    /// they stay in the window.
     preferences: Option<ui::framework::Setting<crate::resource::FilesPreferences>>,
-    /// The preferences last shown, so a change from another window or device
-    /// is adopted once.
     shown_preferences: Option<crate::resource::FilesPreferences>,
-    /// The menus opened or closed since the window last looked, for it to
-    /// show over its shell.
     menus: Vec<MenuChange>,
-    /// The screenshot scenario to stage on the window's next sync.
     staged: Option<StagedScenario>,
-    /// Set while draining commands from a right-press when the press landed on
-    /// a sidebar favourite, so the right-press handler opens the favourite menu
-    /// (not the file context menu) at the cursor. Consumed each right-press.
-    /// Last cursor position in logical coords (for menu placement + the
-    /// context-menu hit-test).
     last_cursor: Point,
-    /// Shared, persistent favourites + drag-reorder state (see
-    /// [`crate::places_sidebar`]). Cloned into the sidebar each rebuild.
     favs: FavStore,
-    /// The places the shell's list was last built from, and the row chosen in
-    /// it.
     places_shown: Option<(Vec<ui::widget::NavSection>, Option<String>)>,
-    /// The row the person last chose in the places list itself, so the
-    /// navigation that follows does not rebuild a list that already shows it.
     places_choice: Rc<RefCell<Option<String>>>,
-    /// A shared places row asked for its own context menu.
     places_context: Rc<RefCell<Option<(PathBuf, Point)>>>,
-    /// A capture shows a favourite being dragged in the places list.
     stage_favorite_drag: bool,
-    /// Per-user config dir for persisting favourites + zoom (`None` when the
-    /// environment has no config dir — the UI still works, just doesn't persist).
-    /// Icon/row zoom step (see [`crate::config`]); `0` = default.
     zoom_level: i32,
-    /// Whether dotfiles are shown.
     show_hidden: bool,
-    /// The user's real, localized XDG user directories (Documents, Downloads,
-    /// …). Drives the standard favourites so a German desktop shows
-    /// *Dokumente / Bilder / Musik*, not hard-coded English names.
     user_dirs: favorites::UserDirs,
-    /// The Tilo collaborative-workspace roots the FUSE driver mounts, surfaced as
-    /// first-class System locations in the sidebar. Resolved once at startup.
     workspace_roots: Vec<PathBuf>,
-    /// Durable global-search projections. These are retained for the widget's
-    /// lifetime: opening Ctrl+K clones cheap handles and never rescans Files'
-    /// sources. The monotonically increasing source revision is advanced only
-    /// by an explicit Files refresh/mutation.
     places_search_revision: u64,
     collaborative_search_revision: Cell<u64>,
     remote_accounts_search_revision: u64,
     places_search: crate::search_provider::PlacesSearch,
     collaborative_search: crate::search_provider::CollaborativeRecordSearch,
-    /// One bounded mount page is admitted at a time. `RefCell` lets opening
-    /// global search advance a continuation without making its query path
-    /// rescan or materialise the whole workspace.
     collaborative_record_pager: RefCell<crate::model::WorkspaceRecordIndexPager>,
     remote_accounts_search: crate::search_provider::RemoteAccountSearch,
-    /// The row a drag started on. `Some(path)` while a drag is live; a floating
-    /// ghost tracks the cursor. On release the app resolves the drop: onto a
-    /// folder row (or the Up target) moves [`Self::drag_paths`] there; over the
-    /// sidebar pins a folder to Favourites. `None` when no drag is in flight.
     pin_drag: Option<PathBuf>,
-    /// All paths carried by the live drag — the pressed row, or the whole
-    /// multi-selection when the drag started on a row that was part of it.
     drag_paths: Vec<PathBuf>,
-    /// A press on a row waiting to become a drag: `(press point, path,
-    /// is_dir)`. Cleared by the release, or by the first move past the
-    /// threshold, which starts the drag.
     armed_drag: Option<(Point, PathBuf, bool)>,
-    /// The multi-selection captured at the moment of a press, before the press's
-    /// click collapses the selection to the single row. If a drag then starts
-    /// from a row that was in this set, the drag carries the whole set (so a
-    /// user can drag several selected items at once). Empty otherwise.
     drag_seed: Vec<PathBuf>,
-    /// A plain press inside a multi-selection: the row it collapses the
-    /// selection to on release, unless a drag of the whole set starts first.
     collapse_on_release: Option<usize>,
-    /// The folder a drag has rested on, and since when: held long enough,
-    /// it opens, so a drop can reach a folder deeper down.
     spring: Option<(PathBuf, Instant)>,
-    /// Whether the row the live drag started on is a folder (from the drag-begin
-    /// signal, not a filesystem probe). Only a single dragged folder can be
-    /// pinned to the sidebar.
     drag_origin_is_dir: bool,
-    /// The folder currently under the cursor during a drag (a valid drop
-    /// target), so it can be highlighted. `None` when over no target.
     drag_hover: Option<PathBuf>,
     nearby_send: crate::nearby_send::NearbySendState,
     nearby_send_path: Option<PathBuf>,
     shortcut_menu: crate::shortcut_menu::ShortcutMenuState,
-    /// Read-only sharing/history sheet sourced entirely from bounded FUSE
-    /// projections. `None` means no sheet is open.
     collab_panel: Option<CollabPanel>,
     collab_panel_focused: bool,
-    /// Where the sheet's parts landed at the last paint.
     collab_layout: Option<ui::widget::ModalLayout>,
-    /// The workspace's invitation Files asks for the entry it shares, and
-    /// the answer it copies the link from.
     share_invite: crate::share_invite::ShareInvite,
-    /// Host-projected names keyed by certified human roots. Labels affect
-    /// presentation only; every command and request continues to carry the
-    /// root key.
     trusted_humans: crate::identity_directory::TrustedHumanDirectory,
     history_result: Arc<std::sync::Mutex<Option<Result<(), String>>>>,
     history_pending_path: Option<PathBuf>,
@@ -791,88 +548,36 @@ pub struct FilesState {
 
     merge_preflight_result: MergePreflightResult,
     merge_preflight_pending: Option<(uuid::Uuid, fs_protocol::FileVersionId)>,
-    /// The job of an effect still running (a share link, a nearby send),
-    /// answered when its work settles.
     effect_reply: Option<ui::framework::EffectReply>,
-    /// Settings' config root remote accounts are read from; `None` reads
-    /// none (embedded and test views), so no ambient store is touched.
     accounts_root: Option<PathBuf>,
-    /// The accounts as last read from `accounts_root`.
     accounts_cache: Vec<crate::remote_accounts::RemoteAccount>,
     cloud: cloud_browse::CloudView,
-    /// Explicit consent injection for protocol fixtures, never ambient authority.
     #[cfg(test)]
     cloud_fixture_consent: bool,
     mounted_cloud: mounted_cloud::MountedCloud,
-    /// NTFS drives the shell can open, for the places list.
     drives: drives::Drives,
-    /// The person's apps, for the Applications place.
     applications: applications::Applications,
     host_intent: Option<ui::widget::AppHostIntent>,
-    /// Folder rows the file view publishes each layout, so a drag's drop point
-    /// can be resolved to the folder it lands on (the view never sees the
-    /// release — the app captures the pointer for the duration of the drag).
     drop_targets: crate::views::file_view::DropTargets,
-    /// Every visible item's rect, for a box selection.
     item_rects: crate::views::file_view::ItemRects,
-    /// A box selection being drawn: where it started, where the pointer
-    /// is, and what was selected before it (kept with Ctrl).
     marquee: Option<(Point, Point, Vec<usize>)>,
-    /// The content pane's live scroll position, owned here so it survives the
-    /// per-frame rebuild. Each rebuilt list/grid `Scrollable` binds to this
-    /// cell (see [`ui::widget::Scrollable::with_persisted_offset`]); without
-    /// it, selecting a row, typing in search, or changing sort — all of which
-    /// rebuild the composition — would snap the list back to the top. Reset to
-    /// `(0, 0)` whenever the directory changes (a new folder starts at top).
     scroll_offset: Rc<Cell<(f32, f32)>>,
-    /// The file list's table, kept across rebuilds with its scroll position,
-    /// column widths and scroll anchor (the list scrolls itself; only the grid
-    /// scrolls under `scroll_offset`).
     list_slot: crate::views::file_list::ListSlot,
-    /// The column widths when the press that may turn into a drag of a
-    /// column's edge began, so the release knows whether it resized anything.
     widths_at_press: Option<std::collections::BTreeMap<String, u32>>,
-    /// The shared, off-thread thumbnail service (content-addressed cache +
-    /// worker pool). Cloned into each rebuilt file view so a folder of images /
-    /// PDFs / ebooks shows real previews (and workspace files show the host's
-    /// gossiped preview) without janking on the UI thread. `None` when no
-    /// writable cache directory could be found — the file view then falls
-    /// back to type badges.
     thumbs: Option<Arc<ThumbnailService>>,
-    /// App-lived memo turning a decoded thumbnail into a `peniko` image once, so
-    /// a scrolling grid never rebuilds the GPU blob per frame.
-    /// Recently opened or changed files, newest first.
-    /// The Recent list of a window no framework hosts.
     recent: crate::recent::RecentFiles,
-    /// Every device's Recent list, in a hosted window.
     recent_record: Option<ui::framework::PersonRecord<crate::recent::RecentRecord>>,
-    /// Asks the session to open a document, in a named app or in the one that
-    /// opens its type: [`crate::open_with::request`] in an app, a recorder in
-    /// tests.
     open_request: crate::open_with::OpenRequest,
-    /// Lists the apps that open a document's type:
-    /// [`crate::open_with::candidates`] in an app, a recorder in tests.
     document_candidates: crate::open_with::CandidateList,
-    /// Opens the session has taken and not answered yet, each with its path
-    /// and answer: asked off the window's thread and taken in by
-    /// [`Self::take_open_replies`].
     open_replies: crate::open_with::OpenReplies,
-    /// "Open With" candidates per file type, asked of the session once per
-    /// listing rather than once per row.
     open_with_cache: RefCell<HashMap<String, Vec<runtime_portal::tools::DocumentApp>>>,
-    /// The listing's entries by resource id, made once per listing.
     entry_ids: RefCell<EntryIds>,
-    /// The entry rows last published, kept while what each shows holds.
     entry_rows: RefCell<entry_rows::EntryRows>,
-    /// Opens the host's search behind "Other application…"; its rows are
-    /// the published open-with actions of [`Self::app_chooser_target`].
     app_chooser: ui::search::SearchOpener,
     app_chooser_target: Option<PathBuf>,
     thumb_imgs: Rc<RefCell<HashMap<ThumbKey, PenikoImage>>>,
 }
 
-/// A screenshot scenario (or none) the view staged, for the window to
-/// stage once it is laid out.
 struct StagedScenario(Option<String>);
 
 /// One test at a time: the waiting stack and the ledger are the process's,
@@ -884,13 +589,10 @@ pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock_recover()
 }
 
-/// Files, as the ledger names it.
 fn files_owner() -> ui::attention::Owner {
     ui::attention::Owner::new("so.tilo.files", "Files").with_icon(ui::icons::Icon::Folder)
 }
 
-/// What the folder last said about itself, waiting to be recorded: the
-/// ledger keeps it, and nothing expires.
 #[derive(Debug, Default)]
 struct StatusText(Option<String>);
 
@@ -903,19 +605,15 @@ impl StatusText {
         self.0 = None;
     }
 
-    /// What was said since the last read.
     fn take(&mut self) -> Option<String> {
         self.0.take()
     }
 
-    /// Whether the folder said something since it was last recorded; a
-    /// test reads it as the window would.
     #[cfg(test)]
     fn is_shown(&self) -> bool {
         self.0.is_some()
     }
 
-    /// What was said, for a test that reads it before the record does.
     #[cfg(test)]
     fn get(&self) -> Option<&String> {
         self.0.as_ref()
@@ -924,16 +622,6 @@ impl StatusText {
 
 impl FileExplorerWidget {
     pub fn new() -> Self {
-        // The same home the start directory is resolved against
-        // (`crate::model::default_start_dir`), and for the same reason.
-        // Under a sandbox this process's `HOME` is its own per-package
-        // directory — `/run/tilo/app` — while the directory actually
-        // opened is the user's real home, bound by a grant and named by
-        // `TILO_USER_HOME`. Reading `tilo_paths::home()` here made the two
-        // disagree, and the breadcrumb is where a disagreement shows:
-        // `format_path` abbreviates a path to `~` only when it lies
-        // under the home it was handed, so a home it does not recognise
-        // renders as an absolute trail from the filesystem root.
         let widget =
             Self::with_persistence(config::config_dir().as_deref(), crate::model::user_home());
         {
@@ -944,19 +632,11 @@ impl FileExplorerWidget {
         widget
     }
 
-    /// Construct with an explicit persistence directory + home, resolving the
-    /// XDG user dirs from the real environment. `new` uses the real per-user
-    /// config dir; tests pass a `tempdir` (or `None`) so they never read or
-    /// write the user's real preview cache.
     #[doc(hidden)]
     pub fn with_persistence(config_dir: Option<&Path>, home: Option<PathBuf>) -> Self {
         Self::with_persistence_dirs(config_dir, home, favorites::UserDirs::from_system())
     }
 
-    /// Construct with an explicit persistence directory, home, and injected
-    /// XDG user directories. Tests inject a known (e.g. German-localized) set
-    /// so the standard favourites are deterministic without depending on the
-    /// build machine's locale.
     #[doc(hidden)]
     pub fn with_persistence_dirs(
         config_dir: Option<&Path>,
@@ -966,9 +646,6 @@ impl FileExplorerWidget {
         Self::with_inputs(config_dir, home, user_dirs, None, FileServices::Legacy)
     }
 
-    /// Build with host-supplied startup data and legacy thumbnail/opener services.
-    /// Use [`Self::with_startup_inputs_and_services`] to supply services explicitly,
-    /// including their absence.
     pub fn with_startup_inputs(inputs: StartupInputs) -> Self {
         Self::with_inputs(
             None,
@@ -979,7 +656,6 @@ impl FileExplorerWidget {
         )
     }
 
-    /// Build with exact host services; absent services remain unavailable.
     pub fn with_startup_inputs_and_services(
         inputs: StartupInputs,
         services: HostedFileServices,
@@ -993,9 +669,6 @@ impl FileExplorerWidget {
         )
     }
 
-    /// The window a screenshot shows: the scene's made-up home and folders,
-    /// previews cached in the scene, and nothing read from the machine the
-    /// capture is taken on.
     #[cfg(feature = "samples")]
     pub fn for_scene(scene: &crate::scenarios::Scene) -> Self {
         enable_pdf_previews();
@@ -1052,16 +725,12 @@ impl FileExplorerWidget {
         let cwd = inputs.initial_dir;
 
         let zoom_level = 0;
-        // The standard places until the resource presents the stored ones;
-        // a widget no framework hosts keeps them.
         let favorites = home
             .as_deref()
             .map(|home| favorites::defaults(home, &user_dirs))
             .unwrap_or_default();
         let show_hidden = false;
         let workspace_roots = inputs.workspace_roots;
-        // Construct each durable namespace once. Subsequent refreshes are
-        // revision-gated by `refresh_external_search_catalogs`, never by palette input.
         let places_search = crate::search_provider::PlacesSearch::new(&favorites);
         let mut collaborative_record_pager =
             crate::model::WorkspaceRecordIndexPager::new(&inputs.record_roots);
@@ -1073,11 +742,7 @@ impl FileExplorerWidget {
         let remote_accounts_search =
             crate::search_provider::RemoteAccountSearch::new(&remote_accounts);
         let cmds = new_sink();
-        // The places list and the file view are swapped in on the first
-        // `build_layout`; the toolbar is the content header's one action and
-        // stays for the window's lifetime.
         let (path_widget, actions_widget, toolbar) = crate::toolbar::FileToolbar::new(cmds.clone());
-        // window-bar: fallback, the header the bar takes over once it hosts the window
         let nav = NavShell::new()
             .content_kind(ui::widget::ContentKind::List)
             .with_id("files.shell")
@@ -1094,7 +759,6 @@ impl FileExplorerWidget {
             startup_accounts,
             current_path: cwd.clone(),
             home_path: home,
-            // Shown once the first read of `cwd` is (see below).
             entries: Vec::new(),
             find: String::new(),
             selection: SelectionModel::new(),
@@ -1137,7 +801,6 @@ impl FileExplorerWidget {
             ops_presented: false,
             local_outcomes: HashMap::new(),
             status: None,
-            // Scheduled by the first sync, once the watches exist.
             next_metadata_refresh: None,
             directory_watch: crate::directory_watch::DirectoryWatch::new(ui::WakeHandle::new()),
             folder_counts: {
@@ -1161,12 +824,6 @@ impl FileExplorerWidget {
             rename_paint: ui::own_paint::OwnPaint::default(),
             rename_select_pending: false,
             rect: vello::kurbo::Rect::ZERO,
-            // Placeholder panes; the real places list + file view are swapped
-            // in on the first `build_layout`. The places list is the shell's
-            // *sidebar*, not a content overview: docked beside the file view
-            // when wide, an overlay drawer over it when narrow. Sidebar width
-            // matches the historical fixed sidebar so the docked layout is
-            // pixel-stable.
             toolbar,
             header_in_bar: false,
             bar_query: None,
@@ -1259,13 +916,10 @@ impl FileExplorerWidget {
             open_with_cache: RefCell::new(HashMap::new()),
             entry_ids: RefCell::default(),
             entry_rows: RefCell::default(),
-            // window-bar: picker, the Open with chooser
             app_chooser: ui::search::SearchOpener::new(),
             app_chooser_target: None,
             thumb_imgs: Rc::new(RefCell::new(HashMap::new())),
         };
-        // Nothing is shown yet: until the first read is, that is the
-        // loading state.
         state.is_loading = true;
         state.read_shown_folder(cwd, Then::Nothing);
         Self {
@@ -1278,8 +932,6 @@ impl FileExplorerWidget {
 }
 
 impl FilesState {
-    /// Take part in the resource: bookmark edits go through `dispatcher`,
-    /// and the view follows the person's `preferences`.
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::FileExplorer>,
@@ -1296,12 +948,6 @@ impl FilesState {
         self.adopt_preferences();
     }
 
-    /// Change the filesystem: queue `op` in the Files document, where it is
-    /// in history and undoable, for this device to carry out; `follow` is
-    /// what the window shows when it settles. A window no framework hosts
-    /// carries it out at once.
-    ///
-    /// What it came to when carried out at once; `None` when queued.
     fn queue(
         &mut self,
         op: crate::file_ops::FileOp,
@@ -1359,9 +1005,6 @@ impl FilesState {
         Some(outcome)
     }
 
-    /// Show what the operations carried out since the last presentation
-    /// came to: the ones this window queued as it asked, any other (an
-    /// agent's, another window's, an undo) as a refreshed listing.
     pub(crate) fn follow_ops(
         &mut self,
         ops: &ui::tilo_resource::Outbox<crate::resource::FileTask, Vec<crate::file_ops::Change>>,
@@ -1447,15 +1090,12 @@ impl FilesState {
                         self.end_rename_editor();
                     }
                 }
-                // The editor stays open so the name can be fixed.
                 Some(error) => {
                     self.notify_failure(t("files-rename-failed-title"), &error, None);
                 }
             },
             OpFollowUp::Trash { count } => match error {
                 None => {
-                    // Undo puts back only what Files could tell apart in
-                    // Trash; anything else is offered no Undo it can't keep.
                     let undoable = outcome
                         .result()
                         .iter()
@@ -1516,7 +1156,6 @@ impl FilesState {
         }
     }
 
-    /// Select what an operation wrote, when it is in the folder shown.
     fn select_written(&mut self, outcome: &crate::file_ops::Outcome) {
         let written = outcome.result().iter().find_map(|change| match change {
             crate::file_ops::Change::Wrote { path } => Some(PathBuf::from(path)),
@@ -1530,24 +1169,16 @@ impl FilesState {
         }
     }
 
-    /// Say that a change is done, with Undo when it can be taken back. Only
-    /// a change worth taking back is announced: one the listing alone would
-    /// not show, like files leaving the folder.
     fn notify_done(&mut self, title: String, undoable: bool) {
         self.status = None;
-        // Undo is the window's: offered only when the window has it to give
-        // (a window no framework hosts keeps no history).
         let undo = undoable && self.undo.can_undo();
         self.notice
             .show(title, "", undo.then_some(NoticeAction::Undo));
         self.structure_dirty = true;
     }
 
-    /// Say that something failed: `title` says what, `reason` why, and
-    /// `action` is the way on, when there is one.
     fn notify_failure(&mut self, title: String, reason: &str, action: Option<NoticeAction>) {
         if reason == crate::file_ops::CANCELLED {
-            // The person stopped it: what got through can be taken back.
             self.notify_done(t("files-transfer-stopped"), true);
             return;
         }
@@ -1557,8 +1188,6 @@ impl FilesState {
         self.structure_dirty = true;
     }
 
-    /// A new change makes an Undo notice stale: its Undo would take back
-    /// the newer change instead of the one it names.
     fn retire_stale_undo_notice(&mut self) {
         if self.notice.offers_undo() {
             self.notice.dismiss();
@@ -1566,7 +1195,6 @@ impl FilesState {
         }
     }
 
-    /// Act on a notice's button.
     fn act_on_notice(&mut self, action: NoticeAction) {
         match action {
             NoticeAction::Undo => {
@@ -1591,8 +1219,6 @@ impl FilesState {
         self.structure_dirty = true;
     }
 
-    /// Say why any of `count` weren't pasted; after Cut, take the moved ones
-    /// off the clipboard (the ones that failed stay, to retry).
     fn settle_paste(&mut self, count: usize, cut: bool, outcome: &crate::file_ops::Outcome) {
         use crate::file_ops::Change;
         let error = outcome.reason();
@@ -1608,7 +1234,6 @@ impl FilesState {
             self.clipboard
                 .retain(|path| !done.iter().any(|from| path.as_path() == Path::new(from)));
         }
-        // What was pasted shows up in the listing; only a failure is news.
         if let Some(error) = error {
             let title = t_args(
                 "files-paste-failed",
@@ -1621,8 +1246,6 @@ impl FilesState {
         }
     }
 
-    /// What the person selected, named: a single entry by its name, more by
-    /// how many there are. `None` while nothing is selected.
     pub(crate) fn selection_named(&self) -> Option<(usize, String)> {
         let selected = self.selected_paths();
         let first = selected.first()?;
@@ -1633,8 +1256,6 @@ impl FilesState {
         Some((selected.len(), name))
     }
 
-    /// `key` naming the selection (`files-copy-selected`): "Copy
-    /// “report.pdf”", or "Copy 3 items".
     pub(crate) fn selection_label(key: &str, (count, name): &(usize, String)) -> String {
         crate::i18n::t_args(
             key,
@@ -1645,10 +1266,6 @@ impl FilesState {
         )
     }
 
-    /// Filesystem changes bound to what the person selected, each naming it:
-    /// rename the one selected entry, move the selection to Trash. They act
-    /// on the selection (their contract says so, and an app's search lists
-    /// them first) and are offered only while there is one.
     pub(crate) fn selection_declarations(
         &self,
     ) -> Vec<ui::tilo_resource::ActionDecl<crate::resource::FileExplorer>> {
@@ -1701,9 +1318,6 @@ impl FilesState {
             .collect()
     }
 
-    /// Filesystem changes bound to the entry row `row`: rename, move to a
-    /// folder, move to Trash — the resource's queued, undoable verbs with
-    /// this device and the entry bound, for an agent acting on the row.
     pub(crate) fn entry_declarations(
         &self,
         row: &str,
@@ -1744,9 +1358,6 @@ impl FilesState {
         [rename, move_to, trash].into_iter().flatten().collect()
     }
 
-    /// Filesystem changes an agent or a script asks for in the folder shown:
-    /// the resource's queued, undoable verbs with this device and the folder
-    /// bound, naming only entries the folder holds.
     pub(crate) fn file_op_declarations(
         &self,
     ) -> Vec<ui::tilo_resource::ActionDecl<crate::resource::FileExplorer>> {
@@ -1757,7 +1368,6 @@ impl FilesState {
         if self.is_trash_view() || !self.shown_is_folder {
             return Vec::new();
         }
-        // The folder shown is where these act; a relative one names none.
         let Ok(here) = ui::tilo_resource::AbsolutePath::new(&self.current_path) else {
             return Vec::new();
         };
@@ -1821,11 +1431,6 @@ impl FilesState {
             .bind(file_explorer::Extract::paths().device, device)
             .and(file_explorer::Extract::paths().to, Some(here))
             .declaration("extract-here", word!("files-folder-extract-here"));
-        // Each of these names the entries it changes by name or path, which
-        // an agent or a script passes and a person picks in the listing: a
-        // person renames, moves or trashes what they selected, or a row's
-        // entry, through the actions bound to it. Only a new folder asks
-        // nothing but its name.
         let for_agents = |decl: ui::tilo_resource::ActionDecl<FileExplorer>| {
             decl.for_audience(ui::tilo_actions::Audience::Agents)
         };
@@ -1844,7 +1449,6 @@ impl FilesState {
         new_folder.into_iter().chain(by_entry).map(shown).collect()
     }
 
-    /// Show the bookmarked `places`, resolved on this device.
     pub(crate) fn present_places(&mut self, places: &[String]) {
         let favorites = resolve_places(places, self.home_path.as_deref(), &self.user_dirs);
         if self.favs.borrow().favorites == favorites {
@@ -1855,14 +1459,10 @@ impl FilesState {
         self.structure_dirty = true;
     }
 
-    /// The stored place for folder `path` on this device.
     fn place_for(&self, path: &Path) -> String {
         crate::places::place_of(path, self.home_path.as_deref(), &self.user_dirs)
     }
 
-    /// Submit a bookmark verb. The sidebar already shows it; the stored
-    /// places are presented back once it applies (or again unchanged if it
-    /// is refused).
     fn submit(&mut self, invoke: ui::tilo_resource::Invoke<crate::resource::FileExplorer>) {
         self.retire_stale_undo_notice();
         if let Some(dispatcher) = &self.dispatcher {
@@ -1870,7 +1470,6 @@ impl FilesState {
         }
     }
 
-    /// The view preferences this window shows.
     fn current_preferences(&self) -> crate::resource::FilesPreferences {
         crate::resource::FilesPreferences {
             view: crate::resource::view_mode_token(self.view_mode).to_owned(),
@@ -1882,8 +1481,6 @@ impl FilesState {
         }
     }
 
-    /// Keep the widths the person dragged as their preferences, so a column
-    /// stays where they put it after a relaunch.
     fn store_widths(&self) {
         let widths = self.list_slot.widths();
         let stored = self.preferences.as_ref().map(ui::framework::Setting::get);
@@ -1897,7 +1494,6 @@ impl FilesState {
         }
     }
 
-    /// Keep what the window now shows as the person's preferences.
     fn store_preferences(&mut self) {
         let current = self.current_preferences();
         if self.shown_preferences.as_ref() == Some(&current) {
@@ -1911,8 +1507,6 @@ impl FilesState {
         self.shown_preferences = Some(current);
     }
 
-    /// Show the person's preferences when they changed: in another window,
-    /// on another device, in Settings.
     fn adopt_preferences(&mut self) {
         let Some(stored) = self.preferences.as_ref().map(ui::framework::Setting::get) else {
             return;
@@ -1921,8 +1515,6 @@ impl FilesState {
             return;
         }
         self.shown_preferences = Some(stored.clone());
-        // A column the person dragged wide is theirs on every device: the
-        // list is laid out at those widths again.
         self.list_slot.set_widths(&stored.widths);
         self.view_mode = crate::resource::parse_view_mode(&stored.view);
         let sort_by = crate::resource::parse_sort_key(&stored.sort);
@@ -1940,24 +1532,18 @@ impl FilesState {
         self.structure_dirty = true;
     }
 
-    /// Surface a bounded result from startup portals such as received-file
-    /// admission without coupling those clients to widget internals.
     pub fn set_external_status(&mut self, status: impl AsRef<str>) {
         const MAX_STATUS_CHARS: usize = 512;
         self.status = Some(status.as_ref().chars().take(MAX_STATUS_CHARS).collect());
         self.structure_dirty = true;
     }
 
-    /// Deterministic visual-test seam for the remote-account details sheet.
-    /// Production paths always re-read the canonical store immediately before
-    /// opening this surface; the seam never persists a sample account.
     #[doc(hidden)]
     pub fn debug_show_remote_account(
         &mut self,
         account: &crate::remote_accounts::RemoteAccount,
         reauthenticate: bool,
     ) {
-        // The places list shows the account too, as it would from the store.
         self.startup_accounts = Some(vec![account.clone()]);
         self.places_shown = None;
         self.show_remote_account_panel(account, reauthenticate);
@@ -1971,7 +1557,6 @@ impl FilesState {
         self.leave_cloud_browse();
         let service = account.kind.label().to_string();
         let (title, lines, action) = if reauthenticate {
-            // The one thing to do, said once; Settings is where people sign in.
             (
                 t_args(
                     "files-account-sign-in-title",
@@ -2012,8 +1597,6 @@ impl FilesState {
         });
     }
 
-    /// Choose the cloud account row `id` in the places list: open its folder
-    /// when it has one now, else say what is wrong with it.
     fn show_remote_account(&mut self, id: &str) -> bool {
         self.refresh_external_search_catalogs();
         let Some(account) = self.remote_account(id) else {
@@ -2037,9 +1620,6 @@ impl FilesState {
         true
     }
 
-    /// The thumbnail context (service + peniko memo) handed to each rebuilt file
-    /// view. `None` when no thumbnail service could be opened — the view then
-    /// falls back to type badges.
     fn thumb_ctx(&self) -> Option<ThumbCtx> {
         Some(ThumbCtx {
             service: self.thumbs.clone()?,
@@ -2047,14 +1627,10 @@ impl FilesState {
         })
     }
 
-    /// The current zoom scale multiplier (icon/row size).
     fn zoom_scale(&self) -> f64 {
         config::zoom_scale(self.zoom_level)
     }
 
-    /// Refresh an already-loaded private Places projection. This is deliberately
-    /// called only by the favourite mutation paths, never by a palette query or
-    /// normal CRDT `sync`.
     fn refresh_places_search(&mut self) {
         self.places_search_revision = self.places_search_revision.wrapping_add(1);
         let favorites = self.favs.borrow().favorites.clone();
@@ -2062,9 +1638,6 @@ impl FilesState {
             .refresh(self.places_search_revision, &favorites);
     }
 
-    /// Admit the next bounded collaborative mount page. Search state is reset
-    /// only when the source authority generation changes; otherwise the
-    /// retained `SearchCatalog` gets exactly the newly fetched rows.
     fn advance_collaborative_search_page(&self) -> crate::model::WorkspaceRecordIndexPage {
         let page = self.collaborative_record_pager.borrow_mut().next_page();
         let revision = self.collaborative_search_revision.get();
@@ -2079,9 +1652,6 @@ impl FilesState {
         page
     }
 
-    /// Refresh external metadata after an explicit directory refresh/navigation
-    /// or completed remote operation. The mount portion consumes a single
-    /// bounded continuation page, never its entire authority.
     fn remote_account_snapshot(&self) -> Vec<crate::remote_accounts::RemoteAccount> {
         self.startup_accounts
             .clone()
@@ -2108,10 +1678,6 @@ impl FilesState {
             .refresh(self.remote_accounts_search_revision, &accounts);
     }
 
-    /// The entries currently shown: the sorted listing of the folder open,
-    /// narrowed by what the window's search has been given. There is no
-    /// in-app search field — the window's own search is the one control, and
-    /// this is what it narrows.
     pub fn displayed_entries(&self) -> Vec<Entry> {
         let find = self.find.trim().to_lowercase();
         if find.is_empty() {
@@ -2124,16 +1690,11 @@ impl FilesState {
             .collect()
     }
 
-    /// How many of the folder's entries what the person typed leaves.
     fn find_count(&self) -> ui::widget::FilterCount {
         let shown = self.displayed_entries().len();
         ui::widget::FilterCount::new(shown, self.entries.len())
     }
 
-    /// The sole bridge from a durable/agent-visible resource id to a host
-    /// path. Paths stay in the live presentation snapshot: action payloads,
-    /// history and search identities carry only opaque ids and are refused
-    /// when the row disappeared or was replaced.
     fn entry_resource_id(entry: &Entry) -> String {
         entry.record_id.map_or_else(
             || crate::search_provider::entry_resource_id(&entry.path),
@@ -2141,16 +1702,10 @@ impl FilesState {
         )
     }
 
-    /// The listed entry whose resource id is `id`
-    /// ([`Self::entry_resource_id`]), through ids made once per listing:
-    /// finding a row's entry hashed the path of every entry before it, and
-    /// a publication asks it of every row.
     fn entry_by_resource_id(&self, id: &str) -> Option<&Entry> {
         self.entry_ids.borrow_mut().find(&self.entries, id)
     }
 
-    /// The resource identities (kind and id) of the single selected entry,
-    /// most specific first: its collaborative record, then its path.
     fn selected_entry_identities(&self) -> Vec<(String, String)> {
         if self.selection.selected().len() != 1 {
             return Vec::new();
@@ -2182,8 +1737,6 @@ impl FilesState {
             .map(|entry| entry.path.clone())
     }
 
-    /// Recent actions name only a currently presented, still-existing row.
-    /// A retained address cannot navigate or edit another location's history.
     fn recent_entry_path(&self, resource_id: &str) -> Result<PathBuf, String> {
         if !self.is_recent_view() {
             return Err(t("files-recent-action-unavailable"));
@@ -2200,11 +1753,6 @@ impl FilesState {
         self.run_effect_for(effect, None)
     }
 
-    /// Do `effect`: show a folder, copy or paste, open or share a file. A job (sending to a nearby device, creating a share link)
-    /// answers later through the reply [`Self::await_effect`] keeps.
-    ///
-    /// # Errors
-    /// Why nothing (or not everything) was done.
     #[allow(
         clippy::too_many_lines,
         reason = "one match over the effect vocabulary keeps every caller's door in one auditable place"
@@ -2390,14 +1938,10 @@ impl FilesState {
                 if self.has_native_trash_entries() {
                     return Err(t("files-native-trash-delete-unavailable"));
                 }
-                // The effect is confirmed by its contract; no second sheet.
                 self.perform_empty_trash();
                 None
             }
             FilesEffect::OpenItem { item } => {
-                // Resolved only against what the window shows now, so a
-                // deleted, renamed or replayed row cannot regain authority
-                // or disclose a path.
                 let target = self
                     .visible_open_path(&item)
                     .ok_or_else(|| crate::i18n::CATALOG.t("files-location-gone"))?;
@@ -2665,10 +2209,6 @@ impl FilesState {
         Ok(Ran::Done(answer))
     }
 
-    /// Do `effect` through the door every caller uses: submitted to the
-    /// framework host, which answers it with [`Self::run_effect`] like a
-    /// palette's or an agent's call. A widget no framework hosts (a shell's
-    /// embedded tile) does it at once.
     fn perform(&mut self, effect: crate::effects::FilesEffect) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.effect(&effect);
@@ -2680,7 +2220,6 @@ impl FilesState {
         }
     }
 
-    /// A job answers its caller later; one runs at a time.
     fn refuse_while_answering(&mut self) -> Result<(), String> {
         self.retire_cancelled_effect();
         if self.effect_reply.is_some() {
@@ -2689,8 +2228,6 @@ impl FilesState {
         Ok(())
     }
 
-    /// A cancelled caller cannot acknowledge a transfer. Retire its local
-    /// polling state while the host retains the durable recovery receipt.
     fn retire_cancelled_effect(&mut self) {
         if self
             .effect_reply
@@ -2704,7 +2241,6 @@ impl FilesState {
         }
     }
 
-    /// Keep `reply` until the job [`Self::run_effect`] started settles.
     pub(crate) fn await_effect(&mut self, reply: ui::framework::EffectReply) {
         match self.answering_op.take() {
             Some(op) => {
@@ -2735,7 +2271,6 @@ impl FilesState {
         }
     }
 
-    /// Answer the caller waiting on `op`, now that it settled as `outcome`.
     fn answer_op(&mut self, op: &crate::file_ops::FileOp, outcome: &crate::file_ops::Outcome) {
         self.op_replies.retain(|(_, reply)| !reply.is_cancelled());
         let Some(at) = self.op_replies.iter().position(|(queued, _)| queued == op) else {
@@ -2748,7 +2283,6 @@ impl FilesState {
         });
     }
 
-    /// Answer the job awaiting its result, if one is.
     fn answer_effect(
         &mut self,
         result: Result<tilo_actions::ActionOutput, tilo_actions::ActionFailure>,
@@ -2758,7 +2292,6 @@ impl FilesState {
         }
     }
 
-    /// Select the entry at `target`, as acting on its row does.
     fn select_entry(&mut self, target: &Path) -> Result<(), String> {
         let index = self
             .displayed_entries()
@@ -2770,8 +2303,6 @@ impl FilesState {
         Ok(())
     }
 
-    /// Run the menu command `command` builds for the entry `entry` names,
-    /// with that entry selected, as its context menu does.
     fn entry_command(
         &mut self,
         entry: &str,
@@ -2795,7 +2326,6 @@ impl FilesState {
         Ok(None)
     }
 
-    /// The remote account `id` names.
     fn account_named(&self, id: &str) -> Result<crate::remote_accounts::RemoteAccount, String> {
         self.remote_account(id)
             .ok_or_else(|| "remote account is no longer available".to_string())
@@ -2805,9 +2335,6 @@ impl FilesState {
         entry_rows::importable_under(path, &self.import_mounts())
     }
 
-    /// Where the accounts a converted file can be imported once from are
-    /// mounted: Google Drive and Dropbox accounts, not themselves imports,
-    /// not disabled.
     fn import_mounts(&self) -> Vec<PathBuf> {
         self.remote_account_snapshot()
             .into_iter()
@@ -2823,9 +2350,6 @@ impl FilesState {
             .collect()
     }
 
-    /// Import uses the ordinary queued copy path: kernel reads hydrate the
-    /// mounted source, while the destination contains independent local bytes.
-    /// No credential, mount, pin or sync relationship is created here.
     fn import_once(
         &mut self,
         entry: &str,
@@ -2837,8 +2361,6 @@ impl FilesState {
         if !self.importable_cloud_entry(&source) {
             return Err(t("files-import-source-unavailable"));
         }
-        // Retain the validated target, not its alias, when the document
-        // outbox executes the copy on a later frame.
         if !folder.is_dir() {
             return Err(crate::i18n::CATALOG.t_args(
                 "files-folder-missing",
@@ -2865,8 +2387,6 @@ impl FilesState {
         })
     }
 
-    /// Copy the entry `entry` names into `folder`, keeping its name: a
-    /// queued, undoable operation.
     fn copy_into_folder(
         &mut self,
         entry: &str,
@@ -2890,8 +2410,6 @@ impl FilesState {
         })
     }
 
-    /// Queue the copy of one entry `op`: the operation queued, `None` when
-    /// it was carried out at once.
     fn queue_copy(
         &mut self,
         op: crate::file_ops::FileOp,
@@ -2911,10 +2429,6 @@ impl FilesState {
         }
     }
 
-    /// What an effect that changed files came to: done when `queued` is
-    /// `None` (carried out at once), else a job answered once the device
-    /// carried the queued operation out, so a caller that hears it finished
-    /// finds the files there.
     fn answer_when_settled(&mut self, queued: Option<crate::file_ops::FileOp>) -> Ran {
         match queued {
             Some(op) => {
@@ -2925,7 +2439,6 @@ impl FilesState {
         }
     }
 
-    /// Show the collaborative record `record` in its folder, selected.
     fn reveal_record(&mut self, record: &str) -> Result<(), String> {
         let record_id = uuid::Uuid::parse_str(record)
             .map_err(|_| "invalid collaborative record id".to_string())?;
@@ -2950,7 +2463,6 @@ impl FilesState {
         Ok(())
     }
 
-    /// Accept (into `destination`) or decline an incoming nearby transfer.
     fn decide_nearby(
         &mut self,
         transfer: ui::collaboration::NearbyTransferHandle,
@@ -3012,8 +2524,6 @@ impl FilesState {
             })
     }
 
-    /// Refresh the persistent top bar with the current navigation context
-    /// (path, history availability, view mode) before it is laid out.
     fn update_toolbar(&self) {
         let nav = crate::toolbar::NavAvailability {
             back: !self.history.is_empty(),
@@ -3034,7 +2544,6 @@ impl FilesState {
         );
     }
 
-    /// What the places list shows now: the Favorites and the locations.
     fn current_places(&self) -> Places {
         Places::new(&self.favs, self.current_path.clone())
             .with_active_account(self.cloud.active.then(|| self.cloud.account.clone()))
@@ -3051,7 +2560,6 @@ impl FilesState {
                             status: account.badge(),
                             id: account.id.as_str().to_owned(),
                             label: account.label,
-                            // A folder that cannot be opened has no place to go to.
                             mount: account.mount.filter(|_| available),
                         }
                     })
@@ -3060,10 +2568,6 @@ impl FilesState {
             .with_drives(self.drives.shown.iter().map(drives::drive_place).collect())
     }
 
-    /// Put the **places** pane (the window's sidebar) in the shell. The list
-    /// keeps its own keyboard focus and scroll, so it is replaced only when
-    /// what it shows changes: its places, or the chosen one when the choice
-    /// did not come from the list itself.
     fn refresh_places_pane(&mut self, chrome: &mut Chrome) {
         let places = self.current_places();
         let sections = places.sections();
@@ -3094,15 +2598,11 @@ impl FilesState {
         self.places_shown = Some((sections, selected));
     }
 
-    /// The **content** pane (the responsive body's detail): the file list or
-    /// grid (plus any error affordance), scrolling under a symmetric gutter.
     fn build_content_pane(&self, theme: &ui::Theme) -> Box<dyn Widget> {
         if self.cloud.active {
             return self.build_cloud_pane(theme);
         }
         let sp = &theme.tokens.spacing;
-        // Loading and failure replace the list, so no stale rows sit under
-        // a failure.
         if let Some((title, detail, can_retry)) = self.state_surface_copy() {
             return Box::new(if can_retry {
                 failure_state(
@@ -3116,10 +2616,6 @@ impl FilesState {
         }
         let displayed = self.displayed_entries();
         let scale = self.zoom_scale();
-        // `renaming` marks the item edited in place, publishing its label rect
-        // into `rename_rect` for the host to draw the shared editor over. The
-        // cursor seeds the view's pointer position so a press hit-tests
-        // correctly on the frame it is rebuilt (see `FileView::with_cursor`).
         let view = FileView::new(&displayed, &self.selection, &self.cmds)
             .with_scale(scale)
             .with_workspace_roots(Rc::from(self.workspace_roots.clone()))
@@ -3132,11 +2628,8 @@ impl FilesState {
             .with_thumbs(self.thumb_ctx())
             .with_folder_counts(Some(Arc::clone(&self.folder_counts)), self.show_hidden)
             .with_list(self.list_slot.clone());
-        // A plain (percent-height) column: this pane is the content column of
-        // the shell, so it must FILL that rect (`percent(1.0)` height).
         let mut view_col = Column::new().with_vertical_padding(sp.s1);
         match self.view_mode {
-            // The list is a table that scrolls itself.
             ViewMode::List => {
                 view_col = view_col.push(crate::views::list_view::build_list(
                     view,
@@ -3144,10 +2637,6 @@ impl FilesState {
                     self.sort_order,
                 ));
             }
-            // The grid scrolls: pin the scroll viewport to the *remaining*
-            // height of the content column (grow-from-zero) rather than
-            // letting it claim `percent(1.0)`, so a long directory overflows
-            // the viewport and the wheel + scrollbar thumb move the grid.
             ViewMode::Grid => {
                 view_col = view_col.push(
                     Scrollable::new(ScrollAxis::Vertical)
@@ -3162,17 +2651,11 @@ impl FilesState {
         if !self.entries.is_empty() {
             return view_col.into_widget();
         }
-        // An empty folder keeps its view underneath, so a press on the
-        // background, a drop or the context menu still reach the folder.
         Box::new(Stack::new().push(view_col.into_widget()).push(Box::new(
             EmptyState::new(self.empty_state_message()).with_icon(self.empty_state_icon()),
         )))
     }
 
-    /// The label for the floating status bubble: an operation status, else the
-    /// item count, plus the selection summary when something is selected. The
-    /// current path is shown ONCE — in the path bar at the top — so it is
-    /// deliberately not repeated here. Empty string means nothing to surface.
     fn footer_label(&self) -> String {
         if self.cloud.active {
             return t_args(
@@ -3180,8 +2663,6 @@ impl FilesState {
                 &[arg("count", i64_of_usize(self.cloud.entries.len()))],
             );
         }
-        // A folder that did not open, or is still opening, has no count to
-        // report: the state surface says what is happening.
         if self.error.is_some() || self.is_loading {
             return String::new();
         }
@@ -3240,9 +2721,6 @@ impl FilesState {
         )
     }
 
-    /// Concise, readable copy for the center state. The visual treatment has a
-    /// deliberately finite line length, while the full path remains discoverable
-    /// in the location bar and the root accessibility description.
     fn state_surface_copy(&self) -> Option<(String, String, bool)> {
         if self.cloud.active {
             return None;
@@ -3275,17 +2753,12 @@ impl FilesState {
         ))
     }
 
-    /// Why the folder shown couldn't be listed, and the system's words for
-    /// it, when it couldn't.
     fn folder_failure(&self) -> Option<(crate::fileops::FolderFailure, &str)> {
         let error = self.error.as_deref()?;
-        // The stored error is the localized "couldn't open" sentence around
-        // the system's message; the cause is what follows its colon.
         let cause = error.rsplit_once(": ").map_or(error, |(_, cause)| cause);
         Some((crate::fileops::FolderFailure::of(cause), cause))
     }
 
-    /// The command a failed listing's button runs.
     fn folder_recovery_command(&self) -> FileCommand {
         match self.folder_failure() {
             Some((failure, _)) if !failure.may_pass() => FileCommand::Up,
@@ -3305,10 +2778,6 @@ impl FilesState {
         self.collab_panel_focused = false;
     }
 
-    /// Surface the complete built-in keyboard vocabulary in the same modal
-    /// shell used for Properties, sharing and recovery.  The rows describe
-    /// semantic primary-modifier bindings (Ctrl on most desktops, Command on
-    /// macOS), rather than hard-coding a physical keyboard layout.
     fn show_keyboard_shortcuts_panel(&mut self) {
         use ui::platform::{HostShortcut, PlatformConventions, Shortcut};
         let conventions = PlatformConventions::default();
@@ -3319,8 +2788,6 @@ impl FilesState {
                 .collect::<Vec<_>>()
                 .join(" / ")
         };
-        // In the order a person works: get somewhere, change things, see
-        // them differently.
         let rows: [(&str, Vec<Shortcut>); 14] = [
             ("files-shortcuts-open", vec![Shortcut::key("Enter")]),
             ("files-shortcuts-preview", vec![Shortcut::key("Space")]),
@@ -3439,9 +2906,6 @@ impl FilesState {
         }
     }
 
-    /// Spoken state for custom-painted surfaces which otherwise have no
-    /// backing child widget. The stable accessible name on Files' root turns
-    /// value changes into live announcements without stealing keyboard focus.
     fn accessibility_status(&self) -> String {
         if self.cloud.active {
             return self.footer_label();
@@ -3472,8 +2936,6 @@ impl FilesState {
         self.footer_label()
     }
 
-    /// Say news in the window's bar: a new status, or that the archive just
-    /// entered is read-only until extracted.
     fn publish_status(&mut self) {
         if self.status != self.status_said {
             self.status_said.clone_from(&self.status);
@@ -3493,15 +2955,11 @@ impl FilesState {
             }
             self.archive_said = archive;
         }
-        // What the folder says about itself is recorded, not thrown at the
-        // window: nothing the system says expires.
         if let Some(text) = self.status_notice.take() {
             ui::attention::publish(ui::attention::Notice::did(files_owner(), text));
         }
     }
 
-    /// Whether the content column is narrower than the direct toolbar
-    /// controls need; they move into the overflow when it is.
     fn sync_toolbar_compact(&self, chrome: &Chrome) {
         let column = chrome.nav.geometry().content_column;
         self.toolbar.set_content_width(column.width());
@@ -3521,7 +2979,6 @@ impl FilesState {
             .primary()
             .filter(|&i| self.selection.is_selected(i))
     }
-    /// All currently-selected displayed-entry indices.
     pub fn selected_indices(&self) -> Vec<usize> {
         self.selection.selected()
     }
@@ -3532,10 +2989,6 @@ impl FilesState {
         self.is_loading
     }
 
-    /// Deterministic offscreen-shot seam for the busy state. Production
-    /// navigation owns this transition synchronously; exposing it only for the
-    /// headless renderer lets visual CI cover the semantic/loading composition
-    /// without adding a fake delayed filesystem implementation.
     #[doc(hidden)]
     pub fn debug_show_loading_state(&mut self) {
         self.entries.clear();
@@ -3544,7 +2997,6 @@ impl FilesState {
         self.status = None;
     }
 
-    /// Deterministic offscreen-shot seam for the actionable error state.
     #[doc(hidden)]
     pub fn debug_show_error_state(&mut self) {
         self.entries.clear();
@@ -3566,7 +3018,6 @@ impl FilesState {
         self.view_mode
     }
 
-    /// Navigate to `path`, pushing the current path onto the back-history.
     pub fn navigate(&mut self, path: PathBuf) {
         if path != self.current_path {
             self.history.push(self.current_path.clone());
@@ -3575,7 +3026,6 @@ impl FilesState {
         self.load(path);
     }
 
-    /// Go to the parent directory (history-aware).
     pub fn back(&mut self) {
         if self.is_recent_view() || self.is_applications_view() {
             return;
@@ -3585,13 +3035,10 @@ impl FilesState {
         }
     }
 
-    /// Go up to the parent directory (alias of `back` kept explicit for
-    /// the toolbar's distinct Up affordance).
     pub fn go_up(&mut self) {
         self.back();
     }
 
-    /// Pop the back-history.
     pub fn history_back(&mut self) {
         if let Some(prev) = self.history.pop() {
             self.forward.push(self.current_path.clone());
@@ -3599,7 +3046,6 @@ impl FilesState {
         }
     }
 
-    /// Pop the forward-history.
     pub fn history_forward(&mut self) {
         if let Some(next) = self.forward.pop() {
             self.history.push(self.current_path.clone());
@@ -3608,21 +3054,12 @@ impl FilesState {
     }
 
     pub fn refresh(&mut self) {
-        // Settling a local copy must not navigate away from its source view.
         if !self.cloud.active {
             self.load(self.current_path.clone());
         }
     }
 
-    /// Re-read the visible directory without treating it as navigation, when
-    /// its watch reported a change or, where no watch covers it, when its
-    /// poll is due. Stable record identity preserves selection across remote
-    /// rename/move metadata; ordinary files fall back to their path. Scroll
-    /// and transient operation status remain untouched.
     fn refresh_metadata_if_due(&mut self, now: Instant) -> bool {
-        // The first sync after construction starts the watches; changes made
-        // before a watch started are covered by one more read. A folder read starts the watch of the folder it reads; this
-        // starts it only for a folder shown without one.
         if !self.folder_reads.is_pending() {
             let watched = self.watched_directory(&self.current_path);
             if self.directory_watch.point_at(watched.as_deref()) {
@@ -3635,8 +3072,6 @@ impl FilesState {
                     .parent()
                     .filter(|dir| !dir.as_os_str().is_empty()),
             );
-        // A directory already known to have changed is not drained again
-        // until it is read: its events would only wake the window again.
         if !self.directory_changed && self.directory_watch.take_changes() {
             self.directory_changed = true;
         }
@@ -3645,9 +3080,6 @@ impl FilesState {
         let catalog_signal = catalog_watched || self.catalog_watch.take_changes();
         let poll_due = self.next_metadata_refresh.is_some_and(|due| now >= due);
         if poll_due || self.next_metadata_refresh.is_none() {
-            // Set the next deadline before doing any I/O.  A transient read
-            // error must not accidentally turn a very large directory into a
-            // busy loop.
             self.next_metadata_refresh = self.next_poll_interval().map(|interval| now + interval);
         }
         let catalog_changed = (catalog_signal
@@ -3657,9 +3089,6 @@ impl FilesState {
                 .collaborative_record_pager
                 .borrow_mut()
                 .poll_generation();
-        // `sync` admits the one bounded page for this turn. Keep polling and
-        // admission separate so an authority change cannot consume two pages
-        // in one UI frame.
         let identities_changed = (identity_signal
             || (poll_due
                 && self.identity_watch.coverage() != crate::directory_watch::Coverage::Complete))
@@ -3673,17 +3102,12 @@ impl FilesState {
         if !(directory_polled || change_readable) || self.directory_read_deferred() {
             return changed;
         }
-        // Drain before reading: a change after this point wakes the window
-        // again and is read next time.
         let _ = self.directory_watch.take_changes();
         self.directory_changed = false;
         self.last_directory_read = now;
         self.refresh_metadata_preserving_view() || changed
     }
 
-    /// The record catalogue's roots, when one generation check reads them
-    /// all, so that a change any watch reports is seen; with more, none, and
-    /// the catalogue is checked on a timer, a few roots at a time.
     fn catalog_roots_to_watch(&self) -> Vec<PathBuf> {
         let roots = self.collaborative_record_pager.borrow().generation_roots();
         if roots.len() > crate::model::WorkspaceRecordIndexPager::GENERATION_ROOTS_PER_POLL {
@@ -3692,15 +3116,10 @@ impl FilesState {
         roots
     }
 
-    /// A rename or pin drag defers reading the listing, and a read under way
-    /// covers every change before it started.
     fn directory_read_deferred(&self) -> bool {
         self.renaming.is_some() || self.pin_drag.is_some() || self.folder_reads.is_pending()
     }
 
-    /// The directory to watch for `path`'s listing: `None` for listings that
-    /// are not one directory's entries (Recent, an archive, the hosted Trash
-    /// that merges two directories), which are polled instead.
     fn watched_directory(&self, path: &Path) -> Option<PathBuf> {
         let virtual_listing = crate::recent::is_location(path)
             || crate::applications::is_location(path)
@@ -3709,15 +3128,11 @@ impl FilesState {
         (!virtual_listing).then(|| path.to_path_buf())
     }
 
-    /// How often to poll what no change signal covers, or `None` when
-    /// nothing needs polling.
     fn next_poll_interval(&self) -> Option<Duration> {
         use crate::directory_watch::Coverage;
         let entries = self.entries.len();
         let directory = match self.directory_watch.coverage() {
             Coverage::Complete => None,
-            // Local edits arrive as events; remote ones (a network share, a
-            // FUSE mount that does not signal them) only by reading.
             Coverage::Partial => Some(metadata_refresh::interval(entries)),
             Coverage::None => Some(metadata_refresh::unwatched_interval(entries)),
         };
@@ -3746,17 +3161,11 @@ impl FilesState {
         }
         self.trusted_humans = next;
         self.structure_dirty = true;
-        // File history names its authors from this directory: rebind it.
         self.framework_history_binding = None;
         true
     }
 
-    /// Re-read the current directory while preserving stable-record
-    /// selection, scroll, and operation status. Collaborative controls use
-    /// this path because their xattr response changes row metadata but is not
-    /// navigation.
     fn refresh_metadata_preserving_view(&mut self) -> bool {
-        // A read still outstanding is newer than what is shown.
         if self.folder_reads.is_pending() {
             return false;
         }
@@ -3766,9 +3175,6 @@ impl FilesState {
             .is_some_and(|(purpose, read)| self.apply_read(purpose, read))
     }
 
-    /// Show `listing`, a new read of the folder shown, keeping the
-    /// selection (by stable record identity, else by path), the scroll and
-    /// the status.
     fn update_from(&mut self, listing: Result<Vec<Entry>, String>) -> bool {
         let selected = self
             .selection
@@ -3824,9 +3230,6 @@ impl FilesState {
         true
     }
 
-    /// Single/double click handler retained for tests + the command path.
-    /// A second click on the same row within the session's multi-click window
-    /// returns its path.
     pub fn select(&mut self, idx: Option<usize>) -> Option<PathBuf> {
         let now = ui::time::now();
         if let (Some(i), Some((pi, pt))) = (idx, self.last_click)
@@ -3869,8 +3272,6 @@ impl FilesState {
     }
 
     fn sort_preserving_selection(&mut self) {
-        // Sorting only permutes this snapshot; paths identify its unchanged
-        // entries without cloning file metadata or reading/hydrating content.
         let positions: HashMap<_, _> = self
             .selection
             .selected_set()
@@ -3897,8 +3298,6 @@ impl FilesState {
         self.retain_shown_selection();
         self.renaming = self.renaming.and_then(|old| remapped.get(&old).copied());
         self.rename_rect.set(None);
-        // A previous click's row cannot be used for double-click detection
-        // after reordering: that row may now contain a different file.
         self.last_click = None;
     }
     pub fn set_view_mode(&mut self, m: ViewMode) {
@@ -3925,16 +3324,6 @@ impl FilesState {
         )
     }
 
-    // --- Command application ------------------------------------------
-
-    /// Apply one queued command, returning whether it changed the widget
-    /// Apply one semantic Files command through the same path used by menus,
-    /// keyboard actions and accessibility activation.
-    ///
-    /// This is public so shell hosts and full-stack mount tests can drive the
-    /// application without synthesizing layout-dependent pointer coordinates.
-    // Central semantic dispatcher: every menu, keyboard, accessibility, and
-    // integration-test command must share the same state transitions.
     #[allow(
         clippy::too_many_lines,
         reason = "central semantic command dispatcher keeps every input source on one state transition path"
@@ -3961,8 +3350,6 @@ impl FilesState {
             self.status = Some(t("files-archive-read-only"));
             return true;
         }
-        // Recent is not a folder: nothing can be created in, pasted into or
-        // run from it. Items keep working (open, copy, rename, drag).
         if self.is_recent_view()
             && matches!(
                 &cmd,
@@ -4006,8 +3393,6 @@ impl FilesState {
             FileCommand::ContextSelect(target) => self.apply_context_select(target),
             FileCommand::Activate(index) => self.apply_activate(index),
             FileCommand::ContextMenuAt { index, at } => {
-                // Select what the menu acts on, exactly as a right-press does,
-                // then open the one menu the window has at the row.
                 self.apply_context_select(Some(index));
                 self.last_cursor = at;
                 self.open_context_menu(at);
@@ -4030,10 +3415,6 @@ impl FilesState {
                 } else {
                     b"automatic"
                 };
-                // Pin policy is a collaborative-FS control, not a generic file
-                // xattr.  A mixed selection may contain ordinary files, and an
-                // inherited pin can only be changed on its parent.  Restrict
-                // writes to records for which this exact action is meaningful.
                 let displayed = self.displayed_entries();
                 let paths: Vec<_> = self
                     .selection
@@ -4266,8 +3647,6 @@ impl FilesState {
                             )],
                         ),
                     ];
-                    // Record ids and content hashes are the system's
-                    // bookkeeping; agents read them through the actions.
                     if let Some(metadata) = &entry.rich_metadata {
                         let properties = &metadata.properties;
                         if let (Some(width), Some(height)) =
@@ -4475,10 +3854,6 @@ impl FilesState {
                 let entry = selected.map(|(version, path)| {
                     let person = version.actor.person;
                     let identity = short_fingerprint(&version.actor.person.0);
-                    // The device that signed the version names who wrote it,
-                    // as the file's History does: an agent's own device reads
-                    // as the agent, on behalf of its person, and so does the
-                    // agent that device recorded as having caused it.
                     let attribution =
                         crate::framework_history::version_attribution(&path, version.id);
                     let author = authors
@@ -4536,8 +3911,7 @@ impl FilesState {
                 true
             }
             FileCommand::RestoreVersion { version_id } => {
-                // This legacy menu intent now selects the immutable version in
-                // shared History. Only its reviewed confirmation can write.
+                // This intent only selects the version; the reviewed confirmation writes.
                 self.refresh_framework_history_target();
                 self.close_collab_panel();
                 self.framework_history.open(Some(version_id));
@@ -4556,10 +3930,6 @@ impl FilesState {
                     self.status = Some(t("files-select-file-with-history"));
                     return true;
                 };
-                // The review remains non-committing while the daemon reads the
-                // immutable members. It repeats this preflight immediately
-                // before publishing, so reopening an old menu can never commit
-                // a merge whose members or base have changed.
                 self.show_collab_panel(CollabPanel {
                     title: t_args("files-merge-review-title", &[arg("name", entry.name)]),
                     summary: t("files-merge-review-checking"),
@@ -4690,8 +4060,6 @@ impl FilesState {
             FileCommand::Cut => self.apply_cut(),
             FileCommand::Paste => {
                 if self.can_paste_clipboard() {
-                    // The person pasting is here to answer: clashing names
-                    // are asked about once.
                     self.perform(crate::effects::FilesEffect::Paste {
                         conflict: Some("ask".into()),
                     });
@@ -4826,37 +4194,26 @@ impl FilesState {
         }
     }
 
-    /// `FileCommand::Click` — drives selection and, via the app's
-    /// double-click detection, opening.
     fn apply_click(&mut self, index: usize, ctrl: bool, shift: bool) -> bool {
         if ctrl || shift {
             self.selection.apply_click(index, ctrl, shift);
             self.retain_shown_selection();
             self.last_click = None;
         } else {
-            // Capture a multi-selection the press lands inside *before*
-            // the click collapses it, so a drag that starts here carries
-            // the whole set (drag a multi-selection). A press outside the
-            // multi-selection seeds nothing.
             let sel = self.selection.selected();
             if sel.len() > 1 && sel.contains(&index) {
-                // Keep the set while the press may still become its drag;
-                // the release collapses it (`release_click`).
                 self.drag_seed = self.selected_paths();
                 self.collapse_on_release = Some(index);
                 return true;
             }
             self.drag_seed = Vec::new();
             if let Some(path) = self.select(Some(index)) {
-                // Double-click → open / enter.
                 self.open_path(path);
             }
         }
         true
     }
 
-    /// The release of a plain press inside a multi-selection that didn't
-    /// become a drag: now it was a click, and selects just that row.
     fn release_click(&mut self) {
         if let Some(index) = self.collapse_on_release.take() {
             self.drag_seed.clear();
@@ -4867,17 +4224,10 @@ impl FilesState {
         }
     }
 
-    /// `FileCommand::ContextSelect` — selects the right-press target so the
-    /// context menu that follows acts on what was clicked.
     fn apply_context_select(&mut self, target: Option<usize>) -> bool {
         match target {
-            // A right-press on a row that isn't already part of the
-            // selection selects just it; one inside an existing
-            // multi-selection leaves that selection intact so the menu
-            // action applies to every highlighted item.
             Some(i) if !self.selection.is_selected(i) => self.selection.select_only(i),
             Some(_) => {}
-            // Right-press on empty space clears the selection.
             None => self.selection.clear(),
         }
         self.retain_shown_selection();
@@ -4885,8 +4235,6 @@ impl FilesState {
         true
     }
 
-    /// `FileCommand::NewFolder` — create, refresh, then drop into
-    /// inline-rename so the user names it right away.
     fn apply_new_folder(&mut self) -> bool {
         self.queue(
             crate::file_ops::FileOp::NewFolder {
@@ -4898,8 +4246,6 @@ impl FilesState {
         true
     }
 
-    /// `FileCommand::Delete` — trash the selection, or (already in the
-    /// Trash) first ask before permanently purging it.
     fn apply_delete(&mut self) -> bool {
         let paths = self.selected_paths();
         if paths.iter().any(|path| self.is_native_trash_entry(path)) {
@@ -4912,8 +4258,6 @@ impl FilesState {
             return self.uninstall_selected_apps();
         }
         if self.is_recent_view() {
-            // Recent lists uses of files from many folders: Delete forgets
-            // the use, as the row's menu does, and never trashes the file.
             for path in &paths {
                 self.apply_forget_recent(path);
             }
@@ -4921,9 +4265,6 @@ impl FilesState {
         }
         if !paths.is_empty() {
             if self.is_trash_view() {
-                // Already in the Trash — a second delete is irreversible.
-                // Hold the exact paths in the modal action so a changed
-                // selection cannot silently change what gets destroyed.
                 self.show_collab_panel(CollabPanel {
                     title: t_args(
                         "files-permanent-delete-title",
@@ -4952,7 +4293,6 @@ impl FilesState {
         true
     }
 
-    /// Carry out a previously confirmed permanent deletion from Trash.
     fn apply_permanent_delete(&mut self, paths: &[PathBuf]) -> bool {
         if paths.iter().any(|path| self.is_native_trash_entry(path)) {
             self.status = Some(t("files-native-trash-delete-unavailable"));
@@ -4973,13 +4313,10 @@ impl FilesState {
         true
     }
 
-    /// `FileCommand::RestoreFromTrash` — restore the selection to its
-    /// original location.
     fn is_native_trash_entry(&self, path: &Path) -> bool {
         entry_rows::in_native_trash(path, self.native_trash_dir().as_deref())
     }
 
-    /// The host's Trash, when this window uses its native Trash.
     fn native_trash_dir(&self) -> Option<PathBuf> {
         self.hosted_clipboard()
             .then(host_fs::trash::user_trash_dir)
@@ -5017,9 +4354,6 @@ impl FilesState {
         true
     }
 
-    /// `FileCommand::EmptyTrash` — ask before permanently emptying a
-    /// non-empty Trash. An already-empty Trash is safe feedback, not a
-    /// confirmation flow.
     fn request_empty_trash_confirmation(&mut self) -> bool {
         if self.has_native_trash_entries() {
             self.status = Some(t("files-native-trash-delete-unavailable"));
@@ -5041,7 +4375,6 @@ impl FilesState {
         true
     }
 
-    /// Carry out a previously confirmed request to empty the Trash.
     fn perform_empty_trash(&mut self) -> bool {
         if self.has_native_trash_entries() {
             self.status = Some(t("files-native-trash-delete-unavailable"));
@@ -5063,8 +4396,6 @@ impl FilesState {
         true
     }
 
-    /// `FileCommand::NewFromTemplate` — copy `template`, refresh, then drop
-    /// into inline-rename.
     fn apply_new_from_template(&mut self, template: &Path) -> bool {
         self.perform(crate::effects::FilesEffect::NewFromTemplate {
             template: template_resource_id(&template.to_string_lossy()),
@@ -5072,7 +4403,6 @@ impl FilesState {
         true
     }
 
-    /// Create a file from `template` in the folder shown and start naming it.
     fn create_from_template(&mut self, template: &Path) -> Result<(), String> {
         match templates::create_from_template(template, &self.current_path) {
             Ok(path) => {
@@ -5093,23 +4423,13 @@ impl FilesState {
         }
     }
 
-    /// `FileCommand::BeginDrag` — start carrying the row(s) as a floating
-    /// ghost, and hand the gesture to the host or the toolkit's own
-    /// client-side drag.
     fn apply_begin_drag(&mut self, path: PathBuf, is_dir: bool) -> bool {
-        // The press carries the whole selection; it was never a click.
         self.collapse_on_release = None;
         if self.pin_drag.is_some() {
-            // Already carrying — the view and the app both arm the
-            // same press, and whichever fires second is redundant.
             return true;
         }
         self.armed_drag = None;
         tracing::debug!(target: "file_explorer::drag", ?path, "drag begins");
-        // Start carrying the row(s); the ghost + the drop are owned by
-        // `handle_event`. Drag the whole multi-selection when the press
-        // landed inside it (captured in `drag_seed` before the click
-        // collapsed it, Finder/Nautilus behaviour), else just this row.
         let seed = std::mem::take(&mut self.drag_seed);
         self.drag_paths = if seed.contains(&path) {
             seed
@@ -5119,25 +4439,11 @@ impl FilesState {
         self.drag_origin_is_dir = is_dir;
         self.pin_drag = Some(path);
         self.drag_hover = None;
-        // Tell the host what is being carried: if the pointer
-        // reaches another application's window, the host turns
-        // this into a real drag-and-drop for that client.
-        //
-        // That is the path when Files is a widget inside the
-        // compositor. When it is a packaged app — its own
-        // process, its own sandbox, a Wayland client like any
-        // other — there is no host holding the gesture, so it
-        // opens the drag itself. Only one of the two can be
-        // true in a given process, and each reports whether it
-        // applied, so both are offered the gesture and at most
-        // one takes it.
         if self
             .drag_paths
             .iter()
             .any(|path| crate::applications::is_app(path))
         {
-            // An app is not a file another app could take: it is carried
-            // only inside this window, where the Trash uninstalls it.
             return true;
         }
         crate::external_drag::begin(self.drag_paths.clone());
@@ -5147,15 +4453,6 @@ impl FilesState {
                 paths = ?self.drag_paths,
                 "carrying the drag out of this app as a client drag"
             );
-            // The gesture now belongs to the compositor's
-            // drag grab, and this window will not see the rest
-            // of it: no more motion, and no release. Anything
-            // kept here would be state waiting for an end that
-            // never arrives — a ghost pinned to the last place
-            // the pointer was, and a drop this app would try to
-            // resolve against its own folders. So it is let go
-            // of here, and the picture from this point on is
-            // the compositor's to draw.
             self.pin_drag = None;
             self.drag_paths.clear();
             self.drag_hover = None;
@@ -5165,7 +4462,6 @@ impl FilesState {
         true
     }
 
-    /// `FileCommand::AddFavorite` — pin `path` to the places list.
     fn apply_add_favorite(&mut self, path: PathBuf) -> bool {
         let place = self.place_for(&path);
         let added = {
@@ -5187,7 +4483,6 @@ impl FilesState {
         true
     }
 
-    /// `FileCommand::RemoveFavorite` — unpin `path` from the places list.
     fn apply_remove_favorite(&mut self, path: &Path) -> bool {
         let removed = {
             let mut favs = self.favs.borrow_mut();
@@ -5201,8 +4496,6 @@ impl FilesState {
         true
     }
 
-    /// `FileCommand::ReorderFavorite` — move favourite `from` to index `to`
-    /// (drag-to-reorder drop).
     fn apply_reorder_favorite(&mut self, from: usize, to: usize) -> bool {
         let moved = self
             .favs
@@ -5229,8 +4522,6 @@ impl FilesState {
         true
     }
 
-    /// `FileCommand::Activate` — activate entry `index` directly (keyboard
-    /// Enter / grid double-click).
     fn apply_activate(&mut self, index: usize) -> bool {
         let disp = self.displayed_entries();
         if let Some(e) = disp.get(index) {
@@ -5239,8 +4530,6 @@ impl FilesState {
         true
     }
 
-    /// `FileCommand::SortColumn` — a sortable list header at `col` was
-    /// clicked; toggles order on a repeat click of the active column.
     fn apply_sort_column(&mut self, col: usize) -> bool {
         let by = match col {
             1 => SortBy::Name,
@@ -5256,7 +4545,6 @@ impl FilesState {
         true
     }
 
-    /// `FileCommand::Copy` — copy the selection into the clipboard.
     fn apply_copy(&mut self) -> bool {
         if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
             self.perform(crate::effects::FilesEffect::CopySelection);
@@ -5267,7 +4555,6 @@ impl FilesState {
         true
     }
 
-    /// `FileCommand::Cut` — cut the selection into the clipboard.
     fn apply_cut(&mut self) -> bool {
         if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
             self.perform(crate::effects::FilesEffect::CutSelection);
@@ -5278,26 +4565,17 @@ impl FilesState {
         true
     }
 
-    /// `FileCommand::OpenTemplatesMenu` — opened from the menu-routing path
-    /// with real geometry; if it arrives via the command queue just open it
-    /// at the cursor.
     fn apply_open_templates_menu(&mut self) -> bool {
         self.open_templates_submenu(self.last_cursor);
         true
     }
 
-    /// `FileCommand::ArmDrag` — a plain press landed on a row: arm a drag of
-    /// `path` from `at`, started once the held pointer travels far enough.
     fn apply_arm_drag(&mut self, path: PathBuf, is_dir: bool, at: Point) -> bool {
         tracing::debug!(target: "file_explorer::drag", ?path, ?at, "drag armed");
         self.armed_drag = Some((at, path, is_dir));
         true
     }
 
-    /// `FileCommand::OpenPath` — a typed/accepted path from the editable
-    /// path bar: open a file, navigate into a directory (or a
-    /// not-yet-existing path, so the error affordance surfaces rather than
-    /// silently doing nothing).
     fn apply_open_path(&mut self, p: PathBuf) -> bool {
         if p.is_file() {
             self.open_path(p);
@@ -5307,8 +4585,6 @@ impl FilesState {
         true
     }
 
-    /// `FileCommand::SetSortOrder` — set the sort direction explicitly
-    /// (from the grid "Sort by" menu).
     fn apply_set_sort_order(&mut self, order: SortOrder) -> bool {
         if self.sort_order != order {
             self.toggle_sort_order();
@@ -5316,7 +4592,6 @@ impl FilesState {
         true
     }
 
-    /// Set the zoom level (clamped) and persist it.
     fn set_zoom(&mut self, level: i32) {
         let level = config::clamp_zoom(level);
         if level != self.zoom_level {
@@ -5326,29 +4601,23 @@ impl FilesState {
         }
     }
 
-    /// The current zoom level (for tests).
     pub fn zoom_level(&self) -> i32 {
         self.zoom_level
     }
 
-    /// Whether hidden files are shown (for tests).
     pub fn show_hidden(&self) -> bool {
         self.show_hidden
     }
 
-    /// Borrow the favourites list (for tests).
     pub fn favorites(&self) -> Vec<crate::favorites::Favorite> {
         self.favs.borrow().favorites.clone()
     }
 
-    /// Shared favourites store.
     #[cfg(test)]
     pub(crate) fn favorites_store(&self) -> FavStore {
         self.favs.clone()
     }
 
-    /// Stage the preview of the folder's first text file, for an offscreen
-    /// review.
     #[doc(hidden)]
     pub fn debug_show_preview(&mut self) {
         let text = |entry: &Entry| {
@@ -5362,8 +4631,6 @@ impl FilesState {
         }
     }
 
-    /// Stage the name-clash question, for an offscreen review. Nothing is
-    /// copied: the sheet is only shown.
     #[doc(hidden)]
     pub fn debug_show_clash(&mut self) {
         let files: Vec<PathBuf> = self
@@ -5381,8 +4648,6 @@ impl FilesState {
         ));
     }
 
-    /// Stage the Undo notice a move to Trash shows, for an offscreen review.
-    /// Nothing is moved: headless rendering never touches a person's Trash.
     #[doc(hidden)]
     pub fn debug_show_trash_notice(&mut self) {
         self.undo.publish(&ui::UndoStatus {
@@ -5392,19 +4657,14 @@ impl FilesState {
         self.notify_done(t_args("files-moved-to-trash", &[arg("count", 2)]), true);
     }
 
-    /// Open the context menu *and* its "New File" flyout (headless shots demo).
     #[doc(hidden)]
     pub fn debug_show_templates_menu(&mut self, at: Point) {
-        // `--scenario context-menu` uses this exact pointer location. Keeping
-        // it in the widget makes the screenshot's menu position truthful to a
-        // real right-click rather than visually competing with the toolbar ⋯.
         self.last_cursor = at;
         self.open_context_menu(at);
         let anchor = Point::new(self.opened_menu_rect().x1 - 6.0, at.y + 66.0);
         self.open_templates_submenu(anchor);
     }
 
-    /// The main menu last opened, before the window shows it.
     fn opened_menu(&mut self) -> Option<&mut ContextMenu> {
         self.menus.iter_mut().rev().find_map(|change| match change {
             MenuChange::Main(menu, _) => Some(menu),
@@ -5412,21 +4672,16 @@ impl FilesState {
         })
     }
 
-    /// Where the main menu last opened is.
     fn opened_menu_rect(&mut self) -> vello::kurbo::Rect {
         self.opened_menu()
             .map_or(vello::kurbo::Rect::ZERO, |menu| menu.get_rect())
     }
 
-    /// Whether a drag-to-pin is currently in flight (a folder is being carried
-    /// toward the sidebar).
     #[doc(hidden)]
     pub fn debug_pin_dragging(&self) -> bool {
         self.pin_drag.is_some()
     }
 
-    /// Start a drag-to-pin ghost carrying `path`, with the cursor at `at` — for
-    /// a mid-drag screenshot.
     #[doc(hidden)]
     pub fn debug_begin_pin_drag(&mut self, path: PathBuf, at: Point) {
         self.pin_drag = Some(path.clone());
@@ -5436,10 +4691,6 @@ impl FilesState {
         crate::external_drag::begin(self.drag_paths.clone());
     }
 
-    /// Start a drag carrying `srcs` hovering the folder `over` — for a shot of a
-    /// drag-to-move in progress (ghost + drop-target highlight). Requires the
-    /// file view to have published its folder rows (a layout must have run);
-    /// returns `false` if `over` isn't a laid-out folder row.
     #[doc(hidden)]
     pub fn debug_begin_move_drag(&mut self, srcs: Vec<PathBuf>, over: PathBuf) -> bool {
         let rect = self
@@ -5452,13 +4703,10 @@ impl FilesState {
         self.pin_drag = srcs.first().cloned();
         self.drag_paths = srcs;
         self.drag_hover = Some(over);
-        // Cursor inside the target row so the ghost sits over it.
         self.last_cursor = Point::new(rect.x0 + 48.0, f64::midpoint(rect.y0, rect.y1));
         true
     }
 
-    /// The folder rows the file view currently publishes as drop targets — for
-    /// tests / the shots demo to pick a real target.
     #[doc(hidden)]
     pub fn debug_folder_targets(&self) -> Vec<(PathBuf, vello::kurbo::Rect)> {
         self.drop_targets
@@ -5468,14 +4716,11 @@ impl FilesState {
             .collect()
     }
 
-    /// The Up nav button's rect — the drop target that moves carried items into
-    /// the parent directory. `None` at the root (no Up button).
     #[doc(hidden)]
     pub fn debug_up_button_rect(&self) -> Option<vello::kurbo::Rect> {
         self.toolbar.up_button_rect()
     }
 
-    /// Select the given displayed-entry indices (headless shots demo).
     #[doc(hidden)]
     pub fn debug_select(&mut self, indices: &[usize]) {
         self.selection.clear();
@@ -5490,16 +4735,12 @@ impl FilesState {
         self.structure_dirty = true;
     }
 
-    /// Ask the owning framework host to open the selected real file history.
-    /// A standalone widget without a managed host cannot render History.
     #[doc(hidden)]
     pub fn debug_open_history_demo(&mut self) {
         self.refresh_framework_history_target();
         self.framework_history.open(None);
     }
 
-    /// Show the history of the file named by `source`: the selected file's,
-    /// as the host's History offers it.
     pub(crate) fn show_file_history_in(
         &mut self,
         source: ui::history_mode::checked_files::FileHistorySource,
@@ -5509,10 +4750,6 @@ impl FilesState {
         self.refresh_framework_history_target();
     }
 
-    /// Open what a launch names: a path, resolved against the launcher's
-    /// working directory, is a folder to show, or a file to show selected in
-    /// its folder ("Show in Files"). A folder that is missing or unreadable
-    /// shows the ordinary navigation error.
     pub fn open_launch_argument(&mut self, argument: &str) {
         match std::path::absolute(argument) {
             Ok(path) if path.is_file() => {
@@ -5523,13 +4760,10 @@ impl FilesState {
         }
     }
 
-    /// Stage `scenario` on the window's next sync, once it is laid out.
     pub(crate) fn stage_on_next_sync(&mut self, scenario: Option<&str>) {
         self.staged = Some(StagedScenario(scenario.map(str::to_owned)));
     }
 
-    /// Stage the view state screenshot `scenario` shows, once the window is
-    /// laid out: a selection, an open menu, a drag in flight.
     #[expect(
         clippy::too_many_lines,
         reason = "one table of the screenshot scenarios, an arm each"
@@ -5562,8 +4796,6 @@ impl FilesState {
                 self.stage_sort_selection(name);
             }
             Some(name @ ("recent" | "recent-menu" | "recent-revealed" | "recent-forgotten")) => {
-                // Capture-only files from the prepared scratch home. Use the
-                // same Recent setting and commands as the live window.
                 let home = self.current_path.clone();
                 let target = home.join("Quarterly report.pdf");
                 self.note_recent(&home.join("Notes.txt"), crate::recent::RecentUse::Opened);
@@ -5615,8 +4847,6 @@ impl FilesState {
             }
             Some("places") => chrome.show_places(),
             Some("remote-account") => {
-                // A made-up account that needs signing in again: no real
-                // account store or vault is read.
                 let account = crate::remote_accounts::RemoteAccount {
                     id: accounts::AccountId::from("shot-remote-account"),
                     kind: crate::remote_accounts::RemoteAccountKind::Nextcloud,
@@ -5658,8 +4888,6 @@ impl FilesState {
             Some("clash") => self.debug_show_clash(),
             Some("preview") => self.debug_show_preview(),
             Some("context-menu") => {
-                // A right-click in the content pane, away from the toolbar's
-                // menu, with its first row armed as the keyboard would.
                 let at = Point::new(
                     rect.x0 + rect.width() * 0.45,
                     rect.y0 + rect.height() * 0.34,
@@ -5683,8 +4911,6 @@ impl FilesState {
             }
             _ => {}
         }
-        // A capture is one frame: it shows the folders' item counts as a
-        // settled window does, counted here rather than on the worker.
         let folders: Vec<_> = self
             .displayed_entries()
             .iter()
@@ -5737,8 +4963,6 @@ impl FilesState {
         }
     }
 
-    /// The filesystem work that cannot be done now, as this window's state
-    /// says.
     pub(crate) fn effect_statuses(&self) -> Vec<ui::framework::EffectStatus> {
         use crate::effects::FilesEffect;
         let mut statuses = Vec::new();
@@ -5757,7 +4981,6 @@ impl FilesState {
             }
         }
         if let Some(named) = self.selection_named() {
-            // What they act on, named: "Copy “report.pdf”".
             statuses.push(ui::framework::EffectStatus::labelled(
                 FilesEffect::COPY_SELECTION,
                 Self::selection_label("files-copy-selected", &named),
@@ -5782,8 +5005,6 @@ impl FilesState {
                 t("files-selection-empty"),
             ));
         }
-        // Pasting from this window's own clipboard needs something on it; a
-        // hosted clipboard is the workspace's, which this window cannot see.
         let hosted_paste =
             matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard();
         if !hosted_paste && self.clipboard.is_empty() {
@@ -5825,7 +5046,6 @@ impl FilesState {
         statuses
     }
 
-    /// Ask for the previews of every file shown, so a capture waits for them.
     fn prefetch_thumbnails(&self) {
         if let Some(ctx) = self.thumb_ctx() {
             crate::views::file_view::FileView::prefetch_thumbnails(
@@ -5836,8 +5056,6 @@ impl FilesState {
         }
     }
 
-    /// Carry a file onto the first folder the view laid out, for a capture
-    /// of a move in progress. The view publishes its folder rows as it draws.
     fn resolve_staged_move_drag(&mut self) {
         if !self.staged_move_drag {
             return;
@@ -5898,11 +5116,6 @@ impl FilesState {
             .collect()
     }
 
-    // --- drag & drop --------------------------------------------------
-
-    /// The folder a drag released at `pt` would move into: a folder row under
-    /// the cursor (never one of the dragged items), else the parent directory
-    /// when the cursor is over the Up affordance. `None` over anything else.
     fn folder_target_at(&self, chrome: &Chrome, pt: Point) -> Option<PathBuf> {
         for t in self.drop_targets.borrow().iter() {
             if t.rect.contains(pt) && !self.drag_paths.contains(&t.path) {
@@ -5924,8 +5137,6 @@ impl FilesState {
         self.place_target_at(chrome, pt).map(|(path, _)| path)
     }
 
-    /// Show the copy or move under way once it has run long enough to be
-    /// worth watching, with Cancel; whether the card changed.
     fn follow_transfers(&mut self, now: Instant) -> bool {
         let running = crate::file_ops::active_transfers();
         let Some(transfer) = running.iter().find(|transfer| {
@@ -5944,7 +5155,6 @@ impl FilesState {
         true
     }
 
-    /// The notice for a transfer under way: what it does, and how far it is.
     fn show_transfer(&mut self, transfer: &crate::file_ops::LocalTransfer) {
         use std::sync::atomic::Ordering;
         let folder = Path::new(&transfer.folder).file_name().map_or_else(
@@ -5955,7 +5165,6 @@ impl FilesState {
             match transfer.kind {
                 crate::file_ops::TransferKind::Copy => "files-copying",
                 crate::file_ops::TransferKind::Move => "files-moving",
-                // `folder` is the archive being extracted.
                 crate::file_ops::TransferKind::Extract => "files-extracting",
                 crate::file_ops::TransferKind::Compress => "files-compressing",
             },
@@ -5981,8 +5190,6 @@ impl FilesState {
         self.structure_dirty = true;
     }
 
-    /// Open the folder a drag has rested on long enough; whether it did.
-    /// The drag goes on in the opened folder.
     fn spring_open_if_due(&mut self, now: Instant) -> bool {
         let due = self.pin_drag.is_some()
             && self
@@ -6001,8 +5208,6 @@ impl FilesState {
         true
     }
 
-    /// The preview or clash sheet, while one is up: it is the window's
-    /// whole semantic tree, as a modal is.
     fn sheet_accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
         if let Some(preview) = &self.preview {
@@ -6036,7 +5241,6 @@ impl FilesState {
         None
     }
 
-    /// The folders a long path bar hides, as a menu: each opens its folder.
     fn open_path_menu(&mut self, folders: Vec<(String, PathBuf)>, at: Point) {
         if folders.is_empty() {
             return;
@@ -6053,9 +5257,6 @@ impl FilesState {
         self.structure_dirty = true;
     }
 
-    /// Files dragged in from another app: the folder under the pointer (or
-    /// the one shown) lights up, and the drop copies them there. Each file
-    /// arrives as its own event; they are gathered and copied as one.
     fn route_incoming_drop(&mut self, chrome: &Chrome, event: &winit::event::WindowEvent) -> bool {
         use winit::event::WindowEvent;
         match event {
@@ -6078,7 +5279,6 @@ impl FilesState {
         }
     }
 
-    /// Copy what another app dropped, once its files have all arrived.
     fn take_incoming_drop(&mut self) {
         if self.incoming.is_empty() {
             return;
@@ -6097,7 +5297,6 @@ impl FilesState {
         }
     }
 
-    /// Show the primary selected item large.
     fn show_preview(&mut self) {
         let Some(entry) = self
             .selection
@@ -6111,8 +5310,6 @@ impl FilesState {
         self.structure_dirty = true;
     }
 
-    /// The preview sheet takes every event while it is up: Space or Escape
-    /// close it, the arrow keys move through the folder with it open.
     fn route_preview_event(
         &mut self,
         event: &winit::event::WindowEvent,
@@ -6171,7 +5368,6 @@ impl FilesState {
         self.structure_dirty = true;
     }
 
-    /// A press on empty space in the file view starts a box selection.
     fn maybe_start_marquee(
         &mut self,
         chrome: &Chrome,
@@ -6214,8 +5410,6 @@ impl FilesState {
         self.structure_dirty = true;
     }
 
-    /// A box selection under way takes the pointer: it grows with the
-    /// pointer, selecting what it touches, and ends on release.
     fn route_marquee_event(
         &mut self,
         event: &winit::event::WindowEvent,
@@ -6258,7 +5452,6 @@ impl FilesState {
         true
     }
 
-    /// Paint the box selection being drawn.
     fn draw_marquee(
         &self,
         scene: &mut vello::Scene,
@@ -6274,9 +5467,6 @@ impl FilesState {
         ui::paint::stroke_rect(scene, transform, area, ink, 1.0);
     }
 
-    /// The sidebar place a drop at `pt` lands in, with its row: the middle
-    /// of a place's row, where a drop moves into it. The band between rows
-    /// stays the gap a folder is pinned into.
     fn place_target_at(&self, chrome: &Chrome, pt: Point) -> Option<(PathBuf, vello::kurbo::Rect)> {
         if !chrome.in_places_list(pt) {
             return None;
@@ -6302,9 +5492,6 @@ impl FilesState {
         })
     }
 
-    /// Resolve and apply a drag's drop: move the carried row(s) into a folder
-    /// (a row, or the parent via the Up target), else pin a single folder to
-    /// Favourites when released over the sidebar. Clears the drag state.
     fn finish_drag(&mut self, chrome: &Chrome, copy: bool) {
         crate::external_drag::end();
         let target = self.folder_target_at(chrome, self.last_cursor);
@@ -6319,16 +5506,13 @@ impl FilesState {
         self.drag_hover = None;
         self.spring = None;
         if paths.iter().any(|path| crate::applications::is_app(path)) {
-            // Apps go nowhere but the Trash, where they are uninstalled.
             if target.as_deref().is_some_and(crate::fileops::is_trash_dir) {
                 self.uninstall_apps(&paths);
             }
         } else if let Some(dir) = target {
             self.drop_paths_into(&paths, &dir, copy);
         } else if over_sidebar {
-            // Only a single folder can be a favourite — files and multi-drags
-            // are not pinnable. `is_dir` comes from the dragged row, so this
-            // holds even for a folder that isn't physically on disk (tests).
+            // Only one folder is pinnable: files and multi-selections are not.
             if paths.len() == 1
                 && self.drag_origin_is_dir
                 && let Some(path) = origin
@@ -6339,9 +5523,6 @@ impl FilesState {
         self.drag_origin_is_dir = false;
     }
 
-    /// Drop the drag without acting on it: the release belonged to someone
-    /// else (the host delivered it to another application), or the gesture
-    /// was abandoned.
     fn cancel_drag(&mut self) {
         crate::external_drag::end();
         self.drag_paths.clear();
@@ -6351,11 +5532,7 @@ impl FilesState {
         self.drag_origin_is_dir = false;
     }
 
-    /// Move (or with `copy`, copy) each of `paths` into directory `dir`. A
-    /// drop onto another filesystem copies, as a move there would be a copy
-    /// and a delete. No-ops and impossible moves — into itself, into its own
-    /// subtree, or into the folder it already lives in — are skipped rather
-    /// than erroring.
+    /// Move each of `paths` into `dir`, copying instead when the two are on different filesystems.
     fn drop_paths_into(&mut self, paths: &[PathBuf], dir: &std::path::Path, copy: bool) {
         let copy = copy || paths.iter().any(|src| !host_fs::same_filesystem(src, dir));
         let entries: Vec<PathBuf> = paths
@@ -6375,8 +5552,6 @@ impl FilesState {
         self.transfer(entries, dir, copy);
     }
 
-    /// Copy or move `paths` into `dir`, first asking once what to do about
-    /// names `dir` already has.
     fn transfer(&mut self, paths: Vec<PathBuf>, dir: &Path, copy: bool) {
         let clashing = clash::clashing(&paths, dir, copy);
         if clashing.is_empty() {
@@ -6387,8 +5562,6 @@ impl FilesState {
         }
     }
 
-    /// Queue the copy or move of `paths` into `dir`; a taken name gets a
-    /// free one.
     fn run_transfer(&mut self, paths: &[PathBuf], dir: &Path, copy: bool) {
         if paths.is_empty() {
             return;
@@ -6417,7 +5590,6 @@ impl FilesState {
         }
     }
 
-    /// Settle the clash question: `None` leaves everything as it was.
     fn settle_clash(&mut self, choice: Option<ClashChoice>) {
         let Some(pending) = self.clash.take() else {
             return;
@@ -6455,8 +5627,6 @@ impl FilesState {
                 self.run_transfer(&pending.unclashing(), &pending.folder, pending.copy);
             }
             Some(ClashChoice::Replace) => {
-                // One step to undo: the replaced items come back from Trash
-                // and the new ones go.
                 let group = self
                     .dispatcher
                     .as_ref()
@@ -6477,7 +5647,6 @@ impl FilesState {
         }
     }
 
-    /// The clash sheet takes every event while it is up.
     fn route_clash_event(&mut self, event: &winit::event::WindowEvent) {
         use winit::event::{ElementState, MouseButton, WindowEvent};
         use winit::keyboard::{Key, NamedKey};
@@ -6500,7 +5669,6 @@ impl FilesState {
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 match &event.logical_key {
                     Key::Named(NamedKey::Escape) => self.settle_clash(None),
-                    // Enter takes the choice that loses nothing.
                     Key::Named(NamedKey::Enter) => self.settle_clash(Some(ClashChoice::KeepBoth)),
                     _ => {}
                 }
@@ -6509,10 +5677,6 @@ impl FilesState {
         }
     }
 
-    /// Copy (or, after Cut, move) the clipboard into the folder shown.
-    ///
-    /// The operation queued for this device to carry out, `None` when it
-    /// was carried out at once.
     fn paste(&mut self) -> Result<Option<crate::file_ops::FileOp>, String> {
         if self.clipboard.is_empty() {
             return Err("The clipboard is empty".into());
@@ -6542,8 +5706,6 @@ impl FilesState {
         }
     }
 
-    /// Enter: open every selected file, each in its app; a single folder
-    /// (or a selection of only folders) opens the primary one here.
     fn open_selected(&mut self) {
         let paths = self.selected_paths();
         let files: Vec<PathBuf> = paths.iter().filter(|p| !p.is_dir()).cloned().collect();
@@ -6558,23 +5720,10 @@ impl FilesState {
         }
     }
 
-    /// Open a path: navigate into directories, else launch its app.
     fn open_path(&mut self, path: PathBuf) {
         let _ = self.open_target(path);
     }
 
-    /// Open `path`: navigate into directories, and hand a file to the session
-    /// to open in whichever app owns it.
-    ///
-    /// The explorer picks no app of its own. It asks the session
-    /// ([`crate::open_with::request`]), which resolves what opens the file's
-    /// type, and launches it — the same place every other surface that opens a
-    /// resource asks. A refusal is shown in the notice naming the file, with
-    /// "Open with" beside it when another app claims it: activation never
-    /// silently does nothing.
-    ///
-    /// Returns whether the path was handed off (`false` when it navigated
-    /// a dir).
     fn open_target(&mut self, path: PathBuf) -> std::io::Result<bool> {
         if let Some(app) = crate::applications::app_id(&path) {
             self.open_app(app.to_owned());
@@ -6585,9 +5734,6 @@ impl FilesState {
                 self.navigate(path);
                 return Ok(false);
             }
-            // The rows shown came from the archive's entries, read already;
-            // a path typed into an archive not yet read opens as a folder,
-            // which reads it.
             let is_folder = crate::archive::cached(&archive).is_none_or(|entries| {
                 !entries.iter().any(|entry| {
                     entry.path == prefix && entry.kind != crate::archive::Kind::Directory
@@ -6597,9 +5743,6 @@ impl FilesState {
                 self.navigate(path);
                 return Ok(false);
             }
-            // A file inside an archive opens as a read-only copy of it, read
-            // off the window's thread: reaching it can mean decoding most of
-            // a compressed tar.
             if let Some(copy) = archive_member_cached(&archive, &prefix) {
                 return self.open_target(copy);
             }
@@ -6610,9 +5753,6 @@ impl FilesState {
             self.navigate(path);
             return Ok(false);
         }
-        // The system Tilo replaced is left as it was. Opening one of its files brings a copy into
-        // the workspace and opens that copy: from its first edit on, its versions are the
-        // workspace document's, like any other file's.
         if tilo_files::native::retained_home::contains(&path) {
             match Self::bring_into_workspace(&path) {
                 Ok(copy) => self.ask_open(&copy, None),
@@ -6624,18 +5764,11 @@ impl FilesState {
         Ok(true)
     }
 
-    /// Copy a file of the system Tilo replaced into the workspace, choosing a name no other file
-    /// holds so an earlier copy the person edited is never overwritten. The original is only read.
     fn bring_into_workspace(path: &Path) -> Result<PathBuf, String> {
         let home = crate::model::user_home().ok_or_else(|| t("files-open-with-no-workspace"))?;
         fileops::import_mounted_into(path, &home)
     }
 
-    /// Ask the session to open `path`, in `app` or in the app that opens its
-    /// type, off the window's thread: starting an app can take a while, and
-    /// the window stays live while it does. The answer is taken in by
-    /// [`Self::take_open_replies`], which shows a refusal and puts an open in
-    /// the Recent list.
     fn ask_open(&mut self, path: &Path, app: Option<String>) {
         let request = self.open_request;
         let replies = Arc::clone(&self.open_replies);
@@ -6653,8 +5786,6 @@ impl FilesState {
         }
     }
 
-    /// Take in the answers to opens asked off the window's thread; whether any
-    /// came in.
     fn take_open_replies(&mut self) -> bool {
         let answered = self
             .open_replies
@@ -6671,8 +5802,6 @@ impl FilesState {
         changed
     }
 
-    /// Say that `path` didn't open and why, offering another app when one
-    /// claims the file: a double-click never just does nothing.
     fn notify_open_failed(&mut self, path: &Path, reason: &str) {
         let name = path.file_name().map_or_else(
             || path.display().to_string(),
@@ -6687,44 +5816,28 @@ impl FilesState {
         );
     }
 
-    // --- inline rename -------------------------------------------------
-
-    /// The transient status line shown in the footer — an operation
-    /// result, or the reason an open was refused. Readable so a host (or
-    /// a test standing in for one) can confirm the explorer told the user
-    /// something rather than swallowing it.
     pub fn status_line(&self) -> Option<&str> {
         self.status.as_deref()
     }
 
-    /// The notice over the file view (a change to take back, a failure to
-    /// act on) as one line, title then reason; readable so a host or a test
-    /// can confirm what the person was told.
     pub fn notice_line(&self) -> Option<String> {
         self.notice.line()
     }
 
-    /// Whether an inline rename is currently in progress.
     pub fn is_renaming(&self) -> bool {
         self.renaming.is_some()
     }
 
-    /// The current editable rename text (the field's live contents).
     pub fn rename_buffer(&self) -> &str {
         &self.rename_buffer
     }
 
-    /// Replace the editable rename text. The next `sync` seeds the local
-    /// editor; this test seam deliberately has no document side effect.
     #[cfg(test)]
     pub(crate) fn set_rename_buffer(&mut self, s: String) {
         self.rename_buffer = s;
         self.rename_seed_pending = true;
     }
 
-    /// Begin an inline rename of the primary selection: open the in-place editor
-    /// over the row, seeded with the entry's current name. No-op without a
-    /// selection.
     pub fn begin_rename(&mut self) {
         let disp = self.displayed_entries();
         if let Some(i) = self.selection.primary()
@@ -6739,8 +5852,6 @@ impl FilesState {
         }
     }
 
-    /// Tear down the in-place editor: drop focus and clear its published rect so
-    /// no stale field is drawn after a rename ends.
     fn end_rename_editor(&mut self) {
         self.renaming = None;
         self.rename_seed_pending = false;
@@ -6749,30 +5860,17 @@ impl FilesState {
         self.rename_rect.set(None);
     }
 
-    /// Abandon the in-progress rename, leaving the file untouched.
     pub fn cancel_rename(&mut self) {
         self.end_rename_editor();
     }
 
-    /// Paint the app background and lazily build the composition if it is
-    /// missing (a tab activated after boot never ran `build_layout`).
     fn paint_background(&mut self, theme: &ui::Theme) {
-        // The window ground is the framework's; this only notices that the
-        // chrome + body panes are normally built inside `build_layout`.
-        // When this widget is hosted inside a shell's TabBar (e.g. the Files
-        // tab on a Tilo shell that boots Notes-active), `build_layout` doesn't
-        // run for inactive tabs — so switching to Files later produces a widget
-        // with no chrome built and nothing visible renders even though
-        // `self.rect` is correct. Flag structure-dirty here so the host runs a
-        // full rebuild (which populates the chrome + swaps the real panes into
-        // the persistent `nav`) on the next frame.
         let _ = theme;
         if !self.composed_once && self.rect.width() > 0.0 && self.rect.height() > 0.0 {
             self.structure_dirty = true;
         }
     }
 
-    /// The icon an empty folder shows above its sentence.
     fn empty_state_icon(&self) -> ui::icons::Icon {
         if self.is_recent_view() {
             ui::icons::Icon::History
@@ -6785,8 +5883,6 @@ impl FilesState {
         }
     }
 
-    /// The sheet's spec: the title, a close control and, when the panel
-    /// proposes something, its one action.
     fn collab_panel_spec<'a>(
         title: &'a str,
         actions: &'a [ui::widget::ModalAction<'a>],
@@ -6797,8 +5893,6 @@ impl FilesState {
             .body_height(body_height)
     }
 
-    /// Height the sheet's body wants at `width`: the summary, then each line
-    /// in its own wrapped row.
     fn collab_panel_body_height(
         panel: &CollabPanel,
         tr: &mut ui::text_render::TextRenderer,
@@ -6826,9 +5920,6 @@ impl FilesState {
         height
     }
 
-    /// Draw the sheet: the shared modal over its scrim, the panel's summary
-    /// and lines as its body, and the one action in its footer. Records the
-    /// sheet's layout so the event path hit-tests what was painted.
     fn draw_collab_panel(
         &mut self,
         scene: &mut vello::Scene,
@@ -6865,7 +5956,6 @@ impl FilesState {
             Self::collab_panel_body_height(panel, text_renderer, theme, body_width as f32);
         let spec = Self::collab_panel_spec(&panel.title, &actions, body_height);
         let layout = modal_dialog::layout(self.rect, &spec, text_renderer, theme);
-        // Hover on the footer action and the close control follows the pointer.
         if let (Some(action), Some(rect)) = (actions.first_mut(), layout.actions.first()) {
             action.hovered = hovered(*rect);
         }
@@ -6910,11 +6000,6 @@ impl FilesState {
         self.collab_layout = Some(layout);
     }
 
-    /// Draw the in-place rename editor over the row/cell being renamed. The
-    /// file view publishes the target rect (in on-screen coords) during its own
-    /// paint and omits that row's label, so the field slots exactly where the
-    /// name was. Nothing is drawn when not renaming or when the row is scrolled
-    /// out of view (the published rect is then `None`).
     fn draw_rename_editor(
         &mut self,
         scene: &mut vello::Scene,
@@ -6931,17 +6016,12 @@ impl FilesState {
         let input = &mut self.rename_input;
         self.rename_paint.record(scene, transform, |scene| {
             input.draw_child(scene, transform, text_renderer, theme, presence);
-            // The field, its focus ring and the correction chip it floats
-            // past itself.
             let reach = f64::from(theme.tokens.spacing.s2);
             let ring = input.get_rect().inflate(reach, reach);
             input.overhang().map_or(ring, |chip| ring.union(chip))
         });
     }
 
-    /// Mark the folder (or Up affordance) a live drag is hovering, so the drop
-    /// target is unmistakable: your colour ringed around its row. Drawn under
-    /// the ghost.
     fn draw_drop_highlight(
         &self,
         chrome: &Chrome,
@@ -6952,8 +6032,6 @@ impl FilesState {
         let Some(hover) = &self.drag_hover else {
             return;
         };
-        // A row target carries its published rect; the parent (Up) target uses
-        // the Up button's rect.
         let rect = self
             .drop_targets
             .borrow()
@@ -6991,9 +6069,6 @@ impl FilesState {
         );
     }
 
-    /// Draw the floating ghost that tracks the cursor during a drag, so it reads
-    /// as carrying the row(s). Shows the dragged item's own icon/name, or an
-    /// item count when several are carried at once.
     fn draw_pin_ghost(
         &self,
         scene: &mut vello::Scene,
@@ -7019,16 +6094,12 @@ impl FilesState {
         let pad = f64::from(tokens.spacing.s3);
         let icon = f64::from(tokens.metrics.icon_sm);
         let gap = f64::from(tokens.spacing.s2);
-        // The pill grows with its measured label so enlarged text stays inside it.
         let h = (f64::from(th) + 2.0 * f64::from(tokens.spacing.s2))
             .max(ui::widget::ControlSize::Small.height(theme));
         let w = pad + icon + gap + f64::from(tw) + pad;
-        // Offset from the cursor so the ghost sits beside, not under, the pointer.
         let x0 = self.last_cursor.x + f64::from(tokens.spacing.s3);
         let y0 = self.last_cursor.y + f64::from(tokens.spacing.s2);
         let rect = Rect::new(x0, y0, x0 + w, y0 + h);
-        // The ghost is genuinely off the surface: it floats, with the
-        // floating shadow and material.
         ui::widget::floating_surface::paint(scene, transform, rect, theme);
         let iy = y0 + (h - icon) / 2.0;
         ui::icons::draw_icon(
@@ -7050,10 +6121,6 @@ impl FilesState {
         );
     }
 
-    /// Commit the in-progress rename: rename the target file to
-    /// `rename_buffer` (trimmed). Returns whether the file was renamed. A
-    /// blank or unchanged name just closes the bar; an fs error keeps the
-    /// bar open with a status message so the user can retry.
     pub fn commit_rename(&mut self) -> bool {
         let Some(idx) = self.renaming else {
             return false;
@@ -7084,9 +6151,6 @@ impl FilesState {
     }
 }
 
-/// Resolve a standalone [`ContextMenu`]'s rect through its shared anchored
-/// layout. Both the main menu and the "New File" flyout own their geometry;
-/// neither needs an app-local instantiation of the Taffy layout solver.
 fn layout_menu_widget(menu: &mut ContextMenu) {
     if menu.is_open() {
         menu.set_text_scale(ui::Theme::dark().text_scale);
@@ -7094,9 +6158,6 @@ fn layout_menu_widget(menu: &mut ContextMenu) {
     }
 }
 
-/// Presentation-side lower bound for the daemon's fail-closed merge codecs.
-/// The daemon still validates exact bytes and may reject a malformed serialized document,
-/// invalid UTF-8, overlapping edits, or a stale signed conflict.
 fn merge_supported_path(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
@@ -7109,8 +6170,6 @@ fn merge_supported_path(path: &std::path::Path) -> bool {
 }
 
 impl FilesState {
-    /// What "Open Terminal Here" asks the shell for: Terminal, started in
-    /// the current directory when that is a path the request can carry.
     pub fn terminal_intent(&self) -> runtime_portal::tools::ToolIntent {
         use runtime_portal::tools::ToolIntent;
         let directory = self
@@ -7127,7 +6186,6 @@ impl FilesState {
         ToolIntent::Terminal { directory }
     }
 
-    /// Ask the shell to open Terminal in the current directory.
     pub fn open_terminal(&self) -> Result<(), String> {
         #[cfg(test)]
         crate::model::fixture_io_guard::ambient_io("open_terminal");
@@ -7135,8 +6193,6 @@ impl FilesState {
         runtime_portal::tools::open_tool(self.terminal_intent(), on_behalf_of)
     }
 
-    /// Activate entry `idx` (by displayed index): navigate into a directory
-    /// or launch the associated app.
     pub fn open_entry(&mut self, idx: usize) -> std::io::Result<bool> {
         let disp = self.displayed_entries();
         let Some(entry) = disp.get(idx) else {
@@ -7146,29 +6202,22 @@ impl FilesState {
         self.open_target(path)
     }
 
-    /// Build + open the right-click menu at `at`, with items appropriate to
-    /// the current selection and clipboard.
-    /// The template files currently available for the "New File ▸" submenu.
     pub fn available_templates(&self) -> Vec<PathBuf> {
         self.templates.templates()
     }
 
-    /// Host entries cannot be purged through private-data Trash controls.
     fn has_native_trash_entries(&self) -> bool {
         self.entries
             .iter()
             .any(|entry| self.is_native_trash_entry(&entry.path))
     }
 
-    /// Whether this view offers Trash operations rather than editing.
     fn is_trash_view(&self) -> bool {
         fileops::is_trash_dir(&self.current_path)
             || (self.hosted_clipboard()
                 && host_fs::trash::user_trash_dir().as_ref() == Some(&self.current_path))
     }
 
-    /// The path of the single selected entry when it is a directory (drives the
-    /// "Add to Favorites" action).
     fn single_selected_dir(&self) -> Option<PathBuf> {
         let disp = self.displayed_entries();
         let sel = self.selection.selected();
@@ -7179,15 +6228,10 @@ impl FilesState {
         disp.get(idx).filter(|e| e.is_dir).map(|e| e.path.clone())
     }
 
-    /// Whether the current directory is a favourite that may be removed (i.e.
-    /// present in the list and not the pinned Home entry).
-    /// The stored place of the folder shown, when it is a folder a person
-    /// can pin (not Recent, Trash or an archive).
     pub(crate) fn current_place(&self) -> Option<String> {
         (self.shown_is_folder && !self.is_trash_view()).then(|| self.place_for(&self.current_path))
     }
 
-    /// Whether the folder shown is one of the Favourites.
     pub(crate) fn current_is_favourite(&self) -> bool {
         self.favs
             .borrow()
@@ -7204,8 +6248,6 @@ impl FilesState {
             .any(|f| !f.is_home && f.path == self.current_path)
     }
 
-    /// The check a menu row for `command` shows: the sort that is in force,
-    /// and whether hidden files are shown. Other commands are not state.
     fn command_checked(&self, command: Option<&FileCommand>) -> Option<bool> {
         match command? {
             FileCommand::SetSort(by) => Some(self.sort_by == *by),
@@ -7237,14 +6279,12 @@ impl FilesState {
                 cmds.push(cmd);
             }
         }
-        // What a sent message is about: the files the menu acts on.
         menu.set_about(self.shared_selection());
         menu.open_at([at.x as f32, at.y as f32]);
         layout_menu_widget(&mut menu);
         self.menus.push(MenuChange::Main(menu, cmds));
     }
 
-    /// Open the "New File" flyout listing one "New <name>" entry per template.
     fn open_templates_submenu(&mut self, at: Point) {
         let tpls = self.available_templates();
         // The catalogue can change after its parent menu was opened.  Do not
@@ -7265,8 +6305,6 @@ impl FilesState {
         self.menus.push(MenuChange::Sub(menu, cmds));
     }
 
-    /// Open the "Run shortcut" flyout: one row per shortcut that runs on the
-    /// selected entry.
     fn open_shortcuts_submenu(&mut self, at: Point) {
         let identities = self.selected_entry_identities();
         let offered: Vec<(String, String)> = self
@@ -7290,8 +6328,6 @@ impl FilesState {
         self.menus.push(MenuChange::Sub(menu, cmds));
     }
 
-    /// Say on the status line what became of a shortcut run from the menu,
-    /// when `event` says. Returns whether the status line changed.
     fn handle_shortcut_event(&mut self, event: &ui::collaboration::CollabEvent) -> bool {
         let status = match self.shortcut_menu.handle_event(event) {
             Some(crate::shortcut_menu::ShortcutOutcome::Started { label }) => {
@@ -7310,16 +6346,11 @@ impl FilesState {
         true
     }
 
-    /// Take the desk's answer to the sheet Files asked for: once it is open the
-    /// action that asked is answered and the status line cleared, and a refusal
-    /// says why. Returns whether the status line changed.
     fn handle_share_event(&mut self, event: &ui::collaboration::CollabEvent) -> bool {
         let Some(answer) = self.share_invite.handle_event(event) else {
             return false;
         };
         let status = match &answer {
-            // The sheet is up: what to make of it is the person's, in the session's own surface, so
-            // Files says nothing more and the action that asked for it is answered.
             Ok(()) => {
                 self.answer_effect(Ok(tilo_actions::ActionOutput::default()));
                 None
@@ -7341,8 +6372,6 @@ impl FilesState {
         true
     }
 
-    /// Whether the entry is one Files can share: sharing is inviting people into
-    /// the workspace an entry is in, so anything inside one is shared the same way.
     fn offers_sharing(&self, entry: &crate::model::Entry) -> bool {
         crate::model::workspace_root_for(&entry.path, &self.workspace_roots).is_some()
     }
@@ -7423,11 +6452,6 @@ impl FilesState {
         self.status = Some(t("files-nearby-choose-destination"));
     }
 
-    /// Open the context menu from a `(label, command)` spec, right-aligned so
-    /// its right edge sits at `anchor` (a toolbar control's bottom-right). Used
-    /// by the labelled View / Sort menus, whose triggers hug the window's right
-    /// edge where a left-anchored menu would spill off-screen. A `None` command
-    /// with an empty label is a separator.
     fn open_menu_right_aligned(
         &mut self,
         spec: Vec<(String, Option<FileCommand>, Option<bool>)>,
@@ -7458,10 +6482,6 @@ impl FilesState {
                 cmds.push(cmd);
             }
         }
-        // Right-align: lay out once to learn the menu size, then re-anchor so
-        // the right edge lands on `anchor.x`. A tall menu flips above the
-        // trigger rather than slipping below the window; both axes clamp as a
-        // final guard for unusually tiny viewports.
         menu.open_at([anchor.x as f32, anchor.y as f32]);
         layout_menu_widget(&mut menu);
         let menu_rect = menu.get_rect();
@@ -7479,19 +6499,12 @@ impl FilesState {
         self.menus.push(MenuChange::Main(menu, cmds));
     }
 
-    /// Construct a menu constrained to Files' live window rect. Overlay menus
-    /// are outside the app's normal layout tree, so this is what keeps a
-    /// 200%-text menu fully reachable rather than letting it grow off a right
-    /// or bottom edge after its trigger was measured at normal text size.
     fn new_overlay_menu(&self) -> ContextMenu {
         let mut menu = ContextMenu::new();
         menu.set_viewport(Some(self.rect));
         menu
     }
 
-    /// The labelled "View options" overflow menu (the ⋯ button): new folder /
-    /// file, a clearly-labelled show-hidden toggle with a check, and a terminal.
-    /// Everything here is spelled out in words — no mystery symbolic controls.
     fn open_view_menu(&mut self) {
         let anchor = self.toolbar.view_menu_anchor();
         let flip_y = self
@@ -7499,9 +6512,6 @@ impl FilesState {
             .view_menu_rect()
             .map_or(anchor.y, |rect| rect.y0 - 2.0);
         let mut spec: Vec<(String, Option<FileCommand>, Option<bool>)> = Vec::new();
-        // At phone width the path remains useful while direct view / sort
-        // controls move here. The same labelled actions remain keyboard and
-        // accessibility reachable without squeezing desktop chrome into one row.
         if self.toolbar.is_compact() {
             if self.toolbar.can_go_forward() {
                 spec.push((t("files-forward"), Some(FileCommand::Forward), None));
@@ -7518,8 +6528,6 @@ impl FilesState {
                 Some(self.view_mode == ViewMode::Grid),
             ));
             spec.push((String::new(), None, None));
-            // The sort choices sit in this menu itself, each with a check,
-            // rather than behind one row that opens another menu.
             spec.extend(self.sort_menu_spec(true));
             spec.push((String::new(), None, None));
         }
@@ -7579,9 +6587,6 @@ impl FilesState {
         self.open_menu_right_aligned(spec, anchor, flip_y);
     }
 
-    /// The labelled "Sort by" menu (the grid-mode Sort button): the sort key,
-    /// then the direction, each with a check on the active choice. This is the
-    /// grid's equivalent of clicking a list column header.
     fn open_sort_menu(&mut self) {
         let anchor = self.toolbar.sort_menu_anchor();
         let flip_y = self
@@ -7592,9 +6597,6 @@ impl FilesState {
         self.open_menu_right_aligned(spec, anchor, flip_y);
     }
 
-    /// The sort key, then the direction, each with a check on the active
-    /// choice. Within another menu (`inline`) each key says what it sorts
-    /// ("Sort by name"); under the "Sort by" button the bare key is enough.
     fn sort_menu_spec(&self, inline: bool) -> Vec<(String, Option<FileCommand>, Option<bool>)> {
         let mut spec: Vec<(String, Option<FileCommand>, Option<bool>)> = Vec::new();
         let key = |bare: &str, inline_label: &str| t(if inline { inline_label } else { bare });
@@ -7628,12 +6630,6 @@ impl FilesState {
         spec
     }
 
-    /// Route the pointer and the keys through the open menu (its flyout while
-    /// that is up) and translate its chosen row back into the app command bus.
-    /// The menu is painted as an overlay rather than installed in the taffy
-    /// tree, so normal child event propagation cannot reach it. The menu runs
-    /// its own rows, presses and send row, so a row a press, a key or the
-    /// send-to box beside it takes is the same row.
     fn route_menu_event(
         &mut self,
         chrome: &mut Chrome,
@@ -7654,7 +6650,6 @@ impl FilesState {
                 .submenu
                 .contains([self.last_cursor.x, self.last_cursor.y])
         {
-            // A press outside the flyout closes both menus.
             chrome.submenu.close();
             chrome.context_menu.close();
             return true;
@@ -7686,7 +6681,6 @@ impl FilesState {
         } else {
             chrome.menu_commands.get(index).cloned().flatten()
         };
-        // A flyout opens beside the row that opened it, the menu kept open.
         let rect = chrome.context_menu.get_rect();
         let row = chrome
             .context_menu
@@ -7708,9 +6702,6 @@ impl FilesState {
         true
     }
 
-    /// Put a keyboard-opened context menu beside the selected row. Falling
-    /// back to the content area's upper-left keeps the action available when
-    /// the row is virtualized or the composition has not painted yet.
     fn keyboard_context_anchor(&self, chrome: &Chrome) -> Point {
         fn find_named_rect(widget: &dyn Widget, name: &str) -> Option<vello::kurbo::Rect> {
             if let Some((_, rect)) = widget
@@ -7740,18 +6731,11 @@ impl FilesState {
         Point::new(self.rect.x0 + 24.0, self.rect.y0 + 72.0)
     }
 
-    /// Drain and apply all queued commands. Returns whether any command
-    /// changed the structure.
-    /// What shows the row a search hit or an agent's `open` names: queued,
-    /// and opened before the next frame is laid out.
     pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
         let opened = Rc::clone(&self.opened);
         move |anchor| opened.borrow_mut().push(anchor.to_owned())
     }
 
-    /// Show the row `anchor` names as its own open action does: a place
-    /// opens, a collaborative record is revealed, a remote account shows its
-    /// connection details.
     pub(crate) fn open_anchor(&mut self, anchor: &str) -> Result<(), String> {
         use crate::effects::FilesEffect;
         let effect = if anchor.starts_with("files.place:") {
@@ -7877,8 +6861,6 @@ impl FilesState {
                 }
             }
             Err(error) => {
-                // Said with the file's Version history, where the change can
-                // be made again.
                 self.history_pending_success = None;
                 self.status = None;
                 let action = path.map(NoticeAction::OpenHistory);
@@ -7890,8 +6872,6 @@ impl FilesState {
         true
     }
 
-    /// App-level keyboard navigation, applied when a key isn't consumed by
-    /// a focused child (search field, etc.). Returns whether it acted.
     #[allow(
         clippy::too_many_lines,
         reason = "the complete keyboard command map stays auditable in one match so every shortcut has a single routing point"
@@ -7906,9 +6886,6 @@ impl FilesState {
         if ke.state != winit::event::ElementState::Pressed {
             return false;
         }
-        // While renaming, the rename field owns the keyboard (Enter/Escape are
-        // handled upstream in `handle_event`); don't let list nav / Delete /
-        // clipboard shortcuts fire underneath the editor.
         if self.renaming.is_some() {
             return false;
         }
@@ -7917,7 +6894,6 @@ impl FilesState {
         let alt = modifiers.state().alt_key();
         let len = self.displayed_entries().len();
         match &ke.logical_key {
-            // Back, forward and up, as in every file manager and browser.
             Key::Named(NamedKey::ArrowLeft) if alt => {
                 self.history_back();
                 true
@@ -7930,22 +6906,14 @@ impl FilesState {
                 self.go_up();
                 true
             }
-            // Location is a first-class, keyboard-accessible control. Keep
-            // this at the application layer so it works when focus is in the
-            // file view, places list, or breadcrumb; a path editor itself
-            // consumes keys before this method is reached.
             Key::Character(s) if (s == "l" || s == "L") && ctrl => {
                 if self.header_in_bar {
-                    // The location is the window bar's: it edits there.
                     ui::window_toolbar::edit_location();
                 } else {
                     self.toolbar.begin_path_edit();
                 }
                 true
             }
-            // Help is intentionally a regular view command, not an invisible
-            // one-off keypath: the same reference is reachable from View
-            // options and the current-folder action resource.
             Key::Named(NamedKey::F1) => {
                 self.apply_command(FileCommand::ShowKeyboardShortcuts);
                 true
@@ -7962,7 +6930,6 @@ impl FilesState {
                 self.open_context_menu(self.keyboard_context_anchor(chrome));
                 true
             }
-            // F2 renames the current selection in place.
             Key::Named(NamedKey::F2) => {
                 self.begin_rename();
                 true
@@ -7989,8 +6956,6 @@ impl FilesState {
                 self.retain_shown_selection();
                 true
             }
-            // Escape clears the selection (when there is one); otherwise it is
-            // left for the host so it never swallows a no-op.
             Key::Named(NamedKey::Escape) if !self.selection.is_empty() => {
                 self.selection.clear();
                 self.retain_shown_selection();
@@ -8005,7 +6970,6 @@ impl FilesState {
                 self.go_up();
                 true
             }
-            // Space shows the selected file large, as in every file manager.
             Key::Named(NamedKey::Space) if !self.selection.is_empty() => {
                 self.show_preview();
                 true
@@ -8053,7 +7017,6 @@ impl FilesState {
                 self.set_zoom(self.zoom_level - 1);
                 true
             }
-            // Typing the start of a name moves to it.
             Key::Character(s)
                 if !ctrl
                     && !alt
@@ -8080,11 +7043,6 @@ impl FilesState {
         }
     }
 
-    /// A live drag owns the pointer: the ghost follows the cursor, the
-    /// hovered folder is highlighted, and the release resolves the drop —
-    /// moving the carried row(s) into a folder (or the parent), or pinning a
-    /// folder to the sidebar. Returns whether the event was consumed (the
-    /// caller should stop routing it further).
     fn handle_live_drag_event(
         &mut self,
         chrome: &Chrome,
@@ -8097,8 +7055,6 @@ impl FilesState {
         }
         match event {
             WindowEvent::CursorMoved { .. } => {
-                // Once the host has carried the drag to another
-                // application, no folder here is a target any more.
                 self.drag_hover = if crate::external_drag::is_handed_off() {
                     None
                 } else {
@@ -8117,12 +7073,8 @@ impl FilesState {
                 ..
             } => {
                 if crate::external_drag::is_handed_off() {
-                    // The drop landed in another application; the host
-                    // delivered it. Nothing moves here.
                     self.cancel_drag();
                 } else {
-                    // Ctrl copies, as on every desktop; so does a drop onto
-                    // another disk, where a move would be a copy and delete.
                     self.finish_drag(chrome, ctx.modifiers.state().control_key());
                 }
                 *ctx.handled = true;
@@ -8133,8 +7085,6 @@ impl FilesState {
         }
     }
 
-    /// The open context menu (or its flyout) gets first dibs on clicks +
-    /// Escape. Returns whether the event was consumed.
     fn handle_open_menu_event(
         &mut self,
         chrome: &mut Chrome,
@@ -8164,12 +7114,6 @@ impl FilesState {
         true
     }
 
-    /// Right-click opens the context menu. First deliver the press to the
-    /// body so the content pane selects the row under the cursor (it pushes
-    /// `ContextSelect`); draining that before building the menu is what
-    /// makes the menu's actions target what was actually clicked rather
-    /// than a stale selection from an earlier click. Returns whether the
-    /// event was consumed.
     fn handle_right_click_open_menu(
         &mut self,
         chrome: &mut Chrome,
@@ -8214,7 +7158,6 @@ impl FilesState {
                     None,
                 ));
             }
-            // Use the same shared, viewport-constrained menu as the toolbar.
             self.open_menu_right_aligned(spec, at, at.y);
         } else if !chrome.in_places_list(self.last_cursor) {
             self.open_context_menu(self.last_cursor);
@@ -8224,9 +7167,6 @@ impl FilesState {
         true
     }
 
-    /// Ctrl + mouse-wheel zooms the icon/row size (before the wheel reaches
-    /// the Scrollable, which would otherwise consume it for scrolling).
-    /// Returns whether the event was consumed.
     fn handle_zoom_wheel(
         &mut self,
         chrome: &Chrome,
@@ -8239,8 +7179,6 @@ impl FilesState {
         if !(ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key()) {
             return false;
         }
-        // An open popup of the window (a dropdown's list, a menu) takes
-        // every wheel over the window, held keys or not.
         if Widget::modal_capture(&chrome.nav).is_some() {
             return false;
         }
@@ -8258,12 +7196,6 @@ impl FilesState {
         true
     }
 
-    /// While an inline rename is active the in-place editor (drawn over the
-    /// row, not in a bottom bar) owns input: Enter commits, Escape cancels,
-    /// every other keystroke edits the field, and a press outside the field
-    /// commits. Handled before the event reaches app-level nav / the file
-    /// view so typing never leaks into list navigation or Enter-opens a
-    /// row. Returns whether the event was consumed.
     fn handle_rename_mode_event(
         &mut self,
         event: &winit::event::WindowEvent,
@@ -8282,9 +7214,6 @@ impl FilesState {
                 if ke.state == ElementState::Pressed {
                     match &ke.logical_key {
                         Key::Named(NamedKey::Enter) => {
-                            // A local field owns this transient proposal. Read
-                            // it directly so Enter commits the final keystroke
-                            // without serialising a UI-only value into CRDT.
                             self.rename_buffer = self.rename_input.value().to_string();
                             self.commit_rename();
                             *ctx.handled = true;
@@ -8300,7 +7229,6 @@ impl FilesState {
                         _ => {}
                     }
                 }
-                // Typing / editing keys go to the field (it splices the CRDT).
                 self.rename_input.handle_event(event, ctx);
                 if let Some(value) = self.rename_input.take_dirty() {
                     self.rename_buffer = value;
@@ -8319,7 +7247,6 @@ impl FilesState {
                     .get()
                     .is_some_and(|r| r.contains(self.last_cursor));
                 if inside {
-                    // Reposition the caret within the field.
                     self.rename_input.handle_event(event, ctx);
                     if let Some(value) = self.rename_input.take_dirty() {
                         self.rename_buffer = value;
@@ -8337,10 +7264,6 @@ impl FilesState {
         }
     }
 
-    /// Deliver to the body first (toolbar/breadcrumb, places list, file
-    /// view), stopping at the first that consumes it; then app-level
-    /// keyboard nav, queued commands, and the narrow-drawer dismissal that
-    /// follows a place navigation.
     fn finish_event(
         &mut self,
         chrome: &mut Chrome,
@@ -8363,8 +7286,6 @@ impl FilesState {
         if self.drain_commands() {
             self.structure_dirty = true;
         }
-        // Going somewhere from the places screen of a narrow window shows
-        // the folder.
         if self.current_path != path_before
             && chrome.nav.front_pane() == ui::widget::NavPane::Sidebar
             && !chrome.nav.geometry().stack.is_empty()
@@ -8375,9 +7296,6 @@ impl FilesState {
 }
 
 impl FilesState {
-    /// What showing a folder answers: its resource id, its path and its
-    /// first entries (a folder's name ends in `/`), so a caller acts on
-    /// the folder without querying it again.
     fn folder_answer(&self) -> serde_json::Value {
         let entries: Vec<String> = self
             .entries
@@ -8501,9 +7419,6 @@ impl FilesState {
         ));
     }
 
-    /// The live rows the window shows beneath the resource: listing entries,
-    /// remote accounts, nearby transfers, and the retry of a failed listing.
-    /// The folder, its places and templates are the resource's publication.
     fn live_filesystem_extras(&self) -> Vec<ResourceSpec> {
         self.published_live_rows()
             .into_iter()
@@ -8511,9 +7426,6 @@ impl FilesState {
             .collect()
     }
 
-    /// [`Self::live_filesystem_extras`] as the rows a publication shares:
-    /// an entry's row is the one last published while what it shows holds
-    /// ([`Self::live_entry_rows`]).
     pub(crate) fn published_live_rows(&self) -> Vec<ui::framework::LiveRow> {
         use ui::framework::LiveRow;
         let mut rows: Vec<LiveRow> = published_place_resources(&self.favorites())
@@ -8530,9 +7442,6 @@ impl FilesState {
         rows
     }
 
-    /// The live rows besides places, templates and entries: remote
-    /// accounts, drives, cloud entries, nearby transfers and a failed
-    /// listing's retry.
     fn live_other_resources(&self) -> Vec<ResourceSpec> {
         let mut extras = self.live_remote_account_resources();
         extras.extend(self.live_drive_resources());
@@ -8558,10 +7467,6 @@ impl FilesState {
         if !ui::bound_dispatch::host_person_invocation_permitted() {
             return Vec::new();
         }
-        // External file accounts are the folders the storage daemon's cloud
-        // service mounts under `~/Remote`. Files never talks to the server or
-        // opens the vault: it opens the folder like any other place and shows
-        // the account's reported health as a badge.
         self.remote_account_snapshot()
             .into_iter()
             .map(|account| {
@@ -8604,16 +7509,9 @@ impl FilesState {
     }
 }
 
-/// The listing's entries by resource id ([`FilesState::entry_resource_id`]).
-/// An id is a pure function of an entry's path and record, so an id found
-/// here names the entry at its index whenever that entry still has the
-/// path and record it had when the ids were made; anything else (another
-/// listing, an id not found) makes them again from the listing as it is.
 #[derive(Default)]
 struct EntryIds {
-    /// Each entry's path and record, in listing order, when the ids were made.
     made_of: Vec<(PathBuf, Option<[u8; 16]>)>,
-    /// The index of each id's entry in that listing.
     by_id: HashMap<String, usize>,
 }
 
@@ -8643,8 +7541,6 @@ impl EntryIds {
         self.lookup(entries, id)
     }
 
-    /// The entry `id` names, when its index still holds the entry it was
-    /// made from.
     fn lookup<'a>(&self, entries: &'a [Entry], id: &str) -> Option<&'a Entry> {
         let index = *self.by_id.get(id)?;
         let (path, record) = self.made_of.get(index)?;
@@ -8655,12 +7551,7 @@ impl EntryIds {
 }
 
 impl FilesState {
-    /// When the listing is next read: its poll, or the read a reported
-    /// change asked for once its gap has passed
-    /// ([`Self::refresh_metadata_if_due`]).
     fn listing_deadline(&self) -> Option<Instant> {
-        // A deferred read ends on input of its own or when the read under way
-        // wakes the window; a due deadline here would only spin until then.
         let changed_directory =
             (self.directory_changed && !self.directory_read_deferred()).then(|| {
                 self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len())
@@ -8671,10 +7562,7 @@ impl FilesState {
             .min()
     }
 
-    /// Every deadline besides the listing's, which the sync serves.
     fn other_deadline(&self, chrome: &Chrome) -> Option<Instant> {
-        // Nearby Send asks only when the shell announces a change; the asks
-        // that announcement queued go out on the next pump, at once.
         self.nearby_send
             .has_requests()
             .then(Instant::now)
@@ -8843,9 +7731,6 @@ impl FilesState {
 }
 
 impl FilesState {
-    /// The selected files and folders, for asking an agent about them: each
-    /// row's published resource as a whole item, in the order shown, and
-    /// their names listed.
     fn shared_selection(&self) -> Option<ui::shared_selection::SharedSelection> {
         let displayed = self.displayed_entries();
         let picked: Vec<&Entry> = self
@@ -8869,7 +7754,6 @@ impl FilesState {
 }
 
 impl FilesState {
-    /// Narrow the listing to what `query` finds.
     fn set_filter(&mut self, query: &str) {
         if self.find == query {
             return;
@@ -8879,15 +7763,8 @@ impl FilesState {
     }
 }
 
-/// What the window's frame asks of the state.
 impl FilesState {
-    /// Take in what finished on the app runtime since; whether the window
-    /// shows something new.
     fn poll_frame(&mut self) -> bool {
-        // A row a screen reader, the agent or a test acted on through the
-        // accessibility tree: the table the view paints records the request
-        // where no pointer event delivers it, and it is applied here as the
-        // double-click and the right-press apply theirs.
         let (opened, menu) = self.list_slot.take_row_requests();
         let mut restored = false;
         if let Some(index) = opened {
@@ -8896,11 +7773,9 @@ impl FilesState {
         if let Some((index, at)) = menu {
             restored |= self.apply_command(FileCommand::ContextMenuAt { index, at });
         }
-        // Service calls finishing on the app runtime wake the event loop.
         let transfers = self.follow_transfers(ui::time::now());
         let previewed = self.preview.as_mut().is_some_and(Preview::poll);
         let sprang = self.spring_open_if_due(ui::time::now());
-        // A folder's item count came in: the list shows it.
         let counted = self.folder_counts.take_arrived();
         let listed = self.take_folder_read()
             | self.take_archive_listing()
@@ -8923,14 +7798,9 @@ impl FilesState {
 
     fn sync_frame(&mut self, chrome: &mut Chrome, state: &AppModel, path: &ModelPath) {
         self.adopt_preferences();
-        // A control a caller invoked through the door (a toolbar button)
-        // queued its command, and a search hit or an agent's `open` queued
-        // the row it names; apply them before this frame is laid out.
         if self.drain_commands() | self.drain_opened() {
             self.structure_dirty = true;
         }
-        // The window's bar shows the toolbar's slots, and what the person did
-        // with them runs here, before this frame is laid out.
         if self.sync_window_toolbar(chrome) {
             self.structure_dirty = true;
         }
@@ -8939,8 +7809,6 @@ impl FilesState {
         self.take_incoming_drop();
         self.refresh_framework_history_target();
         self.refresh_metadata_if_due(ui::time::now());
-        // One bounded catalogue page per idle/sync turn. The palette only
-        // reads its retained SearchCatalog; it never performs mount I/O.
         if self.collaborative_record_pager.borrow().has_more() {
             let page = self.advance_collaborative_search_page();
             if page.truncated {
@@ -8955,9 +7823,6 @@ impl FilesState {
             self.rename_seed_pending = false;
         }
 
-        // Keep the persistent in-place rename editor alive through rebuilds.
-        // On its first frame select the name but not a file's extension, so
-        // typing replaces the name and keeps the type (a folder's whole name).
         self.rename_input.sync(state, path);
         if self.rename_select_pending {
             let is_dir = self
@@ -8973,17 +7838,11 @@ impl FilesState {
 
         chrome.nav.sync(state, path);
 
-        // `TextInput` also accepts accessibility SetValue; absorb any local
-        // edit after sync so every input route feeds the same command.
         if self.renaming.is_some()
             && let Some(value) = self.rename_input.take_dirty()
         {
             self.rename_buffer = value;
         }
-        // The notice says so in the window's bar while it is up; its
-        // button pressed there acts as the card's did.
-        // A row in Needs you waits on the very action this notice carried:
-        // pressing it acts here, where the change it is about lives.
         for press in self.needs.take() {
             let Some(acted) = ui::attention::apply(press) else {
                 continue;
@@ -9013,9 +7872,6 @@ impl FilesState {
         theme: &ui::Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        // Child overlays (the path bar's completion popover, dropdowns) first,
-        // then our top-layer context menu (and its flyout) so they composite
-        // above everything.
         chrome
             .nav
             .draw_overlay(scene, transform, text_renderer, theme, presence);
@@ -9039,16 +7895,12 @@ impl FilesState {
                 .submenu
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
-        // The drop-target highlight sits on the target folder; the drag ghost
-        // floats above everything else.
         self.resolve_staged_move_drag();
         self.draw_drop_highlight(chrome, scene, transform, theme);
         self.draw_marquee(scene, transform, theme);
         self.draw_pin_ghost(scene, transform, text_renderer, theme);
     }
 
-    // Primary widget event dispatcher; pointer, keyboard, drag, menu, and
-    // accessibility paths converge here before entering semantic commands.
     #[allow(
         clippy::too_many_lines,
         reason = "root event dispatcher orders pointer, keyboard, drag, menu, and retained-child routing"
@@ -9070,14 +7922,10 @@ impl FilesState {
                 ..
             }
         ) {
-            // What a column drag would start from: a press on a column's
-            // edge resizes as the pointer moves and ends on the release.
             self.widths_at_press = Some(self.list_slot.widths());
         }
-        // Track the cursor for menu placement + hit-testing.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = ctx.logical(position);
-            // An armed press that has travelled far enough becomes a drag.
             if let Some((start, path, is_dir)) = self.armed_drag.clone()
                 && self.pin_drag.is_none()
                 && self.last_cursor.distance(start) > crate::views::file_view::drag_threshold()
@@ -9101,8 +7949,6 @@ impl FilesState {
             *ctx.handled = true;
             return;
         }
-        // A failed listing has nothing else to act on, so Enter or Space
-        // anywhere takes its way on, as its button does.
         if self.error.is_some()
             && matches!(
                 event,
@@ -9180,14 +8026,10 @@ impl FilesState {
             ..
         } = event
         {
-            // A release without travel was a click, not a drag.
             self.armed_drag = None;
             self.release_click();
         }
 
-        // A live drag, the open context menu, a right-click, a zoom wheel,
-        // and an in-place rename all get first dibs on the event, in that
-        // priority order; the first that consumes it stops routing.
         if self.handle_live_drag_event(chrome, event, ctx)
             || self.handle_open_menu_event(chrome, event, ctx)
             || self.handle_right_click_open_menu(chrome, event, ctx)
@@ -9207,10 +8049,6 @@ impl FilesState {
             }
         ) && self.widths_at_press.take() != Some(self.list_slot.widths())
         {
-            // The press resized a column and this is where it ended: the
-            // width the person dragged is theirs from here on
-            // (`APP-file-explorer-02`). A press that resized nothing keeps
-            // the widths it began with, and nothing is stored.
             self.store_widths();
         }
         if !panel_was_open && self.collab_panel.is_some() {
@@ -9312,9 +8150,6 @@ impl FilesState {
 }
 
 impl FilesState {
-    /// The places, collaborative records and remote accounts as search
-    /// entries. Collaborative entries carry stable record UUIDs; their
-    /// current paths are provenance, never identity.
     pub(crate) fn search_entries_shown(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         let mut entries = self.places_search.entries();
         entries.extend(self.collaborative_search.entries());
@@ -9326,18 +8161,11 @@ impl FilesState {
 }
 
 impl FilesState {
-    /// The live rows the window shows beneath the resource: listing entries,
-    /// remote accounts, nearby transfers and the retry of a failed listing.
-    /// The folder, its places and templates and its folder-wide work are the
-    /// resource's publication.
     #[cfg(test)]
     pub(crate) fn published_rows(&self) -> Vec<ResourceSpec> {
         self.live_filesystem_extras()
     }
 
-    /// The row `id`, when [`Self::published_rows`] leaves it out: an entry
-    /// past the eager page, a place, a late collaborative record, a remote
-    /// account, found by a search and resolved only when acted on.
     pub(crate) fn published_row(&self, id: &str) -> Option<ResourceSpec> {
         fn find(resource: &ResourceSpec, id: &str) -> Option<ResourceSpec> {
             if resource.id.as_str() == id {
@@ -9373,8 +8201,6 @@ impl FilesState {
 }
 
 impl FilesState {
-    /// What the window asks of the host next: a document to open in its
-    /// own app.
     pub(crate) fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
         self.host_intent.take()
     }
@@ -9399,10 +8225,6 @@ mod launch_argument_tests;
 #[path = "files_app/sidebar_button_tests.rs"]
 mod sidebar_button_tests;
 
-/// What the palette, agents and scripts reach of a Files window, for the
-/// tests that drive the widget without a framework host: the resource's
-/// publication with the window's effects beside it and its live rows
-/// beneath, and the routing the framework does for its view.
 #[cfg(test)]
 pub(crate) mod published {
     use super::FileExplorerWidget;
@@ -9412,8 +8234,6 @@ pub(crate) mod published {
     use ui::tilo_actions::ResourceSpec;
     use ui::tilo_resource::{Effect as _, Resource as _};
 
-    /// The published tree: one root, as the framework publishes it, with the
-    /// places the window shows.
     pub(crate) fn tree(
         files: &FileExplorerWidget,
         doc: &automerge::AutoCommit,
@@ -9423,8 +8243,6 @@ pub(crate) mod published {
             "Files",
             &FileExplorer::default(),
         );
-        // What the window binds over the folder shown and the selection,
-        // as its view publishes it.
         for decl in files.state().bound_declarations() {
             root = ui::tilo_resource::bind_declaration(root, &decl);
         }
@@ -9434,8 +8252,6 @@ pub(crate) mod published {
         vec![root]
     }
 
-    /// Invoke the action `action` of the published resource `resource` with
-    /// `args`, as the palette or an agent does through the door.
     pub(crate) fn invoke(
         files: &mut FileExplorerWidget,
         doc: &mut automerge::AutoCommit,
@@ -9466,13 +8282,8 @@ pub(crate) mod published {
         )
     }
 
-    /// How an operation started: done at once with its output, or pending
-    /// to finish later.
     pub(crate) type Started = ui::framework::Effected;
 
-    /// Start the encoded operation on the window as the framework does:
-    /// the effect vocabulary to the view's handler, anything else to the
-    /// toolkit's widgets inside it.
     pub(crate) fn start(
         files: &mut FileExplorerWidget,
         kind: ui::tilo_actions::OperationKind,
@@ -9533,8 +8344,6 @@ impl FilesState {
         true
     }
 
-    /// `--shots`: say the item and selection counts in the window's bar,
-    /// so a single headless frame shows them.
     pub fn arm_status_for_shots(&mut self) {
         let label = self.footer_label();
         self.status_notice.show(label);

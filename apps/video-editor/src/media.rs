@@ -1,60 +1,32 @@
-//! The FUSE-media seam.
+//! Where a media reference resolves to, and whether its bytes are local.
 //!
-//! In Tilo, source media lives on the **P2P FUSE filesystem mounted at
-//! `/var/workspace`** (see the workspace `fs` crate), *not* in the editor's
-//! CRDT. This is deliberate and load-bearing for collaboration:
-//!
-//!   * The **CRDT carries only references** — a workspace-relative path plus
-//!     cheap metadata (duration, dimensions, palette). That is what
-//!     replicates between peers over the editor's Automerge document.
-//!   * The **bytes live on the FUSE** and hydrate on demand. When a second
-//!     collaborator opens the project, the path references resolve against
-//!     *their* mount; `fs` projects the metadata immediately (P2P gossip) and
-//!     fetches content the first time a frame is actually decoded.
-//!
-//! So a [`crate::model::MediaItem`] stores `path` = `"footage/Drone.mov"`
-//! (relative to the workspace root) and a [`Hydration`] status. The decode
-//! path ([`crate::preview`], gated behind the `decode` feature) is the only
-//! place that resolves a reference to real bytes — that resolution is the
-//! single hydration seam, isolated here so the rest of the editor never
-//! assumes a byte is local.
-//!
-//! ## Why a seam and not direct `std::fs`?
-//!
-//! `open()` on the FUSE does **not** imply bytes are present — `fs` is
-//! projection-first, hydration-on-read (10s metadata TTL, 1 MB readahead).
-//! Treating media access as a typed seam ([`resolve`]) keeps that contract
-//! explicit: a caller gets a [`MediaSource`] describing *where* the bytes
-//! are and *whether* they are local yet, never a bare assumption.
+//! The record carries only references: a workspace-relative path plus cheap
+//! metadata. The bytes live on the workspace FUSE, where they hydrate on read, so
+//! a path that resolves is not a path that can be decoded. Everything that reads
+//! media goes through [`resolve`], which says both.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use ui::tilo_resource;
 
-/// Root of the Tilo P2P FUSE filesystem. Every collaborator mounts the same
-/// logical tree here, so a workspace-relative media path resolves to the
-/// same logical file for all peers (the bytes hydrate per-peer on read).
+/// The workspace mount: the same tree on every peer, hydrated per peer.
 pub use ::media::source::WORKSPACE_ROOT;
 
-/// Sub-directory under the workspace where the editor expects project media
-/// to be imported. Keeping imports under a single prefix makes the
-/// per-cluster sandbox allowlist a single grant rather than per-file.
+/// Where imported media goes: one prefix keeps the sandbox allowlist to a
+/// single grant.
 pub const MEDIA_PREFIX: &str = "media";
 
-/// Prefix of a media path naming the editor's own copy of a file imported by
-/// its contents (a browser page has no paths to store).
+/// Names the editor's own copy of a file imported by its contents, for a host
+/// with no paths to store.
 pub const KEPT_PREFIX: &str = "tilo-kept";
 
-/// Whether a media reference's *content* is available locally yet. The CRDT
-/// always carries the reference (so the clip can be laid out, trimmed and
-/// drawn from metadata); the bytes are a separate, lazily-hydrated concern.
+/// Whether a reference's bytes are local. The reference itself is always in the
+/// record, so a clip can be laid out, trimmed and drawn from metadata alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, tilo_resource::Model)]
 pub enum Hydration {
-    /// Path + metadata are known (replicated via the CRDT) but the bytes
-    /// have not been fetched from the FUSE yet. The timeline still renders
-    /// the clip from metadata; the preview shows a representative frame.
+    /// Metadata is known; the bytes have not been fetched yet.
     Projected,
-    /// Content is present in the local FUSE cache and can be decoded.
+    /// Present in the local cache, so it can be decoded.
     Local,
 }
 
@@ -76,40 +48,32 @@ impl Hydration {
     }
 }
 
-/// A resolved media reference: the absolute on-FUSE path plus whether its
-/// bytes are hydrated. This is the *only* type the decode path consumes, so
-/// the hydration contract is enforced in one place.
+/// The only type the decode path consumes, so the hydration contract is
+/// enforced in one place.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MediaSource {
-    /// Absolute path under [`WORKSPACE_ROOT`] (or a bundled sample path in
-    /// `--shots`/dev — see [`resolve`]).
+    /// Absolute, under [`WORKSPACE_ROOT`] or a bundled sample directory.
     pub abs_path: PathBuf,
-    /// Whether the bytes are present locally (FUSE-hydrated or a real file).
     pub hydration: Hydration,
 }
 
 impl MediaSource {
-    /// `true` when the bytes can actually be read/decoded right now.
+    /// Whether the bytes can be read now.
     pub fn is_decodable(&self) -> bool {
         self.hydration.is_local()
     }
 }
 
-/// Where a screenshot's sample media lives in place of the workspace mount;
-/// see [`serve_sample_media`].
 #[cfg(feature = "samples")]
 static SAMPLE_MEDIA: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-/// The stand-ins for the demo project's sources bundled with the crate
-/// (`sample-media/`).
 #[cfg(feature = "samples")]
 pub fn bundled_sample_media() -> PathBuf {
     Path::new(env!("OUT_DIR")).join("sample-media")
 }
 
-/// Resolve relative media under `dir` before anywhere else: a capture of the
-/// demo project serves the bundled stand-ins ([`bundled_sample_media`]), so
-/// its sources resolve to local bytes without a live workspace mount. `None`
+/// Resolve relative media under `dir` before anywhere else, so a capture of the
+/// demo project finds its bundled stand-ins with no workspace mount. `None`
 /// stops it.
 #[cfg(feature = "samples")]
 pub fn serve_sample_media(dir: Option<PathBuf>) {
@@ -123,23 +87,18 @@ fn sample_media() -> Option<PathBuf> {
     SAMPLE_MEDIA.lock().ok().and_then(|s| s.clone())
 }
 
-/// Where a source imported from content (`tilo.content:<reference>`) is read
-/// from: a directory holding each by its address. The render helper points it
-/// at its job directory, where the host laid out the sources a render
-/// places; a path naming content resolves nowhere else.
+/// Where sources imported by content (`tilo.content:<reference>`) are read from:
+/// a directory holding each by its address, which the render helper points at its
+/// job directory. A content path resolves nowhere else.
 static CONTENT_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-/// Read content-addressed sources from `dir` (see `CONTENT_ROOT`); `None`
-/// stops it.
 pub fn set_content_root(dir: Option<PathBuf>) {
     if let Ok(mut slot) = CONTENT_ROOT.lock() {
         *slot = dir;
     }
 }
 
-/// The file a content-addressed `path` names under the content root, when
-/// one is set: the bytes a render laid out under the content's address, which
-/// the reference that opens them names.
+/// The file a content-addressed `path` names under the content root.
 fn content_file(path: &str) -> Option<PathBuf> {
     let reference = tilo_actions::content_hash(path)?;
     let address = ui::framework::content::content_address(reference)?;
@@ -147,35 +106,16 @@ fn content_file(path: &str) -> Option<PathBuf> {
     Some(root.join(address))
 }
 
-/// Resolve a media `path` to an absolute [`MediaSource`], reporting whether its
-/// bytes are hydrated.
+/// An absolute `path` is used verbatim; otherwise a content reference, then the
+/// sample media, then the mount, then the working directory; then the canonical
+/// mount path, projected.
 ///
-/// Resolution order:
-///   0. **Absolute path** — a `path` that is already absolute (an imported
-///      local file, or a path already under the mount) is used verbatim. This
-///      is how a portal-imported file outside the workspace reaches the decoder.
-///   1. **Sample media** — otherwise, if a capture serves sample media
-///      (`serve_sample_media`) and `<dir>/<path>` exists, use it, so
-///      headless captures read real bytes deterministically without a live
-///      FUSE mount.
-///   2. **FUSE mount** — `/var/workspace/<path>`, when it is really there.
-///      A workspace reference is what the CRDT replicates, so the mount is
-///      asked before anything local: two peers must resolve the same
-///      logical file even if one of them happens to have a same-named file
-///      beside their project.
-///   3. **Beside the project file**, then **the working directory** — the
-///      two places a relative path that is not a workspace reference can
-///      honestly mean.
-///   4. Failing all of that, the canonical `/var/workspace/<path>`, reported
-///      as [`Hydration::Projected`].
-///
-/// `hydration` is `Local` iff the resolved path exists on disk (the FUSE
-/// reports a present cached file as an ordinary stat); `Projected`
-/// otherwise. The editor never panics on a missing file — a projected
-/// reference is a normal, drawable state.
+/// The mount is asked before anything local: the reference is what replicates,
+/// so two peers must resolve the same logical file even if one has a same-named
+/// file beside their project. Hydration is `Local` when the resolved path
+/// exists, and a missing file is a normal, drawable state rather than a panic.
 pub fn resolve(path: &str) -> MediaSource {
-    // 0. Absolute path: an imported local file, or an already-absolute mount
-    //    path. Use it directly — never re-root it under the workspace.
+    // An absolute path is never re-rooted under the workspace.
     let raw = Path::new(path);
     if raw.is_absolute() {
         let hydration = if raw.exists() {
@@ -211,8 +151,7 @@ pub fn resolve(path: &str) -> MediaSource {
             };
         }
     }
-    // 2/3. The mount first, then the working directory. Order matters: the
-    //      mount is the shared meaning, the other is this machine's.
+    // The mount is the shared meaning; the working directory is this machine's.
     let mounted = Path::new(WORKSPACE_ROOT).join(path);
     let bases = [
         Some(PathBuf::from(WORKSPACE_ROOT)),
@@ -229,24 +168,20 @@ pub fn resolve(path: &str) -> MediaSource {
             hydration: Hydration::Local,
         };
     }
-    // 4. Nothing has it. Report the canonical location, projected.
     MediaSource {
         abs_path: mounted,
         hydration: Hydration::Projected,
     }
 }
 
-/// Turn a resolved absolute path into the shared [`media::Source`] the decode
-/// engine consumes; see [`media::Source::for_path`].
+/// The [`media::Source`] the decode engine consumes.
 pub fn engine_source(abs_path: &Path) -> ::media::Source {
     ::media::Source::for_path(abs_path)
 }
 
-/// The path the editor should store in the CRDT for an imported file at
-/// absolute `abs`. A file already under the workspace mount is stored
-/// **workspace-relative** so the reference replicates to peers (their FUSE
-/// resolves the same logical file); a local file outside the workspace is
-/// stored as its absolute path (it decodes locally; a peer sees it projected).
+/// A file under the workspace mount is stored relative, so the reference
+/// replicates and resolves on a peer; one outside is stored absolute, and a peer
+/// sees it projected.
 pub fn stored_path_for_import(abs: &Path) -> String {
     let root = ::media::Source::workspace_root();
     for base in [root.as_path(), Path::new(WORKSPACE_ROOT)] {
@@ -257,8 +192,8 @@ pub fn stored_path_for_import(abs: &Path) -> String {
     abs.to_string_lossy().into_owned()
 }
 
-/// Build the canonical workspace-relative path the editor stores for an
-/// imported file `name` (e.g. `"Drone.mov"` → `"media/Drone.mov"`).
+/// The path stored for an imported file: `"Drone.mov"` becomes
+/// `"media/Drone.mov"`.
 pub fn workspace_path(name: &str) -> String {
     format!("{MEDIA_PREFIX}/{name}")
 }
@@ -273,20 +208,18 @@ mod tests {
         {
             assert_eq!(workspace_path("Drone.mov"), "media/Drone.mov");
         }
-        // Case `resolve_reports_projected_or_local_via_the_seam`:
-        // Both cases live in one test so there's no inter-test race over the
-        // process-wide sample media.
+        // Both cases live in one test: the sample media is process-wide.
         {
             serve_sample_media(None);
-            // 1. A path that cannot exist on this host resolves as Projected —
-            //    the reference is valid, the bytes simply are not hydrated.
+            // A path that cannot exist resolves projected: the reference is
+            // valid, the bytes are not hydrated.
             let src = resolve("media/definitely-not-here-42.mov");
             assert_eq!(src.hydration, Hydration::Projected);
             assert!(!src.is_decodable());
             assert!(src.abs_path.starts_with(WORKSPACE_ROOT));
 
-            // 2. With the bundled override pointing at a dir that has the file,
-            //    the seam reports it Local + decodable.
+            // With the override pointing at a directory holding the file, it
+            // resolves local.
             let dir = std::env::temp_dir();
             let name = format!("tilo-ve-seam-{}.bin", std::process::id());
             let f = dir.join(&name);
@@ -299,9 +232,8 @@ mod tests {
             serve_sample_media(None);
             std::fs::remove_file(&f).ok();
         }
-        // Case `a_relative_path_found_nowhere_is_a_workspace_reference`:
-        // with nothing of that name in the working directory, the reference
-        // is a workspace one: projected, not fabricated.
+        // With nothing of that name in the working directory, the reference is
+        // a workspace one: projected, not fabricated.
         {
             serve_sample_media(None);
             let away = resolve(&format!("tilo-ve-nowhere-{}/take1.mp4", std::process::id()));

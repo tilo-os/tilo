@@ -1,5 +1,5 @@
-//! Installed, explicitly authorized managed processes and shared supervision.
-//! No ambient identity, package trust or process-global environment is changed.
+//! Installed, explicitly authorized managed processes and shared supervision. No
+//! ambient identity, package trust or process-global environment is changed.
 use crate::manifest::ManifestView;
 use package_store::InstalledPackage;
 use std::{
@@ -11,14 +11,10 @@ use tilo_app_package::PackageId;
 use tilo_app_package::trust::TrustFile as _;
 
 pub const WORKSPACE_AGENT_PACKAGE_ID: &str = "so.tilo.agent";
-/// Non-terminal managed launches one launcher holds. A started agent stays
-/// non-terminal while its process lives (idle agents wait for messages), so
-/// this must be at least the Store's live-agent limit
-/// (`tilo_peer_state::owner_commit::MAX_LIVE_PRIVATE_AGENTS`, 16).
+/// Non-terminal managed launches one launcher holds.
 pub const MAX_LIVE_MANAGED_LAUNCHES: usize = 16;
 
-/// Independently configured release trust. Embedded publisher keys are never
-/// added here. The enrolled host supplies this from its qualified release config.
+/// Independently configured release trust.
 #[derive(Clone, Debug)]
 pub struct PackageTrust {
     pub publishers: Vec<[u8; 32]>,
@@ -41,9 +37,8 @@ impl PackageTrust {
     }
 }
 
-/// The registry row for the workspace agent installed at `payload_root`
-/// with `manifest_path` under the signed package root `package_id_hex`, as an
-/// enrolled host configures it outside the package store.
+/// The registry row for the workspace agent installed at `payload_root` with `manifest_path` under the
+/// signed package root `package_id_hex`, as an enrolled host configures it outside the package store.
 #[must_use]
 pub fn agent_package_row(
     package_id_hex: String,
@@ -78,11 +73,6 @@ pub struct InstalledManagedPackage {
 }
 impl InstalledManagedPackage {
     /// Bind an installed agent package and verify it against `trust`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the package is not the workspace agent, a path cannot be
-    /// canonicalized, or verification fails.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "public constructor shared with the cloud host; the owned root mirrors `installed`"
@@ -141,8 +131,8 @@ impl InstalledManagedPackage {
         }
         let collection_bytes =
             std::fs::read(evidence.join("collection.qcl")).map_err(|e| e.to_string())?;
-        // The signed root must name this package and commit to exactly the
-        // installed manifest and the recorded payload collection.
+        // The signed root must name this package and commit to exactly the installed manifest and the
+        // recorded payload collection.
         let meta = tilo_app_package::PackageMeta::from_parts(
             self.id,
             &signed,
@@ -187,19 +177,15 @@ impl InstalledManagedPackage {
             return Err("managed package identity or manifest mismatch".into());
         }
         refuse_unusual_entries(&self.installed.payload_root)?;
-        // Replay the recorded chain (identity, signature, both covered
-        // hashes); every named payload file was hashed above, so what is left
-        // is a file the signed collection does not name.
+        // Replay the recorded chain (identity, signature, both covered hashes); every named payload
+        // file was hashed above, so what is left is a file the signed collection does not name.
         package_store::integrity::read_record(
             &evidence,
             WORKSPACE_AGENT_PACKAGE_ID,
             &self.id.to_hex(),
         )
         .map_err(|e| e.to_string())?;
-        // Legacy installs copied the manifest into the payload. The current
-        // content-addressed store keeps metadata outside its signed payload
-        // tree; its authoritative manifest was checked above. Never require
-        // a new, unsigned file in that tree merely to launch a managed app.
+        // Legacy installs copied the manifest into the payload.
         let payload_manifest = self.installed.payload_root.join(MANIFEST_FILE);
         if payload_manifest.exists() || evidence == managed_record_dir(&self.data_root) {
             let installed_manifest = std::fs::read(payload_manifest).map_err(|e| e.to_string())?;
@@ -208,8 +194,8 @@ impl InstalledManagedPackage {
             }
         }
         refuse_unexpected_files(&self.installed.payload_root, collection)?;
-        // Parse the exact bytes already verified above, never reread a path
-        // that could have changed after signature/integrity validation.
+        // Parse the exact bytes already verified above, never reread a path that could have changed
+        // after signature/integrity validation.
         let manifest: ManifestView =
             toml::from_str(std::str::from_utf8(&manifest).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
@@ -242,8 +228,8 @@ impl InstalledManagedPackage {
     }
 }
 
-/// Where the managed agent's signed install evidence lives under its
-/// explicitly configured data root (the pre-content-store installer layout).
+/// Where the managed agent's signed install evidence lives under its explicitly configured data root
+/// (the pre-content-store installer layout).
 fn managed_record_dir(data_root: &Path) -> PathBuf {
     package_store::integrity::detached_record_dir(data_root, WORKSPACE_AGENT_PACKAGE_ID)
 }
@@ -251,8 +237,8 @@ fn managed_record_dir(data_root: &Path) -> PathBuf {
 /// The manifest copy the installer writes at the payload root.
 const MANIFEST_FILE: &str = "manifest.toml";
 
-/// Refuse a regular file under `root` that neither the signed `collection`
-/// names nor is the installer's manifest copy.
+/// Refuse a regular file under `root` that neither the signed `collection` names nor is the installer's
+/// manifest copy.
 fn refuse_unexpected_files(
     root: &Path,
     collection: &tilo_app_package::Collection,
@@ -278,9 +264,7 @@ fn refuse_unexpected_files(
     Ok(())
 }
 
-/// The existing integrity walker follows directories. Refuse links and unusual
-/// files before entering it so unknown links cannot escape or recurse forever,
-/// including links absent from the signed collection.
+/// The existing integrity walker follows directories.
 fn refuse_unusual_entries(root: &Path) -> Result<(), String> {
     let mut directories = vec![root.to_path_buf()];
     let mut entries = 0usize;
@@ -301,8 +285,8 @@ fn refuse_unusual_entries(root: &Path) -> Result<(), String> {
     }
     Ok(())
 }
-/// A managed agent is a headless service with required collaboration and
-/// model gateway services and no network.
+/// A managed agent is a headless service with required collaboration and model gateway services and no
+/// network.
 fn require_managed_service(manifest: &ManifestView) -> Result<(), String> {
     let requires = |service: &str| {
         manifest
@@ -323,7 +307,7 @@ fn require_managed_service(manifest: &ManifestView) -> Result<(), String> {
     Ok(())
 }
 
-/// Labels supplied by a committed host owner. These carry no launch authority.
+/// Labels supplied by a committed host owner.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ManagedLaunchScope {
     /// A retained collaborator process, independent of any queued task.
@@ -424,9 +408,6 @@ pub struct ManagedRuntime {
 }
 impl ManagedRuntime {
     /// Resolve the normal declared runtime against independent host trust.
-    /// Unlike an ordinary developer launch, a managed agent cannot accept an
-    /// arbitrary signed publisher or run without its declared runtime.
-    /// `sandbox_shim` and `bwrap` are selected by the owning host, not the app.
     #[cfg(target_os = "linux")]
     pub fn from_launch_options(
         manifest: &ManifestView,
@@ -470,8 +451,7 @@ impl ManagedRuntime {
             sandbox_shim,
             bwrap,
         };
-        // Also check the app's exact declared runtime name/version. Never use
-        // an explicit root override to bypass that managed launch contract.
+        // Also check the app's exact declared runtime name/version.
         verify_bundle(manifest, &runtime)?;
         Ok(runtime)
     }
@@ -485,20 +465,13 @@ struct RuntimeOwner {
     /// Last full verification and the exact filesystem stamp it covered.
     verified: Mutex<Option<(std::time::Instant, TreeStamp)>>,
 }
-/// Longest interval a full package/runtime verification is reused while no
-/// verified file or directory changed. The full check re-reads, re-hashes
-/// and signature-verifies every payload and runtime byte (tens of
-/// milliseconds), and it ran on every process-fact read: dozens of times per
-/// agent step.
+/// Longest interval a full package/runtime verification is reused while no verified file or directory
+/// changed.
 const RUNTIME_RECHECK: std::time::Duration = std::time::Duration::from_secs(2);
 /// Most filesystem entries one stamp covers; larger trees always verify fully.
 const STAMP_ENTRIES: usize = 65_536;
-/// Metadata of every entry under the verified roots (payload, installed
-/// manifest, integrity evidence, runtime bundle), in walk order. Any write,
-/// replace, rename, link, chmod or new entry changes a file's or its parent
-/// directory's inode, length, mtime or ctime (ctime cannot be set by users),
-/// so an equal stamp means no verified byte or name changed since it was
-/// taken. It is only a reuse hint; `RUNTIME_RECHECK` bounds its age.
+/// Metadata of every entry under the verified roots (payload, installed manifest, integrity evidence,
+/// runtime bundle), in walk order.
 #[derive(PartialEq, Eq, Debug)]
 struct TreeStamp(Vec<(PathBuf, [i64; 8])>);
 impl TreeStamp {
@@ -566,8 +539,8 @@ impl RuntimeOwner {
         if reusable {
             return Ok(());
         }
-        // Stamp before and after the full check: only an unchanged tree
-        // across the whole verification is retained.
+        // Stamp before and after the full check: only an unchanged tree across the whole verification
+        // is retained.
         let before = self.stamp();
         let began = std::time::Instant::now();
         self.revalidate_fully()?;
@@ -630,12 +603,12 @@ fn verify_bundle(
 }
 /// Implemented only by the installed durable host owner, never by a wire peer.
 pub trait ManagedLaunchAuthority: Send + Sync {
-    /// Consume the exact durable host launch permit once. An error never authorizes retry.
+    /// Consume the exact durable host launch permit once.
     fn claim_launch(&self, binding: &ManagedBinding) -> Result<(), String>;
     /// Check retained binding and current policy without consuming/recreating a claim.
     fn revalidate_launch(&self, binding: &ManagedBinding) -> Result<(), String>;
 }
-/// A single reservation in one owning runtime. Intentionally neither Clone nor Serde.
+/// A single reservation in one owning runtime.
 pub struct VerifiedLaunchAuthority {
     owner: Weak<RuntimeOwner>,
     binding: ManagedBinding,
@@ -658,8 +631,8 @@ struct ManagedAttempt {
     binding: ManagedBinding,
     cancelled: Arc<std::sync::atomic::AtomicBool>,
     terminal: Arc<std::sync::atomic::AtomicBool>,
-    /// Rung on cancellation; the launch's supervisor sleeps on it and the
-    /// child's exit instead of polling both.
+    /// Rung on cancellation; the launch's supervisor sleeps on it and the child's exit instead of
+    /// polling both.
     #[cfg(target_os = "linux")]
     wake: Arc<bounded_command::WakeFd>,
 }
@@ -698,10 +671,6 @@ impl VerifiedManagedSupervisor {
         self.process
     }
     /// Re-verify the runtime and return its recorded facts.
-    ///
-    /// # Errors
-    ///
-    /// As [`VerifiedManagedRuntime::revalidate`].
     pub fn runtime_facts(&self) -> Result<ManagedRuntimeFacts, String> {
         self.record.runtime.revalidate()
     }
@@ -809,7 +778,7 @@ pub enum ManagedLaunchEvent {
         reason: String,
     },
 }
-/// Owns one bounded set of launch attempts and exact child reapers. It never recovers a child by PID.
+/// Owns one bounded set of launch attempts and exact child reapers.
 pub struct ManagedLauncher {
     owner: Arc<RuntimeOwner>,
     authority: Arc<dyn ManagedLaunchAuthority>,
@@ -864,18 +833,12 @@ impl ManagedLauncher {
         VerifiedManagedRuntime(Arc::downgrade(&self.owner))
     }
     /// Reserve `binding.launch` and consume its host launch claim.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description for an invalid or reused binding, exhausted capacity, or a refused
-    /// runtime check or host claim; the reservation is retained either way.
     pub fn authorize(
         &mut self,
         binding: ManagedBinding,
     ) -> Result<VerifiedLaunchAuthority, String> {
         binding.validate()?;
         // Reserve before runtime checks, the one-use host claim, descriptors or workers.
-        // Even a refused/ambiguous claim retains this identity and cannot be attempted again.
         if self.attempts.contains_key(&binding.launch) {
             return Err("launch already reserved; original status only".into());
         }
@@ -921,10 +884,6 @@ impl ManagedLauncher {
         Ok(permit)
     }
     /// Reap finished workers and take the queued launch events.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the event owner is poisoned; outcomes are then uncertain.
     pub fn drain_events(&mut self) -> Result<Vec<ManagedLaunchEvent>, String> {
         let mut index = 0;
         while index < self.threads.len() {
@@ -975,17 +934,13 @@ impl ManagedLauncher {
         Ok(())
     }
     /// Stop every launch and wait a bounded time for their workers.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first cleanup failure; outcomes of affected launches are uncertain.
     pub fn shutdown(&mut self) -> Result<(), String> {
         self.owner
             .live
             .store(false, std::sync::atomic::Ordering::Release);
         let mut failed = None;
-        // Cancelling every attempt also wakes its supervisor for the
-        // `live` store above, which has no wake of its own.
+        // Cancelling every attempt also wakes its supervisor for the `live` store above, which has no
+        // wake of its own.
         for attempt in self.attempts.values() {
             attempt.cancel();
         }
@@ -1097,8 +1052,7 @@ impl KernelProcess {
 #[path = "managed_channel.rs"]
 pub mod channel;
 
-/// Proven wait result from this launch owner's exact Child handle. Diagnostic
-/// PID labels or process absence cannot construct this witness.
+/// Proven wait result from this launch owner's exact Child handle.
 #[derive(Clone)]
 pub struct VerifiedManagedExit {
     binding: ManagedBinding,
@@ -1230,8 +1184,8 @@ impl EnrolledProcessObserver for LaunchObserver {
                 Some(error)
             }
         };
-        // Sleep on exit and on the attempt's cancellation ring; `stop` and
-        // `shutdown` ring after storing `cancelled` (and `live`).
+        // Sleep on exit and on the attempt's cancellation ring; `stop` and `shutdown` ring after
+        // storing `cancelled` (and `live`).
         let status = loop {
             match bounded_command::wait_child_or(&mut child, Some(self.wake.fd()), None) {
                 Ok(bounded_command::Wakeup::Exited(status)) => break Ok(status),
@@ -1256,8 +1210,8 @@ impl EnrolledProcessObserver for LaunchObserver {
             }
         };
         let process = self.process.lock().ok().and_then(|p| *p);
-        // Operator visibility: a signal (for example a seccomp kill)
-        // is otherwise reported only as a failure without a code.
+        // Operator visibility: a signal (for example a seccomp kill) is otherwise reported only as a
+        // failure without a code.
         tracing::info!(agent = %self.binding.agent, ?status, "managed child exited");
         if let Ok(status) = status {
             self.terminal
@@ -1294,8 +1248,7 @@ impl EnrolledProcessObserver for LaunchObserver {
 }
 #[cfg(target_os = "linux")]
 impl LaunchObserver {
-    /// Revalidate, spawn and supervise the agent on this worker; a failure
-    /// becomes a launch event.
+    /// Revalidate, spawn and supervise the agent on this worker; a failure becomes a launch event.
     fn run(
         self,
         opts: &crate::run::RunOptions,
@@ -1349,11 +1302,6 @@ pub(crate) fn managed_service_argv(binding: &ManagedBinding) -> Vec<String> {
 #[cfg(target_os = "linux")]
 impl ManagedLauncher {
     /// Start the permitted launch's sandboxed agent on a supervising worker.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description for a permit or channel of another runtime, a stopped launch, or
-    /// an unavailable worker; spawn failures are reported as events instead.
     pub fn launch(
         &mut self,
         permit: VerifiedLaunchAuthority,
@@ -1452,10 +1400,6 @@ impl VerifiedManagedProcess {
         self.0.process()
     }
     /// Check that `binding` and `process` are still this process's live custody.
-    ///
-    /// # Errors
-    ///
-    /// As [`VerifiedManagedSupervisor::revalidate`].
     pub fn revalidate(
         &self,
         binding: &ManagedBinding,
@@ -1465,7 +1409,7 @@ impl VerifiedManagedProcess {
     }
 }
 
-/// Descriptive durable evidence. Only `VerifiedManagedProcess` confers live custody.
+/// Descriptive durable evidence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelProcessFacts {
     pub binding: ManagedBinding,
@@ -1476,7 +1420,6 @@ pub struct ChannelProcessFacts {
 }
 
 /// Authenticated process proof and the exact socket admitted alongside it.
-/// The broker consumes this wrapper; callers cannot replace its socket.
 pub struct AdmittedManagedConnection {
     process: VerifiedManagedProcess,
     stream: std::os::unix::net::UnixStream,
@@ -1530,9 +1473,8 @@ mod stamp_tests {
         let root = dir.path().join("payload");
         std::fs::create_dir_all(root.join("bin")).unwrap();
         std::fs::write(root.join("bin/agent"), b"one").unwrap();
-        // Filesystem timestamps come from a coarse clock (several ms on
-        // Linux), so a rewrite right after the first write can share its
-        // mtime and ctime. Date the installed file back as a real payload is.
+        // Filesystem timestamps come from a coarse clock (several ms on Linux), so a rewrite right
+        // after the first write can share its mtime and ctime.
         std::fs::File::options()
             .write(true)
             .open(root.join("bin/agent"))

@@ -1460,9 +1460,13 @@ impl<'a> Parser<'a> {
             let name = self.ident("a parameter name")?;
             self.expect(&Tok::Colon)?;
             let ty = self.type_expr()?;
-            // `above: Option<Task> (above)`: the place the view offering the action supplies,
-            // written as part of what the parameter is. No caller gives it, so it has no default.
-            let place = if self.is(&Tok::LParen) {
+            // What a parameter says of itself, written in one place: `above: Option<Task>
+            // (above)`, the place the view offering the action supplies it in, which no caller
+            // gives and so takes no default; `saved: Bool (label: "On the Watch later list")`,
+            // what it is called where a person gives it.
+            let (place, label) = if self.is(&Tok::LParen) && matches!(self.peek_at(2), Tok::Colon) {
+                (None, Some(self.param_label()?))
+            } else if self.is(&Tok::LParen) {
                 self.bump();
                 let role = self.ident("a part a parameter is (`above`)")?;
                 self.expect(&Tok::RParen)?;
@@ -1472,9 +1476,9 @@ impl<'a> Parser<'a> {
                         "an entry fills the action's one `Text` parameter with the words nothing else takes, so the parameter is plain: `title: Text = \"\"`",
                     );
                 }
-                Some(role)
+                (Some(role), None)
             } else {
-                None
+                (None, None)
             };
             let default = if self.eat(&Tok::Assign) {
                 let default = self.expr()?;
@@ -1486,17 +1490,34 @@ impl<'a> Parser<'a> {
                         if args.len() == 1
                             && matches!(&args[0].value.kind, ExprKind::Ident(read) if *read == name.name)
                 );
-                if self.is(&Tok::LParen) || written_as_a_place {
+                // `done: Bool = true (label: "On the done list")` reads as the literal called
+                // with `label:`, which nothing can call: it is the parameter's label written
+                // after the default instead, where no parameter takes it.
+                let written_as_a_label = matches!(
+                    &default.kind,
+                    ExprKind::Call { callee, args, .. }
+                        if matches!(
+                            callee.kind,
+                            ExprKind::Int(_)
+                                | ExprKind::Float(_)
+                                | ExprKind::Bool(_)
+                                | ExprKind::Str(_)
+                                | ExprKind::Length(..)
+                                | ExprKind::Duration(..)
+                                | ExprKind::Calendar(_)
+                        ) && matches!(&args[..], [arg] if matches!(&arg.name, Some(named) if named.name == "label"))
+                );
+                if self.is(&Tok::LParen) || written_as_a_place || written_as_a_label {
                     let at = Span::new(self.prev_end(), self.prev_end());
                     return self.fail(
                         at,
                         format!(
-                            "a place a view supplies comes right after the parameter's type, as `{}: Type ({})`; it takes no default",
-                            name.name, name.name
+                            "a place a view supplies (`({})`) and a label (`(label: \"...\")`) come right after the parameter's type, before its default: `{}: Type ({})`, `{}: Bool (label: \"...\")`",
+                            name.name, name.name, name.name, name.name
                         ),
                     );
                 }
-                Some(default)
+                Some(Box::new(default))
             } else {
                 None
             };
@@ -1506,6 +1527,7 @@ impl<'a> Parser<'a> {
                 ty,
                 default,
                 place,
+                label,
             });
             if !self.eat(&Tok::Comma) {
                 break;
@@ -1513,6 +1535,33 @@ impl<'a> Parser<'a> {
         }
         self.expect(&Tok::RParen)?;
         Ok(out)
+    }
+
+    /// `saved: Bool (label: "On the Watch later list")`: what the parameter is called where a
+    /// person gives it, written as one option of it.
+    fn param_label(&mut self) -> PResult<String> {
+        self.expect(&Tok::LParen)?;
+        let option = self.ident("the option a parameter takes: `label`")?;
+        if option.name != "label" {
+            return self.fail(
+                option.span,
+                format!(
+                    "a parameter takes the option `label`: what it is called where a person gives it, as `saved: Bool (label: \"On the Watch later list\")`; `{}:` is not one",
+                    option.name
+                ),
+            );
+        }
+        self.expect(&Tok::Colon)?;
+        let words = self.plain_string("a parameter's label")?;
+        if !self.is(&Tok::RParen) {
+            let at = self.span();
+            return self.fail(
+                at,
+                "a parameter takes one option, `label:`; what it holds in other words says itself where it shows",
+            );
+        }
+        self.expect(&Tok::RParen)?;
+        Ok(words)
     }
 
     fn action(

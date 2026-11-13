@@ -56,7 +56,6 @@ for line in sys.stdin:
     }
 }
 
-/// Where the fixture marks a renewal under way, and the directory holding it.
 fn renewal_marker() -> (tempfile::TempDir, PathBuf) {
     let directory = tempfile::tempdir().expect("marker directory");
     let marker = directory.path().join("renewing");

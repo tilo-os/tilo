@@ -1,21 +1,17 @@
-//! Paragraph properties (`w:pPr`) the model does not represent — indentation, keep-with-next,
-//! page break before, borders, shading, tabs, the paragraph mark's run properties, a section
-//! break's `w:sectPr`, … — kept verbatim on the block (attr [`ATTR_PPR`]) and merged back with
-//! the modeled properties (style, numbering, alignment, line spacing) on export, in the
-//! element order `CT_PPr` requires.
+//! Paragraph and run properties the model does not represent (indentation, keep-with-next, page
+//! break before, borders, shading, tabs, the paragraph mark's run properties, a section break, the
+//! character style, caps, kerning, the original font names, …).
 //!
-//! Run properties (`w:rPr`) the model does not represent — the character style, caps,
-//! character spacing, kerning, hidden text, the original font names, … — likewise ride on the
-//! run's text as a [`MARK_RPR`] mark and are merged back in `CT_RPr` order.
+//! They are kept verbatim on the block (attr [`ATTR_PPR`]) or ride on the run's text as a
+//! [`MARK_RPR`] mark, and are merged back with the modeled properties in the element order
+//! `CT_PPr`/`CT_RPr` require.
 
 use super::styles::{attr_val, line_spacing_from_spacing, mark_from_rpr_child};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 
-/// Block attr holding the unmodeled `w:pPr` children of an imported paragraph, verbatim.
 pub(super) const ATTR_PPR: &str = "docx_ppr";
 
-/// Mark holding the unmodeled `w:rPr` children of the runs it covers, verbatim.
 pub(crate) const MARK_RPR: &str = "docx_rpr";
 
 /// `CT_RPr`'s child order.
@@ -75,7 +71,6 @@ pub(super) fn kept_run_props(rpr: &str) -> String {
     for (name, raw) in children(inner) {
         let modeled = match name.as_slice() {
             b"w:rFonts" => false,
-            // Written together with `w:sz`.
             b"w:szCs" => true,
             _ => first_start(&raw).is_some_and(|e| mark_from_rpr_child(&e).is_some()),
         };
@@ -86,7 +81,6 @@ pub(super) fn kept_run_props(rpr: &str) -> String {
     kept
 }
 
-/// The start tag of an element's XML, parsed.
 fn first_start(raw: &str) -> Option<BytesStart<'static>> {
     let mut reader = Reader::from_str(raw);
     match reader.read_event().ok()? {
@@ -179,13 +173,9 @@ pub(super) const ATTR_TBLGRID: &str = "docx_tblgrid";
 pub(super) const ATTR_TRPR: &str = "docx_trpr";
 pub(super) const ATTR_TCPR: &str = "docx_tcpr";
 
-/// The table properties and cell width the exporter writes when it has none kept; imported as
-/// such they carry nothing to keep.
 pub(super) const DEFAULT_TBLPR: &str = r#"<w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>"#;
 pub(super) const DEFAULT_TCW: &str = r#"<w:tcW w:w="0" w:type="auto"/>"#;
 
-/// Whether a table's properties or grid, as imported, say more than the exporter's defaults
-/// (automatic width, columns without widths).
 pub(super) fn is_informative_table_part(raw: &str) -> bool {
     raw != DEFAULT_TBLPR
         && !(raw.starts_with("<w:tblGrid")
@@ -216,8 +206,6 @@ const TCPR_ORDER: &[&[u8]] = &[
     b"w:tcPrChange",
 ];
 
-/// The children of a cell's `w:tcPr` (its verbatim XML) the model does not hold: all but the
-/// spans (`w:gridSpan`, `w:vMerge`).
 pub(super) fn kept_cell_props(tcpr: &str) -> String {
     element_children(tcpr)
         .into_iter()
@@ -228,8 +216,6 @@ pub(super) fn kept_cell_props(tcpr: &str) -> String {
         .collect()
 }
 
-/// A cell's `w:tcPr` from the `modeled` spans and the kept properties; a kept `w:tcW` (the
-/// cell's width) replaces the exporter's automatic one.
 pub(super) fn cell_props_xml(modeled: &[(&[u8], String)], kept: Option<&str>) -> String {
     let mut all: Vec<(Vec<u8>, String)> = modeled
         .iter()
@@ -254,7 +240,6 @@ pub(super) fn cell_props_xml(modeled: &[(&[u8], String)], kept: Option<&str>) ->
     format!("<w:tcPr>{inner}</w:tcPr>")
 }
 
-/// How many `w:gridCol`s a kept `w:tblGrid` has.
 pub(super) fn grid_columns(tblgrid: &str) -> usize {
     element_children(tblgrid)
         .iter()
@@ -276,8 +261,6 @@ fn element_children(xml: &str) -> Vec<(Vec<u8>, String)> {
     )
 }
 
-/// Where `name` goes in a `w:pPr`; an element `CT_PPr` does not list (an extension) goes just
-/// before the paragraph mark's run properties.
 fn order_of(name: &[u8]) -> usize {
     PPR_ORDER
         .iter()
@@ -312,7 +295,6 @@ pub(super) fn kept_child(e: &BytesStart, raw: &str, keep_jc: bool) -> Option<Str
     }
 }
 
-/// The sibling elements of an XML fragment as `(name, verbatim XML)`.
 fn children(xml: &str) -> Vec<(Vec<u8>, String)> {
     let mut reader = Reader::from_str(xml);
     let mut out = Vec::new();
@@ -349,7 +331,6 @@ fn children(xml: &str) -> Vec<(Vec<u8>, String)> {
     }
 }
 
-/// The section break (`w:sectPr`) among a paragraph's kept properties, if any.
 pub(super) fn section_break(kept: &str) -> Option<String> {
     children(kept)
         .into_iter()
@@ -357,7 +338,6 @@ pub(super) fn section_break(kept: &str) -> Option<String> {
         .map(|(_, raw)| raw)
 }
 
-/// Whether a paragraph's kept properties hold a style reference of their own.
 pub(super) fn has_style(kept: &str) -> bool {
     children(kept).iter().any(|(name, _)| name == b"w:pStyle")
 }
@@ -427,7 +407,6 @@ mod tests {
             run_props_xml(modeled, Some(&kept)),
             r#"<w:rStyle w:val="Keyword"/><w:rFonts w:ascii="Liberation Serif" w:hAnsi="Liberation Serif"/><w:b/><w:caps/><w:sz w:val="24"/><w:szCs w:val="24"/>"#
         );
-        // A changed family replaces the kept font; a removed one drops it.
         let mono = r#"<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/>"#;
         assert!(run_props_xml(mono, Some(&kept)).contains("Courier New"));
         assert!(!run_props_xml("", Some(&kept)).contains("rFonts"));

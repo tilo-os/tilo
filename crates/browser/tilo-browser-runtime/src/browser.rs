@@ -1882,6 +1882,44 @@ fn compile_deferred_pipelines_later() {
 /// needs one sooner creates it there and then, so nothing is ever drawn
 /// without its pipeline.
 async fn new_renderer(device: &wgpu::Device) -> Result<vello::Renderer, String> {
+    let code = RENDERER_CODE
+        .wait()
+        .await
+        .ok_or_else(|| "the page could not fetch its renderer's code".to_owned())?;
+    (code.make)(device.clone()).await
+}
+
+/// The renderer's maker: vello's shaders and the code that compiles them.
+///
+/// The first frames rasterize on the CPU while the renderer's pipelines
+/// compile ([`compile_renderer`]), so nothing of it is needed before a first
+/// frame: the browser desktop fetches it as its own module
+/// (`deferred-renderer`), beside that frame, and the start module carries
+/// neither the shaders' sources nor their compiler.
+#[derive(Clone, Copy)]
+pub struct RendererCode {
+    make: fn(wgpu::Device) -> MadeRenderer,
+}
+
+/// A renderer being made: its pipelines compile asynchronously.
+type MadeRenderer =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<vello::Renderer, String>>>>;
+
+/// The renderer's maker this build links.
+#[must_use]
+pub fn builtin_renderer_code() -> RendererCode {
+    RendererCode {
+        make: |device| Box::pin(async move { make_renderer(&device).await }),
+    }
+}
+
+ui::lazy_code! {
+    /// The renderer's maker, fetched as the page starts where the bundle
+    /// defers it (`deferred-renderer`).
+    pub static RENDERER_CODE: RendererCode = builtin_renderer_code, feature = "deferred-renderer";
+}
+
+async fn make_renderer(device: &wgpu::Device) -> Result<vello::Renderer, String> {
     let options = vello::RendererOptions {
         antialiasing_support: vello::AaSupport::area_only(),
         ..Default::default()

@@ -33,7 +33,10 @@ fn the_surface_names_a_kind_per_type_and_a_verb_per_action() {
     );
     let increment = &meta.actions[0];
     let counter = &surfaces[0];
+    // By the action's id, the one its changes' claims name: its name is what the door offers
+    // it by, not what a record keeps.
     assert_eq!(counter.verb(&increment.id).unwrap().0, ActionKind::Undoable);
+    assert!(counter.verb(&increment.name).is_none());
     // The record parameter is the resource itself, so the verb takes none.
     assert!(
         counter
@@ -115,17 +118,47 @@ fn a_bound_fields_edit_names_a_verb_the_surface_publishes() {
         .iter()
         .find(|surface| surface.kind == action.kind)
         .unwrap_or_else(|| panic!("no surface of kind {}", action.kind));
+    let verb = surface
+        .verbs
+        .iter()
+        .find(|verb| verb.id == action.action_id)
+        .unwrap_or_else(|| panic!("{} publishes no {}", action.kind, action.action_id));
+    assert_eq!(verb.kind, ActionKind::Undoable);
+    // The arguments the change names are the ones its verb declares: every argument the verb
+    // requires is there, and it names nothing the verb does not know. A text edit is what the
+    // person typed, so the change carries the text itself and its arguments name the field alone.
+    let args = action
+        .args
+        .as_object()
+        .unwrap_or_else(|| panic!("the change's arguments are named: {}", action.args));
     assert_eq!(
-        surface.verb(&action.action_id).map(|verb| verb.0),
-        Some(ActionKind::Undoable),
-        "{} publishes no {}",
-        action.kind,
-        action.action_id
+        args.get("field"),
+        Some(&json!(title)),
+        "the field it changed is the one it names"
     );
-    assert_eq!(
-        action.args,
-        json!({"field": title, "value": "Groceries"}),
-        "the verb's arguments are the ones it publishes"
+    for param in verb.params.iter().filter(|param| param.required) {
+        assert!(
+            args.contains_key(&param.name),
+            "{} names the `{}` its verb requires: {}",
+            action.action_id,
+            param.name,
+            action.args
+        );
+    }
+    for name in args.keys() {
+        assert!(
+            verb.params.iter().any(|param| param.name == *name),
+            "{} names no argument its verb leaves undeclared: {}",
+            action.action_id,
+            action.args
+        );
+    }
+    // What was typed is the edit the change records, never the text it leaves: the change names
+    // the field, and its edit carries the words.
+    assert!(
+        !args.contains_key("value"),
+        "a keystroke's change names the field it edits: {}",
+        action.args
     );
 }
 
@@ -361,7 +394,7 @@ fn a_published_action_builds_the_planned_dyn_action() {
     let increment = resource
         .actions
         .iter()
-        .find(|spec| spec.id == meta.actions[0].id)
+        .find(|spec| spec.id == meta.actions[0].name)
         .unwrap();
     assert_eq!(increment.contract.kind, ActionKind::Undoable);
     let built = increment.build_json(&serde_json::Map::new()).unwrap();
@@ -418,7 +451,7 @@ action attach(b: Board, list: todo.TodoList) {
     let spec = resource
         .actions
         .iter()
-        .find(|spec| spec.id == attach.id)
+        .find(|spec| spec.id == attach.name)
         .unwrap();
     let list = spec
         .params()
@@ -546,7 +579,9 @@ fn a_requirement_refuses_the_invocation_whose_rule_does_not_hold() {
     replica.apply(&finished);
     let due = meta.actions.iter().find(|a| a.name == "due").unwrap();
     assert_eq!(
-        replica.host.availability(&first, &due.id),
+        replica
+            .host
+            .availability(&resource_id(&meta.app, &first), &due.name),
         Some(tilo_actions::Availability::Unavailable {
             code: "unmet".to_owned(),
             reason: "It is done already".to_owned(),
@@ -560,7 +595,9 @@ fn a_requirement_refuses_the_invocation_whose_rule_does_not_hold() {
     assert!(why.contains("It is done already"), "{why}");
     let open = items[1].clone();
     assert_eq!(
-        replica.host.availability(&open, &due.id),
+        replica
+            .host
+            .availability(&resource_id(&meta.app, &open), &due.name),
         Some(tilo_actions::Availability::Available)
     );
     plan(&mut replica, "due", Some(&open), json!({}))
@@ -644,7 +681,9 @@ fn a_requirement_over_an_unset_option_field_reads_the_field_as_none() {
         .item(&id, task_ty.id.clone())
         .id_string();
     assert_eq!(
-        replica.host.availability(&item, &clear.id),
+        replica
+            .host
+            .availability(&resource_id(&meta.app, &item), &clear.name),
         Some(tilo_actions::Availability::Unavailable {
             code: "unmet".to_owned(),
             reason: "It has no date".to_owned(),
@@ -660,7 +699,9 @@ fn a_requirement_over_an_unset_option_field_reads_the_field_as_none() {
     .unwrap();
     replica.apply(&day);
     assert_eq!(
-        replica.host.availability(&item, &clear.id),
+        replica
+            .host
+            .availability(&resource_id(&meta.app, &item), &clear.name),
         Some(tilo_actions::Availability::Available),
         "a task due by a day has one to clear"
     );
@@ -737,7 +778,9 @@ fn the_tasks_app_says_a_task_with_no_day_has_none_to_clear() {
         .find(|action| action.name == "due_clear")
         .unwrap();
     assert_eq!(
-        replica.host.availability(&item, &clear.id),
+        replica
+            .host
+            .availability(&resource_id(&meta.app, &item), &clear.name),
         Some(tilo_actions::Availability::Unavailable {
             code: "unmet".to_owned(),
             reason: "It has no date".to_owned(),

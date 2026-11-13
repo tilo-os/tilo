@@ -120,7 +120,7 @@ fn language_card<R: ui::tilo_resource::Resource<State = R> + ui::tilo_resource::
         .unwrap_or_default();
     let names: Vec<String> = std::iter::once(language::name(None))
         .chain(
-            language::choices(&offered)
+            language::choices(&crate::i18n::CATALOG.languages(), &offered)
                 .iter()
                 .map(|choice| language::name(Some(choice))),
         )
@@ -314,9 +314,6 @@ mod tests {
             crate::testing::shown_values(&mut app, &language).contains(&device),
             "unset, the device's language is shown as the choice"
         );
-        assert!(crate::i18n::languages().contains(&"en-US"));
-        assert!(crate::i18n::languages().contains(&"de-DE"));
-
         crate::testing::edit_field(&mut app, "settings.appearance", "language", "de-DE").unwrap();
         let settings = app.settings::<AppearancePrefs>();
         assert_eq!(settings.get().language.as_deref(), Some("de-DE"));
@@ -326,8 +323,9 @@ mod tests {
         );
     }
 
-    /// Choosing an installed language takes effect at once; a language the
-    /// desktop neither has nor is offered is refused and changes nothing.
+    /// Choosing an installed language takes effect at once, named as its pack
+    /// is; a language the desktop neither has nor is offered is refused and
+    /// changes nothing.
     #[test]
     fn choosing_an_installed_language_writes_it_at_once() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -339,12 +337,12 @@ mod tests {
         app.effect(&choose("Deutsch")).unwrap();
         assert_eq!(
             app.settings::<AppearancePrefs>().get().language.as_deref(),
-            Some("de-DE")
+            Some("de")
         );
         assert!(app.effect(&choose("xx-XX")).is_err());
         assert_eq!(
             app.settings::<AppearancePrefs>().get().language.as_deref(),
-            Some("de-DE")
+            Some("de")
         );
         app.effect(&choose(language::DEVICE)).unwrap();
         assert_eq!(app.settings::<AppearancePrefs>().get().language, None);

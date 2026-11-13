@@ -124,7 +124,7 @@ params = [
 id = "make-thumbnails"
 kind = "read"
 params = [
-  { name = "photos", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string", content = true } } },
+  { name = "photos", type = { list = "any" }, required = true, schema = { type = "array", items = { type = "string", content = true } } },
 ]
 
 [[resources.types]]

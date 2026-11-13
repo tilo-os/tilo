@@ -1,43 +1,19 @@
-//! Media import, project files in and out, and the export destination:
-//! everything the editor reaches through the host file chooser.
-//!
-//! The portal client — the worker thread, the Tokio runtime, the `ashpd`
-//! round-trip, and the URI→path rule that makes this the file-access security
-//! boundary — lives in [`ui::portal`]. All this module carries is the filter
-//! sets and the labels this app wants on each dialog.
-//!
-//! Import is *multi-select*: the user picks arbitrarily many clips at once and
-//! every local one comes back to be probed and added to the media bin. A
-//! `/var/workspace/...` pick resolves through the FUSE mount and hydrates on
-//! read exactly like a local file (see [`crate::media`]).
-//!
-//! Reusing the shared primitive is not merely DRY: the previous per-app copy
-//! mapped URIs with `strip_prefix("file://")`, which turns
-//! `file://evil-host/etc/passwd` into a working-directory-relative path from a
-//! URI that named a *remote host*. The shared [`ui::portal::to_local_path`]
-//! rejects a foreign host outright, so converging on it closes that hole.
+//! Media import, project files in and out, and the export destination: the
+//! filter sets and labels this app gives the host's file choosers. The chooser
+//! itself, and the URI-to-path rule that makes it the file-access boundary, are
+//! [`ui::portal`]'s.
 
 use ui::portal::{FileFilter, PickRequest};
 
 pub use ui::portal::{MultiChannel as ImportChannel, MultiOutcome as ImportOutcome};
 pub use ui::portal::{PortalChannel as ExportDestChannel, PortalOutcome as ExportDestOutcome};
 
-/// The container / still formats the editor can bring into the bin. Both globs
-/// and MIME types are supplied because portal backends differ in which they
+/// Both globs and MIME types, because portal backends differ in which they
 /// honour.
 fn media_filter() -> FileFilter {
-    // Built from the very lists the probe accepts, so the chooser cannot
-    // advertise less than the editor can open. It used to name five video
-    // extensions, two audio and three image while `probe` recognised
-    // twenty-eight, twenty-three and fifteen — so a `.flac`, an `.avi` or a
-    // `.heic` was filtered out of the picker entirely, and a user with one had
-    // no way to discover the editor would have taken it happily.
-    //
-    // MIME types stay hand-written: they are a small, stable set covering the
-    // formats whose types portal backends actually honour, and there is no
-    // extension-to-MIME table here to derive them from. The globs are the
-    // authoritative half — a backend that honours neither shows everything,
-    // which is also fine.
+    // The globs come from the lists the probe accepts, so the chooser cannot
+    // offer less than the editor can open. The MIME types are hand-written:
+    // there is no extension-to-MIME table here to derive them from.
     let mut f = FileFilter::new("Media")
         .mimetype("video/mp4")
         .mimetype("video/webm")
@@ -69,10 +45,8 @@ fn media_filter() -> FileFilter {
     f
 }
 
-/// Open the host multi-select chooser for media to import, on a worker thread.
-/// Every local path the user picked arrives over the returned channel, which
-/// the editor drains each frame (see `VideoEditorApp::drain_import`). The UI
-/// thread is never blocked.
+/// The multi-select import chooser, on a worker thread; the editor drains the
+/// returned channel each frame (`VideoEditorApp::drain_import`).
 pub fn request_import() -> ImportChannel {
     PickRequest::open_multiple("Import media", "Import")
         .thread_name("video-editor-import")
@@ -82,7 +56,7 @@ pub fn request_import() -> ImportChannel {
 }
 
 /// The same chooser delivering the chosen files' contents, for a host whose
-/// files have no path (a browser page).
+/// files have no path.
 pub fn request_import_contents() -> ui::portal::ContentsChannel {
     PickRequest::open_multiple("Import media", "Import")
         .filter(media_filter())
@@ -90,8 +64,6 @@ pub fn request_import_contents() -> ui::portal::ContentsChannel {
         .send_contents()
 }
 
-/// The chooser filter for one export container, so the Save dialog offers the
-/// extension the encode will actually produce.
 fn container_filter(ext: &str) -> FileFilter {
     let label = match ext {
         "mp4" => "MP4 video",
@@ -108,19 +80,12 @@ fn container_filter(ext: &str) -> FileFilter {
     }
 }
 
-/// Ask the host where to write an export, on a worker thread.
+/// The Save chooser for an export, on a worker thread. Under
+/// `landlock = "strict"` this round-trip is what earns the write: the grant
+/// follows the file the person picked.
 ///
-/// Export previously had no destination UI at all: the output path came from
-/// `TILO_VE_EXPORT_OUT` / `TILO_VE_EXPORT_DIR` or fell back to the temp
-/// directory, so a user could not choose where their render landed and, under
-/// `landlock = "strict"`, the app has no standing grant to write into
-/// `~/Videos` anyway. Routing the destination through the Save portal is what
-/// *earns* the write: the grant follows the file the user picked, which is the
-/// same boundary [`request_import`] relies on for reads.
-///
-/// `suggested_name` seeds the filename field (the project name plus the
-/// container's extension); `ext` also selects the type filter so the dialog
-/// does not offer to save an H.264 file as `.webm`.
+/// `suggested_name` seeds the filename field; `ext` also picks the type filter,
+/// so the dialog does not offer to save an H.264 stream as `.webm`.
 pub fn request_export_destination(suggested_name: &str, ext: &str) -> ExportDestChannel {
     PickRequest::save("Export video", "Export", suggested_name)
         .thread_name("video-editor-export-dest")
@@ -129,8 +94,8 @@ pub fn request_export_destination(suggested_name: &str, ext: &str) -> ExportDest
         .send()
 }
 
-/// Ask where an export rendered without a path (a browser page's) will be
-/// saved; its bytes are written there when the render finishes.
+/// Where a render without a path is saved; its bytes are written there when the
+/// render finishes.
 pub fn request_export_save(suggested_name: &str, ext: &str) -> ui::portal::DestinationChannel {
     PickRequest::save("Export video", "Export", suggested_name)
         .thread_name("video-editor-export-save")
@@ -143,17 +108,14 @@ pub fn request_export_save(suggested_name: &str, ext: &str) -> ui::portal::Desti
 // Project files
 // ---------------------------------------------------------------------------
 
-/// The chooser filter for the editor's own project file. Both the glob and a
-/// MIME type, for the same reason the media filter carries both.
 fn project_filter() -> FileFilter {
     FileFilter::new(crate::project_file::KIND_LABEL)
         .glob(&format!("*.{}", crate::project_file::EXTENSION))
         .mimetype("application/x-tilo-video-project")
 }
 
-/// The Open chooser for a project file to bring in. Keeps "All files": a
-/// project someone renamed away from `.qvp` is still openable, and its
-/// header is what decides.
+/// Keeps "All files": a project renamed away from `.qvp` is still openable, and
+/// its header decides.
 pub fn open_project_request() -> PickRequest {
     PickRequest::open("Open project file", "Open")
         .thread_name("video-editor-open-project")
@@ -161,13 +123,8 @@ pub fn open_project_request() -> PickRequest {
         .all_files()
 }
 
-/// The Save chooser a project file is exported through, seeded with
-/// `suggested_name`. Deliberately without "All files": a project file is
-/// always written as `.qvp`, and an extensionless one is a file the Open
-/// chooser then hides.
-///
-/// Under `landlock = "strict"` this round-trip is what earns the write: the
-/// grant follows the file the person picked.
+/// Without "All files": a project file is always written as `.qvp`, and an
+/// extensionless one the Open chooser would then hide.
 pub fn export_project_request(suggested_name: &str) -> PickRequest {
     PickRequest::save("Export project file", "Export", suggested_name)
         .thread_name("video-editor-export-project")
@@ -207,8 +164,7 @@ mod tests {
             assert_eq!(r.filter_names(), vec!["MP4 video", "All files"]);
         }
         {
-            // The dialog must not invite saving an H.264 stream as .webm — the
-            // filter follows the container the encode chain will actually mux.
+            // The filter follows the container the encode chain will mux.
             assert_eq!(container_filter("mp4").name(), "MP4 video");
             assert_eq!(container_filter("mov").name(), "QuickTime video");
             assert_eq!(container_filter("webm").name(), "WebM video");
@@ -243,13 +199,8 @@ mod tests {
 mod filter_tests {
     use super::*;
 
-    /// The chooser must offer everything the editor can actually open.
-    ///
-    /// It used to name five video extensions against the probe's twenty-eight,
-    /// so a `.flac`, an `.avi` or a `.heic` was filtered out of the picker and
-    /// the user had no way to learn the editor would have taken it. Deriving
-    /// the globs from the probe's own lists is what keeps the two honest; this
-    /// asserts they have not drifted apart again.
+    /// The globs are derived from the probe's lists; this asserts the two have
+    /// not drifted apart.
     #[test]
     fn the_chooser_offers_every_format_the_probe_accepts() {
         let f = media_filter();
@@ -265,8 +216,8 @@ mod filter_tests {
                 "the probe reads {ext} but the chooser hides it: {globs:?}",
             );
         }
-        // And a few by name, so the test says something even if the lists are
-        // ever restructured.
+        // A few by name, so the test says something if the lists are ever
+        // restructured.
         for want in ["*.flac", "*.avi", "*.heic", "*.opus", "*.mkv"] {
             assert!(globs.contains(&want), "missing {want}");
         }

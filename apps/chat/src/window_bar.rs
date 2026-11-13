@@ -203,6 +203,7 @@ impl ChatApp {
                 });
             let avatar = LocationAvatar {
                 name: self.display_name(&identity),
+                hue: Some(self.participant_hue(&identity)),
                 identity,
                 agent: other.is_agent(),
                 presence,

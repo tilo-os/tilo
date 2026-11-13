@@ -937,11 +937,17 @@ impl HereState {
                 let agent = member.kind == "agent";
                 let key = if agent { id } else { self.user_of(id)? };
                 let claimed = ui::presence::parse_hex_color(&member.colour);
+                // Software steps clear of the person it is certified for, as its record and every
+                // app paint it.
+                let person = member
+                    .user
+                    .as_deref()
+                    .filter(|user| agent && !user.is_empty());
                 Some((
                     id,
                     key,
                     claimed,
-                    ui::presence::participant_color(key, agent, None),
+                    ui::presence::participant_color(key, agent, person),
                 ))
             })
             .collect();
@@ -1899,6 +1905,35 @@ mod tests {
     /// its windows, the People list's row, the bar's face, and the colour its own apps paint its
     /// card, its text marks and its caret in — the one rule ([`ui::presence::participant_color`]),
     /// never a colour a surface picked for itself.
+    /// An agent that claims no colour wears the one rule's, clear of the person it is certified
+    /// for, as its record and every app paint it: never theirs, even where what it is would land
+    /// on them.
+    #[test]
+    fn an_agent_steps_clear_of_its_persons_colour() {
+        let helper = "agent:helper@host";
+        let own = ui::tokens::PresenceHue::of_agent(helper);
+        let person = (0..1000)
+            .map(|n| format!("person-{n}"))
+            .find(|id| ui::tokens::PresenceHue::of_identity(id) == own)
+            .expect("someone whose colour what it is lands on");
+        let agent = LiveMember {
+            user: Some(person.clone()),
+            ..member(helper, "agent", "Helper")
+        };
+        let mut here = HereState::default();
+        here.set_members(None, Some(vec![agent]));
+        let worn = here.colors().get(helper).copied();
+        assert_eq!(
+            worn,
+            Some(ui::presence::participant_color(helper, true, Some(&person)))
+        );
+        assert_ne!(
+            worn,
+            Some(ui::presence::user_color(&person)),
+            "never theirs"
+        );
+    }
+
     #[test]
     fn an_agent_wears_one_colour_on_every_surface() {
         let helper = "agent:helper@host";

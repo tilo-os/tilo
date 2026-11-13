@@ -70,7 +70,7 @@ class Track(TypedDict):
 
 class Library(Resource):
     """Music — `music.library`."""
-    __surface__ = "so.tilo.music@d92862e59d2efe32"
+    __surface__ = "so.tilo.music@aa24e13eaf28c26e"
     recommendations: Preferences
     @property
     def artists(self) -> dict[str, Artist]:

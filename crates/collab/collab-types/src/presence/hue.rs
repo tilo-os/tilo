@@ -270,6 +270,20 @@ impl PresenceHue {
         Self::of_agent_client(name).unwrap_or_else(|| Self::of_identity(agent_client(name)))
     }
 
+    /// The hue a participant wears, from who they are: a person the one their identity derives
+    /// ([`Self::of_identity`]), software the one what it is wears ([`Self::of_agent`], the same
+    /// for every run of it) — and, for software, never the hue of the person it acts for
+    /// (`for_person`, its principal): it steps clear of them ([`Self::apart_from`]). A person
+    /// yields a hue to nobody. The one rule every surface and record asks.
+    #[must_use]
+    pub fn of_participant(id: &str, is_agent: bool, for_person: Option<&str>) -> Self {
+        if !is_agent {
+            return Self::of_identity(id);
+        }
+        let own = Self::of_agent(id);
+        for_person.map_or(own, |person| own.apart_from(Self::of_identity(person)))
+    }
+
     /// This hue worn clearly apart from `other`: itself, unless it sits on `other`'s hue or
     /// next to it, where it steps round the ring to the first entry two slots or more away, so
     /// software is never painted in the colour of the person it acts for. `other` stays where

@@ -16,9 +16,6 @@ use crate::context::Worktree;
 use crate::error::CliError;
 use crate::hypervisor::{CommandLine, Runner};
 
-/// Resolve the source feature graph and output directory before admitting a build.
-/// Metadata is read-only; a failed command or incomplete response must not
-/// silently choose different features or Cargo's fallback output directory.
 pub fn cargo_metadata(runner: &mut impl Runner) -> Result<Value, CliError> {
     let command = CommandLine::new(
         &cargo_program(),
@@ -53,13 +50,10 @@ pub fn cargo_metadata(runner: &mut impl Runner) -> Result<Value, CliError> {
     Ok(metadata)
 }
 
-/// `pkg/dev-overrides` for each of `packages` that declares the feature,
-/// read from `cargo metadata`. Production images never enable it.
 pub fn dev_features(metadata: &Value, packages: &[String]) -> Vec<String> {
     dev_override_features(metadata, packages)
 }
 
-/// Cargo's target directory for this worktree, from `cargo metadata`.
 pub fn target_dir(metadata: &Value) -> String {
     metadata
         .get("target_directory")
@@ -67,9 +61,6 @@ pub fn target_dir(metadata: &Value) -> String {
         .map_or_else(|| "target".to_owned(), str::to_owned)
 }
 
-/// The cargo host builds run: `TILO_VM_CARGO` if set (any cargo drop-in,
-/// such as a wrapper that builds on another machine and hands back the
-/// outputs), else `cargo`.
 pub fn cargo_program() -> String {
     cargo_program_from(std::env::var("TILO_VM_CARGO").ok())
 }
@@ -86,17 +77,12 @@ pub fn cargo_build(component: &Component, extra_features: &[String]) -> CommandL
     command
 }
 
-/// Build outputs a component ships that cargo does not make: where the file
-/// is installed, where the installer finds it under the profile directory,
-/// and the script the image build runs to make it (`os/Containerfile`).
 const NATIVE_OUTPUTS: &[(&str, &str, &str)] = &[(
     "/usr/lib/tilo/ntfs-mount/fuse-handoff.so",
     "ntfs-mount/fuse-handoff.so",
     "crates/system/ntfs-mount/native/build.py",
 )];
 
-/// The non-cargo builds `component` needs before the installer can lay it
-/// out, each writing into `target_dir`'s profile directory.
 pub fn native_builds(component: &Component, target_dir: &str) -> Vec<CommandLine> {
     NATIVE_OUTPUTS
         .iter()
@@ -116,8 +102,6 @@ pub fn install(component: &Component, target_dir: &str, dest: &Path) -> CommandL
     command
 }
 
-/// Build one app in the complete cohort graph and package its derived ABI.
-/// The normal installer still decides whether that exact SDK is installed.
 pub fn app_package(target_dir: &str, dir: &str, out: &Path) -> CommandLine {
     CommandLine::new("python3", &["os/dev/assemble-app-runtime.py"])
         .arg("--repo")
@@ -133,7 +117,6 @@ pub fn app_package(target_dir: &str, dir: &str, out: &Path) -> CommandLine {
         .env("CARGO", cargo_program())
 }
 
-/// Apps this worktree offers: `apps/<dir>/tilo-app.toml`.
 pub fn apps_in(root: &Path) -> Vec<String> {
     let mut apps: Vec<String> = std::fs::read_dir(root.join("apps"))
         .into_iter()
@@ -146,14 +129,12 @@ pub fn apps_in(root: &Path) -> Vec<String> {
     apps
 }
 
-/// Pack `dir` (holding `usr/`) as an uncompressed tar, symlinks kept.
 pub fn pack(dir: &Path, out: &Path) -> Result<(), CliError> {
     let file =
         std::fs::File::create(out).map_err(CliError::io(format!("create {}", out.display())))?;
     pack_into(dir, file)
 }
 
-/// [`pack`] into any writer.
 pub fn pack_into(dir: &Path, out: impl std::io::Write) -> Result<(), CliError> {
     let mut builder = tar::Builder::new(out);
     builder.follow_symlinks(false);
@@ -188,8 +169,6 @@ fn first_line(runner: &mut dyn Runner, command: &CommandLine) -> Option<String> 
     })
 }
 
-/// What the worktree says about a build of `component`: commit, dirty-tree
-/// hash and `Cargo.lock` hash. The builder adds its toolchain.
 pub fn source_provenance(worktree: &Worktree, component: &str, builder: &str) -> Provenance {
     let mut provenance = Provenance::local(component);
     provenance.source_commit = worktree.head();
@@ -204,11 +183,6 @@ pub fn source_provenance(worktree: &Worktree, component: &str, builder: &str) ->
     provenance
 }
 
-/// Everything that identifies a host build of `component`, laid out in
-/// `tree`. Its target and toolchain are read from the binaries themselves,
-/// so a cargo drop-in that builds elsewhere (another architecture, another
-/// machine) is recorded as what it built; this host's `rustc` answers only
-/// when the layer has no binary that says.
 pub fn provenance(
     runner: &mut dyn Runner,
     worktree: &Worktree,
@@ -235,19 +209,14 @@ pub fn provenance(
     provenance
 }
 
-/// What a built binary says about its build.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ElfFacts {
-    /// `<arch>-unknown-linux-gnu`, from the ELF machine.
     pub target: Option<String>,
     /// `rustc <version> (<hash> <date>)`, as `rustc --version` prints it,
     /// from the `.comment` section rustc writes.
     pub toolchain: Option<String>,
 }
 
-/// Prefer the first ELF with embedded Rust compiler facts, in path order.
-/// Native dependencies may sort before the authored Rust runtime. Keep the
-/// first ELF as a fallback for components containing only native C binaries.
 pub fn first_elf(tree: &Path) -> Option<ElfFacts> {
     let mut entries: Vec<PathBuf> = std::fs::read_dir(tree)
         .ok()?
@@ -279,7 +248,6 @@ pub fn first_elf(tree: &Path) -> Option<ElfFacts> {
     first
 }
 
-/// Machine and rustc of a little-endian ELF64 file; `None` for anything else.
 pub fn elf_facts(bytes: &[u8]) -> Option<ElfFacts> {
     let field = |at: usize, len: usize| bytes.get(at..at.checked_add(len)?);
     let u16_at = |at: usize| Some(u16::from_le_bytes(field(at, 2)?.try_into().ok()?));
@@ -328,7 +296,6 @@ pub fn elf_facts(bytes: &[u8]) -> Option<ElfFacts> {
     })
 }
 
-/// Cache hit and miss totals from `sccache --show-stats --stats-format=json`.
 pub fn sccache_totals(stats: &Value) -> Option<(u64, u64)> {
     let sum = |key: &str| -> Option<u64> {
         let counts = stats.get("stats")?.get(key)?.get("counts")?.as_object()?;
@@ -352,14 +319,11 @@ pub fn sccache_stats(runner: &mut dyn Runner) -> Option<(u64, u64)> {
     sccache_totals(&serde_json::from_str(&output.stdout).ok()?)
 }
 
-/// Staging for one build: the layer tree and its archive, removed on drop.
 pub struct Staging {
     dir: tempfile::TempDir,
 }
 
 impl Staging {
-    /// # Errors
-    /// Temp dir creation failures.
     pub fn new(worktree: &Worktree) -> Result<Self, CliError> {
         let parent = worktree.root.join("target").join("dev-layers");
         std::fs::create_dir_all(&parent)
@@ -380,7 +344,6 @@ impl Staging {
     }
 }
 
-/// Summaries for the receipt.
 pub fn cache_summary(
     before: Option<(u64, u64)>,
     after: Option<(u64, u64)>,
@@ -400,23 +363,18 @@ mod tests {
 
     use super::*;
 
-    /// The command as plain cargo would run it, whichever cargo this host picks.
     fn as_cargo(command: &CommandLine) -> String {
         format!("cargo {}", command.args.join(" "))
     }
 
-    /// Host builds run an explicit cargo, else cargo; builds use manifest features plus dev overrides;
-    /// the installer gets the profile dir and component; apps package with their own tools.
     #[test]
     fn builds_pick_the_right_cargo_features_and_tools() {
-        // Phase: host_builds_run_an_explicit_cargo_else_cargo.
         {
             assert_eq!(cargo_program_from(Some("my-cargo".into())), "my-cargo");
             assert_eq!(cargo_program_from(Some(" ".into())), "cargo");
             assert_eq!(cargo_program_from(None), "cargo");
         }
 
-        // Phase: build_uses_manifest_features_plus_dev_overrides.
         {
             let shell = component(
                 "[[component]]\nname = \"browser\"\npackages = [\"browser\", \"helper\"]\nfeatures = [\"browser/thin\"]\n",
@@ -440,7 +398,6 @@ mod tests {
             );
         }
 
-        // Phase: installer_gets_the_profile_dir_and_the_component.
         {
             let fs = component("[[component]]\nname = \"fs\"\npackages = [\"fs\"]\n");
             assert_eq!(
@@ -451,7 +408,6 @@ mod tests {
             assert_eq!(target_dir(&json!(null)), "target");
         }
 
-        // Phase: native_outputs_are_built_before_the_installer_needs_them.
         {
             let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
             let manifest =
@@ -476,7 +432,6 @@ mod tests {
             assert!(native_builds(&fs, "/t").is_empty());
         }
 
-        // Phase: apps_package_with_their_own_tools.
         {
             let package = app_package("target", "notes", Path::new("/w/notes.tapp"));
             assert_eq!(
@@ -577,7 +532,6 @@ mod tests {
             .unwrap()
     }
 
-    /// A minimal ELF64: header, a `.comment` and the section-name table.
     fn elf(machine: u16, comment: &[u8]) -> Vec<u8> {
         let names = b"\0.comment\0.shstrtab\0";
         let mut bytes = vec![0_u8; 64];
@@ -607,8 +561,6 @@ mod tests {
         bytes
     }
 
-    /// A host build's target and toolchain come from the binary it made,
-    /// so a build for another architecture is recorded as that one.
     #[test]
     fn provenance_reads_target_and_rustc_from_the_built_binary() {
         let comment =
@@ -686,8 +638,6 @@ mod tests {
                 toolchain: Some("rustc 1.98.0 (88d9e12ae 2026-08-18)".into()),
             }
         );
-        // Carry the observed facts through the maintained full-stream writer,
-        // just as builderlayer::pack does, and verify the complete footer.
         let mut bytes = Vec::new();
         crate::builderlayer::write_layer(
             dir.path(),
@@ -715,7 +665,6 @@ mod tests {
 
     #[test]
     fn packing_keeps_usr_links_and_sccache_totals_parse() {
-        // Phase: pack_keeps_usr_and_symlinks.
         {
             let dir = tempfile::tempdir().unwrap();
             std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
@@ -735,7 +684,6 @@ mod tests {
             assert!(names.contains(&"usr/bin/sh-link".to_string()));
         }
 
-        // Phase: sccache_json_totals.
         {
             let stats = json!({"stats": {"cache_hits": {"counts": {"Rust": 40, "C/C++": 2}}, "cache_misses": {"counts": {"Rust": 3}}}});
             assert_eq!(sccache_totals(&stats), Some((42, 3)));

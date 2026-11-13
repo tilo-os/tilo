@@ -75,8 +75,8 @@ pub use tilo_workspace_join::{room_workspace_id, workspace_topic};
 pub use auth::{AuthError, AuthenticatedPeer};
 pub use config::{ConfigError, RelayConfig};
 pub use home_peer::{
-    HomePeerRegistration, home_peer_registry_path, personal_device_peer_path,
-    remember_personal_device, valid_home_peer_label,
+    HomePeerRegistration, checked_home_peers, home_peer_registry_path, personal_device_peer_path,
+    read_home_peers, remember_personal_device, valid_home_peer_label, write_home_peers,
 };
 pub use mesh::{
     ComputeAccelerator, DeviceKey, DeviceMeshProfile, DeviceRole, PowerAvailability,

@@ -1,26 +1,15 @@
-//! Connection-type awareness for prefetch decisions.
-//!
-//! Prefetching lyrics / the next queued song / album metadata is only polite on
-//! a **stable, non-metered** connection (home Wi-Fi / ethernet) — never on a
-//! metered cellular link where it would burn the user's data. This module
-//! reads the latest [`tilo_net::status`] snapshot (the session portal on Linux,
-//! the Network Information API in a page), with an env override for tests and
-//! headless boxes. Unknown metering postpones speculative prefetch; explicit
-//! playback remains available.
+//! Connection-type awareness for prefetch: speculative downloads wait unless the
+//! connection is stable and unmetered.
 
-/// Whether speculative downloads should be withheld: metered or unknown.
-/// Read the latest snapshot so moving onto a tether updates the decision.
+/// Whether speculative downloads wait: metered or unknown.
 pub fn is_metered() -> bool {
-    // Deterministic override first: tests + operators set `TILO_MUSIC_METERED=1`
-    // (metered) or `=0` (stable) to force the decision.
+    // `TILO_MUSIC_METERED=1` or `=0` forces the answer, for tests and headless boxes.
     if let Ok(v) = std::env::var("TILO_MUSIC_METERED") {
         return v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes");
     }
     tilo_net::status::current().metered.unwrap_or(true)
 }
 
-/// Whether prefetch should run — the inverse of [`is_metered`], named for the
-/// call site.
 pub fn connection_is_stable() -> bool {
     !is_metered()
 }

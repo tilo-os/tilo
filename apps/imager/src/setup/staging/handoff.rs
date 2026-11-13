@@ -1,7 +1,5 @@
-//! The Imager's side of the staging ESP handoff ([`staging_handoff_model`]): the
-//! handoff for a plan, and the secret-free profile it may carry onto the
-//! unencrypted staging ESP. The placeholder the exporter reserves for it is
-//! in [`imager_backend::staging::fat`].
+//! The Imager's side of the staging ESP handoff: the handoff for a plan, and the
+//! secret-free profile it may carry.
 
 use serde::{Deserialize, Serialize};
 pub use staging_handoff_model::{HANDOFF_FILE, pad_json};
@@ -9,7 +7,6 @@ use staging_handoff_model::{HostOs, StagedIdentity};
 
 use super::plan::Plan;
 
-/// The shared staging contract, with an optional metadata-only migration binding.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Handoff {
@@ -30,8 +27,6 @@ impl std::ops::DerefMut for Handoff {
     }
 }
 
-/// Keys of the installer's secret-free media profile
-/// (`InstallProfile::to_media_profile_json`).
 const PROFILE_KEYS: [&str; 12] = [
     "schema",
     "purpose",
@@ -47,8 +42,6 @@ const PROFILE_KEYS: [&str; 12] = [
     "tpm_handoff",
 ];
 
-/// Refuse anything but the secret-free media profile shape, so a request can
-/// never smuggle a passphrase onto the unencrypted staging ESP.
 pub fn validate_profile(
     profile: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
@@ -85,7 +78,6 @@ pub fn validate_profile(
     Ok(())
 }
 
-/// The secret-free handoff profile for an Imager install profile.
 pub fn profile_from_install(
     profile: &crate::model::InstallProfile,
 ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
@@ -98,13 +90,11 @@ pub fn profile_from_install(
 }
 
 impl Handoff {
-    /// Validated compact JSON padded with spaces to exactly `len` bytes.
     pub fn to_padded(&self, len: u64) -> Result<Vec<u8>, String> {
         self.validate()?;
         pad_json(&serde_json::to_vec(self).map_err(|e| e.to_string())?, len)
     }
 
-    /// Parse placeholder bytes (JSON plus trailing whitespace).
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > staging_handoff_model::MAX_BYTES {
             return Err("staged installation record is unexpectedly large".into());
@@ -114,7 +104,6 @@ impl Handoff {
         Ok(handoff)
     }
 
-    /// Shared staging consistency plus the secret-free profile and migration binding.
     pub fn validate(&self) -> Result<(), String> {
         self.staging.validate()?;
         validate_profile(&self.profile)?;
@@ -162,9 +151,6 @@ impl Handoff {
     }
 }
 
-/// The handoff for a plan whose partitions now carry `esp_guid` and
-/// `root_guid`. `original_boot_order` comes from the helper's live firmware
-/// read (the Windows probe basis has none).
 pub fn for_plan(
     operation_id: &str,
     plan: &Plan,
@@ -239,8 +225,6 @@ mod tests {
         )
     }
 
-    /// Run the parser that detects and publishes the live handoff, rather
-    /// than a reimplementation of its field rules.
     #[cfg(target_os = "linux")]
     fn parse_live(bytes: &[u8]) -> Result<serde_json::Value, String> {
         imager_backend::test_support::parse_live_handoff(bytes)
@@ -362,7 +346,6 @@ mod tests {
         assert!(secret.to_padded(4096).is_err());
     }
 
-    /// Handoff encoding, validation and profile mapping.
     #[test]
     fn handoff_round_trips_validates_and_maps_only_profile_keys() {
         {

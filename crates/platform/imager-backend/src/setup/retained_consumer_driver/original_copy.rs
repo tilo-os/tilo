@@ -1,5 +1,5 @@
-//! Installed Copy on the existing private Shell/root request and person gate.
-//! Source/output work and importer retirement remain owned until observed stop.
+//! Installed Copy on the existing private Shell/root request and person gate; source and output work
+//! and importer retirement stay owned until an observed stop.
 use super::*;
 use crate::setup::{
     home_capture::{InstalledCopyTransaction, InstalledVerifiedArtifacts},
@@ -12,8 +12,8 @@ use launcher::retained_view::installed_copy::{
 use std::{os::fd::AsRawFd, sync::mpsc};
 
 pub(super) fn run(arguments: impl Iterator<Item = OsString>) -> io::Result<()> {
-    // Before bootstrap watcher threads or any source mount; affects only this
-    // fixed root helper, never the source host/Shell propagation state.
+    // Runs before bootstrap watcher threads or any source mount, and affects only this fixed root
+    // helper.
     let namespace = namespace::ManagedConsumerNamespace::isolate()?;
     let result = run_current(arguments, &namespace);
     while ReviewedInstalledOriginalCopy::retirement_pending()
@@ -52,8 +52,8 @@ fn copy_context(
     {
         return Err(refused());
     }
-    // The command remains a certificate-context binding only. This mode never
-    // executes a program, environment or argument selected by this tuple.
+    // The command is a certificate-context binding only; this mode executes no program, environment
+    // or argument selected by this tuple.
     Ok(())
 }
 fn run_current(
@@ -117,8 +117,8 @@ fn run_current(
         actor.revoke();
         std::thread::park_timeout(Duration::from_millis(50));
     }
-    // The transaction, signed runs, output issue and real importer must leave
-    // their slots before consuming actual source/person custody.
+    // The transaction, signed runs, output issue and real importer leave their slots before any source
+    // or person custody is consumed.
     if actor.retire().is_err() {
         loop {
             std::thread::park_timeout(Duration::from_millis(50));
@@ -159,8 +159,8 @@ fn run_reviewed(
     let mut receiver = RootConsumerChannel::authenticate(endpoint, cancellation)?;
     receiver.verify_installed_copy_recipient(&recipient)?;
     let importer = receiver.retain_peer();
-    // This is an actual already authenticated short-lived nonroot helper;
-    // issue construction later additionally matches its observed Shell child.
+    // An already authenticated short-lived non-root helper; issue construction later matches its
+    // observed Shell child.
     fence.observed_consumer()?;
     let transport = ServiceCancellation::default();
     owner.send_installed_copy_status(
@@ -229,8 +229,8 @@ fn run_reviewed(
         Ok(artifacts) if control_error.is_none() && !cancel.load(Ordering::Acquire) => artifacts,
         result => {
             drop(result);
-            // Shut down exactly this importer transport; its actual gate stop
-            // watcher cancels and joins any owned adoption worker before exit.
+            // Shut down exactly this importer transport: its gate stop watcher cancels and joins any
+            // owned adoption worker before exit.
             let _ = receiver.stop_installed_copy_transport();
             drop(receiver);
             wait_importer(&importer)?;
@@ -268,8 +268,8 @@ fn run_reviewed(
     match received {
         Ok(received) => {
             let (_, _, home, applications) = received.evidence();
-            // Actual full adoption verification came from the pinned importer,
-            // and its kernel task has now stopped before releasing source IO.
+            // Adoption came from the pinned importer, and its kernel task has stopped before source IO
+            // is released.
             let completion = Arc::new(
                 crate::setup::home_capture::InstalledCopyCompletion::observed(received, cancel)?,
             );
@@ -278,8 +278,8 @@ fn run_reviewed(
                 .record_receiver_complete(&completion, cancel)
                 .is_err()
             {
-                // Publication may have reached durable storage before its error.
-                // Keep the real completion; never infer permission to re-export.
+                // Publication may have reached durable storage before its error, so keep the real
+                // completion and never infer permission to re-export.
                 park_completed_copy(&completion);
             }
             let home = home.map(hex::encode);
@@ -295,9 +295,8 @@ fn run_reviewed(
             if sent.is_err() {
                 park_completed_copy(&completion);
             }
-            // Keep this authenticated root task alive until Shell has consumed
-            // the exact successful receipt. Process death never substitutes for
-            // receipt delivery, and a buffered frame cannot race root teardown.
+            // Keep this authenticated root task alive until Shell consumed the exact receipt: process
+            // death is not receipt delivery.
             loop {
                 match owner.receive_installed_copy_command(Duration::from_millis(50), &transport) {
                     Ok(Some(CopyOwnerCommand::AcknowledgeComplete {
@@ -308,9 +307,8 @@ fn run_reviewed(
                         && home_cipher_sha256 == home
                         && applications_cipher_sha256 == applications =>
                     {
-                        // Complete remains successful even if exact material retirement
-                        // fails. Keep the actual root task and owned permit alive;
-                        // process exit would lose uncertain native custody.
+                        // Complete stays successful even if material retirement fails; keep the root task
+                        // and owned permit alive, since process exit would lose uncertain custody.
                         return finish_cleanup(
                             &completion,
                             &tx,
@@ -338,9 +336,8 @@ fn run_reviewed(
         }
     }
 }
-/// Retry only bounded transient IO failures against the same real completion
-/// and its private observed-effect permit. Refusal and cancellation stay errors;
-/// the caller keeps root custody and exposes cleanup separately from Complete.
+/// Refusal and cancellation stay errors; the caller keeps root custody and exposes cleanup separately
+/// from Complete.
 fn finish_cleanup(
     completion: &Arc<crate::setup::home_capture::InstalledCopyCompletion>,
     transaction: &Arc<crate::setup::home_capture::InstalledCopyTransaction>,
@@ -440,9 +437,8 @@ fn retire_completed_copy(
     }
     unreachable!("bounded cleanup loop always returns on its final attempt")
 }
-/// Durable Complete cannot become Failed or authorize a fresh export. Retain
-/// the same opaque completion and its actual source/output/namespace custody in
-/// this executing root task when ACK or exact retirement remains uncertain.
+/// Durable Complete cannot become Failed or authorize a fresh export; the executing root task keeps
+/// the same opaque completion and its custody while ACK or retirement is uncertain.
 fn park_completed_copy(completion: &Arc<crate::setup::home_capture::InstalledCopyCompletion>) -> ! {
     let _held = completion.clone();
     loop {
@@ -468,7 +464,6 @@ fn wait_importer(peer: &process_binding::ExecutingPeer) -> io::Result<()> {
         }
     }
 }
-/// Constructor-private observation from the actual pinned importer channel.
 /// Arrays, expectations, process death or a public checkpoint cannot construct it.
 pub struct ActualCopyReceiveComplete {
     artifacts: Arc<InstalledVerifiedArtifacts>,

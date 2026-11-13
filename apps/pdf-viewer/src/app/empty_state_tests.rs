@@ -1,13 +1,8 @@
-//! The empty window's words and its tab names, as a person meets them: the
-//! state it says, the failure it explains, and the tabs a narrow panel fits.
-
 use ui::Widget;
 
 use super::tests::{any_access_node, app_with_state, framed, full_frame, staged_empty};
 use crate::PdfApp;
 
-/// The empty state names its own state in the window's language, and the
-/// words it paints are the words it reads out.
 #[test]
 fn the_empty_state_says_its_state_in_the_window_language() {
     let catalog = &crate::CATALOG;
@@ -34,9 +29,6 @@ fn the_empty_state_says_its_state_in_the_window_language() {
     catalog.set_locale("en-US");
 }
 
-/// Why an open failed is said in the person's words, and the words name
-/// what actually failed: the engine's own reasons, a file window that
-/// could not open, and a file that is not a PDF each say their own thing.
 #[test]
 fn a_failed_open_says_the_cause_the_engine_reported() {
     let mut app = PdfApp::empty();
@@ -80,9 +72,6 @@ fn a_failed_open_says_the_cause_the_engine_reported() {
     }
 }
 
-/// The review panel's tabs are painted from the catalogue, and every name
-/// that ends up painted fits the strip: one name per tab, the same whether
-/// the panel is docked or floats over a narrow window.
 #[test]
 fn the_review_tabs_fit_their_strip_in_every_language() {
     let catalog = &crate::CATALOG;
@@ -93,8 +82,6 @@ fn the_review_tabs_fit_their_strip_in_every_language() {
             let (app, st) = app_with_state();
             let mut app = framed(app, st, w, h, None);
             if app.overlay_mode {
-                // A narrow window floats the panel over the pages, as a
-                // capture of it keeps it on screen.
                 app.show_sidebar = true;
                 full_frame(&mut app, w, h, None);
             }
@@ -114,8 +101,6 @@ fn the_review_tabs_fit_their_strip_in_every_language() {
     }
 }
 
-/// The comments list says how many threads there are and how many are open,
-/// in the window's language, with a singular where there is one.
 #[test]
 fn the_comment_summary_counts_in_the_window_language() {
     let catalog = &crate::CATALOG;
@@ -129,9 +114,6 @@ fn the_comment_summary_counts_in_the_window_language() {
     assert_eq!(super::comments_summary(1, 0), "1 comment, resolved");
 }
 
-/// A phone is shown the way in it has, not a gesture it cannot make: the
-/// file-open surface leaves out the drop hint when the window reports a
-/// touch-only device, and the empty state's stack closes up by that line.
 #[test]
 fn a_touch_only_phone_is_not_told_to_drop_a_file() {
     use ui::headless::Framed;

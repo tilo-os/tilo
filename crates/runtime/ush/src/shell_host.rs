@@ -1,18 +1,14 @@
-//! The new shell on a Linux device: [`ush_shell`]'s interpreter, with this
-//! machine as its host.
+//! The new shell on a Linux device: [`ush_shell`]'s interpreter, with this machine as its
+//! host.
 //!
-//! Inside a guest the guest's root is the environment by construction: what
-//! the record granted is bound at its path and nothing else is there, so the
-//! tier-1 commands read through the guest's own file system and see exactly
-//! what the grants allow. The file commands go to the broker as the
-//! environment's actions, the same way the guest's `cp` shim sends them
-//! ([`crate::file_actions::command`]). A command that is not tier 1 runs in
-//! the guest, as it did under bash, so nothing a person relies on breaks
-//! while tiers 2 and 3 are still to come.
+//! Inside a guest the guest's root is the environment by construction, so the tier-1
+//! commands read through it and see exactly what the grants allow; the file commands go to
+//! the broker as the environment's actions ([`crate::file_actions::command`]). A command
+//! that is not tier 1 runs in the guest, so nothing a person relies on breaks.
 //!
-//! `tilo-ush sh` (the guest's `ush-sh`) is this shell: `-c SCRIPT`, a script
-//! file, or, with no operand, interactive on its terminal, marking each run
-//! for Terminal when the session's key is in [`crate::runs::KEY_ENV`].
+//! `tilo-ush sh` (the guest's `ush-sh`) is this shell: `-c SCRIPT`, a script file, or
+//! interactive on its terminal, marking each run for Terminal when the session's key is in
+//! [`crate::runs::KEY_ENV`].
 
 use std::io::{self, IsTerminal as _, Read, Write};
 use std::os::fd::{AsFd as _, OwnedFd};
@@ -27,20 +23,14 @@ use ush_shell::{
     DirEntry, FileCall, Host, Input, Kind, Metadata, Output, Program, Shell, Std, Stdio, WriteMode,
 };
 
-/// The name the shell answers to on a guest's `PATH`.
 pub const SHELL_COMMAND: &str = "ush-sh";
 
-/// The shell's path inside a guest: what `$SHELL` and the generated
-/// `passwd` name.
 pub fn guest_shell_path() -> PathBuf {
     Path::new(crate::GUEST_BIN_DIR).join(SHELL_COMMAND)
 }
 
-/// Set by the `SIGINT` handler: the person pressed Ctrl-C.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
-/// Set by the `SIGTSTP` handler: the person pressed Ctrl-Z while one of
-/// the shell's own commands had the terminal.
 static SUSPENDED: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_interrupt(_: libc::c_int) {
@@ -75,19 +65,13 @@ fn catch_interrupt() {
     }
 }
 
-/// This machine, as the shell's host.
 pub struct DeviceHost {
-    /// The broker of the guest the shell runs in; `None` outside a guest.
     broker: Option<PathBuf>,
     recoverable: PathBuf,
-    /// The terminal's settings as commands left them, while the line editor
-    /// has it taking keys one at a time: what it gets back afterwards.
     cooked: std::sync::Mutex<Option<libc::termios>>,
 }
 
 impl DeviceHost {
-    /// The host for a shell in a guest when the broker is there, else for
-    /// one outside every guest.
     pub fn discover() -> Self {
         let broker = std::env::var_os("TILO_USH_BROKER")
             .map_or_else(|| PathBuf::from(crate::GUEST_BROKER_SOCK), PathBuf::from);
@@ -114,7 +98,6 @@ fn metadata_of(meta: &std::fs::Metadata) -> Metadata {
     } else if ft.is_file() {
         Kind::File
     } else {
-        // A fifo, a socket or a device.
         Kind::Other
     };
     Metadata {
@@ -130,7 +113,6 @@ fn metadata_of(meta: &std::fs::Metadata) -> Metadata {
     }
 }
 
-/// A file opened for reading that answers an interrupted read as one.
 struct File(std::fs::File);
 
 impl Read for File {
@@ -139,8 +121,6 @@ impl Read for File {
     }
 }
 
-/// The descriptor a child gets for one of the shell's streams: the host's
-/// own when the stream is one, else a pipe the shell feeds or drains.
 fn inherit(stream: Option<Std>) -> Option<OwnedFd> {
     match stream? {
         Std::In => io::stdin().as_fd().try_clone_to_owned().ok(),
@@ -348,8 +328,6 @@ impl Host for DeviceHost {
                     return false;
                 }
                 let mut raw = now;
-                // Keys one at a time, unechoed; Ctrl-C, Ctrl-Z and Ctrl-S
-                // are keys too, and Enter arrives as itself.
                 raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN);
                 raw.c_iflag &= !(libc::IXON | libc::ICRNL | libc::INLCR | libc::IGNCR);
                 raw.c_cc[libc::VMIN] = 1;
@@ -357,14 +335,12 @@ impl Host for DeviceHost {
                 if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSADRAIN, &raw const raw) != 0 {
                     return false;
                 }
-                // Switched on twice, it goes back to what it was first.
                 cooked().get_or_insert(now);
             }
             return true;
         }
         let settings = cooked().take();
         if let Some(settings) = settings {
-            // SAFETY: as above, with settings tcgetattr filled in.
             unsafe {
                 libc::tcsetattr(libc::STDIN_FILENO, libc::TCSADRAIN, &raw const settings);
             }
@@ -404,7 +380,6 @@ impl Host for DeviceHost {
     }
 }
 
-/// The name an id has in `passwd` or `group`.
 fn account_name(file: &str, id: u32) -> Option<String> {
     let text = std::fs::read_to_string(file).ok()?;
     text.lines().find_map(|line| {
@@ -415,8 +390,6 @@ fn account_name(file: &str, id: u32) -> Option<String> {
     })
 }
 
-/// Give the terminal back to the shell's own process group: the prompt is
-/// the shell's, whatever job had the terminal last.
 fn take_terminal() {
     // SAFETY: plain calls on our own standard input; SIGTTOU is ignored, so
     // asking from the background does not stop the shell.
@@ -427,10 +400,7 @@ fn take_terminal() {
     }
 }
 
-/// Give the terminal to the process group `group`: a job's programs in the
-/// foreground get Ctrl-C and Ctrl-Z themselves.
 fn give_terminal(group: i32) {
-    // SAFETY: as in `take_terminal`.
     unsafe {
         if libc::isatty(libc::STDIN_FILENO) == 1 {
             libc::tcsetpgrp(libc::STDIN_FILENO, group);
@@ -438,7 +408,6 @@ fn give_terminal(group: i32) {
     }
 }
 
-/// Send `signal` to the process group `group`.
 fn signal_group(group: i32, signal: Signal, job: &Job) {
     let number = match signal {
         Signal::Stop => libc::SIGTSTP,
@@ -557,8 +526,6 @@ fn run_program(
     })
 }
 
-/// Start `command` in `job`'s process group, making the group with it when
-/// it is the job's first program.
 fn spawn_in_job(command: &mut Command, job: &Arc<Job>) -> io::Result<std::process::Child> {
     use std::os::unix::process::CommandExt as _;
     let mut group = job.group();
@@ -566,7 +533,6 @@ fn spawn_in_job(command: &mut Command, job: &Arc<Job>) -> io::Result<std::proces
     command.process_group(joined.unwrap_or(0));
     let child = match command.spawn() {
         Ok(child) => child,
-        // The group's first program is gone: this one starts a group anew.
         Err(e) if joined.is_some() && e.raw_os_error() == Some(libc::EPERM) => {
             command.process_group(0);
             command.spawn()?
@@ -588,9 +554,6 @@ fn spawn_in_job(command: &mut Command, job: &Arc<Job>) -> io::Result<std::proces
     Ok(child)
 }
 
-/// Wait for a job's program: feeding and draining its streams as
-/// [`run_program`] does, telling the job when Ctrl-Z stopped it, and
-/// carrying the job's signals to its group.
 fn in_job(
     child: &mut std::process::Child,
     io: &Stdio,
@@ -639,7 +602,6 @@ fn in_job(
                 // terminal again. A stop the shell already took back
                 // (`fg` before this thread saw it) is no stop.
                 let mut again: libc::c_int = 0;
-                // SAFETY: as above; WNOHANG returns at once.
                 let changed =
                     unsafe { libc::waitpid(pid, &raw mut again, libc::WCONTINUED | libc::WNOHANG) }
                         == pid;
@@ -663,15 +625,12 @@ fn in_job(
         }
     });
     drop(attached);
-    // The job's last program ended: the shell's own commands that follow
-    // in the line have the terminal again.
     if job.foreground() && job.programs_running() == 0 {
         take_terminal();
     }
     Program::Exited(status)
 }
 
-/// An [`Output`] as a [`Write`].
 struct OutputWriter(Output);
 
 impl Write for OutputWriter {
@@ -685,8 +644,6 @@ impl Write for OutputWriter {
     }
 }
 
-/// `tilo-ush sh [-c SCRIPT [NAME [ARG…]] | FILE [ARG…]] [-i] [-l]`: run
-/// the shell. Answers its exit status.
 pub fn main(args: &[String]) -> i32 {
     let mut script = None;
     let mut operands = Vec::new();

@@ -4,13 +4,12 @@ use automerge::AutoCommit;
 use tilo_desktop_model::apps::{canonical_app_id, record_routes};
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::{
-    AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceSlot, compose_id, shared_record,
+    AppId, AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
+    Workspace, WorkspaceSlot, compose_id, shared_record,
 };
 
 #[test]
 fn app_tiles_have_one_canonical_id_that_routes_and_labels_them() {
-    // Phase `every_app_tile_has_one_canonical_id`.
     {
         let terminal = TileContent::Stub {
             kind: AppKind::Terminal,
@@ -18,7 +17,7 @@ fn app_tiles_have_one_canonical_id_that_routes_and_labels_them() {
         };
         assert_eq!(
             canonical_app_id(&terminal),
-            Some("so.tilo.terminal".to_owned())
+            Some(AppId::new("so.tilo.terminal"))
         );
         let foreign = TileContent::Foreign {
             app_id: "org.gimp.GIMP".into(),
@@ -26,7 +25,6 @@ fn app_tiles_have_one_canonical_id_that_routes_and_labels_them() {
         };
         assert_eq!(canonical_app_id(&foreign).as_deref(), Some("org.gimp.GIMP"));
     }
-    // Phase `a_bound_record_is_routed`.
     {
         let salt = 7;
         let (strip_id, group_id, tab_id) = (
@@ -75,7 +73,6 @@ fn app_tiles_have_one_canonical_id_that_routes_and_labels_them() {
             Some("rec-1")
         );
     }
-    // Phase `a_builtin_label_answers_to_its_package_when_one_exists`.
     {
         assert_eq!(AppKind::Other("Notes".into()).app_id(), "so.tilo.notes");
         assert_eq!(

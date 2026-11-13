@@ -451,6 +451,9 @@ heavy = true
 
 [[check.matrix.set]]
 when = { group = "browser-compute-web" }
+# Its packaging test runs the bundle build, which lays out the product fonts from tilo's package
+# store, each fetched by the SHA-256 tools/font-catalog.py pins and checks.
+egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "python3 -I tools/ci/suites.py run --jobs 8 --group browser-compute-web"
 
 [[check.matrix.set]]
@@ -713,7 +716,7 @@ heavy = true
 [[check]]
 name = "pins"
 # Verifies digest-pinned kernel images' signatures: the registry, and Sigstore's log and trust root.
-egress = { to = ["registry.tilo.so:443", "tuf-repo-cdn.sigstore.dev:443", "rekor.sigstore.dev:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443", "tuf-repo-cdn.sigstore.dev:443", "rekor.sigstore.dev:443"], pinned = true }
 run = "export RUNNER_TEMP=$TMPDIR GITHUB_PATH=$TMPDIR/github-path\nTILO_GITHUB_ASSET_CACHE=/target/signing-tools TILO_ASSET_OFFLINE=1 bash os/dev/install-cached-cosign.sh\nexport PATH=$(cat \"$GITHUB_PATH\"):$PATH\nbash os/dev/verify-snapshot-pins.sh os/kernel-snapshot.env\n"
 needs = ["signing-tools"]
 
@@ -2221,8 +2224,6 @@ default = false
 # the same image.
 [[check]]
 name = "source-date-ci-fast"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/source-date.sh /target/source-date/ci-fast os/Containerfile.ci-fast"
 git = true
 outputs = ["/target/source-date/ci-fast"]
@@ -2230,8 +2231,6 @@ default = false
 
 [[check]]
 name = "source-date-ci-sdk"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/source-date.sh /target/source-date/ci-sdk os/Containerfile.ci-sdk sdk/python/pyproject.toml sdk/python/uv.lock sdk/typescript/package.json sdk/typescript/bun.lock"
 git = true
 outputs = ["/target/source-date/ci-sdk"]
@@ -2239,8 +2238,6 @@ default = false
 
 [[check]]
 name = "source-date-release-tools"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/source-date.sh /target/source-date/release-tools os/Containerfile.release-tools"
 git = true
 outputs = ["/target/source-date/release-tools"]
@@ -2248,8 +2245,6 @@ default = false
 
 [[check]]
 name = "source-date-ci-builder"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/source-date.sh /target/source-date/ci-builder $(bash tools/ci/publish/ci-builder.sh inputs)"
 git = true
 outputs = ["/target/source-date/ci-builder"]
@@ -2346,8 +2341,6 @@ arch = ["x86_64", "aarch64"]
 # to the runs and outputs) of the signing and publishing checks below.
 [[check]]
 name = "image-ci-builder"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "python3 -I tools/ci/publish/oci-index.py /target/publish/ci-builder/index /target/publish/ci-builder/x86_64/image.oci.tar"
 needs = ["image-ci-builder-x86_64"]
 outputs = ["/target/publish/ci-builder/index/image.oci.tar", "/target/publish/ci-builder/index/digest"]
@@ -2393,8 +2386,6 @@ id_token = ["registry.tilo.so"]
 
 [[check]]
 name = "canary-ci-builder-cache-cold-{arch}"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/ci-builder-canary.sh cold /target/publish/ci-builder/{arch}/canary"
 image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
 requires = ["arch={arch}"]
@@ -2405,8 +2396,6 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "canary-ci-builder-cache-warm-{arch}"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/ci-builder-canary.sh warm /target/publish/ci-builder/{arch}/canary"
 needs = ["canary-ci-builder-cache-cold-{arch}"]
 image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
@@ -2419,8 +2408,6 @@ arch = ["x86_64", "aarch64"]
 # files, so its verdict holds until the image changes, and every publication waits for it.
 [[check]]
 name = "canary-ci-builder-browser-{arch}"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/ci-builder-canary.sh browser"
 image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
 requires = ["arch={arch}"]
@@ -2437,8 +2424,8 @@ arch = ["x86_64", "aarch64"]
 # (bisected to the commit that broke it), and main's development tags go without it.
 [[check]]
 name = "canary-ci-builder-browser-tests-{arch}"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Its tests' fixtures and fonts, from tilo's package store by the SHA-256 their sources pin.
+egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/publish/ci-builder-canary.sh browser-tests"
 image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
 requires = ["arch={arch}"]
@@ -2793,7 +2780,9 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "nested-session"
-egress = { to = ["code.tilo.so:443"], pinned = true }
+# The pinned CEF archive (SHA-256 in scripts/browser/cef-lock.json) the Browser among the apps
+# renders with, and the build scripts' pinned assets.
+egress = { to = ["code.tilo.so:443", "cef-builds.spotifycdn.com:443"], pinned = true }
 run = "bash dist/dev/nested-session-build.sh /target/nested-session"
 needs = ["image-env-runtime-dev-tree-x86_64"]
 env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", TILO_ENV_RUNTIME_TREES = "/target/publish/env-runtime/dev-trees" }
@@ -3059,8 +3048,12 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/publish/cli-release.sh build {arch}-unknown-linux-musl /target/publish/cli/linux-{arch}"
 # The musl C compiler the program's C (ring, SQLite) needs, and for aarch64 the Zig toolchain
 # that cross-compiles it and qemu to run it: see tools/ci/install-cli-toolchain.sh.
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
-setup = { run = "bash tools/ci/install-cli-toolchain.sh {arch}-unknown-linux-musl", egress = { to = ["0.0.0.0/0", "::/0"] } }
+# Pinned: Fedora's packages come from the image's released repository, which never changes, Zig by
+# the SHA-256 the script checks, and the Rust target from rust-toolchain.toml's release, whose
+# manifest names each file's hash. Its hosts are dl.fedoraproject.org, ziglang.org and
+# static.rust-lang.org, but a setup's micro-VM resolves no declared name (its DNS is refused), so
+# it keeps the open network.
+setup = { run = "bash tools/ci/install-cli-toolchain.sh {arch}-unknown-linux-musl", egress = { to = ["0.0.0.0/0", "::/0"], pinned = true } }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/cli/linux-{arch}/*"]
 # A release builds the whole program for musl from cold, beside the rest of the release on the
@@ -3081,9 +3074,8 @@ name = "cli-macos-cross-{arch}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/publish/cli-release.sh build {arch}-apple-darwin /target/publish/cli/macos-{arch}"
 # Zig, which carries Darwin's C library headers, the Rust target, and llvm-otool to read the
-# Mach-O with: see tools/ci/install-cli-toolchain.sh.
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
-setup = { run = "bash tools/ci/install-cli-toolchain.sh {arch}-apple-darwin", egress = { to = ["0.0.0.0/0", "::/0"] } }
+# Mach-O with: see tools/ci/install-cli-toolchain.sh. Pinned as cli-{arch}'s setup is.
+setup = { run = "bash tools/ci/install-cli-toolchain.sh {arch}-apple-darwin", egress = { to = ["0.0.0.0/0", "::/0"], pinned = true } }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/cli/macos-{arch}/*"]
 default = false
@@ -3105,7 +3097,8 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/cli-release.sh rehearse /target/publish/cli/release"
 # openssl makes the rehearsal site's certificate and verifies the signature as the installer does;
 # the image lacks it, so it is installed here.
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 needs = ["cli-release", "signing-tools"]
 requires = ["arch=x86_64"]
@@ -3117,7 +3110,8 @@ name = "sign-cli"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/cli-release.sh sign /target/publish/cli/release"
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 needs = ["cli-release", "cli-rehearsal", "signing-tools"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
@@ -3132,7 +3126,8 @@ name = "publish-cli"
 # Publishes with a stored token, to hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/cli-release.sh publish /target/publish/cli/release"
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 needs = ["cli-release", "sign-cli"]
 requires = ["arch=x86_64"]
@@ -4663,7 +4658,9 @@ default = false
 
 [[check]]
 name = "os-base-x86_64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+# The mirror answers a blob read with a redirect into object storage, whose host is no fixed
+# name: the open network, as the layers built on this image have.
+egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash os/image/build-layer.sh base x86_64 /target/os/x86_64/base"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/os/x86_64/base/**"]
@@ -4697,7 +4694,7 @@ default = false
 
 [[check]]
 name = "os-chromium-x86_64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/compile.sh --chromium /target/os/x86_64/chromium"
 needs = ["os-assets"]
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
@@ -4748,7 +4745,7 @@ default = false
 
 [[check]]
 name = "os-layer-packages-x86_64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer packages x86_64 /target/os/x86_64/layers/packages"
 needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-builder-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
@@ -4760,7 +4757,9 @@ default = false
 
 [[check]]
 name = "os-layer-kernel-x86_64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+# The kernel layer verifies the kernel's signature as it pulls it: cosign asks Sigstore's trust
+# root and transparency log, as `pins` does.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443", "tuf-repo-cdn.sigstore.dev:443", "rekor.sigstore.dev:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer kernel x86_64 /target/os/x86_64/layers/kernel"
 needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
@@ -4772,7 +4771,7 @@ default = false
 
 [[check]]
 name = "os-layer-system-x86_64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer system x86_64 /target/os/x86_64/layers/system"
 needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-builder-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
@@ -4784,7 +4783,7 @@ default = false
 
 [[check]]
 name = "os-layer-trust-x86_64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer trust x86_64 /target/os/x86_64/layers/trust"
 needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
@@ -4796,7 +4795,7 @@ default = false
 
 [[check]]
 name = "os-layer-image-x86_64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer image x86_64 /target/os/x86_64/layers/image"
 needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-x86_64", "os-builder-x86_64", "os-tools-x86_64", "os-compile-x86_64", "os-chromium-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
@@ -4822,7 +4821,7 @@ default = false
 
 [[check]]
 name = "os-layer-trust-release-x86_64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer trust x86_64 /target/os/x86_64/release-layers/trust"
 needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
@@ -4835,7 +4834,7 @@ default = false
 
 [[check]]
 name = "os-layer-image-release-x86_64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer image x86_64 /target/os/x86_64/release-layers/image"
 needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-release-x86_64", "os-builder-x86_64", "os-tools-x86_64", "os-compile-release-x86_64", "os-chromium-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
@@ -4875,7 +4874,9 @@ default = false
 
 [[check]]
 name = "os-base-aarch64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+# The mirror answers a blob read with a redirect into object storage, whose host is no fixed
+# name: the open network, as the layers built on this image have.
+egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash os/image/build-layer.sh base aarch64 /target/os/aarch64/base"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/os/aarch64/base/**"]
@@ -4909,7 +4910,7 @@ default = false
 
 [[check]]
 name = "os-chromium-aarch64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/compile.sh --chromium /target/os/aarch64/chromium"
 needs = ["os-assets"]
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
@@ -4960,7 +4961,7 @@ default = false
 
 [[check]]
 name = "os-layer-packages-aarch64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer packages aarch64 /target/os/aarch64/layers/packages"
 needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-builder-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
@@ -4972,7 +4973,9 @@ default = false
 
 [[check]]
 name = "os-layer-kernel-aarch64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+# The kernel layer verifies the kernel's signature as it pulls it: cosign asks Sigstore's trust
+# root and transparency log, as `pins` does.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443", "tuf-repo-cdn.sigstore.dev:443", "rekor.sigstore.dev:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer kernel aarch64 /target/os/aarch64/layers/kernel"
 needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
@@ -4984,7 +4987,7 @@ default = false
 
 [[check]]
 name = "os-layer-system-aarch64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer system aarch64 /target/os/aarch64/layers/system"
 needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-builder-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
@@ -4996,7 +4999,7 @@ default = false
 
 [[check]]
 name = "os-layer-trust-aarch64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer trust aarch64 /target/os/aarch64/layers/trust"
 needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
@@ -5008,7 +5011,7 @@ default = false
 
 [[check]]
 name = "os-layer-image-aarch64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer image aarch64 /target/os/aarch64/layers/image"
 needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-aarch64", "os-builder-aarch64", "os-tools-aarch64", "os-compile-aarch64", "os-chromium-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
@@ -5034,7 +5037,7 @@ default = false
 
 [[check]]
 name = "os-layer-trust-release-aarch64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer trust aarch64 /target/os/aarch64/release-layers/trust"
 needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
@@ -5047,7 +5050,7 @@ default = false
 
 [[check]]
 name = "os-layer-image-release-aarch64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer image aarch64 /target/os/aarch64/release-layers/image"
 needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-release-aarch64", "os-builder-aarch64", "os-tools-aarch64", "os-compile-release-aarch64", "os-chromium-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
@@ -5076,7 +5079,9 @@ default = false
 
 [[check]]
 name = "os-layer-kernel-release-lenovo-83ed"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+# The kernel layer verifies the kernel's signature as it pulls it: cosign asks Sigstore's trust
+# root and transparency log, as `pins` does.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443", "tuf-repo-cdn.sigstore.dev:443", "rekor.sigstore.dev:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer kernel aarch64 /target/os/aarch64/board-layers/lenovo-83ed/kernel"
 needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
@@ -5090,7 +5095,7 @@ default = false
 
 [[check]]
 name = "os-layer-system-release-lenovo-83ed"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer system aarch64 /target/os/aarch64/board-layers/lenovo-83ed/system"
 needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-release-lenovo-83ed", "os-builder-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
@@ -5104,7 +5109,7 @@ default = false
 
 [[check]]
 name = "os-layer-trust-release-lenovo-83ed"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer trust aarch64 /target/os/aarch64/board-layers/lenovo-83ed/trust"
 needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-release-lenovo-83ed", "os-layer-system-release-lenovo-83ed"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
@@ -5118,7 +5123,7 @@ default = false
 
 [[check]]
 name = "os-layer-image-release-lenovo-83ed"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer image aarch64 /target/os/aarch64/board-layers/lenovo-83ed/image"
 needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-release-lenovo-83ed", "os-layer-system-release-lenovo-83ed", "os-layer-trust-release-lenovo-83ed", "os-builder-aarch64", "os-tools-aarch64", "os-compile-release-aarch64", "os-chromium-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
@@ -5273,7 +5278,8 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "cargo run --locked -q -p tilo-local -- web --check --bundle /target/publish/web-desktop/bundle"
 needs = ["web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "cli-x86_64"]
 # openssl signs the stack's own releases, as the release key signs production's.
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64" }
 requires = ["arch=x86_64"]
@@ -5335,8 +5341,6 @@ on = ["dispatch"]
 
 [[check]]
 name = "image-web-entry-context"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/web-entry-context.sh /target/publish/web-entry/context /target/publish/web-desktop/bundle /target/docs/site"
 needs = ["web-desktop-bundle", "docs-site"]
 outputs = ["/target/publish/web-entry/context/**"]
@@ -5521,9 +5525,15 @@ default = false
 # of its own.
 [[check]]
 name = "e2e"
+# No egress: every flow meets the stack on loopback (the relay and API on 127.0.0.1 and localhost,
+# the site at tilo.localhost, which the image's resolver answers itself), and its programs, fonts
+# and Caddy are its needs'. Its sandbox refuses a router search (UPnP, 239.255.255.250:1900, as
+# iroh's endpoints make) and DNS lookups: with the open network the same flows failed as without
+# it, so none of them needs either.
 run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/e2e"
 needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-cli", "lounge-gate-tools", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-gate/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0" }
 requires = ["arch=x86_64"]
@@ -5543,9 +5553,11 @@ timeout_secs = 1200
 # flow has the check's time. Run when named, to chase a reload that kills its tab.
 [[check]]
 name = "e2e-reloads"
+# No egress: as e2e, it meets the stack on loopback alone; see e2e.
 run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/e2e-reloads reloads"
 needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-cli", "lounge-gate-tools", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-gate/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e-reloads/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", E2E_FLOW_SECONDS = "840" }
 requires = ["arch=x86_64"]
@@ -5559,6 +5571,8 @@ default = false
 # light, dark and at a phone's width, kept as pictures. It judges nothing on looks.
 [[check]]
 name = "page-tour"
+# No egress: as e2e, the tour meets its Lounge on loopback (direct-lounge.sh) and its programs and
+# fonts are its needs'.
 run = "mkdir -p /target/page-tour-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/page-tour-cli tilo\nTILO_TOUR_IN_LOG=1 bash os/containers/tilo-lounge/test-page-tour.sh /target/publish/web-desktop/bundle /target/page-tour"
 needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-tools", "web-desktop-bundle", "cli-x86_64"]
 env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/page-tour-cli/tilo" }
@@ -5601,8 +5615,9 @@ default = false
 # here, so a check's bring-up downloads nothing.
 [[check]]
 name = "tilo-sh-caddy"
-# Downloads checked against the SHA-256 or SHA-512 its sources pin; GitHub sends them on to CDN hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
+# The release archive, checked against the SHA-512 caddy.env pins; GitHub sends it on to its
+# release-assets host.
+egress = { to = ["github.com:443", "release-assets.githubusercontent.com:443", "objects.githubusercontent.com:443"], pinned = true }
 run = "bash tools/ci/publish/tilo-sh-caddy.sh /target/publish/tilo-sh-caddy"
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/tilo-sh-caddy/**"]
@@ -5641,7 +5656,8 @@ name = "tilo-sh-local-vm"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash os/containers/tilo-sh/check-in-vm.sh /target/tilo-sh-local-vm"
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False podman util-linux xfsprogs python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 needs = ["tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context", "cli-x86_64", "image-vm-host", "image-hosted-guest", "tilo-sh-tools"]
 env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-vm-state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "1", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_BROWSER_FREE_ACTIONS = "200", TILO_SH_TILO_ENROLL = "/target/tilo-sh-tools/tilo-enroll", TILO_SH_TILO_APPROVE = "/target/tilo-sh-tools/tilo-approve" }
@@ -5842,7 +5858,8 @@ name = "tilo-sh-vm-host"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash os/containers/tilo-sh/test-vm-host.sh /target/publish/vm-host/image.oci.tar /target/publish/hosted-guest/image /target/tilo-sh-tools/tilo-enroll"
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False podman xfsprogs util-linux && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 needs = ["image-vm-host", "image-hosted-guest", "tilo-sh-tools"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]

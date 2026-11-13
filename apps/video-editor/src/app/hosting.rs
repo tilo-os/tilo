@@ -1,6 +1,6 @@
-//! The editor as the window of its bound view: what it takes from the view
-//! when it is built, how it follows the document, and what it leaves for the
-//! view's effect handler and publications to read.
+//! The editor as the window of its bound view: what it takes from the view when built, how
+//! it follows the document, and what it leaves for the view's effect handler and
+//! publications.
 
 #[allow(
     clippy::wildcard_imports,
@@ -17,18 +17,15 @@ use crate::actions::VideoEditorEffect;
 
 type Cx = EffectCx<Project>;
 
-/// What finishes after the effect that started it returned (a chooser the
-/// person answered) or arrives outside the window (a capture's stage), for
-/// the window, which an effect handler holds only while the effect starts:
-/// it runs on the window's next sync.
+/// What finishes after the effect that started it returned, or arrives outside the window,
+/// for the window, which an effect handler holds only while the effect starts: it runs on
+/// the window's next sync.
 #[derive(Clone, Default)]
 pub(crate) struct Later(Rc<RefCell<Vec<Work>>>);
 
-/// One piece of work [`Later`] holds for the window.
 type Work = Box<dyn FnOnce(&mut VideoEditorApp)>;
 
 impl Later {
-    /// Run `work` on the window at its next sync, which `cx` wakes it for.
     pub(super) fn run(&self, cx: &Cx, work: impl FnOnce(&mut VideoEditorApp) + 'static) {
         self.push(work);
         cx.waker().wake();
@@ -43,9 +40,8 @@ impl Later {
     }
 }
 
-/// What the view publishes beside the project, as the window last showed
-/// it: the playhead and measured mix the edits bind to, and whether a
-/// render runs for Cancel export.
+/// The playhead and measured mix the edits bind to, and whether a render runs for
+/// Cancel export.
 #[derive(Default)]
 pub(crate) struct Published {
     playhead: f64,
@@ -54,7 +50,6 @@ pub(crate) struct Published {
 }
 
 impl Published {
-    /// The edits bound to the playhead and the measured mix over `project`.
     pub(crate) fn declarations(
         &self,
         project: &Project,
@@ -66,8 +61,6 @@ impl Published {
         })
     }
 
-    /// Export needs an encoder in this build; cancelling needs a render
-    /// running.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = Vec::new();
         if let Some(reason) = crate::export::unavailable_reason() {
@@ -94,10 +87,6 @@ impl Published {
 }
 
 impl VideoEditorApp {
-    /// The editor `cx`'s view lays out. A launch naming files imports them,
-    /// the way a file chooser's pick does, and places the first on the
-    /// timeline. A screenshot or a past version of anything else is
-    /// hermetic.
     pub(crate) fn hosted(cx: &ViewCx<Project>) -> Self {
         let mut app = Self::new();
         app.actions = Some(cx.dispatcher());
@@ -119,12 +108,10 @@ impl VideoEditorApp {
         app
     }
 
-    /// What the view's publications read of this window.
     pub(crate) fn published(&self) -> Rc<RefCell<Published>> {
         Rc::clone(&self.published)
     }
 
-    /// Where work for this window goes from outside it.
     pub(crate) fn later(&self) -> Later {
         self.later.clone()
     }
@@ -141,10 +128,7 @@ impl VideoEditorApp {
         self.present(&project);
     }
 
-    /// The stored project changed: a local edit, a collaborator's, an undo
-    /// — or, in History mode, a past version. A drag in flight keeps its
-    /// live preview; the new project is loaded when it lets go, exactly as
-    /// for the standalone editor.
+    /// A drag in flight keeps its live preview; the new project is loaded when it lets go.
     pub(crate) fn present(&mut self, project: &Rc<Project>) {
         self.stored = Rc::clone(project);
         if self.drag_is_editing() {
@@ -160,24 +144,19 @@ impl VideoEditorApp {
         }
     }
 
-    /// Run what was left for the window since its last sync.
     pub(super) fn run_later(&mut self) {
         for work in self.later.take() {
             work(self);
         }
     }
 
-    /// Bring what the view publishes in step with the window.
     pub(crate) fn publish_shown(&self) {
         let mut published = self.published.borrow_mut();
         published.playhead = self.playhead;
-        // The copy `draw` reads, so the palette cannot report a level the
-        // meter on screen disagrees with.
         published.mix = self.mix.clone();
         published.exporting = self.export_job.is_some();
     }
 
-    /// Answer `effect` on the window as it shows the document now.
     pub(crate) fn effect(&mut self, effect: VideoEditorEffect, cx: &mut Cx) -> EffectAnswer {
         self.follow_document();
         let answer = crate::agent_timeline::effect(&effect, self.content.as_ref(), cx)
@@ -187,8 +166,6 @@ impl VideoEditorApp {
         answer
     }
 
-    /// A `--shots` capture: the scenario's project is loaded; arrange the
-    /// editor around it on its next sync. See [`Self::stage_capture`].
     #[cfg(feature = "samples")]
     pub(crate) fn stage_later(later: &Later, scenario: Option<&str>) {
         let scenario = scenario.map(str::to_owned);

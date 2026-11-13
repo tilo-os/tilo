@@ -1,5 +1,5 @@
 //! Retain an abandoned delivery until its actual writer thread has exited.
-//! Canonical app-runtime timers observe completion; no pool waits on a writer.
+
 use super::{Delivered, PreparedMedia};
 use std::{
     io,
@@ -55,7 +55,6 @@ struct Retirement {
     stopped: AtomicBool,
     failed: AtomicBool,
     wake: Condvar,
-    // Retain the canonical runtime task handle; never abort it on UI teardown.
     task: Mutex<Option<ui::rt::JoinHandle<()>>>,
 }
 fn registry() -> &'static Mutex<Vec<Arc<Retirement>>> {
@@ -74,7 +73,6 @@ impl Retirement {
         }
         self.wake.notify_all();
     }
-    // Host teardown only: frames have stopped before this potentially blocking join.
     fn wait_stopped(&self) -> io::Result<()> {
         let mut held = self
             .custody
@@ -84,7 +82,6 @@ impl Retirement {
             drop(held);
             let result = custody.wait();
             if custody.child.is_some() || custody.native_read_key.is_some() {
-                // A wait error is not evidence that the exact helper stopped.
                 *self
                     .custody
                     .lock()
@@ -191,8 +188,6 @@ fn retain_custody(key: Option<String>, custody: Custody) {
         wake: Condvar::new(),
         task: Mutex::new(None),
     });
-    // A failed runtime start must not drop the join handle or custody. The
-    // registry owns both before scheduling; matching operations remain blocked.
     registry()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -207,8 +202,6 @@ fn retain_custody(key: Option<String>, custody: Custody) {
                     return;
                 }
                 if let Some(mut custody) = observed.take_finished() {
-                    // Both a completed writer join and already observed Child
-                    // wait are nonblocking. Cleanup remains off the UI thread.
                     if custody.native_read_key.is_some() {
                         let owner = observed.clone();
                         let failed = runtime
@@ -247,8 +240,6 @@ pub(super) fn pending(key: &str) -> bool {
         let mut entries = match registry().try_lock() {
             Ok(entries) => entries,
             Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-            // A short concurrent registration is uncertainty, never permission
-            // to start another writer. No registry mutex encloses a thread join.
             Err(std::sync::TryLockError::WouldBlock) => return true,
         };
         entries.retain(|entry| !entry.stopped.load(Ordering::Acquire));
@@ -264,7 +255,6 @@ pub(super) fn pending(key: &str) -> bool {
             .any(|entry| !entry.stopped.load(Ordering::Acquire))
 }
 
-/// Synchronous final host teardown, never a busy check or a frame callback.
 pub(super) fn finish_pending(key: &str) -> io::Result<()> {
     let entries = registry()
         .lock()
@@ -333,8 +323,6 @@ mod tests {
             .unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let key = format!("target:{id}");
-        // The helper reads until released below, so retaining it returns
-        // only if UI teardown does not wait on it.
         let (retained, done) = mpsc::channel();
         let retaining = key.clone();
         std::thread::spawn(move || {
@@ -382,8 +370,6 @@ mod tests {
                 .unwrap();
             complete.send(finish_pending(&closing_key)).unwrap();
         });
-        // Teardown blocks on the held worker, seen blocked where the platform
-        // shows it, and has not finished.
         if let Some(tid) =
             tilo_test_env::recv("teardown to start", &teardown_tid).map(|tid| tid.to_string())
         {
@@ -422,8 +408,6 @@ mod tests {
         let worker_cancel = cancel.clone();
         let joined = std::thread::spawn(move || {
             ready_send.send(()).unwrap();
-            // Bounded rendezvous uses a real held writable descriptor. Cancellation
-            // is deliberately cooperative; signalling it is not proof of exit.
             release_recv
                 .recv_timeout(tilo_test_env::hang_bound())
                 .unwrap();
@@ -441,8 +425,6 @@ mod tests {
         delivery.joined = Some(joined);
         delivery.worker = Some(result_recv);
         delivery.cancel = Some(cancel.clone());
-        // The writer runs until released below, so the drop returns only if
-        // UI teardown does not wait on it.
         let (dropped, done) = mpsc::channel();
         std::thread::spawn(move || {
             drop(delivery);

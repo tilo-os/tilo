@@ -1,5 +1,5 @@
-//! Private Windows installer cache. Cooperative current-user boundary only.
-//! FlushFileBuffers orders data, not guaranteed power-loss persistence of directory entries.
+//! The private Windows installer cache: a cooperative current-user boundary only.
+
 use crate::setup::internal_bundle::{WindowsDirectoryPath, windows_directory_path};
 
 fn require(ok: bool, why: &str) -> Result<(), String> {
@@ -8,8 +8,6 @@ fn require(ok: bool, why: &str) -> Result<(), String> {
 
 fn windows_cache_path(raw: impl IntoIterator<Item = u16>) -> Result<WindowsDirectoryPath, String> {
     let parsed = windows_directory_path(raw)?;
-    // Reserve the private namespace, manifest digest and payload directory before
-    // creating anything; the final verifier must accept this exact raw ancestry.
     let mut final_names = parsed.names.clone();
     final_names.extend(
         ["tilo-internal-install", &"0".repeat(64), "payload"]
@@ -27,7 +25,6 @@ fn windows_cache_path(raw: impl IntoIterator<Item = u16>) -> Result<WindowsDirec
     Ok(parsed)
 }
 
-// Masks are mapped from generic rights before this policy is evaluated.
 fn allowed_ace(principal_trusted: bool, mask: u32, private: bool) -> bool {
     mask & !0x001f_01ff == 0
         && (principal_trusted
@@ -545,8 +542,6 @@ mod native {
                 file,
                 id,
                 security,
-                // Only new() fills the separate ASCII control-file label.
-                // Raw ancestry uses native_leaf exclusively; never narrow UTF-16.
                 leaf: Vec::new(),
                 native_leaf: leaf.to_vec(),
                 name,
@@ -593,7 +588,6 @@ mod native {
         directory_wide(parent, &wide(leaf), create, private)
     }
     fn entries(parent: &File) -> Result<Vec<Vec<u8>>> {
-        // Transient listing access is closed before held-handle rename uses its parent.
         let raw = unsafe {
             ReOpenFile(
                 parent.as_raw_handle(),
@@ -780,7 +774,6 @@ mod native {
             )
         }
     }
-    /// The per-user cache directory that holds `tilo-internal-install`.
     pub(in crate::setup) fn cache_base() -> Result<std::path::PathBuf> {
         tilo_paths::cache_dir().ok_or_else(|| "Current-user LocalAppData cache unavailable".into())
     }
@@ -855,7 +848,6 @@ mod native {
                     io(e)
                 });
             }
-            // Closing the permanent lock handle releases the kernel byte lock.
             lock.check(Some(root))?;
             let payload = directory(root, b"payload", true, true)?;
             let journals = [
@@ -1077,7 +1069,6 @@ mod native {
         h.update(std::process::id().to_le_bytes());
         h.update(COUNTER.fetch_add(1, Ordering::Relaxed).to_le_bytes());
         let digest = h.finalize();
-        // Uniqueness only. Exclusive FILE_CREATE supplies the no-adoption boundary.
         Ok(working_leaf(u128::from_le_bytes(
             digest[..16].try_into().unwrap(),
         )))
@@ -1094,7 +1085,6 @@ mod native {
                 "Cache selection changed",
             )?;
             self.lease.check()?;
-            // Finals authenticate first, independently of stale partial records.
             let mut finals = [
                 final_handle(self.lease.clone(), selected, 0, cancel)?,
                 final_handle(self.lease.clone(), selected, 1, cancel)?,
@@ -1221,7 +1211,6 @@ mod native {
     }
     impl super::super::FreshProvider for WindowsProvider<'_> {
         fn take_fresh(&mut self, selected: &SelectedManifest, index: usize) -> Result<Ownership> {
-            // Consume before any validation, including failing binding/native checks.
             let fresh = self.fresh.take();
             self.revoke_preparation();
             require(
@@ -1399,8 +1388,6 @@ mod native {
                 )?;
                 let leaf = format!("record-{generation:010}");
                 let parent = &self.lease.journals[self.index].file;
-                // Exclusive record leaf is the publication. Any later failure is
-                // uncertain; torn/unknown records survive for conservative recovery.
                 self.uncertain = true;
                 let file = open(parent, leaf.as_bytes(), Role::Writer, true).map_err(io)?;
                 created = true;
@@ -1521,7 +1508,6 @@ mod native {
             .ok_or_else(|| std::io::Error::other("Rename overflow"))?
             .max(size_of::<FILE_RENAME_INFO>());
         let mut aligned = vec![0usize; bytes.div_ceil(size_of::<usize>())];
-        // Allocation is aligned for the SDK header, zero-filled, and bounded by a 255-unit leaf.
         let info = aligned.as_mut_ptr().cast::<FILE_RENAME_INFO>();
         unsafe {
             (*info).Anonymous.ReplaceIfExists = false;
@@ -1574,7 +1560,6 @@ mod native {
             match rename(&self.file, &lease.payload.file, final_name.as_bytes()) {
                 Ok(()) => (),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    // The winner is authenticated independently. Our partial and its records remain residue.
                     return final_handle(
                         lease,
                         self.provider.selected,
@@ -1614,7 +1599,6 @@ mod native {
                         && final_file.held.security == expected_security,
                     "Published close/reopen identity/security changed",
                 )?;
-                // final_handle has rehashed exact bytes/EOF through the close/reopen gap.
                 #[cfg(test)]
                 super::tests::boundary("final-verified")?;
                 stop(cancel)?;
@@ -1638,8 +1622,6 @@ mod native {
             result
                 .map_err(|e: String| format!("Final publication uncertain; retained residue: {e}"))
         }
-        /// Resume later drops the owner and keeps records. Discard requires fresh
-        /// Session preparation, exact DELETE-capable ownership and closed handles.
         pub(in crate::setup) fn discard(
             mut self,
             operation: u64,
@@ -1675,7 +1657,6 @@ mod native {
                 } = provider;
                 drop(file);
                 drop(payload);
-                // Positively owned source is deleted before any journal retirement.
                 require(
                     !entries(&lease.payload.file)?
                         .iter()
@@ -1700,8 +1681,6 @@ mod native {
         pub(in crate::setup) fn has_retained_residue(&self) -> bool {
             self.residue
         }
-        /// Verify once at actual consumption, then retain native guards through
-        /// the callback, including its error path. Restore the original cursor.
         pub(in crate::setup) fn with_verified_reader<T>(
             &mut self,
             cancel: &AtomicBool,
@@ -1714,8 +1693,6 @@ mod native {
                 self.held.file.rewind().map_err(io)?;
                 consume(&mut self.held.file)
             })();
-            // Run every postcheck even on callback/verification failure. Do not
-            // short circuit away restoration or the final cancellation check.
             let restored = self
                 .held
                 .file

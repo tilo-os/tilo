@@ -1,6 +1,23 @@
+use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
+use std::collections::{HashMap, HashSet};
+use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, sync_channel};
+use std::sync::{Arc, Mutex};
+use taffy::{NodeId, TaffyTree};
+use tilo_content::ContentStore;
 use ui::ColorCompat;
+use ui::collaboration::PresencePayload;
+use ui::icons::Icon;
+use ui::permissions::AppKind as PermAppKind;
+use ui::presence::{PresenceCtx, PresenceKey};
 use ui::widget::TaffyTreeExt;
+use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{AppModel, ModelPath};
+use ui::{
+    DragSelect, Granularity, clipboard_copy, clipboard_copy_primary, clipboard_paste,
+    clipboard_paste_primary, extend_span_drag, line_boundaries, word_boundaries,
+};
 use ui::{
     Theme,
     paint::PaintCtx,
@@ -10,26 +27,6 @@ use ui::{
         Banner, BannerContent, BannerKind, EmptyState, EmptyStateContent, FindOptions, Findable,
         OverlayScrollbar, PressOutcome, ScrollMetrics, Widget, paint_find_match,
     },
-};
-// Shared text-selection + clipboard primitives from the toolkit — the terminal
-// reuses these rather than re-implementing word/line boundary walking, multi-
-// click gesture detection, or clipboard access.
-use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
-use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, sync_channel};
-use std::sync::{Arc, Mutex};
-use taffy::{NodeId, TaffyTree};
-use tilo_content::ContentStore;
-use ui::collaboration::PresencePayload;
-use ui::icons::Icon;
-use ui::permissions::AppKind as PermAppKind;
-use ui::presence::{PresenceCtx, PresenceKey};
-use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::{
-    DragSelect, Granularity, clipboard_copy, clipboard_copy_primary, clipboard_paste,
-    clipboard_paste_primary, extend_span_drag, line_boundaries, word_boundaries,
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -41,9 +38,7 @@ use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 
 use crate::graphics::TerminalImagePlacement;
 
-/// The PTY reader applies natural backpressure once this many chunks are
-/// waiting for the UI. A terminal must never silently discard process output,
-/// but it also must not let a noisy process allocate without bound.
+/// Chunks the PTY reader may queue before it stops reading: output is never dropped, memory is bounded.
 const PTY_QUEUE_CHUNKS: usize = 64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PtyReadDisposition {
@@ -52,15 +47,8 @@ pub(crate) enum PtyReadDisposition {
     Closed,
 }
 
-/// A PTY master reports that no slave descriptor is open: Linux with `EIO`,
-/// macOS with the end of the file. For a hosted `ush` session that happens
-/// briefly in the hand-off window, after the master reaches the app but before
-/// the guest opens its slave, and it also happens for good once the guest
-/// exits. `session_open` tells the two apart: the supervisor keeps the
-/// session's lifetime socket open exactly while its guest runs, so the signal
-/// retries only while that socket is still open. A local PTY has no hand-off
-/// window, so for it the signal always means the shell exited. `EINTR` is
-/// never closure; every other error is.
+/// A PTY master with no slave open: `EIO` on Linux, end of file on macOS. A hosted session sees it in
+/// its hand-off window, so only a closed `session_open` makes it final. `EINTR` is never closure.
 pub(crate) fn classify_pty_read(
     result: &std::io::Result<usize>,
     session_open: impl FnOnce() -> bool,
@@ -79,33 +67,16 @@ pub(crate) fn classify_pty_read(
     }
 }
 
-/// What the session banner says once the shell has exited.
 fn session_ended_message() -> String {
     crate::i18n::t("terminal-session-ended")
 }
 
-/// One UI turn may parse at most this much queued PTY output. Anything beyond
-/// it stays in the bounded queue for the following frame, preserving ordering
-/// while keeping pointer input and accessibility responsive during a build
-/// flood.
+/// Most queued output one frame parses; the rest waits, in order, for the next frame.
 const MAX_PUMP_BYTES: usize = 256 * 1024;
-/// A palette/agent invocation is intentionally much smaller than local paste:
-/// it is a reviewed command submission, not a bulk data transport.
 pub(crate) const MAX_RESOURCE_SEND_BYTES: usize = 8 * 1024;
-/// Keep contextual resource publication proportional to what is on screen.
-/// Historical OSC links remain lazily resolvable by their stable id, but a
-/// malicious process cannot make every palette refresh materialise thousands
-/// of children.
 const MAX_VISIBLE_RESOURCE_LINKS: usize = 32;
-/// Resource labels are navigation chrome, not a second copy of an arbitrarily
-/// long OSC URL. The full validated target stays in the operation payload.
 const MAX_LINK_RESOURCE_LABEL_CHARS: usize = 120;
-/// Find is deliberately bounded separately from retained scrollback. A noisy
-/// log may contain thousands of identical hits; keeping a focused review
-/// surface responsive matters more than counting every occurrence forever.
 const MAX_FIND_MATCHES: usize = 2_048;
-/// A find string is local presentation state, but cap it before repeatedly
-/// scanning history on each keystroke or pasting an accidental large blob.
 const MAX_FIND_QUERY_CHARS: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,26 +94,15 @@ fn link_resource_label(url: &str) -> String {
     label
 }
 
-/// Cell coordinate within the terminal buffer. `row` is an **absolute** index
-/// into the full `grid` (scrollback included), not a viewport-local row — the
-/// selection model anchors to the buffer so a selection stays on the same
-/// cells when the viewport scrolls. `col` is a grid column. Rendering
-/// translates absolute rows into on-screen rows via the current scrollback
-/// offset (`viewport_start_y`); pointer hit-testing does the inverse.
-///
-/// `Ord` is derived and, because `row` is declared first, orders in reading
-/// order (row then column) — which is exactly what the span-walker and
-/// `extend_span_drag` rely on.
+/// A cell in the buffer: `row` absolute, scrollback included, `col` a grid column. `Ord` is row then
+/// column, the reading order the span walker steps in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct GridPos {
     pub row: usize,
     pub col: usize,
 }
 
-/// Flow-selection state, matching xterm / GNOME-Terminal / kitty / alacritty
-/// semantics: `anchor` is where the drag started, `cursor` is where the
-/// pointer currently is, and the selected region walks the buffer in
-/// reading order from `min(anchor, cursor)` to `max(anchor, cursor)`.
+/// A flow selection: the buffer from `anchor` to `cursor` in reading order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Selection {
     pub anchor: GridPos,
@@ -150,7 +110,6 @@ pub struct Selection {
 }
 
 impl Selection {
-    /// Returns the (start, end) endpoints in reading order.
     pub fn ordered(&self) -> (GridPos, GridPos) {
         if self.anchor <= self.cursor {
             (self.anchor, self.cursor)
@@ -159,21 +118,13 @@ impl Selection {
         }
     }
 
-    /// True if anchor and cursor coincide — a "collapsed" selection.
-    /// Used after mouse-release to drop selections that were really just
-    /// idle clicks.
     pub fn is_collapsed(&self) -> bool {
         self.anchor == self.cursor
     }
 }
 
-/// Open an OSC 8 hyperlink through the toolkit's native opener without waiting
-/// for the browser. A launch failure is logged; malformed URLs are ignored.
-/// Only plain public `http(s)` targets are launched. In particular, terminal
-/// output never gets to turn an OSC 8 link into access to a local `file:` URL,
-/// a `mailto:` draft, credentials in an authority, or a query/fragment that
-/// might contain a bearer token. A user can still select and copy any text the
-/// process printed; the opener is deliberately the narrower, explicit effect.
+/// Open an OSC 8 link through the toolkit's opener. Only plain public `http(s)` targets open: never
+/// `file:`, credentials, or a query that may carry a token.
 pub(crate) fn open_url(url: &str) {
     if !is_public_web_link(url) {
         return;
@@ -181,10 +132,8 @@ pub(crate) fn open_url(url: &str) {
     ui::widget::open_external_url(url);
 }
 
-/// An OSC 8 target that is safe to publish to the action directory and hand to
-/// the external opener. This intentionally accepts a small URL subset instead
-/// of attempting to parse and redact arbitrary process-provided metadata: a
-/// redaction mistake would disclose a secret in a resource payload.
+/// An OSC 8 target safe to publish as a resource: a small URL subset, because a redaction mistake
+/// would put a secret in the payload.
 pub(crate) fn is_public_web_link(url: &str) -> bool {
     let Some(authority_and_path) = url
         .strip_prefix("https://")
@@ -200,8 +149,7 @@ pub(crate) fn is_public_web_link(url: &str) -> bool {
     {
         return false;
     }
-    // An authority is required. A slash is optional (for example
-    // `https://example.test`), but a path cannot be mistaken for one.
+    // An authority is required; a path cannot be mistaken for one.
     authority_and_path
         .split_once('/')
         .map_or(!authority_and_path.is_empty(), |(authority, _)| {
@@ -209,18 +157,13 @@ pub(crate) fn is_public_web_link(url: &str) -> bool {
         })
 }
 
-/// Prompted resource input is text, not an escape hatch for arbitrary terminal
-/// control bytes. This keeps the typed `send` promise truthful and lets `run`
-/// guarantee precisely one appended Enter.
+/// Typed resource input carries no control bytes, so `send` appends exactly one Enter.
 fn is_reviewable_terminal_text(value: &str) -> bool {
     !value.chars().any(|ch| ch.is_control() && ch != '\t')
 }
 
-/// Convert an OSC metadata field into a compact, single-line label. OSC is
-/// emitted by the process, not entered through a trusted text field: control
-/// characters would corrupt window/accessibility labels and an unlimited value
-/// would become replicated metadata. Invalid UTF-8, empty, or over-limit
-/// fields are deliberately ignored rather than lossy-decoded.
+/// One OSC metadata field as a single-line label: control characters and over-limit values are
+/// ignored, never decoded lossily.
 pub(crate) fn safe_osc_text(bytes: &[u8], max_bytes: usize) -> Option<String> {
     if bytes.is_empty() || bytes.len() > max_bytes {
         return None;
@@ -232,9 +175,7 @@ pub(crate) fn safe_osc_text(bytes: &[u8], max_bytes: usize) -> Option<String> {
     Some(text.to_string())
 }
 
-/// Record the first terminal transport failure. Later failures cannot make a
-/// dead session live again, so keeping the first reason makes the persistent
-/// status deterministic instead of flapping with each rejected keypress.
+/// Keep the first transport failure: a dead session cannot revive, and the status stops flapping.
 fn set_terminal_disconnected(disconnected: &AtomicBool, message: &Mutex<String>, status: &str) {
     if !disconnected.swap(true, Ordering::AcqRel)
         && let Ok(mut message) = message.lock()
@@ -243,21 +184,14 @@ fn set_terminal_disconnected(disconnected: &AtomicBool, message: &Mutex<String>,
     }
 }
 
-/// Wake an idle app after either fresh PTY bytes *or a lifecycle transition*.
-/// The latter is crucial: EOF has no bytes to queue, but it still changes
-/// visible text, accessibility, and action availability. The wake handle
-/// coalesces wakes the host has not delivered yet; a host that gave the
-/// terminal none pumps it itself (`needs_animation_frame`).
+/// Wake the host after fresh bytes or a lifecycle change: EOF has no bytes but still changes what
+/// shows.
 pub(crate) fn request_terminal_wake(waker: &Mutex<ui::WakeHandle>) {
     if let Ok(waker) = waker.lock() {
         waker.wake();
     }
 }
 
-/// A single foreground/background color, as produced by SGR. `Default`
-/// tracks the theme (fg → `palette.fg_default`, bg → transparent /
-/// `palette.bg_default`); `Indexed` is an ANSI-256 palette slot; `Rgb`
-/// is a 24-bit truecolor triple.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CellColor {
     Default,
@@ -265,9 +199,6 @@ pub enum CellColor {
     Rgb(u8, u8, u8),
 }
 
-/// Per-cell rendering attributes. Colors are `CellColor` (default / ANSI-256
-/// / truecolor), plus the SGR style bits and the wide-glyph continuation
-/// marker.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -281,15 +212,11 @@ pub struct Attr {
     pub italic: bool,
     pub underline: bool,
     pub reverse: bool,
-    /// SGR 2 — faint / dim: the foreground is drawn at reduced opacity.
     pub dim: bool,
     /// SGR 9 — crossed-out (strikethrough).
     pub strike: bool,
     pub is_wide_cont: bool,
-    /// OSC 8 hyperlink id. `0` means "no link"; any other value indexes the
-    /// widget's link registry (`TerminalWidget::links`, the screen's links)
-    /// to resolve the target URL for rendering (underline + link tint) and
-    /// click-to-open.
+    /// OSC 8 hyperlink id; `0` is no link, other values index the widget's link registry.
     pub link_id: u16,
 }
 
@@ -310,8 +237,6 @@ impl Default for Attr {
     }
 }
 
-/// Terminal mode flags toggled by DEC private set/reset (`CSI ? Ps h/l`), as
-/// the emulator last left them.
 #[derive(Clone, Copy, Debug)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -327,9 +252,8 @@ pub struct TermModes {
     pub app_cursor_keys: bool,
     /// `?1000`/`?1002`/`?1003` — some form of mouse reporting requested.
     pub mouse_report: bool,
-    /// The active xterm mouse tracking mode: 0, 1000 (buttons), 1002
-    /// (button-motion), or 1003 (all motion). Keeping the exact mode lets us
-    /// forward only the events the application requested.
+    /// The active xterm mouse tracking mode: 0, 1000 (buttons), 1002 (button-motion) or 1003 (all
+    /// motion).
     pub mouse_tracking: u16,
     /// `?1006` — SGR-encoded mouse coordinates requested.
     pub mouse_sgr: bool,
@@ -351,51 +275,20 @@ impl Default for TermModes {
     }
 }
 
-/// The rows of the open context menu that carry a meaning of their own, by
-/// index. A row the menu left out (too short a pane) has none.
+/// The open context menu's row meanings by index; a row the pane left out has none.
 #[derive(Default)]
 struct MenuRows {
     paste: Option<usize>,
     find: Option<usize>,
     copy_on_select: Option<usize>,
-    /// The bell row, when the menu is tall enough to hold it.
     bell: Option<usize>,
     osc52: Option<usize>,
-    /// What each effect row asks for.
     effects: HashMap<usize, crate::resource::TerminalEffect>,
 }
 
-/// A terminal emulator packaged as a reusable `ui` widget.
-///
-/// It owns a PTY running a shell (or an arbitrary command), a vte parser, and
-/// a cell grid its session record shares, and implements the toolkit's `Widget` trait so it
-/// drops into any layout the same way any other widget does.
-///
-/// # Embedding
-///
-/// A host that wants an integrated terminal (e.g. the IDE's terminal panel):
-///
-/// 1. Spawn one: [`TerminalWidget::spawn_default`] (the user's `$SHELL`) or
-///    [`TerminalWidget::spawn_command`] (a given `CommandBuilder`).
-/// 2. Give it a region every frame with [`place_at`](Self::place_at) (this
-///    reflows the grid **and** resizes the PTY so the shell sees the new size),
-///    then call [`Widget::draw`] to paint it there.
-/// 3. Pump it: call [`Widget::sync`] each frame — it drains the PTY reader and
-///    replays the bytes into the grid. (Gate your host's animation-frame /
-///    redraw request on the terminal being visible so it only spins while on
-///    screen.)
-/// 4. Forward input: route winit events to [`Widget::handle_event`] while the
-///    terminal is focused; keystrokes go to the PTY, wheel scrolls scrollback.
-///
-/// # Programmatic driving
-///
-/// [`write_input`](Self::write_input) sends raw bytes to the shell's stdin and
-/// [`paste`](Self::paste) pastes text (honouring bracketed-paste); the
-/// scrollback API ([`scroll_up`](Self::scroll_up) / [`scroll_down`](Self::scroll_down)
-/// / [`scroll_to_top`](Self::scroll_to_top) / [`scroll_to_bottom`](Self::scroll_to_bottom)
-/// / [`scroll_offset`](Self::scroll_offset)) and the read-back accessors
-/// ([`grid_text`](Self::grid_text) / [`grid_size`](Self::grid_size)) let a host
-/// inspect and control the session without a GPU.
+/// A terminal emulator as a `ui` widget: a process behind a PTY, its parser, and the cell grid the
+/// session record shares. A host gives it a region with [`place_at`](Self::place_at) and pumps it
+/// with [`Widget::sync`].
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent piece of terminal/selection state \
@@ -404,8 +297,7 @@ struct MenuRows {
 )]
 pub struct TerminalWidget {
     rect: Rect,
-    /// Local input/output invalidates deferred speech even at the same caret.
-    /// Exhaustion fails closed rather than reusing an epoch.
+    /// Local input or output invalidates deferred speech even at the same caret; exhaustion fails closed.
     input_epoch: std::cell::Cell<u64>,
     native_editor: Option<crate::native_editor::Client>,
     native_capture: Option<crate::native_editor::Capture>,
@@ -417,20 +309,12 @@ pub struct TerminalWidget {
     pty_master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     service_lifetime: Option<runtime_portal::pending_connection::SessionLifetime>,
     output_rx: Receiver<Vec<u8>>,
-    /// At most one reader chunk that did not fit the current bounded pump.
-    /// Retaining it locally preserves byte ordering without an unbounded
-    /// worklist and lets the next frame resume exactly where parsing stopped.
-    /// `needs_animation_frame` also parks the next queued chunk here, since a
-    /// channel receiver can only be inspected by taking from it.
+    /// The one reader chunk that did not fit the last pump; the next frame resumes there.
     deferred_output: std::cell::Cell<Option<Vec<u8>>>,
-    /// Set permanently when the process end of the PTY closes, its reader
-    /// fails, or a write fails. A live session cannot be honestly revived by
-    /// retrying arbitrary input, so this is local terminal lifecycle state.
+    /// Set for good when the PTY closes, its reader fails or a write fails: a terminal is not revived.
     session_disconnected: Arc<AtomicBool>,
     #[cfg(windows)]
     child_killer: Option<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
-    /// Stable, non-sensitive reason shown in the retained terminal surface and
-    /// its accessibility description. Kept local with the transport state.
     session_status_message: Arc<Mutex<String>>,
     grid: Vec<String>,
     grid_attrs: Vec<Vec<Attr>>,
@@ -442,275 +326,140 @@ pub struct TerminalWidget {
     char_w: f64,
     char_h: f64,
     forced_cell: bool,
-    /// The grid's text style: the theme's `Code` role, cached on every
-    /// `build_layout` and `draw`. `measure` runs before `draw` and does not
-    /// receive a theme, so it reads this cached style. `None` until the first
-    /// layout, when the seeded cell size stands in.
+    /// The theme's `Code` style, cached on every layout and draw: `measure` runs first and sees no theme.
     cell_style: Option<TextStyle>,
-    /// The terminal's palette for the active theme: the theme's terminal
-    /// palette with the default background pinned to the window ground, so a
-    /// default-background cell is the surface the framework already painted.
+    /// The theme's terminal palette, its default background set to the window's background.
     palette: ui::tokens::TerminalPalette,
 
-    /// The emulator of the process's output, and the screen it shows. It
-    /// is live output and never part of the session record.
+    /// The process's output and the screen it shows: live, never in the session record.
     emulator: crate::emulator::Emulator,
-    /// The lines `grid`/`grid_attrs` were last built from, so a rebuild
-    /// converts only lines that changed.
     mirrored: Vec<std::rc::Rc<crate::screen::Line>>,
-    /// Whether this widget's own emulator draws `screen`: set by the first
-    /// output it parses.
     emulating: bool,
-    /// Session changes waiting for the next sync, where the record is at
-    /// hand: they apply in order.
     pending_actions: Vec<ui::tilo_resource::Invoke<crate::resource::Terminal>>,
-    /// Where the session record says this session runs.
     recorded_target: Option<crate::target::SessionTarget>,
-    /// Identity of the process attached here, distinct from a replica's record.
     local_session: Option<String>,
-    /// The relay session the record says this session re-attaches to.
     recorded_relay_session: Option<String>,
-    /// The device this terminal runs on and who uses it, as its window
-    /// says; `None` where the host does not say (a terminal an editor
-    /// starts in its panel), which then treats every session as its own.
+    /// Who uses this terminal and the device it runs on, when its host says; `None` makes every session
+    /// this terminal's own.
     here: Option<Here>,
-    /// The record says the session is set up in another device's window, or
-    /// another participant's: this terminal joins it instead of starting one.
     runs_elsewhere: bool,
 
-    /// True while the alternate screen is the active buffer.
     alt_active: bool,
 
-    /// Terminal mode flags (cursor visibility, bracketed paste, …).
     modes: TermModes,
 
-    /// Rows scrolled up from the bottom of the buffer. 0 == pinned to the
-    /// live output; a new keystroke or fresh PTY output snaps it back to 0.
+    /// Rows scrolled up from the live bottom: 0 is live, and fresh output or a keystroke snaps back.
     scroll_offset: usize,
-    /// Sub-row precision retained between high-resolution touchpad events
-    /// the terminal hands on as rows (to a program that reads the mouse, or
-    /// as arrow keys in the alternate screen).
     wheel_remainder_px: f64,
-    /// The scrollback as a scroll view (`scrollback_ui.rs`).
     view: ScrollbackView,
-    /// The history bar: the toolkit's overlay bar over the right padding,
-    /// shown while the history scrolls and faded at rest.
     scrollbar: OverlayScrollbar,
 
     conventions: ui::PlatformConventions,
-    /// Local find-in-scrollback state: the matches the window bar's search
-    /// asked for ([`Findable`]), painted over their cells. It
-    /// is intentionally not mirrored into the CRDT or resource tree: a find
-    /// term and its matching output can be sensitive, while the shared
-    /// terminal transcript already has its own carefully bounded
-    /// collaboration contract.
+    /// Find matches painted over their cells, never in the record: a find term and its output can be
+    /// sensitive.
     find_matches: Vec<FindMatch>,
     find_current: usize,
-    /// The context menu's Find entry was chosen: the hosting view opens the
-    /// window bar's search ([`Self::take_find_request`]).
     find_request: bool,
-    /// Bumped whenever a sync brings fresh output, so an open find bar finds
-    /// again and its counter follows ([`Findable::content_revision`]).
     content_revision: u64,
-    /// Height of the session banner, as laid out by the last `draw`. The
-    /// grid starts under it.
     chrome_top_band: f64,
-    /// Where the session banner is painted by the last `draw`; empty while the
-    /// session is live.
     banner_rect: Rect,
-    /// Whether this widget was made without any process behind it.
     headless: bool,
-    /// The command a terminal made to run one starts again on restart.
     respawn: Option<CommandBuilder>,
 
-    /// Last palette-derived cursor color, captured on every `draw`. Exposed
-    /// for behavioural tests that want to verify palette swaps actually
-    /// propagate into rendered state without spinning up a GPU scene.
+    /// The cursor's colour at the last `draw`, for tests.
     last_cursor_color: Color,
     last_fg_default: Color,
-    /// Last default-bg color drawn, same rationale as `last_cursor_color`.
     last_bg_default: Color,
 
-    /// Active flow-selection. `None` when nothing is selected (idle, or
-    /// just after a lone click). Coordinates are **buffer-absolute** rows /
-    /// grid columns (see [`GridPos`]); conversion to grid pixels subtracts
-    /// the scrollback offset and uses `char_w`/`char_h` and `self.rect`.
+    /// The selection, in buffer-absolute rows and grid columns.
     selection: Option<Selection>,
-    /// Multi-click gesture recognizer from the toolkit — single→char,
-    /// double→word, triple→line, with shift-extend. Owns the click-count /
-    /// timing / distance thresholds so the terminal doesn't re-derive them.
     drag_select: DragSelect,
-    /// Granularity of the in-progress drag (char / word / line), captured on
-    /// press so `CursorMoved` extends by whole words or lines, not just cells.
     drag_granularity: Granularity,
-    /// The word/line span the pointer first anchored on (buffer-absolute),
-    /// used by `extend_span_drag` to keep that original unit inside the
-    /// selection while a word-/line-granularity drag grows by whole units.
     drag_anchor_span: Option<(GridPos, GridPos)>,
-    /// When true, finishing a (non-empty) selection also copies it to the
-    /// system clipboard, not just the primary selection. Off by default;
-    /// the primary selection is always set so middle-click paste works.
+    /// Finishing a selection also copies it to the system clipboard.
     select_to_copy: bool,
-    /// Whether a program may set the clipboard through OSC 52. Off by
-    /// default: anything that writes to the PTY — a `cat` of a hostile file,
-    /// a remote host, a container shell — would otherwise replace what the
-    /// person pastes next, while every other clipboard effect of this
-    /// terminal is admitted through the host.
+    /// Whether a program may write the clipboard through OSC 52. Off by default: anything printing to
+    /// the PTY could replace what the person pastes next.
     allow_osc52_clipboard: bool,
-    /// The bell, and when it last rang. Both settings above are kept where
-    /// the person's other preferences are kept, so they hold for the next
-    /// terminal too.
     bell: crate::preferences::Bell,
     bell_at: Option<ui::time::Instant>,
     preferences: crate::preferences::Preferences,
-    /// Right-click context menu (Copy / Paste), reusing the shared toolkit
-    /// `ContextMenu` primitive so the terminal never draws its own menu chrome.
-    /// The menu's `Arc<dyn Fn>` callbacks can't reach the PTY, so we dispatch on
-    /// the chosen row's label ourselves (mirrors `TextInput`).
+    /// The right-click menu, the toolkit's `ContextMenu`; its callbacks cannot reach the PTY, so rows
+    /// dispatch here.
     context_menu: ContextMenu,
-    /// Which row of the open context menu does what.
     menu_rows: MenuRows,
-    /// Cursor position cached on every `CursorMoved` so the press arm
-    /// can hit-test without receiving a fresh position. Logical coords
-    /// (post scale-factor divide), matching `text_input`'s convention.
+    /// The pointer's position at the last `CursorMoved`: a press arrives without one.
     last_cursor_pos: Point,
-    /// Viewport scrollback offset captured on the most recent `draw`.
-    /// Stored so `handle_event` can translate logical pixel coordinates
-    /// into viewport-local grid rows (the selection model lives in
-    /// viewport space). Defaults to 0 until the first frame paints.
+    /// The scrollback offset at the last `draw`, for mapping pointer y to viewport rows.
     viewport_start_y: usize,
 
-    /// The single source of truth for grid geometry: the widget
-    /// [`rect`](Self::rect) inset by a uniform body padding on every side; the
-    /// history bar lies over the right padding. Every grid read — cell layout,
-    /// cursor, selection, pointer hit-testing — is relative to this exact rect,
-    /// computed once by [`grid_content_rect`](Self::grid_content_rect) and used
-    /// identically by `set_geometry` and `draw`, so a glyph, its cursor, and a
-    /// click all resolve to the same cell. The compositor draws the window
-    /// decoration (the tab/title chrome); the app draws only the grid.
+    /// The grid's rect: the widget rect inset by the body padding, computed once by
+    /// [`grid_content_rect`](Self::grid_content_rect) and used by `set_geometry`, `draw` and hit-testing.
     grid_rect: Rect,
-    /// Cached body geometry (padding), refreshed from the
-    /// theme on every `draw` so `set_geometry` and pointer hit-testing — neither of which receives a
-    /// `Theme` — inset the grid by the exact amounts `draw` painted with.
-    /// Seeded to the default token values so the first (pre-draw) layout is
-    /// already correct.
+    /// The body padding at the last `draw`, for `set_geometry` and hit-testing, which see no theme.
     chrome_body_pad: f64,
-    /// Latches true the first time the mirrored grid holds any non-blank
-    /// content. Gates the honest empty-state watermark so it only shows before
-    /// the session has ever produced output — never over a legitimately
-    /// cleared screen (`clear`, `CSI 2J`) once the shell has run.
+    /// Latched once any output arrived: the empty-state watermark shows only before that.
     ever_nonblank: bool,
 
-    /// Window title set by OSC 0 / OSC 2, recorded in the session so a
-    /// collaborator sees the same title; surfaced through `AppWidget::app_title`. Defaults to "Terminal".
+    /// Window title from OSC 0/2, in the record so collaborators see it.
     title: String,
-    /// Local fast-lookup mirror of the OSC 8 hyperlink registry (id → URL),
-    /// rebuilt from the screen's links whenever it changes. Used to render
-    /// link tint/underline and to resolve a click into a URL to open.
     links: HashMap<u16, String>,
-    /// Where graphics bytes are stored and read back (verified) by hash.
     content: ContentStore,
     image_placements: Vec<TerminalImagePlacement>,
-    /// Decoded images are deliberately local GPU-side state. The session record
-    /// holds only immutable content addresses; each peer reads, validates and
-    /// decodes bytes on a worker when a placement comes into view.
+    /// Images decode locally from content addresses; the record holds no pixels.
     images: crate::image_loads::ImageLoads,
 
-    /// Stable per-instance id used to scope this terminal's collaboration
-    /// presence (`PresenceKey::App { sub }`), so a peer's caret/selection is
-    /// attributed to this pane rather than colliding with another terminal.
+    /// Scopes this pane's presence, so a peer's caret is attributed to this pane.
     pane_id: String,
-    /// The session record's dispatcher: the framework's when it hosts this
-    /// widget, a parent's when the terminal is nested in its resource. Without
-    /// one the terminal is its process's alone, and nothing is recorded.
+    /// The record's dispatcher: the framework's, a parent's, or none (then nothing is recorded).
     dispatch: Option<ui::framework::Dispatcher<crate::resource::Terminal>>,
 
-    /// Wakes the host when the PTY reader has new output, so an idle terminal
-    /// waits for its process instead of polling. Captured from the scope the
-    /// widget is built in, and replaced by the framework's when it is attached
-    /// ([`SurfaceCx::waker`](ui::framework::SurfaceCx::waker)). Shared with the
-    /// reader threads, which outlive a replacement.
+    /// Wakes the host when the reader has output, so an idle terminal does not poll.
     waker: Arc<Mutex<ui::WakeHandle>>,
-    /// Buttons currently held while an application has mouse tracking active.
-    /// Bits 0/1/2 are left/middle/right. This is local input state, never
-    /// replicated with the shared terminal screen.
+    /// Buttons held while a program has mouse tracking on: local input state, never in the record.
     mouse_buttons: u8,
     focused: bool,
-    /// How this tab reaches its sessions, and where the current one runs.
     sessions: crate::sessions::Sessions,
-    /// The window this terminal is the app of, and how its session's
-    /// end reaches it.
     life: WindowLife,
-    /// Height of the header that carries the target chip.
     chrome_header_h: f64,
-    /// The target chip, as last drawn.
     chip_rect: Rect,
-    /// While the open context menu is the target picker: what each row does.
     target_menu_rows: Option<Vec<Option<TargetMenuRow>>>,
     environments_panel: EnvironmentsPanel,
-    /// The command runs of the process this terminal runs: its shell's
-    /// marks, the run going on and the runs `run` asked for.
     runs: RunState,
     /// The last copy of terminal output, whose outcome can arrive later.
     copy: ui::CopyWatch,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
-    /// The session's `run`, as this widget's record publishes it: what a
-    /// narrated run is shown at. `None` without a record of its own.
     run_action: Option<ui::tilo_actions::ActionAddress>,
 }
 
-/// The device a terminal runs on and who uses it there: a session set up
-/// by them on it is this terminal's own to start again.
 struct Here {
     device: String,
     me: String,
 }
 
-/// The person's command history this terminal adds its runs to.
 struct RunHistory {
     record: ui::framework::PersonRecord<crate::history::CommandHistory>,
-    /// The address of the session record its runs name.
     session: String,
-    /// Who types at this terminal.
     me: String,
 }
 
-/// Where this terminal is with its process's command runs
-/// (docs/app-model/ush.md, "Command runs").
+/// Where this terminal is with its process's command runs (docs/app-model/ush.md, "Command runs").
 #[derive(Default)]
 struct RunState {
-    /// The marks of the process's shell, when it marks its runs.
     marks: Option<crate::runs::Marks>,
-    /// The run going on.
     current: crate::runs::Runs,
-    /// The command lines `run` asked for, shared with the view that carries
-    /// out the session's outbox.
     queue: crate::runs::RunQueue,
     waiting: std::collections::VecDeque<crate::runs::Asked>,
-    /// Typed at the prompt, waiting for the shell to start them, oldest
-    /// first.
     typed: std::collections::VecDeque<crate::runs::Asked>,
-    /// Started for whoever asked.
     running: Option<crate::runs::Asked>,
-    /// Ended, waiting to be recorded.
     ended: Vec<(crate::runs::FinishedRun, Option<crate::runs::Asked>)>,
-    /// The shell showed its prompt and has not started a run since.
     at_prompt: bool,
-    /// The person's command history, and the address of the session record
-    /// its runs name.
     history: Option<RunHistory>,
-    /// The session as its record was last presented: the runs to show
-    /// items of.
     session: Option<std::rc::Rc<crate::resource::Terminal>>,
-    /// The run its host holds, and why: the prompt over the grid.
     held: Option<Held>,
 }
 
-/// A run the host holds until the account changes (docs/app-model/ush.md,
-/// "Command runs"): what the prompt over the grid offers.
 #[derive(Clone, Debug)]
 pub(crate) struct Held {
     pub(crate) refusal: ui::tilo_actions::remote::host_account::Refusal,
@@ -720,9 +469,6 @@ pub(crate) struct Held {
 }
 
 impl TerminalWidget {
-    /// The bell's flash: the pane washes with the attention colour and fades.
-    /// It is drawn over the grid, because a bell nobody sees is what the
-    /// terminal used to do.
     fn draw_bell_flash(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let flash = self.bell_flash(theme.motion());
         if flash <= 0.0 {
@@ -792,10 +538,6 @@ impl TerminalWidget {
             cursor_y: 0,
             width,
             height,
-            // Seed values only — `draw` overwrites char_w/char_h from the
-            // theme's `Code` role on the first frame, and `measure` uses the
-            // cached `cell_style` (unset until the first layout, so it falls
-            // back to these dimensions until then).
             char_w: 9.0,
             char_h: 18.0,
             forced_cell: false,
@@ -842,9 +584,6 @@ impl TerminalWidget {
             last_cursor_pos: Point::ZERO,
             viewport_start_y: 0,
             grid_rect: Rect::ZERO,
-            // Seeded to the default token metrics (body pad 12) so the first
-            // layout — which runs before the first `draw` refreshes it from
-            // the live theme — already insets the grid correctly.
             chrome_body_pad: 12.0,
             ever_nonblank: false,
             title: "Terminal".to_string(),
@@ -869,10 +608,8 @@ impl TerminalWidget {
         }
     }
 
-    /// A new process takes this terminal. Its screen starts blank and it
-    /// claims the session's pane: a tab is durable, its process is not, and
-    /// a shell started after a logout must not inherit the grid of the one
-    /// before it.
+    /// A new process takes the session: its screen starts blank and it claims the pane; a tab outlives
+    /// its process.
     fn begin_local_session(&mut self) {
         self.local_session = Some(uuid::Uuid::new_v4().to_string());
         self.pane_id = uuid::Uuid::new_v4().to_string();
@@ -886,17 +623,12 @@ impl TerminalWidget {
         self.show_screen();
     }
 
-    /// Wake the host through `waker` from now on: the PTY reader and the
-    /// process monitor use it for every later output and lifecycle change.
     pub(crate) fn wake_through(&self, waker: ui::WakeHandle) {
         if let Ok(mut current) = self.waker.lock() {
             *current = waker;
         }
     }
 
-    /// This terminal runs on `device`, used by `me`: a session another
-    /// device or participant set up is joined, not started again
-    /// ([`crate::resource::Terminal::runs_elsewhere`]).
     pub(crate) fn runs_on(&mut self, device: &str, me: &str) {
         self.here = Some(Here {
             device: device.to_owned(),
@@ -904,37 +636,27 @@ impl TerminalWidget {
         });
     }
 
-    /// The device this terminal says its session is set up on, when its
-    /// host said.
     pub(crate) fn here_device(&self) -> Option<String> {
         self.here.as_ref().map(|here| here.device.clone())
     }
 
-    /// Color used for the block cursor on the last `draw`. Test-only accessor
-    /// so palette-swap tests can assert the terminal picks up a new theme.
     pub fn last_cursor_color(&self) -> Color {
         self.last_cursor_color
     }
 
-    /// Active selection, if any. Test-only — production code reads from
-    /// the widget directly inside `draw` / `handle_event`.
     pub fn selection(&self) -> Option<Selection> {
         self.selection
     }
-    /// True between left-mouse-press and left-mouse-release. Test-only.
     pub fn is_dragging(&self) -> bool {
         self.drag_select.is_dragging()
     }
 
-    /// True once the terminal process or its PTY transport has ended. This is
-    /// intentionally local: it describes this peer's transport, not a shared
-    /// claim that a collaborator's separately attached terminal is dead.
+    /// The process or its transport ended, as this peer sees it: local, not a shared claim.
     pub fn is_disconnected(&self) -> bool {
         self.session_disconnected.load(Ordering::Acquire)
     }
 
-    /// Process exit may precede the reader's final bytes. Observe the actual
-    /// reader channel closing only after every queued chunk has been pumped.
+    // The reader channel closing says the process ended: wait for every queued chunk first.
     #[cfg(test)]
     pub(crate) fn pty_output_drained(&self) -> bool {
         if let Some(bytes) = self.deferred_output.take() {
@@ -966,8 +688,6 @@ impl TerminalWidget {
     }
 
     fn status_banner_message(&self) -> Option<String> {
-        // A window closing for its exited shell keeps nothing behind, and a
-        // shell that could not start says why once, with its retry.
         if self.closing_for_exit()
             || self.start_failure().is_some()
             || self.life.reconnect.is_some()
@@ -996,8 +716,7 @@ impl TerminalWidget {
             .and_then(ui::text_input::Receipt::poll)
         {
             self.native_ime = None;
-            // A second refused commit is a different input; the first ACK
-            // must not erase its visible refusal. Fresh admission clears it.
+            // A second refusal must not erase the first's visible refusal.
             self.native_ime_error = result.err().or(self.native_ime_error);
             return true;
         }
@@ -1037,15 +756,10 @@ impl TerminalWidget {
         self.write_input(text.as_bytes());
     }
 
-    /// A compact visual lifecycle state. The detailed transport cause stays in
-    /// the accessible description/live region, where it is neither clipped at
-    /// 200% text scale nor mistaken for a recoverable command prompt.
     #[cfg(test)]
     pub(crate) const fn disconnected_badge_label() -> &'static str {
         "Session ended"
     }
-    /// Current window title (OSC 0/2), defaulting to "Terminal". Host/test
-    /// accessor — also what `AppWidget::app_title` returns.
     pub fn title(&self) -> &str {
         &self.title
     }
@@ -1054,14 +768,10 @@ impl TerminalWidget {
         format!("terminal.transcript:{}", self.pane_id)
     }
 
-    /// The line the session's input goes in, keyed per pane so two terminals
-    /// on one surface stay two places.
     fn terminal_prompt_target(&self) -> String {
         format!("terminal.prompt:{}", self.pane_id)
     }
 
-    /// Where the prompt stands: the cursor's own cell. The on-screen
-    /// keyboard's caret and a run asked of the session both land here.
     #[must_use]
     pub fn prompt_rect(&self) -> Rect {
         let row = self
@@ -1075,8 +785,6 @@ impl TerminalWidget {
         Rect::new(x, y, x + self.char_w.max(1.0), y + self.char_h.max(1.0))
     }
 
-    /// The `run` a narrated one lands at, as the record this terminal's
-    /// surface publishes it ([`Self::run_action`]).
     pub(crate) fn set_run_action(&mut self, run: ui::tilo_actions::ActionAddress) {
         self.run_action = Some(run);
     }
@@ -1121,8 +829,6 @@ impl TerminalWidget {
         ids
     }
 
-    /// The visible public links, as live rows of the session: each opens
-    /// its link.
     pub(crate) fn link_rows(&self) -> Vec<ui::framework::LiveRow> {
         self.visible_link_ids()
             .into_iter()
@@ -1130,7 +836,6 @@ impl TerminalWidget {
             .collect()
     }
 
-    /// The link row `id`, visible or not.
     pub(crate) fn link_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
         let prefix = format!("terminal.link:{}:", self.pane_id);
         self.link_row_for(id.strip_prefix(&prefix)?.parse::<u16>().ok()?)
@@ -1151,8 +856,6 @@ impl TerminalWidget {
         )
     }
 
-    /// The effects that differ from their declaration now: the process's
-    /// input once it ended, and scrolling past either end of the output.
     pub(crate) fn effect_statuses(&self) -> Vec<ui::framework::EffectStatus> {
         use crate::resource::TerminalEffect as E;
         use ui::framework::EffectStatus;
@@ -1220,9 +923,6 @@ impl TerminalWidget {
         ))
     }
 
-    /// What the session shows, for an agent or a script: its output (the
-    /// newest part of the screen and scrollback), title, cursor and where it
-    /// runs.
     pub(crate) fn read_session(&self) -> serde_json::Value {
         let (output, truncated) = crate::resource::readable_output(self.emulator.screen());
         serde_json::json!({
@@ -1288,7 +988,6 @@ impl TerminalWidget {
 
     fn target_picker_accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
-        // Where the window bar names the target, the picker is the bar's.
         if self.bar_shows_target() {
             return None;
         }
@@ -1342,10 +1041,7 @@ impl TerminalWidget {
         })
     }
 
-    /// Convert an accessible extended-grapheme offset in the current visible
-    /// transcript into a cell coordinate. The terminal grid measures columns,
-    /// while a11y measures graphemes, so emoji and combining marks must not be
-    /// treated as UTF-8 byte offsets.
+    /// A visible grapheme offset as a cell: the grid counts columns, accessibility graphemes.
     fn visible_grapheme_position(&self, mut offset: usize) -> Option<GridPos> {
         let start = self.viewport_start_y.min(self.grid.len());
         let end = (start + self.current_visible_rows()).min(self.grid.len());
@@ -1369,9 +1065,7 @@ impl TerminalWidget {
         None
     }
 
-    /// Inverse of [`Self::visible_grapheme_position`]. Only visible selection
-    /// endpoints are published because the accessibility value is the visible
-    /// transcript, not the entire scrollback buffer.
+    /// The inverse: only visible endpoints are published, since the value is the visible transcript.
     fn visible_grapheme_offset(&self, position: GridPos) -> Option<usize> {
         let start = self.viewport_start_y.min(self.grid.len());
         let end = (start + self.current_visible_rows()).min(self.grid.len());
@@ -1405,9 +1099,7 @@ impl TerminalWidget {
         ))
     }
 
-    /// Translate the terminal's grapheme-space selection back into the UTF-8
-    /// offsets carried by [`ui::a11y::AccessNode::with_text_selection`]. The
-    /// bridge then exports those boundaries as AccessKit grapheme positions.
+    /// A grapheme-space selection as the UTF-8 offsets `with_text_selection` carries.
     fn visible_selection_bytes(&self, value: &str) -> Option<(usize, usize)> {
         let (anchor, focus) = self.visible_selection_offsets()?;
         let byte_at = |grapheme_offset| {
@@ -1430,10 +1122,6 @@ impl TerminalWidget {
         self.focused = true;
         true
     }
-    /// Enable/disable "select to copy": when on, finishing a selection also
-    /// writes it to the system clipboard (in addition to the always-set
-    /// primary selection used by middle-click paste). The choice is kept for
-    /// every terminal opened afterwards.
     pub fn set_select_to_copy(&mut self, on: bool) {
         if self.select_to_copy == on {
             return;
@@ -1441,8 +1129,6 @@ impl TerminalWidget {
         self.select_to_copy = on;
         self.preferences.set_copy_on_select(on);
     }
-    /// Allow (or refuse, the default) programs to write the clipboard through
-    /// OSC 52. The choice is kept for every terminal opened afterwards.
     pub fn set_allow_osc52_clipboard(&mut self, on: bool) {
         if self.allow_osc52_clipboard == on {
             return;
@@ -1451,15 +1137,11 @@ impl TerminalWidget {
         self.preferences.set_allow_osc52_clipboard(on);
     }
 
-    /// Choose what a bell does, and keep it. A bell the person asked for is
-    /// a flash of the pane; there is no audible bell in the toolkit yet.
     pub fn set_bell(&mut self, bell: crate::preferences::Bell) {
         self.bell = bell;
         self.preferences.set_bell(bell);
     }
 
-    /// Read the person's preferences — the bell and what a selection does —
-    /// and use them from now on.
     pub fn use_preferences(&mut self, preferences: crate::preferences::Preferences) {
         let stored = preferences.load();
         self.select_to_copy = stored.copy_on_select;
@@ -1468,8 +1150,6 @@ impl TerminalWidget {
         self.preferences = preferences;
     }
 
-    /// The bell rang: remember when, so the pane washes and fades. A bell set
-    /// to off rings nothing.
     fn ring_bell(&mut self) {
         if self.bell == crate::preferences::Bell::Off {
             return;
@@ -1477,22 +1157,17 @@ impl TerminalWidget {
         self.bell_at = Some(ui::time::now());
     }
 
-    /// The bell's flash as a test reads it.
     #[cfg(test)]
     pub(crate) fn bell_flash_for_test(&self) -> f32 {
         self.bell_flash(ui::theme::Theme::default().motion())
     }
 
-    /// Whether a finished selection copies, as a test reads it.
     #[cfg(test)]
     pub(crate) fn selects_to_copy_for_test(&self) -> bool {
         self.select_to_copy
     }
 
-    /// How much of the bell's flash is left, `0.0..=1.0`. A bell is a
-    /// confirmation that arrives at once and leaves, so its arrival, its life
-    /// and its fade are the motion library's `Transient` — the app decides only
-    /// how long it is worth looking at.
+    /// How much of the bell's flash is left, `0.0..=1.0`.
     fn bell_flash(&self, motion: ui::tokens::EffectiveMotion) -> f32 {
         // A quarter second: long enough to catch the eye from another window,
         // short enough not to sit on the text.
@@ -1507,43 +1182,24 @@ impl TerminalWidget {
             motion,
         )
     }
-    /// Set (or clear) the selection programmatically over buffer-absolute
-    /// cells. Host/demo API — e.g. "select all", or a screenshot scenario
-    /// that highlights a range. Coordinates are absolute grid rows/columns
-    /// (see [`GridPos`]).
     pub fn set_selection_cells(&mut self, anchor: GridPos, cursor: GridPos) {
         self.selection = Some(Selection { anchor, cursor });
     }
-    /// Absolute row index (into the full buffer, scrollback included) of the
-    /// first grid row whose text contains `needle`. Host/demo helper for
-    /// locating content to select without a GPU.
     pub fn find_row(&self, needle: &str) -> Option<usize> {
         self.grid.iter().position(|l| l.contains(needle))
     }
-    /// Like [`find_row`](Self::find_row) but returns the *last* matching row —
-    /// useful when a shell echoes a command (which contains the text) before
-    /// the program prints the real output line (also containing it).
     pub fn find_row_last(&self, needle: &str) -> Option<usize> {
         self.grid.iter().rposition(|l| l.contains(needle))
     }
 
-    /// Whether the context menu's Find entry was chosen since the last call.
-    /// The view that hosts this terminal opens the window bar's search; the
-    /// terminal itself holds no bar. Nothing here publishes a query, a match or a
-    /// command to collaborators or agents: scrollback may contain
-    /// credentials, and find is only a viewport aid.
     pub fn take_find_request(&mut self) -> bool {
         std::mem::take(&mut self.find_request)
     }
 
-    /// The platform's keyboard conventions this terminal follows.
     pub(crate) fn conventions(&self) -> ui::PlatformConventions {
         self.conventions
     }
 
-    /// Match `query` against the retained scrollback: literally, or as a
-    /// regular expression; the bar's options choose whether case and whole
-    /// words count.
     fn scan_find_matches(&mut self, query: &str, options: FindOptions) {
         self.find_matches.clear();
         let query: Vec<char> = query.chars().take(MAX_FIND_QUERY_CHARS).collect();
@@ -1597,9 +1253,6 @@ impl TerminalWidget {
             .min(self.find_matches.len().saturating_sub(1));
     }
 
-    /// Match the regular expression `pattern` against the retained
-    /// scrollback. A pattern that does not compile, or matches only empty
-    /// spans, finds nothing.
     fn scan_find_pattern(&mut self, pattern: &str, options: FindOptions) {
         let Ok(pattern) = regex::RegexBuilder::new(pattern)
             .case_insensitive(!options.match_case)
@@ -1664,9 +1317,6 @@ impl TerminalWidget {
         self.set_scroll_offset(max_top.saturating_sub(top));
     }
 
-    /// Resolve the OSC 8 hyperlink URL for the cell at absolute buffer
-    /// `(row, col)`, if any. Host/test accessor: powers click-to-open and
-    /// lets a test assert a parsed hyperlink landed on the right cells.
     pub fn hyperlink_at(&self, row: usize, col: usize) -> Option<&str> {
         let attrs = self.grid_attrs.get(row)?;
         let link_id = attrs.get(col)?.link_id;
@@ -1675,24 +1325,15 @@ impl TerminalWidget {
         }
         self.links.get(&link_id).map(String::as_str)
     }
-    /// True while the alternate screen buffer is active. Test/host accessor.
     pub fn is_alt_screen(&self) -> bool {
         self.alt_active
     }
-    /// Current terminal mode flags. Test/host accessor.
     pub fn modes(&self) -> TermModes {
         self.modes
     }
-    /// Rows currently scrolled back from the live bottom. Test/host accessor.
     pub fn scroll_offset(&self) -> usize {
         self.scroll_offset
     }
-    /// Force the widget into a known *grid* geometry for tests. Sets both the
-    /// outer widget rect and the inner grid content rect to `rect` (i.e. the
-    /// passed rect IS the cell area, with no chrome inset), so grid-level
-    /// hit-testing / selection tests can target known cells directly. The
-    /// production `set_geometry` path insets the grid below the chrome; that
-    /// inset is exercised separately via `place_at`.
     #[cfg(test)]
     pub fn force_geometry(&mut self, rect: Rect, char_w: f64, char_h: f64) {
         self.rect = rect;
@@ -1702,32 +1343,24 @@ impl TerminalWidget {
         self.forced_cell = true;
     }
 
-    /// The history bar's opacity at this frame — for tests.
     #[cfg(test)]
     pub(crate) fn scrollbar_opacity(&self) -> f32 {
         self.scrollbar.opacity()
     }
 
-    /// The inner grid content rect (below the header, inside the padding).
-    /// Test accessor for the chrome-inset geometry.
     #[cfg(test)]
     pub fn grid_rect(&self) -> Rect {
         self.grid_rect
     }
-    /// The current cell height used for grid layout. Test accessor.
     #[cfg(test)]
     pub fn grid_char_h(&self) -> f64 {
         self.char_h
     }
-    /// Bounds of the currently open shared context menu. Test-only so narrow
-    /// viewport regression tests can assert that the terminal keeps its
-    /// overlay reachable rather than clipping it off-screen.
     #[cfg(test)]
     pub fn context_menu_rect(&self) -> Rect {
         Widget::get_rect(&self.context_menu)
     }
     #[cfg(test)]
-    /// The open menu's row labels (empty for separators). Test accessor.
     #[cfg(test)]
     pub(crate) fn context_menu_labels(&self) -> Vec<String> {
         self.context_menu
@@ -1737,7 +1370,6 @@ impl TerminalWidget {
             .collect()
     }
 
-    /// Whether menu row `index` can be chosen. Test accessor.
     #[cfg(test)]
     pub(crate) fn context_menu_item_enabled(&self, index: usize) -> bool {
         self.context_menu
@@ -1746,13 +1378,11 @@ impl TerminalWidget {
             .is_some_and(MenuItem::is_enabled)
     }
 
-    /// Choose menu row `index`, as a click on it does. Test accessor.
     #[cfg(test)]
     pub(crate) fn activate_menu_row_for_test(&mut self, index: usize) {
         self.activate_context_menu_item(index);
     }
 
-    /// End the process's input, as a failed write does. Test accessor.
     #[cfg(test)]
     pub(crate) fn mark_disconnected_for_test(&self) {
         self.mark_disconnected(&crate::i18n::t("terminal-session-input-unavailable"));
@@ -1765,28 +1395,18 @@ impl TerminalWidget {
     pub fn context_menu_find_rect(&self) -> Option<Rect> {
         self.context_menu.item_rect(self.menu_rows.find?)
     }
-    /// Force a viewport scrollback offset for tests that exercise
-    /// `selected_text` over a `grid` larger than the visible viewport.
     #[cfg(test)]
     pub fn force_viewport_start(&mut self, start: usize) {
         self.viewport_start_y = start;
     }
-    /// Inject a selection from a test. Avoids needing to simulate a
-    /// full press/drag/release sequence when the test is about
-    /// downstream behaviour (highlight spans, clipboard text).
     #[cfg(test)]
     pub fn force_selection(&mut self, sel: Option<Selection>) {
         self.selection = sel;
     }
-    /// Replace `grid` from a test. Bypasses the PTY and the emulator so
-    /// selected-text tests can assert against a known buffer.
     #[cfg(test)]
     pub fn force_grid(&mut self, grid: Vec<String>) {
         self.grid = grid;
     }
-    /// The rows the viewport currently shows, top-to-bottom, honouring the
-    /// scrollback offset. Test accessor: lets a scrollback test assert that
-    /// scrolling up reveals older lines without a GPU scene.
     #[cfg(test)]
     pub fn visible_lines(&self) -> Vec<String> {
         let vis = self.current_visible_rows();
@@ -1799,25 +1419,20 @@ impl TerminalWidget {
         let start = max_top.saturating_sub(scroll);
         self.grid.iter().skip(start).take(vis).cloned().collect()
     }
-    /// The rows of the painted find matches, for regressions.
     #[cfg(test)]
     pub fn find_test_matches(&self) -> Vec<usize> {
         self.find_matches.iter().map(|found| found.row).collect()
     }
-    /// The painted session banner after the real draw pass.
     #[cfg(test)]
     pub fn banner_test_rect(&self) -> Rect {
         self.banner_rect
     }
 
-    /// A hosted terminal in a test has no process behind it and starts
-    /// disconnected; this lets its input reach an attached probe.
     #[cfg(test)]
     pub(crate) fn accept_input_for_test(&self) {
         self.session_disconnected.store(false, Ordering::Release);
     }
 
-    /// The framework's verdict on `effect` as this terminal's own gesture.
     #[cfg(test)]
     pub(crate) fn own_gesture_verdict(
         &self,
@@ -1826,8 +1441,6 @@ impl TerminalWidget {
         self.dispatch.as_ref().map(|d| d.is_own_gesture(effect))
     }
 
-    /// Tee subsequent PTY writes so a compositor-path test can see them, in
-    /// any profile it is built in (`test-support`).
     #[cfg(any(test, debug_assertions, feature = "test-support"))]
     pub fn attach_input_probe(&self) -> std::sync::mpsc::Receiver<Vec<u8>> {
         struct ProbeWriter {
@@ -1850,8 +1463,6 @@ impl TerminalWidget {
         }
         rx
     }
-    /// The parsed attribute for the mirrored grid cell at `(row, col)`.
-    /// Test accessor for SGR-parsing assertions.
     #[cfg(test)]
     pub fn cell_attr(&self, row: usize, col: usize) -> Attr {
         self.grid_attrs
@@ -1860,13 +1471,10 @@ impl TerminalWidget {
             .copied()
             .unwrap_or_default()
     }
-    /// The mirrored grid row text at `row`. Test accessor.
     #[cfg(test)]
     pub fn grid_row(&self, row: usize) -> String {
         self.grid.get(row).cloned().unwrap_or_default()
     }
-    /// Compute the per-row spans for the current selection, exposed for
-    /// tests. Returns an empty vec when no selection is active.
     #[cfg(test)]
     pub fn current_row_spans(&self) -> Vec<(usize, usize, usize)> {
         self.selection
@@ -1874,60 +1482,42 @@ impl TerminalWidget {
             .map(|sel| selection_row_spans(sel, self.width))
             .unwrap_or_default()
     }
-    /// Test-only access to the selected-text helper.
     #[cfg(test)]
     pub fn test_selected_text(&self) -> Option<String> {
         self.selected_text()
     }
-    /// Default-fg color last drawn with (sampled from the theme's terminal
-    /// palette). Test-only.
     pub fn last_fg_default(&self) -> Color {
         self.last_fg_default
     }
-    /// Default-bg color last drawn with (sampled from the theme's terminal
-    /// palette). Test-only.
     pub fn last_bg_default(&self) -> Color {
         self.last_bg_default
     }
 
-    /// The full terminal buffer as text — one grid row per line, including
-    /// retained scrollback. Host-facing: lets an embedder read the on-screen
-    /// content (search, "copy all", accessibility) without a GPU scene.
-    /// Trailing padding spaces are preserved; callers trim as needed.
     pub fn grid_text(&self) -> String {
         self.grid.join("\n")
     }
 
-    /// Current grid dimensions as `(cols, rows)`. Reflects the last
-    /// `place_at` / `apply_layout` reflow. Host-facing accessor for sizing.
     pub fn grid_size(&self) -> (usize, usize) {
         (self.width, self.height)
     }
 
-    /// Shared, content-addressed graphics placements discovered in the output
-    /// stream. Visible supported placements are decoded locally and painted on
-    /// the cell grid; callers can also inspect the collaborative descriptors.
     pub fn image_placements(&self) -> &[TerminalImagePlacement] {
         &self.image_placements
     }
 
-    /// The store graphics bytes are kept in.
     #[cfg(test)]
     pub(crate) fn content_store(&self) -> &ContentStore {
         &self.content
     }
 
-    /// Number of grid rows currently visible, from the paint geometry.
     fn current_visible_rows(&self) -> usize {
         (self.grid_rect.height() / self.char_h.max(1.0))
             .floor()
             .max(1.0) as usize
     }
 
-    /// Refresh the cached body metrics (padding, the history bar's sizes) from the
-    /// theme. Called each `draw`; the cached values then feed `set_geometry`
-    /// and pointer hit-testing, which never see a `Theme`. Both derive from the
-    /// shared spacing scale so the OS can retune the spacing centrally.
+    /// Refresh the body padding and the history bar's sizes from `theme`, for the paths that see no
+    /// theme.
     fn refresh_chrome_metrics(&mut self, theme: &Theme) {
         let sp = &theme.tokens.spacing;
         self.chrome_body_pad = f64::from(sp.s3);
@@ -1937,22 +1527,13 @@ impl TerminalWidget {
                 + f64::from(sp.s2);
     }
 
-    /// Row pitch of the cell grid from the renderer's measured line box for
-    /// one cell — the single number `measure`, `draw`, selection bands, the
-    /// block cursor and pointer hit-testing all step rows by. Rounded up so
-    /// rows land on whole pixels (20 px at 1× for the 14 px base font), never
-    /// below one pixel.
+    /// Row height of the grid, rounded up to whole pixels and never below one.
     fn cell_h(measured_line_h: f32) -> f64 {
         f64::from(measured_line_h).ceil().max(1.0)
     }
 
-    /// The inner grid content rect for a given widget rect: the widget rect
-    /// inset by a uniform body padding on every side; the history bar lies
-    /// over the right padding and takes no columns. No header — the compositor owns window
-    /// decoration, so the grid starts under the find and session bands (when
-    /// they are showing) and the top padding. Uses the cached body
-    /// metrics so it is available without a `Theme`. This is the *single*
-    /// definition of the grid geometry, shared by `set_geometry` and `draw`.
+    /// The grid's rect: the widget rect inset by the body padding, with the history bar over the right
+    /// padding. The one definition of the grid geometry.
     fn grid_content_rect(&self, rect: Rect) -> Rect {
         let pad = self.chrome_body_pad;
         let x0 = rect.x0 + pad;
@@ -1962,20 +1543,14 @@ impl TerminalWidget {
         Rect::new(x0, y0, x1, y1)
     }
 
-    /// True when every mirrored grid row is blank — used to gate the
-    /// first-run empty-state watermark.
     fn grid_is_blank(&self) -> bool {
         self.grid.iter().all(|l| l.chars().all(char::is_whitespace))
     }
 
-    /// Furthest the viewport can scroll up: the number of rows above the
-    /// live viewport.
     fn max_scroll(&self) -> usize {
         self.view_rows().saturating_sub(self.current_visible_rows())
     }
 
-    /// What the history bar lies over: the grid's rows across the whole
-    /// width, so the bar stands in the right padding.
     fn scrollbar_area(&self) -> Rect {
         Rect::new(
             self.rect.x0,
@@ -1989,9 +1564,6 @@ impl TerminalWidget {
         self.scrollbar.track(self.scrollbar_area())
     }
 
-    /// How far the view stands back from the live output, in logical
-    /// pixels: what moves the history bar. Output at the live bottom does
-    /// not, so it does not show the bar.
     fn scrollback_depth(&self) -> f64 {
         self.scroll_offset as f64 * self.char_h.max(1.0) - self.view.sub
     }
@@ -2010,22 +1582,12 @@ impl TerminalWidget {
         self.scroll_by_px(to - self.scroll_from_top());
     }
 
-    /// Drain queued PTY bytes and replay them through the vte parser onto the
-    /// screen, and take in images read meanwhile. Shared by both
-    /// `Widget::update` (for hosts that pump it, e.g. the compositor's tile
-    /// host) and `Widget::sync`. Returns whether anything arrived to show.
+    /// Parse queued PTY bytes onto the screen; says whether anything arrived.
     fn pump(&mut self) -> bool {
         let open_activity = self.poll_session_open();
         let native_activity = self.poll_native_ime() || open_activity;
-        // Drain every queued read and coalesce them into one buffer, then feed
-        // the parser once. The reader thread hands over one `Vec` per ~8 KB
-        // `read`, and a burst (`cat` of a big file, a full-screen redraw)
-        // queues many; parsing them as a single slice constructs one performer,
-        // commits the cursor once, and flushes one query-reply batch instead of
-        // repeating that per read. The vte parser is stateful across the drain,
-        // so an escape sequence split across two reads still parses correctly.
-        // Draining first also drops the `output_rx` borrow before `feed` takes
-        // `&mut self`.
+        // Drain every queued read into one buffer so a burst parses once: one performer, one cursor commit,
+        // one query reply.
         let mut batch = Vec::new();
         while batch.len() < MAX_PUMP_BYTES {
             let bytes = match self.deferred_output.get_mut().take() {
@@ -2048,16 +1610,11 @@ impl TerminalWidget {
         let activity = !batch.is_empty();
         if activity {
             self.feed(&batch);
-            // `feed` normally latches this itself, but keep the PTY boundary
-            // authoritative: even if a future parser early-return prevents
-            // visible cells from being mirrored in this frame, bytes were
-            // received from a live session and the loading watermark must
-            // never be painted over them.
+            // Output makes the session live even when the batch only moves the cursor, so the watermark never
+            // covers a real prompt.
             self.ever_nonblank = true;
-            // Fresh output snaps the viewport back to the live bottom.
             self.set_scroll_offset(0);
         }
-        // An image read on the worker arrived to paint.
         let images = self.images.take_finished();
         activity || native_activity || images
     }
@@ -2067,12 +1624,7 @@ impl TerminalWidget {
         self.ever_nonblank
     }
 
-    /// Run `bytes` through the vte parser + performer, mutating the screen.
-    /// This is the single production entry point for terminal output
-    /// processing — the PTY pump feeds real shell output through it, and
-    /// tests and screenshot scenarios feed canned VT sequences through the
-    /// very same path. From here on the terminal shows its own emulator's
-    /// screen; the session record follows it at the next sync.
+    /// The one path terminal output takes; tests and scenarios feed the same parser.
     pub fn feed(&mut self, bytes: &[u8]) {
         let Some(marks) = self.runs.marks.as_mut() else {
             self.feed_output(bytes);
@@ -2086,24 +1638,16 @@ impl TerminalWidget {
         }
     }
 
-    /// [`Self::feed`] of output with the session's marks taken out.
     fn feed_output(&mut self, bytes: &[u8]) {
         if !bytes.is_empty() {
-            // A native edit's own redisplay must preserve its acknowledged
-            // checkpoint. The producer fences actual Readline state changes.
+            // A redisplay must keep the acknowledged checkpoint; only real Readline state changes fence.
             self.invalidate_deferred_input();
         }
-        // Output with no process attached (a scenario, a test) starts the
-        // screen's own session, as an attached process does.
         if !self.emulating {
             self.begin_local_session();
         }
 
-        // Any PTY bytes mean the session is live, even when the first batch is
-        // entirely cursor movement, colour setup, or a prompt whose visible
-        // cells have not reached the render mirror yet. Inferring readiness
-        // only from `grid_is_blank()` left the animated first-run watermark
-        // painted over a real prompt and kept needless repaint work alive.
+        // Any PTY bytes make the session live, even a batch that only moves the cursor.
         if !bytes.is_empty() {
             self.ever_nonblank = true;
         }
@@ -2123,9 +1667,7 @@ impl TerminalWidget {
             }
         }
 
-        // Answer any capability queries this batch raised on the shell's
-        // stdin — the same wire keystrokes use, which is where the shell
-        // expects to read a query response.
+        // Answer capability queries on the shell's stdin, the wire its keystrokes use.
         if !output.responses.is_empty() {
             self.write_input(&output.responses);
         }
@@ -2134,18 +1676,15 @@ impl TerminalWidget {
         if let Some(t) = output.title {
             self.title = t;
         }
-        // A bell rings once per feed, however many times it was rung: one
-        // flash is as much attention as one burst of bells deserves.
+        // A bell rings once per feed, however many times it was rung.
         if output.bells > 0 {
             self.ring_bell();
         }
         self.show_screen();
     }
 
-    /// Place the terminal at an explicit `rect` and reflow the grid + PTY to
-    /// match. This is the embedding entry point: a host widget (e.g. the code
-    /// editor's terminal panel) that owns the terminal outside a Taffy leaf
-    /// calls this instead of `apply_layout` to give it a region to render in.
+    /// Place the terminal at `rect` and reflow the grid and the PTY to match, for a host that owns it
+    /// outside a layout.
     pub fn place_at(&mut self, rect: Rect) {
         self.set_geometry(rect);
     }
@@ -2155,11 +1694,7 @@ impl TerminalWidget {
             .set(self.input_epoch.get().saturating_add(1));
     }
 
-    /// Write raw bytes to the PTY's stdin and report exact transport failure.
-    /// Resource actions use this fallible path so the action door cannot turn a
-    /// dead PTY into a false `Succeeded` result. Local keyboard/paste callers
-    /// use [`Self::write_input`], which records the same terminal state and
-    /// exposes it visibly even though winit cannot return an error.
+    /// Write to the PTY and report transport failure, so an action cannot report success on a dead PTY.
     pub fn try_write_input(&self, bytes: &[u8]) -> Result<(), String> {
         if let Some(("session_not_open", reason)) = self.input_unavailable() {
             return Err(reason.to_owned());
@@ -2188,19 +1723,12 @@ impl TerminalWidget {
         Ok(())
     }
 
-    /// Best-effort convenience wrapper for keyboard and embedded callers. Any
-    /// failure is still made durable through [`Self::is_disconnected`] and the
-    /// visible/a11y disconnected state; callers that can report completion use
-    /// [`Self::try_write_input`] instead.
+    /// The same, for callers that cannot see an error; a failure still shows as disconnected.
     pub fn write_input(&self, bytes: &[u8]) {
         let _ = self.try_write_input(bytes);
     }
 
-    /// Paste `text` into the PTY. When the running app has requested
-    /// bracketed paste (`CSI ? 2004 h`) the text is wrapped in the
-    /// `ESC[200~`…`ESC[201~` guards so the app can tell a paste from typed
-    /// input; otherwise newlines are normalised to carriage returns (what
-    /// the Enter key sends). Pasting snaps the viewport to the live bottom.
+    /// Paste `text`, wrapped in the bracketed-paste guards when the program asked for them.
     pub fn paste(&mut self, text: &str) {
         let _ = self.try_paste(text);
     }
@@ -2223,22 +1751,17 @@ impl TerminalWidget {
         Ok(())
     }
 
-    /// Assign `rect` and, if the cell grid dimensions changed, reflow the
-    /// grid and resize the PTY so the shell sees the new size.
     fn set_geometry(&mut self, rect: Rect) {
         self.rect = rect;
-        // The grid lives in the content rect (below the header, inside the
-        // padding), so it — not the outer widget rect — drives the cell count
-        // and the PTY size.
+        // The grid lives in the content rect, so that rect, not the widget's, drives the cell count and
+        // the PTY size.
         self.grid_rect = self.grid_content_rect(rect);
         let grid_rect = self.grid_rect;
 
         let new_width = (grid_rect.width() / self.char_w.max(1.0)).floor() as usize;
         let new_height = (grid_rect.height() / self.char_h.max(1.0)).floor() as usize;
 
-        // Cap the grid at a sensible terminal size, which bounds what every
-        // feed converts for drawing. The visible region can be larger than
-        // the grid — overflow rows render empty.
+        // Cap the grid's size, which bounds what a feed converts for drawing.
         let new_width = new_width.min(200);
         let new_height = new_height.min(80);
         if new_width > 0 && new_height > 0 && (new_width != self.width || new_height != self.height)
@@ -2247,9 +1770,6 @@ impl TerminalWidget {
             self.height = new_height;
             self.emulator.resize(new_width, new_height);
             self.show_screen();
-            // A poisoned lock means some other thread already panicked while
-            // holding it; skip the PTY resize rather than propagate that
-            // panic here too — the grid dimensions above are updated either way.
             if let Ok(master) = self.pty_master.lock() {
                 let _ = master.resize(PtySize {
                     rows: self.height as u16,
@@ -2263,9 +1783,6 @@ impl TerminalWidget {
 }
 
 impl TerminalWidget {
-    /// Do `effect`, invoked by the palette, an agent or a script through the
-    /// host, or by the person's own gesture.
-    ///
     fn agent_host_input_refused(&self, effect: &crate::resource::TerminalEffect) -> bool {
         use crate::resource::TerminalEffect as E;
         self.sessions
@@ -2443,7 +1960,6 @@ impl TerminalWidget {
         Ok(())
     }
 
-    /// Execute only an authenticated owner operation on this live device-shell session.
     pub(crate) fn device_shell_operation(
         &mut self,
         operation: &ui::floating_surface::DeviceShellOperation,
@@ -2516,14 +2032,8 @@ impl TerminalWidget {
         }
     }
 
-    /// Do `effect` as the person's own gesture: a shortcut, a click or a
-    /// menu row in this terminal. Like a keystroke, it reaches the process
-    /// at once when the framework says it is the person's own gesture
-    /// ([`Dispatcher::is_own_gesture`](ui::framework::Dispatcher::is_own_gesture)):
-    /// the person pasting their own clipboard already chose the text. Under
-    /// any invocation, or when the role does not allow it, it goes through
-    /// the session's host, which checks and confirms as for any caller; a
-    /// terminal with no session record performs it directly.
+    /// Do `effect` as the person's own gesture: it reaches the process at once, or goes through the
+    /// session's host when the role does not allow it.
     fn submit_effect(&mut self, effect: crate::resource::TerminalEffect) {
         if let Some(dispatch) = &self.dispatch
             && !dispatch.is_own_gesture(&effect)
@@ -2538,22 +2048,15 @@ impl TerminalWidget {
 }
 
 impl TerminalWidget {
-    /// The command lines `run` asks this terminal's process to run reach it
-    /// through `queue`, which the view carrying out the session's outbox
-    /// shares.
     pub fn run_through(&mut self, queue: crate::runs::RunQueue) {
         queue.set_pane(if self.emulating { &self.pane_id } else { "" });
         self.runs.queue = queue;
     }
 
-    /// Open new tabs on the environment `recent` remembers, and remember
-    /// the one opened there.
     pub(crate) fn recent_in(&mut self, recent: crate::target::RecentTarget) {
         self.sessions.recent_in(recent);
     }
 
-    /// Remember every run this terminal records in the person's `history`,
-    /// as runs of the session record at `session`.
     pub(crate) fn remember_in(
         &mut self,
         record: ui::framework::PersonRecord<crate::history::CommandHistory>,
@@ -2567,8 +2070,7 @@ impl TerminalWidget {
         });
     }
 
-    /// A new process takes the session: what was asked of the last one and
-    /// has not run settles as failed, and the queue follows the new pane.
+    /// A new process: what the last one had not run settles as failed.
     fn begin_runs(&mut self) {
         let runs = &mut self.runs;
         runs.current = crate::runs::Runs::default();
@@ -2586,7 +2088,6 @@ impl TerminalWidget {
         runs.queue.set_pane(&self.pane_id);
     }
 
-    /// Follow one piece of the session's output: a mark moves its runs on.
     fn follow_run(&mut self, piece: &crate::runs::Piece) {
         use crate::runs::{Mark, Piece};
         let runs = &mut self.runs;
@@ -2599,12 +2100,8 @@ impl TerminalWidget {
             }
             Piece::Mark(Mark::Started { command, .. }) => {
                 runs.at_prompt = false;
-                // The line this terminal typed for `run` starts when the
-                // shell stops showing its prompt and says it runs the
-                // command that was typed: lines reach the shell in the order
-                // they were typed, so the oldest waiting one that matches is
-                // it. Anything else the shell runs — a person's line, a
-                // `.bashrc` command — is nobody's request.
+                // The typed line matches the oldest waiting request when the shell stops showing its prompt;
+                // anything else the shell runs is nobody's request.
                 let typed = if runs
                     .typed
                     .front()
@@ -2660,13 +2157,10 @@ impl TerminalWidget {
         }
     }
 
-    /// Answer the shell's line editor with a page of the person's history
-    /// (docs/app-model/ush.md, "The session's shell"): the newest command
-    /// lines past the `skip` newest, each once, as one mark on its input.
+    /// Answer the shell's history request with the newest lines past `skip`
+    /// (docs/app-model/ush.md, "The session's shell").
     fn answer_history(&self, ask: &crate::runs::HistoryAsk) {
         use base64::Engine as _;
-        /// What one answer holds at most: small enough to pass the
-        /// terminal's input buffer whole, so the shell reads it in one go.
         const ANSWER_BYTES: usize = 3072;
         let Some(key) = self.runs.marks.as_ref().map(|m| m.key().to_owned()) else {
             return;
@@ -2713,12 +2207,9 @@ impl TerminalWidget {
         }
     }
 
-    /// Type the next command line `run` asked for, once the shell is at its
-    /// prompt and nothing typed for it is waiting to start.
     fn type_asked_run(&mut self) {
         for asked in self.runs.queue.take() {
-            // The same request handed over again (its invocation took it
-            // over from the drain) runs once and answers the newest asker.
+            // The same request handed over twice runs once and answers the newest asker.
             let runs = &mut self.runs;
             match runs
                 .waiting
@@ -2788,18 +2279,13 @@ impl TerminalWidget {
         }
     }
 
-    /// Record the runs that ended, their output in the content store, and
-    /// answer whoever asked for each.
     fn record_runs(
         &mut self,
         dispatch: &ui::framework::Dispatcher<crate::resource::Terminal>,
         edits: &mut ui::widget::Edits<'_>,
     ) {
         for (run, asked) in std::mem::take(&mut self.runs.ended) {
-            // The run's output is kept where this window keeps content, and
-            // the run names it by the reference that store answered: a
-            // record's content travels sealed, so a plain hash would name
-            // nothing its readers could open.
+            // Runs name their output by the content store's reference: a record's content travels sealed.
             let output = if run.output.is_empty() {
                 None
             } else {
@@ -2814,11 +2300,7 @@ impl TerminalWidget {
                 }
             };
             let request = asked.as_ref().map(|asked| asked.request.clone());
-            // The run a request asked for takes the request's id, so the
-            // answer names it. Only a line the person started before this
-            // terminal saw the request's line reach the shell can hold that
-            // id already: this run is the request's all the same, under an
-            // id of its own.
+            // A request's run takes the request's id, so the answer names it.
             let taken = request.as_ref().is_some_and(|request| {
                 self.runs
                     .session
@@ -2864,8 +2346,6 @@ impl TerminalWidget {
             let recorded =
                 dispatch.submit_now(edits, crate::resource::Terminal::RECORD_RUN.with(finished));
             match &recorded {
-                // A background job's run stays the session's: the line that
-                // started it is the person's history.
                 Ok(()) if job => {}
                 Ok(()) => self.remember(ran),
                 Err(error) => tracing::warn!(%error, "terminal session record refused a run"),
@@ -2884,8 +2364,6 @@ impl TerminalWidget {
         }
     }
 
-    /// Show the item at `position` of the run `run`: open its page or its
-    /// file.
     fn show_item(&self, run: &str, position: u32) -> Result<(), String> {
         let session = self
             .runs
@@ -2914,8 +2392,6 @@ impl TerminalWidget {
         Ok(())
     }
 
-    /// Remember `ran`, which the session record now holds, in the person's
-    /// history.
     fn remember(&self, mut ran: crate::history::Ran) {
         let Some(history) = &self.runs.history else {
             return;
@@ -2930,17 +2406,13 @@ impl TerminalWidget {
         }
     }
 
-    /// Open the session, drain the PTY and mirror the document's screen.
     fn sync_document(&mut self, _state: &AppModel, _root: &ModelPath) {
         self.dirty = true;
         if self.sessions.is_live() {
             self.ensure_session();
         }
         self.poll_folder_picker();
-        // Drain any bytes the PTY reader thread has queued and replay them
-        // through the vte parser *here*. A host that never calls `update`
-        // still advances the terminal: pumping from `sync`, driven by the
-        // waker (or an embedding host's own pump), is what shows output.
+        // Pump here too: a host that never calls `update` still advances the terminal.
         self.pump();
         self.type_asked_run();
         self.show_setup_failure();
@@ -2950,9 +2422,6 @@ impl TerminalWidget {
         self.close_if_exited();
     }
 
-    /// Bring the session record up to date with this terminal: the session
-    /// changes waiting since the last sync, in order. Nothing is recorded
-    /// for a terminal that has no record.
     fn record(&mut self, edits: &mut ui::widget::Edits<'_>) {
         let Some(dispatch) = self.dispatch.clone() else {
             self.pending_actions.clear();
@@ -2967,15 +2436,12 @@ impl TerminalWidget {
         self.record_runs(&dispatch, edits);
     }
 
-    /// Queue a session change for the next sync.
     fn submit(&mut self, action: ui::tilo_resource::Invoke<crate::resource::Terminal>) {
         if self.dispatch.is_some() {
             self.pending_actions.push(action);
         }
     }
 
-    /// Follow the session as its record holds it: where it runs, the relay
-    /// session it re-attaches to and the pane presence is scoped to.
     pub(crate) fn present_session(&mut self, state: &std::rc::Rc<crate::resource::Terminal>) {
         self.runs.session = Some(std::rc::Rc::clone(state));
         self.recorded_target = state.session_target();
@@ -2989,9 +2455,7 @@ impl TerminalWidget {
         }
     }
 
-    /// Rebuild what is drawn from `screen`: the rows of the active buffer,
-    /// the cursor, the hyperlinks and the image placements. Only rows whose
-    /// line changed are converted again.
+    /// Rebuild what is drawn from `screen`; only rows whose line changed are converted again.
     fn show_screen(&mut self) {
         use std::collections::hash_map::Entry;
         let screen = self.emulator.screen();
@@ -3035,18 +2499,13 @@ impl TerminalWidget {
         self.content_revision = self.content_revision.wrapping_add(1);
     }
 
-    /// Stage screenshot scenario `name`: the output its process printed,
-    /// parsed as PTY output, and the view state shown over it.
     #[cfg(feature = "samples")]
     pub(crate) fn stage_scenario(&mut self, name: &str) {
-        // The staged output is an open session's: a capture has no process
-        // behind it, but only the ended scenario shows the session closed.
         self.session_disconnected.store(false, Ordering::Release);
         if let Some((target, environments)) = crate::scenarios::target(name) {
             self.show_target(target, environments);
         }
         if name == "held" {
-            // The session's marks are read with its key, as a live session's are.
             let key = crate::runs::new_key();
             self.runs.marks = Some(crate::runs::Marks::new(key.clone()));
             self.feed(&crate::scenarios::held(&key));
@@ -3059,7 +2518,6 @@ impl TerminalWidget {
         self.stage_view(name);
     }
 
-    /// The view state scenario `name` shows over its output.
     #[cfg(feature = "samples")]
     fn stage_view(&mut self, name: &str) {
         match name {
@@ -3071,9 +2529,6 @@ impl TerminalWidget {
                 self.set_environment_name_input("Writing");
             }
             "empty-menu" => self.open_context_menu_at(Point::new(24.0, 24.0)),
-            // A whole line of the session's output selected, as a
-            // triple-click selects it: the printed line, not the command
-            // that echoed it.
             "shell-select" => {
                 if let Some(row) = self.find_row_last("primes below 20:") {
                     let (cols, _) = self.grid_size();
@@ -3085,14 +2540,11 @@ impl TerminalWidget {
     }
 }
 
-/// Find in the retained scrollback. The matches live in the widget, which
-/// paints them over the matched cells; the bar counts and steps through them.
+/// Find in the retained scrollback; the matches live here and the bar counts them.
 impl Findable for TerminalWidget {
     fn find(&mut self, query: &str, options: FindOptions) -> Vec<ui::widget::FindMatch> {
         self.find_current = 0;
         self.scan_find_matches(query, options);
-        // A terminal's content is addressed by row and column; the bar only
-        // counts, so each match is reported as the row it is on.
         self.find_matches
             .iter()
             .map(|found| ui::widget::FindMatch::new(found.row, found.row))
@@ -3137,10 +2589,7 @@ impl Widget for TerminalWidget {
         _available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        // `measure` does not receive a theme; read the style cached by the
-        // most recent `build_layout` or `draw`. Before the first layout the
-        // cache is empty and the constructor-seeded char_w/char_h keep layout
-        // yielding a usable grid.
+        // `measure` sees no theme: read the style cached by the last layout or draw.
         if self.forced_cell {
             return taffy::Size::ZERO;
         }
@@ -3157,7 +2606,6 @@ impl Widget for TerminalWidget {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         self.dirty = true;
         if self.copy.failed() {
-            // As for any terminal gesture that fails after it was accepted.
             tracing::warn!("the system clipboard did not accept terminal output");
         }
         self.sync_document(state, root);
@@ -3172,14 +2620,8 @@ impl Widget for TerminalWidget {
         self.record(edits);
     }
 
-    /// Whether queued output needs another visual frame. A standalone terminal
-    /// is woken by its event-loop proxy; an embedded terminal is pumped by its
-    /// host independently of painting. Treating an absent standalone proxy as
-    /// animation demand made every idle embedded terminal repaint the complete
-    /// desktop continuously.
+    /// Whether queued output needs another frame; an embedded terminal is pumped by its host.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        // The next automatic reconnect to a remote shell, and when the
-        // history bar starts to fade.
         match (
             self.reconnect_deadline(),
             self.scrollbar.next_wake_deadline(),
@@ -3190,10 +2632,7 @@ impl Widget for TerminalWidget {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // A bounded pump deliberately leaves excess output queued. Keep frames
-        // flowing until it is drained even when the reader's coalesced wake is
-        // already in flight; otherwise a saturated producer could strand the
-        // final queue behind `ControlFlow::Wait`.
+        // A bounded pump leaves output queued: keep frames coming until it drains.
         let pending = self
             .deferred_output
             .take()
@@ -3210,10 +2649,7 @@ impl Widget for TerminalWidget {
             || self.bell_flash(ui::theme::Theme::default().motion()) > 0.0
     }
 
-    /// The rows that changed, came into view or went, and a scroll as a
-    /// copy of the rows it only moved, for a host that copies; the whole
-    /// terminal when anything else it paints changed. What its top layer
-    /// paints (the context menu, the environments panel) repaints it.
+    /// The rows that changed, came into view or went, and a moved scroll as a copy of its rows.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         if self.view.overlay_drawn || self.view.overlay_presented {
             regions.push(self.rect);
@@ -3228,8 +2664,7 @@ impl Widget for TerminalWidget {
         self.view.overlay_presented = self.view.overlay_drawn;
     }
 
-    /// An outer cache keeps the terminal's scene: what it showed is not
-    /// known to be on screen where the next frame scrolls from.
+    /// Keep the terminal's scene: the next frame's scroll does not know what is on screen.
     fn release_scene_cache(&mut self) {
         self.view.shown.forget();
     }
@@ -3240,11 +2675,7 @@ impl Widget for TerminalWidget {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // `apply_layout` reflows the PTY immediately after Taffy calls
-        // `measure`. Seed that measurement from the active theme here rather
-        // than waiting for `draw`: at a large accessibility text scale, the
-        // old default 18px row height produced too many blank PTY rows, and
-        // the actual output landed above the first painted viewport.
+        // Seed the measurement from the theme: at a large text scale an 18px row height overflowed the PTY.
         self.cell_style = Some(theme.text(TextRole::Code));
         taffy.fill_leaf(node_map, self)
     }
@@ -3267,18 +2698,9 @@ impl Widget for TerminalWidget {
         // framework's, so nothing here fills the widget.
         let cell_style = theme.text(TextRole::Code);
         self.palette = Self::grid_palette(theme);
-        // Refresh the body geometry from the theme and re-derive the inner grid
-        // rect (inside the padding) — the same
-        // `grid_content_rect` `set_geometry` and pointer hit-testing use, so the
-        // grid origin is single-sourced. `set_geometry` and hit-testing read the
-        // cached metrics — neither sees a `Theme`.
         self.refresh_chrome_metrics(theme);
 
-        // Measure the cell advance of the exact style the glyphs are drawn in
-        // so `char_w` equals the width every glyph is drawn at; if the two
-        // disagreed, each colour run would be positioned on a grid finer than
-        // its glyphs and the row would smear over itself. `measure` reads the
-        // cached style for the next layout.
+        // `char_w` must be the advance of the drawn style, or colour runs smear over each other.
         let (w, h) = text_renderer.measure_style(" ", None, &cell_style);
         self.char_w = f64::from(w).max(1.0);
         self.char_h = Self::cell_h(h);
@@ -3288,12 +2710,8 @@ impl Widget for TerminalWidget {
         // out first so the grid and the PTY size are derived under them.
         self.layout_top_bands(theme, text_renderer);
 
-        // `measure` happens before we can resolve the theme's actual
-        // monospace face. Reconcile the PTY geometry after that exact
-        // measurement as well: at 200% text scale a fallback/default advance
-        // can be much narrower than the rendered mono advance, otherwise the
-        // process sees more columns than fit on screen and its right side is
-        // silently clipped. This is a no-op on steady frames.
+        // Reconcile the PTY geometry once the real face is known: at 200% a narrower fallback advance would
+        // clip the process's right side.
         self.set_geometry(self.rect);
         let grid_rect = self.grid_rect;
 
@@ -3312,27 +2730,19 @@ impl Widget for TerminalWidget {
         self.scroll_offset = scroll;
         let start_y = max_top.saturating_sub(scroll);
 
-        // Cache for `handle_event`: pointer hit-tests translate logical y
-        // into viewport-local rows by subtracting `grid_rect.y0` and dividing
-        // by `char_h`. The selection-rendering pass below uses the offset
-        // directly to find the row in `self.grid`.
+        // Cached for pointer hit-tests, which map logical y to a viewport row.
         self.viewport_start_y = start_y;
 
-        // Cursor/palette colour caches update every frame regardless of what
-        // is painted (empty state, hidden cursor, cursor scrolled off screen).
+        // The colour caches update every frame, whatever is painted.
         let cursor_color = cursor_from_palette(&self.palette);
         self.last_cursor_color = cursor_color;
         self.last_fg_default = self.palette.fg_default;
         self.last_bg_default = self.palette.bg_default;
 
-        // Latched via `ever_nonblank` so the empty state never covers a
-        // legitimately cleared screen (`clear`, `CSI 2J`) once the shell has
-        // printed anything.
         if !self.grid_is_blank() {
             self.ever_nonblank = true;
         }
-        // What the terminal paints that does not scroll: the header and the
-        // bands above the grid, or what stands in place of the grid.
+        // What does not scroll: the header and bands above the grid, or what replaces it.
         self.life.restart_action.set(Rect::ZERO);
         let mut outside = Scene::new();
         self.draw_target_header(&mut outside, transform, text_renderer, theme);
@@ -3358,9 +2768,6 @@ impl Widget for TerminalWidget {
         self.draw_bell_flash(scene, transform, theme);
     }
 
-    /// The right-click Copy/Paste menu is a floating Panel: it paints in the
-    /// top layer, over the grid and its bands, and on the empty first-run
-    /// surface as well.
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -3386,10 +2793,7 @@ impl Widget for TerminalWidget {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.dirty = true;
-        // The menu is app-owned overlay content, so route every event to the
-        // shared primitive while it is open and do not let keys/clicks fall
-        // through to the PTY. This gives it Arrow/Enter/Escape keyboard
-        // navigation in addition to pointer selection.
+        // Every event goes to the menu while it is open; keys do not fall through to the PTY.
         if self.context_menu.is_open() {
             let mut menu_handled = false;
             Widget::handle_event(
@@ -3443,9 +2847,7 @@ impl Widget for TerminalWidget {
                 button,
                 ..
             } => {
-                // A press on the grid, by pointer or by a finger, gives it the
-                // keyboard. Typing already reached the session without it, but
-                // the first Tab then moved focus instead of completing.
+                // A press on the grid gives it the keyboard: typing already reached the session, but Tab did not.
                 if *element_state == ElementState::Pressed
                     && self.grid_rect.contains(self.last_cursor_pos)
                 {
@@ -3545,17 +2947,13 @@ impl Widget for TerminalWidget {
         self.focused.then(|| self.prompt_rect())
     }
 
-    /// A terminal always declares terminal input, so the on-screen keyboard
-    /// shows its terminal keys, at a native editor prompt too. What dictation
-    /// is offered is separate: see [`Self::ime_requires_deferred_ack`].
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
         (self.focused && !self.context_menu.is_open() && self.input_unavailable().is_none())
             .then_some(ui::ime::InputContent::TERMINAL)
     }
 
-    /// A native editor prompt offers acknowledged edits: the editor confirms
-    /// each one against its own lease, which is what lets dictation write to
-    /// a terminal at all. A bare PTY offers none.
+    /// A native editor prompt offers acknowledged edits, which lets dictation write to a terminal; a bare
+    /// PTY offers none.
     fn ime_requires_deferred_ack(&self) -> bool {
         self.ime_content().is_some()
             && !self.native_read_only
@@ -3668,10 +3066,8 @@ impl Widget for TerminalWidget {
         if let Some(picker) = self.target_picker_accessibility() {
             transcript.children.push(picker);
         }
-        // The prompt: the line input goes in, where a run the session's
-        // record is asked for is shown landing. It carries no verb of its
-        // own — typing reaches the process as keys, never as an action — and
-        // a terminal with no record behind it runs nothing to show.
+        // The prompt: the line input goes in, where a record's run is shown landing. It carries no verb:
+        // typing reaches the process as keys.
         if self.run_action.is_some() {
             transcript.children.push(
                 AccessNode::new(Role::TextInput)
@@ -3801,9 +3197,6 @@ impl Widget for TerminalWidget {
 }
 
 impl ui::widget::controls::ActionControls for TerminalWidget {
-    /// The prompt is where a `run` on this session's record lands: the
-    /// framework shows a colleague or an agent acting there its cursor,
-    /// bound exactly as a button is to the action it presses.
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         let Some(run) = &self.run_action else {
             return Vec::new();
@@ -3913,19 +3306,15 @@ impl ui::undo::LocalUndo for TerminalWidget {
 }
 
 impl ui::presence::capability::PublishesPresence for TerminalWidget {
-    /// Scope this terminal's collaboration presence to a shared pane id (see
-    /// the session record's pane) so both peers of a shared session file
-    /// their caret/selection under the same key and can find each other's.
+    /// Scope this terminal's presence to a shared pane id, so both peers file their caret under the
+    /// same key.
     fn presence_key(&self) -> Option<PresenceKey> {
         Some(PresenceKey::App {
             app: PermAppKind::Terminal,
             sub: self.pane_id.clone(),
         })
     }
-    /// Broadcast the local view state to peers: the active text selection when
-    /// there is one (so peers see what this user is selecting), otherwise the
-    /// cursor position. The grid/scrollback itself rides the session record, so
-    /// presence only needs to carry the per-user caret/selection.
+    /// Broadcast the view state to peers: the selection when there is one, else the cursor.
     fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
         let key = self.presence_key()?;
         let payload = if let Some(sel) = self.selection {
@@ -3948,10 +3337,6 @@ impl ui::presence::capability::PublishesPresence for TerminalWidget {
 }
 
 impl TerminalWidget {
-    /// Overlay remote collaborators' selections and carets in their own
-    /// colours on top of the grid (following the `TextInput` model). Grid
-    /// content is shared via the session record; this adds the per-peer
-    /// decoration.
     fn draw_peer_marks(
         &self,
         scene: &mut Scene,
@@ -3978,23 +3363,14 @@ impl TerminalWidget {
         }
     }
 
-    /// Record this terminal's session through `dispatcher`: the session
-    /// record's own when the framework hosts the terminal, or a parent's
-    /// child dispatcher when the terminal is nested in another resource (an
-    /// editor's terminal panel), whose action carries each of the session's
-    /// actions and applies it with
-    /// [`Terminal::apply_under`](crate::resource::Terminal::apply_under).
-    /// The parent then presents the nested session with
-    /// [`ResourceSurface::present`](ui::framework::ResourceSurface::present)
-    /// as it changes, read with
-    /// [`Terminal::read_under`](crate::resource::Terminal::read_under).
+    /// Record the session through `dispatcher`: the framework's, or a parent's when this terminal is
+    /// nested in another resource.
     pub fn bind(&mut self, dispatcher: ui::framework::Dispatcher<crate::resource::Terminal>) {
         self.dispatch = Some(dispatcher);
     }
 }
 
 impl TerminalWidget {
-    /// Helper for [`Widget::handle_event`]'s `WindowEvent::CursorMoved` arm.
     fn handle_cursor_moved_event(
         &mut self,
         position: winit::dpi::PhysicalPosition<f64>,
@@ -4002,9 +3378,6 @@ impl TerminalWidget {
         modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) {
-        // Always cache pointer position so the next MouseInput::Pressed
-        // event can hit-test without needing the position from
-        // winit (Pressed arrives without coordinates).
         let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
         self.last_cursor_pos = logical;
         let area = self.scrollbar_area();
@@ -4156,17 +3529,14 @@ impl TerminalWidget {
         }
     }
 
-    /// Helper for [`Widget::handle_event`]'s left-button `WindowEvent::MouseInput` arm.
     fn handle_left_click_event(
         &mut self,
         element_state: ElementState,
         modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) {
-        // Application mouse reporting was already handled by
-        // `handle_mouse_button_event` above. Reaching this helper therefore
-        // means reporting is off or Shift requested the conventional local
-        // selection override.
+        // Application mouse reporting was handled above, so reaching here means reporting is off or Shift
+        // asked for a local selection.
         match element_state {
             ElementState::Pressed if self.grid_rect.contains(self.last_cursor_pos) => {
                 let shift = modifiers.state().shift_key();
@@ -4183,11 +3553,8 @@ impl TerminalWidget {
         }
     }
 
-    /// Helper for [`Widget::handle_event`]'s middle-button `WindowEvent::MouseInput` arm.
     fn handle_middle_click_event(&mut self, handled: &mut bool) {
-        // X11/Wayland primary-selection paste: middle-click inserts the
-        // currently-selected text (from any app), matching every
-        // terminal. Snaps the viewport back to the live bottom.
+        // X11/Wayland primary-selection paste, then snap to the live bottom.
         if self.grid_rect.contains(self.last_cursor_pos) {
             if let Some(text) = clipboard_paste_primary() {
                 self.submit_effect(crate::resource::TerminalEffect::PastePrimary { text });
@@ -4196,18 +3563,14 @@ impl TerminalWidget {
         }
     }
 
-    /// Helper for [`Widget::handle_event`]'s right-button `WindowEvent::MouseInput` arm.
     fn handle_right_click_event(&mut self, handled: &mut bool) {
-        // Right-click opens the Copy/Paste context menu (Copy only when
-        // there's a selection). The window-group decoration is the OS's;
-        // this menu is app content, so it uses the shared toolkit primitive.
+        // Right-click opens the Copy/Paste menu; Copy only when something is selected.
         if self.grid_rect.contains(self.last_cursor_pos) {
             self.open_context_menu_at_cursor();
             *handled = true;
         }
     }
 
-    /// Helper for [`Widget::handle_event`]'s `WindowEvent::KeyboardInput` arm.
     fn handle_key_press_event(
         &mut self,
         logical_key: &Key,
@@ -4223,9 +3586,7 @@ impl TerminalWidget {
             return;
         }
         let mods = modifiers.state();
-        // Ctrl+Plus, Ctrl+Minus and Ctrl+0 zoom the window, which sets the
-        // grid's font larger or smaller (`ui::content_zoom`): never bytes for
-        // the shell.
+        // Ctrl+Plus/Minus/0 zoom the window, never bytes for the shell.
         if ui::content_zoom::ZoomStep::from_key(
             ui::platform::PlatformConventions::default(),
             mods,
@@ -4235,13 +3596,8 @@ impl TerminalWidget {
         {
             return;
         }
-        // Ctrl+Tab, Ctrl+Shift+Tab and Ctrl+Shift+T are the desktop's tab
-        // chords wherever an app leaves them: the next or previous tab of
-        // this window, the last closed tab. A terminal has no bytes of its
-        // own for them (Ctrl+Tab would send the Tab that Tab sends,
-        // Ctrl+Shift+T the ^T of Ctrl+T), so they go unhandled to the
-        // desktop through `ui::shell_tabs`. Ctrl+T and Ctrl+W stay the
-        // shell's ^T and ^W.
+        // The desktop's tab chords, left unhandled: Ctrl+Tab and Ctrl+Shift+T have no bytes of their own,
+        // and Ctrl+T/Ctrl+W stay the shell's.
         if matches!(
             ui::shell_tabs::chord_request(
                 logical_key,
@@ -4292,9 +3648,7 @@ impl TerminalWidget {
                 return;
             }
         }
-        // Shift+Insert remains the broadly compatible terminal paste gesture
-        // (especially useful over remote-desktop/keymaps where Ctrl+Shift+V is
-        // intercepted). It uses the same bracketed-paste-safe path.
+        // Shift+Insert pastes too, through the same bracketed-paste path.
         if mods.shift_key() && matches!(logical_key, Key::Named(NamedKey::Insert)) {
             if let Some(text) = clipboard_paste() {
                 self.submit_effect(crate::resource::TerminalEffect::Paste { text });
@@ -4303,11 +3657,7 @@ impl TerminalWidget {
             return;
         }
 
-        // Conventional terminal scrollback navigation requires Shift. Plain
-        // Page Up/Down must reach readline, pagers and other foreground apps;
-        // stealing them made the emulator behave unlike established desktop
-        // terminals. The alternate screen always receives the keys because a
-        // full-screen app owns its own viewport.
+        // Scrollback navigation needs Shift: plain Page Up/Down goes to readline and pagers.
         if !self.alt_active
             && mods.shift_key()
             && let Key::Named(named) = logical_key
@@ -4341,9 +3691,6 @@ impl TerminalWidget {
         self.deliver_mapped_key_bytes(logical_key, physical_key, text, modifiers, handled);
     }
 
-    /// Map a key press to PTY bytes and write them. Physical Enter/Space
-    /// fill in when the logical key and `text` are empty (control-socket
-    /// and some compositor paths).
     fn deliver_mapped_key_bytes(
         &mut self,
         logical_key: &Key,
@@ -4364,24 +3711,16 @@ impl TerminalWidget {
         }
         if let Some(b) = bytes {
             let _ = self.try_write_input(&b);
-            // A terminal with no process of its own runs no shell for its
-            // session, so a Ctrl+C here has the workspace's host stop the
-            // run it has there.
             if b == [0x03] && self.headless {
                 self.submit(crate::resource::Terminal::STOP.with(()));
             }
-            // Typing snaps the viewport back to the live bottom.
             self.set_scroll_offset(0);
             *handled = true;
         }
     }
 
-    /// Lay out the bands that stand above the grid: the target header, then
-    /// the session banner. Records where they are and how much of the widget
-    /// they take, which the grid geometry subtracts.
     fn layout_top_bands(&mut self, theme: &Theme, tr: &mut TextRenderer) {
         let gutter = f64::from(theme.tokens.spacing.s3);
-        // The header with the session's target comes first.
         let mut y = self.rect.y0 + self.header_h();
         self.banner_rect = Rect::ZERO;
         if let Some(banner) = self.top_banner()
@@ -4400,9 +3739,8 @@ impl TerminalWidget {
         self.chrome_top_band = y - self.rect.y0;
     }
 
-    /// The banner over the grid: the reconnecting one (quiet, with Try
-    /// again) while the tab reconnects to its remote shell, else the
-    /// session's lifecycle line.
+    /// The bar over the grid: the reconnecting one while the tab reattaches, else the session's lifecycle
+    /// line.
     fn top_banner(&self) -> Option<TopBanner> {
         if let Some(message) = self.reconnect_banner() {
             return Some(TopBanner::new(
@@ -4419,16 +3757,12 @@ impl TerminalWidget {
         self.runs.held.as_ref().map(TopBanner::held)
     }
 
-    /// The run its host holds, and why — for tests.
     #[cfg(test)]
     pub(crate) fn held(&self) -> Option<&Held> {
         self.runs.held.as_ref()
     }
 
-    /// A press on the held run's prompt: Add a card opens the provider's
-    /// page; Cancel interrupts a person's waiting command as Ctrl+C does,
-    /// or puts away the prompt of an agent's run, which is not waiting.
-    /// Returns whether the event was taken.
+    /// A press on the held run's prompt; says whether the event was taken.
     fn route_held(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         let Some(held) = self.runs.held.clone() else {
             return false;
@@ -4458,8 +3792,6 @@ impl TerminalWidget {
         true
     }
 
-    /// Cancel the held run: a person's command is interrupted (its end
-    /// takes the prompt away), an agent's prompt goes.
     pub(crate) fn dismiss_held(&mut self, held: &Held) {
         if held.agent {
             self.runs.held = None;
@@ -4468,8 +3800,6 @@ impl TerminalWidget {
         }
     }
 
-    /// Paint the session banner laid out by
-    /// [`layout_top_bands`](Self::layout_top_bands).
     fn draw_top_bands(
         &self,
         scene: &mut Scene,
@@ -4483,8 +3813,6 @@ impl TerminalWidget {
         if self.banner_rect.width() > 0.0
             && let Some(banner) = self.top_banner()
         {
-            // Transport and unconfirmed edits remain visible beside the
-            // transcript and through the same accessible live region.
             let mut ctx = PaintCtx::new(scene, transform, tr, theme);
             let hit = Banner::paint(
                 &mut ctx,
@@ -4506,18 +3834,12 @@ impl TerminalWidget {
         }
     }
 
-    /// The terminal's palette in `theme`. Its default background is the
-    /// window ground, so a default-background cell is the surface the
-    /// framework already painted and a reverse-video cell inverts against it.
     pub(crate) fn grid_palette(theme: &Theme) -> ui::tokens::TerminalPalette {
         theme.tokens.terminal_palette.clone()
     }
 
-    /// Decode and paint graphics only when their buffer rows are visible.  The
-    /// cache holds successful decodes only: a blob which has not arrived at a
-    /// collaborator yet is retried on a later frame, rather than being latched
-    /// as permanently absent.  Images are clipped to the grid so a malformed
-    /// placement cannot paint over terminal chrome or another tile.
+    // Decode graphics only while their rows are visible; a failed decode is retried, not latched. Images
+    // are clipped to the grid.
     fn draw_terminal_images(
         &mut self,
         scene: &mut Scene,
@@ -4566,9 +3888,6 @@ impl TerminalWidget {
             if let Some(image) = self.images.image(&placement, &self.waker) {
                 image.paint_at(scene, transform, rect);
             } else {
-                // Honest fallback for an image still loading, an unavailable
-                // blob or an unsupported / invalid image.  It reserves the promised cells without
-                // pretending an image rendered successfully.
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0),
                     transform,
@@ -4581,8 +3900,6 @@ impl TerminalWidget {
         scene.pop_layer();
     }
 
-    /// Paint one row of cells, run by run of shared attributes, with its top
-    /// at `py`.
     fn draw_cell_row(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -4635,8 +3952,6 @@ impl TerminalWidget {
         }
     }
 
-    /// Paint one run of cells sharing `attr`, starting `at.x` into the grid
-    /// on the row whose top is `at.y`.
     fn draw_run(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -4654,16 +3969,13 @@ impl TerminalWidget {
         let palette = &self.palette;
         let (rx, py) = (at.x, at.y);
         let (mut fg, bg_opt) = resolve_pair(attr, palette);
-        // SGR 2 (faint): blend the foreground toward the background so it
-        // reads as dimmed, matching xterm/kitty. Applied after reverse so a
-        // dimmed reverse cell dims its (swapped) text too.
+        // Faint blends the foreground toward the background, after reverse so a dimmed reverse cell dims its
+        // text too.
         if attr.dim {
             fg = fg.with_alpha_factor(0.55);
         }
-        // OSC 8 hyperlink cells read as links: tint the text toward the
-        // palette's link hue (bright blue anchor) unless the program already
-        // chose an explicit colour, and always underline so the affordance is
-        // obvious. `link_color` comes from the palette so it tracks the theme.
+        // Link cells are tinted to the palette's link hue unless the program chose a colour, and always
+        // underlined.
         let is_link = attr.link_id != 0;
         if is_link && attr.fg == CellColor::Default && !attr.reverse {
             fg = palette.ansi[12];
@@ -4722,14 +4034,8 @@ impl TerminalWidget {
         }
     }
 
-    /// Rows of the buffer that carry anything: the last row with text on it,
-    /// or the cursor's row when it sits below that (an empty line the caret
-    /// is on is a real position, and has to stay reachable).
-    ///
-    /// This is deliberately not `grid.len()`. A session allocates a full
-    /// screen of rows up front and fills them as output arrives, so the
-    /// buffer is `height` rows long from the first frame — before anything
-    /// has ever been printed to it.
+    /// Rows of the buffer that carry anything: the last row with text, or the cursor's row when it sits
+    /// below that.
     fn content_rows(&self) -> usize {
         let written = self
             .grid
@@ -4740,13 +4046,8 @@ impl TerminalWidget {
         written.max(cursor_abs + 1)
     }
 
-    /// How many rows the view scrolls over: the whole buffer, minus blank rows
-    /// below the last thing on it. A session allocates a full screen of rows
-    /// up front, and a band above the grid (the find bar, the session banner)
-    /// shows fewer rows than that screen. Anchoring the view to the bottom of
-    /// the allocation would then hide the first lines of a short transcript
-    /// behind the band, so the view only reaches past what is on screen when
-    /// there is something there. The alternate screen is always shown whole.
+    /// How many rows the view scrolls over: the buffer minus the blank rows below the last text, so a
+    /// band above the grid does not hide the first lines.
     fn view_rows(&self) -> usize {
         if self.alt_active {
             return self.grid.len();
@@ -4756,25 +4057,12 @@ impl TerminalWidget {
             .min(self.grid.len())
     }
 
-    /// Whether the scrollbar represents anything, for a viewport of
-    /// `visible_rows` rows. The predicate [`Self::draw_scrollbar`] gates on.
-    ///
-    /// Two conditions, and the second is the one that is easy to miss: the
-    /// buffer has to be longer than the viewport **and** actually have
-    /// content past it. A buffer can satisfy the first on its own — a
-    /// session allocates a full screen of rows up front, and a window one
-    /// row shorter than that screen then makes `grid.len() > visible_rows`
-    /// true before anything has ever been printed. A bar drawn on that
-    /// advertises travel that does not exist: the thumb moves and the view
-    /// goes from blank to blank. A scrollbar is a claim about content, so
-    /// it appears only when there is content to reach.
+    /// Whether the scrollbar represents anything: the buffer must be longer than the viewport and have
+    /// content past it, since a session allocates a full screen of rows up front.
     pub(crate) fn scrollbar_visible(&self, visible_rows: usize) -> bool {
         !self.alt_active && visible_rows > 0 && self.content_rows() > visible_rows
     }
 
-    /// The toolkit's overlay bar over the right padding, while the buffer
-    /// overflows the viewport: shown while the history scrolls and faded at
-    /// rest, brightened while it is hovered or dragged.
     fn draw_scrollbar(
         &self,
         scene: &mut Scene,
@@ -4792,8 +4080,6 @@ impl TerminalWidget {
             .paint(scene, transform, self.scrollbar_area(), metrics, theme);
     }
 
-    /// What the grid says while no shell runs behind it: the toolkit's empty
-    /// state over the grid area.
     fn draw_empty_state(
         &self,
         scene: &mut Scene,
@@ -4806,11 +4092,6 @@ impl TerminalWidget {
             return;
         }
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
-        // An ended session already says why in the banner above, so the grid
-        // only reports that the shell left nothing behind; a widget that never
-        // had a process explains where output will appear. A session that is
-        // still waiting for the person's allow, or whose target could not be
-        // opened, never ran a shell: the banner says why.
         let shell_ran = matches!(
             self.sessions.state,
             crate::sessions::OpenState::Open | crate::sessions::OpenState::Fixed
@@ -4836,22 +4117,14 @@ impl TerminalWidget {
         }
     }
 
-    /// Convert a logical pointer position into a **buffer-absolute**
-    /// `GridPos`. The on-screen row is offset by the current scrollback
-    /// position (`viewport_start_y`) so the returned row indexes `self.grid`
-    /// directly and a selection anchored to it survives scrolling.
-    /// Coordinates outside the cell grid are clamped to the nearest valid
-    /// visible cell — matching xterm's behaviour during a drag-select that
-    /// leaves the terminal area.
+    /// A pointer position as a buffer-absolute `GridPos`, clamped to the visible grid.
     fn pos_from_logical(&self, p: Point) -> GridPos {
         let local_x = (p.x - self.grid_rect.x0).max(0.0);
-        // The view stands `view.sub` past its first row's top.
         let local_y = (p.y - self.grid_rect.y0).max(0.0) + self.view.sub;
         let col = (local_x / self.char_w.max(1.0)).floor() as usize;
         let vrow = (local_y / self.char_h.max(1.0)).floor() as usize;
-        // `width` is logical grid width; `viewport` height is computed
-        // from `grid_rect.height() / char_h` rather than `self.height` because
-        // resize-clamp may have a stale `self.height` between frames.
+        // `width` comes from the grid rect, not `self.height`, which resize clamping can leave stale between
+        // frames.
         let (_, visible_rows) = self.viewport_window();
         let vrow = vrow.min(visible_rows.saturating_sub(1));
         let abs_row = (self.viewport_start_y + vrow).min(self.grid.len().saturating_sub(1));
@@ -4861,10 +4134,7 @@ impl TerminalWidget {
         }
     }
 
-    /// The buffer-absolute word span containing `pos`, using the toolkit's
-    /// shared `word_boundaries` walker over the row's reconstructed text so
-    /// terminal word selection matches every other Tilo text surface. Returns
-    /// `(start, end)` as `GridPos`es on the same row, `end` exclusive.
+    /// The word span containing `pos`, from the toolkit's shared walker; `end` exclusive.
     fn word_span_at(&self, pos: GridPos) -> (GridPos, GridPos) {
         let line = self.grid.get(pos.row).map_or("", String::as_str);
         // Column → byte offset (accounting for wide glyphs), find the word in
@@ -4885,11 +4155,7 @@ impl TerminalWidget {
         )
     }
 
-    /// The buffer-absolute line span for `pos.row`: the whole grid row. Each
-    /// terminal grid row is one logical line (no embedded `\n`), so this is
-    /// column `0` through the grid width. `line_boundaries` is used for parity
-    /// with the shared primitive even though a single row has no interior
-    /// newline.
+    /// The line span for `pos.row`: the whole grid row, column 0 through the width.
     fn line_span_at(&self, pos: GridPos) -> (GridPos, GridPos) {
         let line = self.grid.get(pos.row).map_or("", String::as_str);
         let (_bs, _be) = line_boundaries(line, col_to_byte(line, pos.col));
@@ -4905,10 +4171,7 @@ impl TerminalWidget {
         )
     }
 
-    /// Start (or, with `extend`, grow) a selection at buffer-absolute `pos`
-    /// for the given multi-click `granularity`. Records the anchor unit so a
-    /// subsequent word-/line-granularity drag keeps that original word/line
-    /// inside the selection.
+    /// Start (or, with `extend`, grow) a selection at `pos` for the multi-click `granularity`.
     fn begin_selection(&mut self, extend: bool, granularity: Granularity, pos: GridPos) {
         self.drag_granularity = if extend {
             Granularity::Char
@@ -4953,9 +4216,7 @@ impl TerminalWidget {
         }
     }
 
-    /// Extend the in-progress drag to buffer-absolute `pos`, honouring the
-    /// drag granularity. Word/line drags grow by whole units via the shared
-    /// `extend_span_drag` rule so the anchored word/line stays selected.
+    /// Extend the drag to `pos`, growing word and line drags by whole units.
     fn extend_drag_to(&mut self, pos: GridPos) {
         let new = match self.drag_granularity {
             Granularity::Char => self.selection.map(|mut s| {
@@ -5000,11 +4261,8 @@ impl TerminalWidget {
         }
     }
 
-    /// Finish a selection gesture on mouse-up. A collapsed (no-drag) selection
-    /// is dropped — but if it was a plain click on an OSC 8 hyperlink cell,
-    /// the link opens first. A non-empty selection is published to the primary
-    /// selection (for middle-click paste) and, when "select to copy" is on,
-    /// the clipboard too.
+    /// Finish a selection on mouse-up: a collapsed one opens an OSC 8 link it landed on and is dropped;
+    /// a non-empty one goes to the primary selection and, with select-to-copy, the clipboard.
     fn finish_selection(&mut self) {
         let collapsed = self.selection.is_none_or(|s| s.is_collapsed());
         if collapsed {
@@ -5026,13 +4284,10 @@ impl TerminalWidget {
         self.drag_anchor_span = None;
     }
 
-    /// Encode a buffer-absolute cell as a single linear index (row-major over
-    /// the grid width) for the collaboration presence payload, which carries a
-    /// `usize` caret / `start..end` selection rather than a 2-D position.
+    /// A cell as one linear index for the presence payload, which carries a `usize`.
     fn lin(&self, p: GridPos) -> usize {
         p.row * self.width.max(1) + p.col
     }
-    /// Inverse of [`lin`]: decode a linear presence index back to a cell.
     fn unlin(&self, pos: usize) -> GridPos {
         let w = self.width.max(1);
         GridPos {
@@ -5040,9 +4295,6 @@ impl TerminalWidget {
             col: pos % w,
         }
     }
-    /// The absolute row of the top row in view and the number of rows in
-    /// view — the viewport window used to map buffer-absolute rows to screen
-    /// rows. Between two rows' tops the view shows a part of one more.
     fn viewport_window(&self) -> (usize, usize) {
         let visible_rows = (self.grid_rect.height() / self.char_h.max(1.0))
             .floor()
@@ -5053,10 +4305,7 @@ impl TerminalWidget {
         )
     }
 
-    /// A remote peer's caret rect (a thin vertical bar at the cell's left
-    /// edge), or `None` when the cell is scrolled out of the viewport. Built
-    /// from the same geometry the local cursor uses so a peer caret lands on
-    /// the right cell.
+    /// A peer's caret as a thin bar at the cell's left edge, or `None` when it is scrolled out of view.
     fn peer_caret_rect(&self, pos: usize) -> Option<Rect> {
         let cell = self.unlin(pos);
         let (start_y, visible_rows) = self.viewport_window();
@@ -5069,9 +4318,7 @@ impl TerminalWidget {
         Some(Rect::new(x, y, x + 2.0, y + self.char_h))
     }
 
-    /// The per-row highlight rects for a remote peer's selection (linear
-    /// `start..end`), clipped to the visible viewport. Mirrors the local
-    /// selection painting so a peer's highlight aligns cell-for-cell.
+    /// A peer's selection as per-row rects, clipped to the viewport.
     fn peer_selection_rects(&self, start: usize, end: usize) -> Vec<Rect> {
         let sel = Selection {
             anchor: self.unlin(start),
@@ -5092,9 +4339,6 @@ impl TerminalWidget {
         rects
     }
 
-    /// Build + open the shared terminal context menu at the cached cursor.
-    /// Selection and clipboard basics stay first; less common session
-    /// affordances remain discoverable without adding permanent app chrome.
     fn open_context_menu_at_cursor(&mut self) {
         self.target_menu_rows = None;
         let has_selection = self.selected_text().is_some_and(|t| !t.is_empty());
@@ -5140,11 +4384,8 @@ impl TerminalWidget {
             crate::i18n::t("terminal-find-scrollback"),
             || {},
         ));
-        // This preference is useful secondary chrome, but never at the cost
-        // of an unreachable context menu. A 160px-high embedded/narrow pane
-        // can fit the copy/paste/selection/process essentials, not another
-        // row plus separator; its keyboard shortcut and desktop-sized menu
-        // still expose the toggle.
+        // The bell toggle is secondary chrome, but never at the cost of an unreachable menu: a 160px pane
+        // fits the essentials, and its shortcut exposes the toggle.
         if self.rect.height() >= 180.0 {
             menu.push(MenuItem::separator());
             self.menu_rows.copy_on_select = Some(menu.items().len());
@@ -5160,10 +4401,8 @@ impl TerminalWidget {
                     .with_checked(self.allow_osc52_clipboard),
             );
         }
-        // Keep the shared popup aware of the terminal's real viewport. The
-        // popup refreshes its geometry when the current theme applies an
-        // accessibility text scale during draw; without this viewport it can
-        // grow past a narrow pane's edge after that refresh.
+        // The shared popup refreshes its geometry on a text-scale change, so give it the terminal's viewport
+        // or it grows past a narrow pane.
         menu.set_viewport(Some(self.rect));
         let p = self.last_cursor_pos;
         let viewport = if self.rect.width() > 0.0 && self.rect.height() > 0.0 {
@@ -5175,7 +4414,6 @@ impl TerminalWidget {
         self.context_menu = menu;
     }
 
-    /// A menu row that asks for `effect` as the person's gesture.
     fn push_menu_effect(
         &mut self,
         menu: &mut ContextMenu,
@@ -5187,10 +4425,6 @@ impl TerminalWidget {
         menu.push(MenuItem::action(label, || {}).with_enabled(enabled));
     }
 
-    /// Open the terminal's shared context menu at a host-owned logical
-    /// position. This is useful for embedders that route a context-menu
-    /// gesture themselves (touch long-press, keyboard invocation, or a custom
-    /// pointer layer) while preserving the terminal's standard actions.
     pub fn open_context_menu_at(&mut self, position: Point) {
         self.last_cursor_pos = position;
         self.open_context_menu_at_cursor();
@@ -5246,10 +4480,7 @@ impl TerminalWidget {
         }
     }
 
-    /// Walk the selected cells across grid rows and return the joined
-    /// text, with trailing whitespace stripped from each row (standard
-    /// terminal-copy semantics). Returns `None` if there is no selection
-    /// or the selection covers no rows.
+    /// The selected text, trailing whitespace stripped from each row; `None` without a selection.
     fn selected_text(&self) -> Option<String> {
         let sel = self.selection?;
         let spans = selection_row_spans(&sel, self.width);
@@ -5262,7 +4493,6 @@ impl TerminalWidget {
             if i > 0 {
                 out.push('\n');
             }
-            // Selection rows are already buffer-absolute grid indices.
             let abs_row = *row;
             let line = self.grid.get(abs_row).map_or("", String::as_str);
 
@@ -5328,10 +4558,8 @@ impl TerminalWidget {
             Key::Character(c) if alt && !ctrl && !mods.super_key() => {
                 Self::map_alt_char(c.as_str())
             }
-            // Hardware Space arrives as `Named(Space)` (often with no `text`).
-            // Control-socket `type` sends `Character` glyphs whose `text` may
-            // also be empty. Both used to fall through, so App/Frame treated
-            // unconsumed Space/Enter as Activate and the PTY never saw them.
+            // Hardware Space arrives as `Named(Space)` and a control-socket `type` may carry empty `text`; both
+            // must still reach the PTY, not become Activate.
             Key::Character(c) if !ctrl && !alt && !mods.super_key() => Some(c.as_bytes().to_vec()),
             _ => None,
         }
@@ -5447,12 +4675,8 @@ impl TerminalWidget {
         }
     }
 
-    /// Alt-as-Meta for plain alphanumerics (readline word ops: Alt-f,
-    /// Alt-b, Alt-d, numeric arguments). Restricted to ASCII
-    /// alphanumeric logical keys so AltGr-composed symbols on layouts
-    /// like `de_DE` (AltGr+q=@, AltGr+e=€, AltGr+7={ …) are never poached
-    /// — those resolve to non-alphanumeric logical keys and fall
-    /// through to their composed `text`.
+    /// Alt as Meta for plain ASCII alphanumerics only: AltGr-composed symbols on layouts like `de_DE`
+    /// keep their `text`.
     fn map_alt_char(s: &str) -> Option<Vec<u8>> {
         if s.chars().count() == 1 && s.chars().all(|ch| ch.is_ascii_alphanumeric()) {
             let mut v = vec![27u8];
@@ -5464,21 +4688,10 @@ impl TerminalWidget {
     }
 }
 
-/// Decompose a flow-selection into per-row pixel spans, in display
-/// order. Each span is `(viewport_row, start_col, end_col)` with
-/// `end_col` exclusive (half-open) so single-row selections of zero
-/// length collapse to nothing.
-///
-/// Layout matches standard terminal-emulator flow semantics:
-/// - Single-row: one span from `start_col` to `end_col`.
-/// - Multi-row: first row goes `start_col..cols`, middle rows go
-///   `0..cols`, last row goes `0..end_col`.
+/// A flow selection as per-row pixel spans `(viewport_row, start_col, end_col)`, `end_col` excluded.
 pub(crate) fn selection_row_spans(sel: &Selection, cols: usize) -> Vec<(usize, usize, usize)> {
     let (start, end) = sel.ordered();
     if start == end {
-        // Collapsed selection produces no spans — a lone click clears
-        // the selection on release, but if a `selection_row_spans` call
-        // sneaks in beforehand we should produce nothing.
         return Vec::new();
     }
     let mut spans = Vec::new();
@@ -5494,8 +4707,6 @@ pub(crate) fn selection_row_spans(sel: &Selection, cols: usize) -> Vec<(usize, u
     spans
 }
 
-/// The columns `sel` covers on `row`, as [`selection_row_spans`] lists
-/// them; `None` when it covers none of it.
 pub(crate) fn selection_span_on(
     sel: &Selection,
     row: usize,
@@ -5510,9 +4721,8 @@ pub(crate) fn selection_span_on(
     Some((from, to))
 }
 
-/// Byte offset in `line` where cell column `col` begins, honouring wide
-/// (double-width) glyphs. Clamps to the string's byte length for columns
-/// past the last glyph (padding region). Inverse of [`byte_to_col`].
+/// Byte offset in `line` where cell column `col` begins, honouring wide glyphs; clamps past the last
+/// glyph.
 pub(crate) fn col_to_byte(line: &str, col: usize) -> usize {
     let mut cells = 0usize;
     for (byte, c) in line.char_indices() {
@@ -5524,8 +4734,6 @@ pub(crate) fn col_to_byte(line: &str, col: usize) -> usize {
     line.len()
 }
 
-/// Cell column corresponding to byte offset `byte` in `line`. Inverse of
-/// [`col_to_byte`]; a byte at or past the end maps to the total cell width.
 pub(crate) fn byte_to_col(line: &str, byte: usize) -> usize {
     let mut cells = 0usize;
     for (b, c) in line.char_indices() {
@@ -5537,9 +4745,8 @@ pub(crate) fn byte_to_col(line: &str, byte: usize) -> usize {
     cells
 }
 
-/// The character occupying cell column `col` of `line`, honouring wide
-/// (double-width) glyphs. Columns that land on a wide glyph's trailing
-/// continuation cell report a space. Returns `None` past the line's end.
+/// The character in cell column `col`, honouring wide glyphs: a trailing continuation cell reports a
+/// space.
 pub(crate) fn cell_char_at(line: &str, col: usize) -> Option<char> {
     let mut idx = 0usize;
     for c in line.chars() {
@@ -5548,7 +4755,6 @@ pub(crate) fn cell_char_at(line: &str, col: usize) -> Option<char> {
             return Some(c);
         }
         if idx + w > col {
-            // Inside a wide glyph's continuation cell.
             return Some(' ');
         }
         idx += w;
@@ -5579,8 +4785,7 @@ pub(crate) fn map_ansi_256(code: u8, palette: &ui::tokens::TerminalPalette) -> C
     }
 }
 
-/// Resolve a `CellColor` to a concrete `Color`. Bold brightens the low 8
-/// ANSI foreground slots (xterm behaviour).
+/// A `CellColor` as a concrete `Color`; bold brightens the low 8 ANSI slots (xterm behaviour).
 pub(crate) fn resolve_color(
     c: CellColor,
     palette: &ui::tokens::TerminalPalette,
@@ -5605,9 +4810,7 @@ pub(crate) fn resolve_color(
     }
 }
 
-/// Resolve a cell's `(foreground, optional background)` colors, applying
-/// reverse video. A `None` background means "leave the default terminal
-/// background showing" (no fill).
+/// A cell's colours with reverse video applied. A `None` background leaves the default showing.
 pub(crate) fn resolve_pair(
     attr: Attr,
     palette: &ui::tokens::TerminalPalette,
@@ -5618,8 +4821,6 @@ pub(crate) fn resolve_pair(
         other => Some(resolve_color(other, palette, false, false)),
     };
     if attr.reverse {
-        // Swap: the foreground color fills the cell; the (explicit) bg
-        // color, or the default terminal bg, paints the text.
         let text = bg.unwrap_or(palette.bg_default);
         (text, Some(fg))
     } else {
@@ -5627,9 +4828,6 @@ pub(crate) fn resolve_pair(
     }
 }
 
-/// Derive the block-cursor color from the palette's default foreground.
-/// Kept as a free function so the rule "the cursor always tracks the theme"
-/// is a single obvious call site and tests can invoke it directly.
 pub(crate) fn cursor_from_palette(palette: &ui::tokens::TerminalPalette) -> Color {
     // An opaque inverted cell: the block is the theme's default foreground and
     // the glyph beneath it is re-drawn in the background colour. Taking the hue
@@ -5637,11 +4835,8 @@ pub(crate) fn cursor_from_palette(palette: &ui::tokens::TerminalPalette) -> Colo
     palette.fg_default.with_alpha_factor(1.0)
 }
 
-/// Snap `rect` to whole device pixels under `transform`, so a cell fill has
-/// crisp edges instead of an anti-aliased fringe. Edges are rounded as device
-/// coordinates, so two rects that meet at one coordinate still meet after
-/// snapping: adjacent runs and rows tile without a seam or an overlap.
-/// `transform` is the paint transform of an axis-aligned scale and offset.
+/// Snap `rect` to whole device pixels so a cell fill has crisp edges and adjacent runs tile without
+/// a seam.
 pub(crate) fn snap_to_device_pixels(transform: Affine, rect: Rect) -> Rect {
     let [sx, _, _, sy, tx, ty] = transform.as_coeffs();
     if sx == 0.0 || sy == 0.0 {
@@ -5656,7 +4851,6 @@ pub(crate) fn snap_to_device_pixels(transform: Affine, rect: Rect) -> Rect {
     )
 }
 
-/// A PTY master with no process behind it.
 struct NullMaster;
 impl MasterPty for NullMaster {
     fn get_size(&self) -> Result<PtySize, anyhow::Error> {
@@ -5690,14 +4884,8 @@ pub struct TerminalBackend {
     pub reader: Box<dyn Read + Send>,
     pub master: Box<dyn MasterPty + Send>,
     pub shell_name: String,
-    /// For an environment on a relay: the session's id there, which
-    /// re-attaches to it.
     pub relay_session: Option<String>,
-    /// The session's id at the session supervisor, when it opened there:
-    /// told to the window a desktop shows this terminal in, which then knows
-    /// which tab a program typed here belongs to.
     pub supervisor_session: Option<String>,
-    /// The key the session's shell marks its command runs with, when it does.
     pub runs: Option<String>,
     native_editor: Option<crate::native_editor::Socket>,
     service_lifetime: Option<runtime_portal::pending_connection::SessionLifetime>,
@@ -5705,7 +4893,6 @@ pub struct TerminalBackend {
     pub child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 impl TerminalBackend {
-    /// A backend with no process behind it — for tests of what opens where.
     #[cfg(test)]
     #[cfg(unix)]
     pub(crate) fn for_test() -> Self {
@@ -5722,9 +4909,6 @@ impl TerminalBackend {
         }
     }
 
-    /// A remote session as the supervisor hands it over — for tests: its
-    /// terminal output reads from `output`, and `lease` is the session's
-    /// lease, on which the supervisor reports how it ended.
     #[cfg(test)]
     #[cfg(unix)]
     pub(crate) fn for_test_remote(
@@ -5738,8 +4922,6 @@ impl TerminalBackend {
         }
     }
 
-    /// A session on this device whose terminal output arrives on `output`,
-    /// held open by `lease`, on which the supervisor reports how it ended.
     #[cfg(test)]
     #[cfg(unix)]
     pub(crate) fn for_test_leased(
@@ -5763,31 +4945,14 @@ impl TerminalBackend {
 
     /// Open a PTY on `target`.
     ///
-    /// **Never `$SHELL` by default.** Inside a Tilo app sandbox there is no
-    /// `/bin` at all: `launcher::profile` binds the loader, fonts, `/sys` and
-    /// the CA bundle, and deliberately binds no executable directory. A session
-    /// runs where its target says (`docs/app-model/environments.md`), and the
-    /// route to it is chosen by `decide_route` from a capability probe, not
-    /// by trying each in turn — so confinement is never silently downgraded.
-    ///
-    /// 1. **The service socket.** A sandboxed app cannot build a namespace, so
-    ///    it asks the session's supervisor and receives a pty master over
-    ///    `SCM_RIGHTS`. This is the production path inside Tilo and it is
-    ///    **mandatory when available**, for every target: the device's own
-    ///    shell too goes through the supervisor, which alone decides whether
-    ///    this person may have it.
-    /// 2. **Spawning the runtime.** An environment on an unconfined host that
-    ///    can build the namespace a guest needs and has the runtime installed —
-    ///    a development tree, mostly.
-    /// 3. **The device's own shell, chosen.** Off Tilo, with no supervisor,
-    ///    the Host target is the user's login shell, started directly. It is
-    ///    only ever reached because the session's target names it, never as a
-    ///    fallback for an environment that cannot run.
+    /// Never `$SHELL` by default: an app sandbox binds no executable directory, so a session runs where
+    /// its target says (docs/app-model/environments.md), and the route comes from a capability probe,
+    /// never from trying each in turn.
     ///
     /// # Errors
     ///
-    /// Returns why the session could not open: the target needs the person's
-    /// allow first, the supervisor refused it, or nothing here can run it.
+    /// Why the session could not open: the person's allow is missing, the supervisor refused it, or
+    /// nothing here can run it.
     pub fn open(
         target: &crate::target::SessionTarget,
         requested_by: Requester,
@@ -5837,9 +5002,8 @@ impl TerminalBackend {
         }
     }
 
-    /// Open a PTY running an arbitrary command. `TERM` is forced to
-    /// `xterm-256color` so programs emit the SGR / DEC sequences this emulator
-    /// understands, regardless of a launcher that happens to be non-terminal.
+    /// Open a PTY running `command`, with `TERM` forced to `xterm-256color` so programs emit the SGR and
+    /// DEC sequences the emulator reads.
     pub fn with_command(mut cmd: CommandBuilder) -> Result<Self, Box<dyn std::error::Error>> {
         cmd.env("TERM", "xterm-256color");
         let shell_name = cmd
@@ -5876,10 +5040,8 @@ impl TerminalBackend {
     }
 }
 
-/// The program the desktop asked this terminal to run instead of a login
-/// shell — how a `Terminal=true` desktop entry opens. The shell passes it in
-/// the launcher's bounded context channel as `{"terminal_command": [argv]}`;
-/// anything else there (or nothing) means an ordinary shell.
+/// The program the desktop asked this terminal to run instead of a login shell, as
+/// `{"terminal_command": [argv]}` in the launcher's context channel.
 pub fn launch_command_from_env() -> Vec<String> {
     std::env::var("TILO_TOOL_CONTEXT")
         .ok()
@@ -5887,7 +5049,6 @@ pub fn launch_command_from_env() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// [`launch_command_from_env`] over an explicit context value.
 pub fn launch_command_from_context(context: &str) -> Vec<String> {
     let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(context)
     else {
@@ -5908,7 +5069,6 @@ pub fn launch_command_from_context(context: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// One `sh -c` script that runs `argv` exactly, each word single-quoted.
 pub fn exec_script(argv: &[String]) -> String {
     let words: Vec<String> = argv
         .iter()
@@ -5917,30 +5077,22 @@ pub fn exec_script(argv: &[String]) -> String {
     format!("exec {}", words.join(" "))
 }
 
-/// The environment variable the launcher sets when it has opened the `ush`
-/// service socket on this app's behalf, per `[sandbox.services]`.
+/// The environment variable the launcher sets when it opened the `ush` service socket for this app.
 pub const USH_SERVICE_FD_ENV: &str = "TILO_SVC_USH_FD";
 
-/// The inherited control connection is distinct from each session lifetime lease.
 static USH_SERVICE: runtime_portal::service_socket::InheritedControlSocket =
     runtime_portal::service_socket::InheritedControlSocket::new("ush");
 
-/// Who caused a session to open. The device's own shell is never opened for
-/// an agent, whatever else allows it.
+/// Who caused a session to open. The device's own shell is never opened for an agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Requester {
-    /// The person, through the terminal's own controls or by reopening a tab.
     #[default]
     Person,
-    /// An agent, through the terminal's published actions.
     Agent,
 }
 
 impl Requester {
-    /// Who is behind the current invocation. Only the person at this screen
-    /// acts without a delivered invocation; anyone reaching the terminal
-    /// through the action broker — an agent, another app, or a collaborator
-    /// in a shared workspace — is not that person, and is treated as an agent.
+    /// Who is behind the current invocation: only the person at this screen acts without one.
     pub fn current() -> Self {
         if ui::invocation_scope::current_invoker().is_some() {
             Self::Agent
@@ -5960,11 +5112,8 @@ impl Requester {
 /// Why a session did not open.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpenError {
-    /// The device's own shell needs the person's allow first.
     NeedsAllow(String),
-    /// The supervisor (or this terminal) refused the request.
     Refused(String),
-    /// Nothing here can run this target.
     Unavailable(String),
     /// No environment can be built on this device: no `env-runtime` image is
     /// installed. The device's own shell may still be opened instead.
@@ -5973,8 +5122,7 @@ pub enum OpenError {
 }
 
 impl OpenError {
-    /// Whether the supervisor answered and refused, leaving the connection
-    /// usable for another request.
+    /// Whether the supervisor answered and refused, leaving the connection usable.
     pub fn is_refusal(&self) -> bool {
         matches!(
             self,
@@ -5997,23 +5145,18 @@ impl std::fmt::Display for OpenError {
 
 impl std::error::Error for OpenError {}
 
-/// Which way the terminal will reach a target, decided by capability probe.
+/// Which way the terminal reaches a target, decided by a capability probe.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ConfineRoute {
-    /// The supervisor service is reachable — the Tilo production path, for
-    /// every target. Mandatory when chosen: a refusal is final.
+    /// The supervisor is reachable: the production path for every target, and a refusal is final.
     Service,
-    /// This unconfined host can build a guest itself and has the runtime at
-    /// the given path.
+    /// This unconfined host can build a guest itself and has the runtime at the given path.
     SelfHosted(std::path::PathBuf),
-    /// No supervisor, and the target is the device's own shell: start the
-    /// login shell directly.
     Host,
-    /// Nothing here can run the target.
     Unavailable(String),
 }
 
-/// Choose how to reach `target` from a capability probe, security-first.
+/// Choose how to reach `target` from a capability probe, security first.
 pub fn confinement_route(target: &crate::target::SessionTarget) -> ConfineRoute {
     #[cfg(windows)]
     {
@@ -6035,8 +5178,6 @@ pub fn confinement_route(target: &crate::target::SessionTarget) -> ConfineRoute 
     )
 }
 
-/// Whether an environment can run here at all — what decides that a new tab
-/// on a machine without Tilo confinement opens the device's own shell.
 pub fn environments_available() -> bool {
     !matches!(
         confinement_route(&crate::target::SessionTarget::default_environment()),
@@ -6044,15 +5185,9 @@ pub fn environments_available() -> bool {
     )
 }
 
-/// Pure core of [`confinement_route`], with the probed inputs injected so the
-/// decision — the actual trust boundary — is unit-testable without touching
-/// process-global state.
-///
-/// The invariants under test: `service_available` wins unconditionally, so no
-/// target reaches a local process while the supervisor is present; the
-/// device's own shell is reached only by naming it; and an environment that
-/// cannot run is unavailable, never quietly the host shell instead. Legacy
-/// VMs are not served by the supervisor.
+/// [`confinement_route`] with its probes injected, so the trust boundary is testable: the supervisor
+/// wins unconditionally, the device's own shell is reached only by naming it, and an environment that
+/// cannot run is unavailable rather than the host shell.
 pub fn decide_route(
     target: &crate::target::SessionTarget,
     service_available: bool,
@@ -6076,12 +5211,8 @@ pub fn decide_route(
     )
 }
 
-/// The supervisor-service descriptor, if the launcher opened one for us and it
-/// is still a live fd.
-///
-/// An env var alone is not enough: the descriptor slot must actually be open,
-/// so a stale or spoofed number pointing at nothing does not select the service
-/// path (off Tilo, only a session whose target is the device's own shell runs locally).
+/// The supervisor's descriptor, if the launcher opened one and it is still live: a spoofed number
+/// pointing at nothing does not select the service path.
 #[cfg(unix)]
 pub(crate) fn ush_service_fd() -> Option<i32> {
     let raw: i32 = std::env::var(USH_SERVICE_FD_ENV).ok()?.parse().ok()?;
@@ -6094,25 +5225,14 @@ pub(crate) fn ush_service_fd() -> Option<i32> {
     (rc != -1).then_some(raw)
 }
 
-/// Whether this process could build the user + mount namespace a self-hosted
-/// guest needs.
-///
-/// False when a seccomp filter is confining us (it would deny `unshare`), when
-/// unprivileged user namespaces are disabled by sysctl, or when `bwrap` — which
-/// the runtime shells out to for the actual namespace setup — is not installed.
-/// Any of those means launching the runtime here would only produce errors, so
-/// we don't.
+/// Whether this process could build the user and mount namespace a self-hosted guest needs: false
+/// under a seccomp filter, without unprivileged user namespaces, or without `bwrap`.
 #[cfg(unix)]
 fn can_build_namespace() -> bool {
     !seccomp_filtered() && unprivileged_userns_enabled() && bwrap_present()
 }
 
-/// True if a seccomp filter is installed on this process — i.e. the Tilo launcher
-/// (or any foreign sandbox) is confining our syscalls.
-///
-/// Read from `/proc/self/status` (`Seccomp:` ≥ 2 is "filter mode"). A filter
-/// cannot be removed once installed and survives `exec`, so an attacker inside
-/// a sandbox cannot clear this to make [`can_build_namespace`] return true.
+/// Whether a seccomp filter confines this process.
 #[cfg(unix)]
 fn seccomp_filtered() -> bool {
     std::fs::read_to_string("/proc/self/status")
@@ -6126,11 +5246,8 @@ fn seccomp_filtered() -> bool {
         .is_some_and(|mode| mode >= 2)
 }
 
-/// Whether the kernel will let an unprivileged process create a user namespace.
-///
-/// Reads the two sysctls distributions use to gate this. An absent file means
-/// the kernel default (enabled), so this only reports `false` on an explicit
-/// disable — never guessing "no" just because a knob is missing.
+/// Whether the kernel allows unprivileged user namespaces. An absent sysctl means the kernel default,
+/// so only an explicit disable reports false.
 #[cfg(unix)]
 fn unprivileged_userns_enabled() -> bool {
     // Debian/Ubuntu knob: `0` disables unprivileged user namespaces entirely.
@@ -6148,19 +5265,13 @@ fn unprivileged_userns_enabled() -> bool {
     true
 }
 
-/// Whether `bwrap` (Bubblewrap) is on `PATH`. The runtime builds the guest's
-/// namespace with it, so its absence means a self-hosted guest cannot start.
 #[cfg(unix)]
 fn bwrap_present() -> bool {
     std::env::var_os("PATH")
         .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("bwrap").exists()))
 }
 
-/// Where the runtime binary is when the terminal has to start one itself.
-///
-/// `$TILO_USH_BIN` first so a development tree can point at `target/debug`,
-/// then the installed location, then `PATH`. Absent from all three means this
-/// machine has no runtime and the caller falls back to `$SHELL`.
+/// Where the runtime binary is: `$TILO_USH_BIN`, then the installed location, then `PATH`.
 #[cfg(unix)]
 pub fn ush_binary() -> Option<std::path::PathBuf> {
     if let Some(explicit) = std::env::var_os("TILO_USH_BIN") {
@@ -6179,12 +5290,8 @@ pub fn ush_binary() -> Option<std::path::PathBuf> {
         .find(|candidate| candidate.exists())
 }
 
-/// Ask the session supervisor for a session on `target` and wrap the pty it
-/// hands back.
-///
-/// The whole exchange is one line of JSON out and one line plus a descriptor
-/// back. What crosses the sandbox boundary is a terminal, not a namespace: the
-/// session is built on the supervisor's side, by the supervisor's rules.
+/// Ask the supervisor for a session on `target` and wrap the pty it hands back: a terminal crosses
+/// the sandbox boundary, not a namespace.
 #[cfg(unix)]
 fn ush_service_backend(
     program: &[String],
@@ -6217,13 +5324,11 @@ fn ush_service_backend(
     })?
 }
 
-/// One request about the environments themselves (list, create, rename,
-/// grant) to the supervisor over the control connection the launcher opened
-/// for this app: the same connection its sessions open on, which keeps
-/// serving after each. `workspace` is the one the app was launched in,
-/// which the supervisor holds it to whatever it names. Its one-line answer.
+/// One request about the environments themselves to the supervisor, over the launcher's control
+/// connection; its answer is one line.
 ///
 /// # Errors
+///
 /// No launcher connection, or the supervisor did not answer.
 pub(crate) fn ush_service_ask(
     request: &serde_json::Value,
@@ -6275,9 +5380,8 @@ fn ush_service_backend(
     ))
 }
 
-/// The `open-session` line for the supervisor. `workspace` is the tilo
-/// workspace the Terminal is in, which the session's environment belongs to;
-/// the field is left out when the Terminal does not know it.
+/// The `open-session` line for the supervisor; `workspace` is left out when the terminal does not
+/// know it.
 pub(crate) fn ush_request(
     program: &[String],
     target: &crate::target::SessionTarget,
@@ -6326,10 +5430,9 @@ pub(crate) fn ush_request(
     Ok(request)
 }
 
-/// The supervisor's answer to `open-session`: `ServeResponse::Session` in
-/// `crates/runtime/ush/src/supervisor.rs`, field for field. Unknown fields are
-/// refused, so every field the supervisor sends must be named here; its unit
-/// test `a_session_reply_keeps_its_wire_form` pins the form this parses.
+/// The supervisor's answer to `open-session`, field for field (`ServeResponse::Session` in
+/// `crates/runtime/ush/src/supervisor.rs`). Unknown fields are refused, so every field the supervisor
+/// sends is named here; `a_session_reply_keeps_its_wire_form` pins the form.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UshSessionReply {
@@ -6349,10 +5452,7 @@ struct UshSessionReply {
 }
 
 impl UshSessionReply {
-    /// Whether the supervisor's session declaration is well formed and matches
-    /// what was asked: a session and relay key of 32 hex digits, an environment
-    /// of sane length, the editor capability only where an editor may be offered,
-    /// and one descriptor more than the plain pair when it is.
+    /// Whether the session declaration is well formed and matches what was asked.
     fn is_valid(
         &self,
         descriptor_count: usize,
@@ -6482,14 +5582,12 @@ pub(crate) fn ush_backend_on(
     })
 }
 
-/// The banner over the grid, as laid out and painted.
 struct TopBanner {
     kind: BannerKind,
     title: String,
     message: Option<String>,
     action: Option<String>,
     secondary: Option<String>,
-    /// The held run's prompt.
     held: bool,
 }
 
@@ -6505,8 +5603,7 @@ impl TopBanner {
         }
     }
 
-    /// The prompt of a run its host holds: the same for a person's run and
-    /// an agent's.
+    /// The prompt of a run its host holds.
     fn held(held: &Held) -> Self {
         use ui::tilo_actions::remote::host_account::Reason;
         let (title, message) = match held.refusal.reason {
@@ -6546,7 +5643,6 @@ impl Held {
     }
 }
 
-/// Settle a run asked for as failed for good: it did not run, and will not.
 fn fail_run(asked: crate::runs::Asked, reason: &str) {
     let settled = ui::tilo_resource::Settled::Failed {
         reason: reason.to_owned(),
@@ -6558,7 +5654,6 @@ fn fail_run(asked: crate::runs::Asked, reason: &str) {
     }));
 }
 
-/// What a supervisor reply without a descriptor means.
 pub(crate) fn refusal(payload: &[u8]) -> OpenError {
     #[derive(serde::Deserialize)]
     struct Reply {
@@ -6577,12 +5672,8 @@ pub(crate) fn refusal(payload: &[u8]) -> OpenError {
     }
 }
 
-/// A [`MasterPty`] over a descriptor someone else opened.
-///
-/// `portable-pty` can only hand out a master it created itself, and the one
-/// that matters here was created by the supervisor and passed over a socket.
-/// Resizing has to keep working — the grid reflows on every window change — so
-/// this is a real `TIOCSWINSZ`, not a stub.
+/// A [`MasterPty`] over a descriptor someone else opened. Resizing is a real `TIOCSWINSZ`: the grid
+/// reflows on every window change.
 #[cfg(unix)]
 struct FdMaster {
     file: std::fs::File,
@@ -6650,24 +5741,15 @@ impl MasterPty for FdMaster {
 }
 
 impl TerminalWidget {
-    /// Wire a spawned [`TerminalBackend`] into a widget: share the writer +
-    /// master behind mutexes and start a reader thread that funnels PTY output
-    /// onto the channel the widget drains in `sync` / `update`. The reader
-    /// thread exits when the shell closes the PTY or the widget (hence the
-    /// receiver) is dropped.
+    /// Wire a spawned backend into the widget and start the reader thread that feeds `sync` and
+    /// `update`.
     fn from_backend(backend: TerminalBackend) -> Self {
         let mut widget = Self::without_process(ContentStore::memory());
-        // The bell and what a selection does are the person's preferences,
-        // kept where their other preferences are: the next terminal opens
-        // with them already set.
         widget.use_preferences(crate::preferences::Preferences::discover());
         widget.attach_backend(backend);
         widget
     }
 
-    /// A widget with no process behind it yet: a sink writer, an empty
-    /// reader, and a mock PTY master. A session is attached later with
-    /// [`Self::attach_backend`].
     fn without_process(content: ContentStore) -> Self {
         let writer: Box<dyn Write + Send> = Box::new(std::io::sink());
         let (_tx, output_rx) = sync_channel(1);
@@ -6681,10 +5763,6 @@ impl TerminalWidget {
         widget
     }
 
-    /// Put a freshly opened process behind this widget: its writer, master
-    /// and lifetime replace the previous ones, a reader thread starts feeding
-    /// the output channel, and the tab's screen is reset for the new process
-    /// at the next sync.
     fn attach_native_editor(&mut self, socket: Option<crate::native_editor::Socket>) {
         self.native_capture = None;
         self.native_history = None;
@@ -6731,10 +5809,8 @@ impl TerminalWidget {
         }
     }
 
-    /// What the reader asks whether the session is still open, and how it
-    /// ended once it is not. The reader distinguishes a hosted session's
-    /// start-up `EIO` from its exit by the lifetime socket the supervisor
-    /// closes when the guest ends. A local PTY has none.
+    /// What the reader asks whether the session is still open: the lifetime socket the supervisor closes
+    /// when the guest ends, which tells a hosted start-up `EIO` from an exit.
     fn reader_lease(&self) -> ReaderLease {
         ReaderLease::new(
             self.service_lifetime
@@ -6763,8 +5839,6 @@ impl TerminalWidget {
         widget.service_lifetime = backend.service_lifetime;
         #[cfg(windows)]
         widget.watch_child_exit(backend.child, exit.clone());
-        // Share the waker with the reader thread so fresh PTY output wakes an
-        // idle host instead of waiting for a poll.
         let waker = widget.waker.clone();
         let session_disconnected = widget.session_disconnected.clone();
         let session_status_message = widget.session_status_message.clone();
@@ -6776,9 +5850,6 @@ impl TerminalWidget {
             .spawn(move || {
                 let mut buf = [0u8; 8192];
                 loop {
-                    // A poisoned lock means the reader is unrecoverable (some
-                    // other thread panicked while holding it); nothing to do but
-                    // stop this reader rather than panic here too.
                     let Ok(mut r) = reader.lock() else {
                         set_terminal_disconnected(
                             &session_disconnected,
@@ -6813,7 +5884,6 @@ impl TerminalWidget {
                             if output_tx.send(chunk.to_vec()).is_err() {
                                 break;
                             }
-                            // Wake the host so `sync` drains the PTY.
                             request_terminal_wake(&waker);
                         }
                     }
@@ -6825,9 +5895,6 @@ impl TerminalWidget {
         }
     }
 
-    /// Construct a hosted terminal using its required process service. The
-    /// session opens at the first sync, on the target its record names (or
-    /// the default for a new tab).
     pub fn spawn_hosted(
         services: crate::HostedProcessServices,
     ) -> Result<Self, crate::HostedTerminalError> {
@@ -6839,16 +5906,14 @@ impl TerminalWidget {
         Ok(widget)
     }
 
-    /// Construct a live hosted tab without doing socket IO on the host.
     pub(crate) fn spawn_hosted_deferred() -> Self {
         let mut widget = Self::without_process(ContentStore::memory());
         widget.sessions = crate::sessions::Sessions::hosted_deferred();
         widget
     }
 
-    /// A live hosted tab whose required supervisor is unavailable. Keep the
-    /// startup cause visible and input refused, rather than presenting it as
-    /// a capture-only terminal that was never meant to open a process.
+    /// A live hosted tab whose supervisor is unavailable: the cause stays visible and input refused,
+    /// rather than a capture-only terminal.
     pub(crate) fn without_hosted_runtime(reason: String) -> Self {
         let mut widget = Self::without_process(ContentStore::memory());
         widget.sessions =
@@ -6858,21 +5923,14 @@ impl TerminalWidget {
         widget
     }
 
-    /// The standalone terminal. Its session opens at the first sync, on the
-    /// target its record names (or the default for a new tab).
-    ///
-    /// # Errors
-    /// Infallible today; kept fallible for hosts that construct it eagerly.
     pub fn spawn_default() -> anyhow::Result<Self> {
         let mut widget = Self::without_process(ContentStore::memory());
         widget.sessions = crate::sessions::Sessions::standalone();
         Ok(widget)
     }
 
-    /// Spawn an arbitrary command in a PTY + reader thread and return a fully
-    /// wired `TerminalWidget`. This is the embedding entry point for hosts that
-    /// want the terminal to run a specific program (a build, a REPL, `ssh …`)
-    /// instead of a login shell.
+    /// Spawn `command` in a PTY and return a wired widget, for hosts that want a specific program instead
+    /// of a login shell.
     ///
     /// ```no_run
     /// use terminal::{TerminalWidget, CommandBuilder};
@@ -6887,19 +5945,14 @@ impl TerminalWidget {
         Ok(widget)
     }
 
-    /// A terminal with a null backend: a sink writer, an empty reader, and a
-    /// mock PTY master. No shell is spawned, so nothing arrives on the output
-    /// channel — used by headless screenshot scenarios that drive the grid
-    /// entirely through `feed`, keeping the frame deterministic.
     pub fn spawn_headless() -> anyhow::Result<Self> {
         let mut widget = Self::without_process(ContentStore::memory());
         widget.headless = true;
         Ok(widget)
     }
 
-    /// Keep the pictures programs show in `content`: the store the host
-    /// lends the window, which carries them to the terminal record's other
-    /// readers. A terminal made without it keeps them in memory.
+    /// Keep program pictures in `content`, the window's store, which carries them to the record's other
+    /// readers; without it they stay in memory.
     #[must_use]
     pub fn with_content(mut self, content: ContentStore) -> Self {
         self.images.set_content(content.clone());
@@ -6910,7 +5963,6 @@ impl TerminalWidget {
 
 impl Drop for TerminalWidget {
     fn drop(&mut self) {
-        // Its sessions end with it; that closes no window.
         self.end_session_exit();
         #[cfg(windows)]
         if let Some(killer) = &mut self.child_killer {

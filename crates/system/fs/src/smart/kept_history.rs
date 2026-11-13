@@ -39,9 +39,7 @@ use crate::namespace::Namespace;
 
 /// The directory under the cache root that holds one file per workspace.
 pub const PREFETCH_HISTORY_DIR: &str = "prefetch-history";
-/// Pairs kept at most: the in-memory table's own bound.
 pub const MAX_PAIRS: usize = 2048;
-/// A pair not opened together for this long is forgotten.
 pub const MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// How long the keeper waits after a change before writing, so the opens of
 /// one sitting share a write.
@@ -53,7 +51,6 @@ const HEADER_BYTES: usize = MAGIC.len() + 4;
 /// Two record ids, the occasions and when the pair was last seen.
 const ENTRY_BYTES: usize = 16 + 16 + 4 + 8;
 const CHECKSUM_BYTES: usize = 32;
-/// The largest valid file; anything larger is not read.
 pub const MAX_FILE_BYTES: usize = HEADER_BYTES + MAX_PAIRS * ENTRY_BYTES + CHECKSUM_BYTES;
 
 /// Why a kept file was refused.
@@ -205,7 +202,6 @@ impl std::fmt::Debug for KeptHistory {
     }
 }
 
-/// What [`KeptHistory::open`] keeps and where.
 pub struct KeptHistorySource<'a> {
     pub cache_root: &'a Path,
     pub workspace: Uuid,
@@ -390,7 +386,6 @@ impl KeptHistory {
         Ok(true)
     }
 
-    /// Forget the history, in memory and on disk, at once.
     pub fn clear(&self) {
         let mut state = self.lock_state();
         state.epoch = state.epoch.wrapping_add(1);

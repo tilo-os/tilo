@@ -55,7 +55,7 @@ pub(crate) fn left_workspace(notices: &dyn Notices, name: &str) {
     crate::directory::workspace_notice(
         notices,
         ("session-left-workspace", "session-left-workspace-body"),
-        name,
+        &tilo_desktop_surface::names::workspace(name),
     );
 }
 
@@ -1228,7 +1228,7 @@ impl crate::Shared {
                     tree.workspaces
                         .iter()
                         .find(|workspace| workspace.id() == enrolled.workspace_id)
-                        .map(|workspace| workspace.name.clone())
+                        .map(|workspace| tilo_desktop_surface::names::workspace(&workspace.name))
                 })
                 .unwrap_or_else(|| key.clone());
             // The name the site listed the workspace under, not the id the desk numbers it by: a

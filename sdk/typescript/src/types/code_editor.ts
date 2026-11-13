@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.code-editor@356770e6900d66da";
+export const SURFACE = "so.tilo.code-editor@a337d60d96a31d9c";
 
 export interface Entry {
   kind: EntryKind;
@@ -72,6 +72,8 @@ export interface Terminal {
   target: string | null;
   relay_session: string | null;
   pane: string | null;
+  device: string | null;
+  holder: string | null;
   runs: Run[];
   requests: unknown;
 }
@@ -149,13 +151,12 @@ export interface Project extends tilo.Resource {
     started_ms: number;
     ended_ms: number;
     exit: number;
-    output_len: number;
     truncated: boolean;
     tool: string;
     undoable: boolean;
     items: unknown[];
     run: string;
-    output?: string;
+    output?: unknown;
     request?: string;
   }): Promise<tilo.Run | void>;
   reveal(args: {

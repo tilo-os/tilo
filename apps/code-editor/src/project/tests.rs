@@ -56,8 +56,6 @@ fn path(project: &Replica<Project>, id: &Id) -> String {
     project.state().unwrap().path_of(id).unwrap()
 }
 
-/// Files and folders are made, renamed and moved with names unique in
-/// their folder, a folder never inside itself, and deleted once empty.
 #[test]
 fn files_and_folders_keep_their_tree_whole() {
     let mut project = Replica::<Project>::new();
@@ -120,16 +118,12 @@ fn files_and_folders_keep_their_tree_whole() {
         .apply_confirmed(Invoke::apply(&crate::actions::delete_action(main.as_str())).unwrap())
         .unwrap();
     assert!(!project.state().unwrap().buffers.contains_key(main.as_str()));
-    // Undo takes a deletion back, so it runs at once.
     project
         .apply(Invoke::apply(&crate::actions::delete_action(nested.as_str())).unwrap())
         .expect("an undoable delete runs at once");
     assert!(!ids(&project).contains(&nested), "the empty folder is gone");
 }
 
-/// What the editor read from disk is recorded once: an entry already
-/// there, or at a path a collaborator recorded, is left as it is; text
-/// already there is never replaced by a disk read.
 #[test]
 fn disk_entries_and_texts_are_recorded_once() {
     let mut project = Replica::<Project>::new();
@@ -187,9 +181,6 @@ fn disk_entries_and_texts_are_recorded_once() {
     );
 }
 
-/// A contextual edit lands where it was made, even after a collaborator
-/// changed the text elsewhere, and is refused where the place is gone or
-/// ambiguous.
 #[test]
 fn contextual_edits_land_where_they_were_made_or_not_at_all() {
     let mut project = Replica::<Project>::new();
@@ -230,7 +221,6 @@ fn contextual_edits_land_where_they_were_made_or_not_at_all() {
     assert_eq!(text(&project, &unicode), "αX😀γ");
 }
 
-/// A file never grows past what one file holds.
 #[test]
 fn an_edit_never_grows_a_file_past_its_limit() {
     let mut project = Replica::<Project>::new();
@@ -251,9 +241,6 @@ fn an_edit_never_grows_a_file_past_its_limit() {
     assert_eq!(text(&project, &id).len(), MAX_TEXT_BYTES);
 }
 
-/// Reading the project reads no text; the texts the views show are read,
-/// follow every change and let go once nobody shows them, at whatever
-/// revision the document is.
 #[test]
 fn only_the_texts_a_view_shows_are_read() {
     let mut project = Replica::<Project>::new();
@@ -291,8 +278,6 @@ fn only_the_texts_a_view_shows_are_read() {
     assert_eq!(then.state().text(other.as_str()), Some("other body"));
 }
 
-/// Two people typing in one file, and making files at once, end with the
-/// same project.
 #[test]
 fn two_replicas_converge() {
     let mut left = Replica::<Project>::new();
@@ -414,10 +399,6 @@ fn the_terminal_records_its_runs_and_queues_asked_commands() {
     assert_eq!(asked, [("cargo test", pane)]);
 }
 
-/// Recording a file's text is one change of the verb: the deterministic text
-/// object it starts from is made beside it, never by splitting the verb's
-/// own writes into a change of their own, so a replica replaying the action
-/// makes the same changes.
 #[test]
 fn recording_text_is_one_change_of_the_verb() {
     let mut project = Replica::<Project>::new();
@@ -427,8 +408,6 @@ fn recording_text_is_one_change_of_the_verb() {
         &crate::actions::record_entry_action(id, EntryKind::File, "main.rs", None, "Rust"),
     )
     .unwrap();
-    // A record from before texts were kept has no map for them yet: the
-    // verb makes it, in its own change.
     {
         use automerge::transaction::Transactable as _;
         let doc = project.doc_mut();
@@ -436,7 +415,6 @@ fn recording_text_is_one_change_of_the_verb() {
         doc.commit();
     }
     let mut cold = project.fork();
-    // Read whole, as an action with no record kept from the last one does.
     ui::tilo_resource::__private::forget_all();
     let before = project.doc_mut().get_heads();
     act(
@@ -465,8 +443,6 @@ fn recording_text_is_one_change_of_the_verb() {
     assert_eq!(theirs, ours, "the replay makes the same changes");
 }
 
-/// Replacing a file's text from the file writes only what differs, so a
-/// collaborator's typing elsewhere in it survives; a folder has no text.
 #[test]
 fn replacing_a_files_text_keeps_a_collaborators_typing() {
     let mut left = Replica::<Project>::new();
@@ -500,9 +476,6 @@ fn replacing_a_files_text_keeps_a_collaborators_typing() {
     );
 }
 
-/// A range a person selected is replaced exactly, in characters, and the
-/// rest of the file stays; a caret inserts; a place outside the text or on a
-/// folder is refused.
 #[test]
 fn a_selected_range_is_replaced_exactly() {
     let mut project = Replica::<Project>::new();

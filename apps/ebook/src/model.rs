@@ -209,8 +209,6 @@ impl Span {
     }
 }
 
-// --- Shared annotation model (reused by PDF reader + word processor) --------
-
 /// What an annotation *is*. All three share one anchor so a unified
 /// sidebar/list can present them together.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model)]
@@ -474,8 +472,6 @@ impl Annotation {
         self
     }
 }
-
-// --- Reading settings + per-book progress ------------------------------------
 
 /// One of the three classic e-reader page tints. These tint the *content
 /// surface* (the page), layered on top of the OS theme that drives all chrome.
@@ -1296,21 +1292,18 @@ mod tests {
     /// Colour, annotation, theme, mode, font, sort and composition values round-trip with stable names and defaults.
     #[test]
     fn model_enums_round_trip_with_stable_defaults() {
-        // --- phase: annokind_round_trips ---
         {
             for k in [AnnoKind::Bookmark, AnnoKind::Highlight, AnnoKind::Note] {
                 assert_eq!(AnnoKind::from_str(k.as_str()), k);
             }
         }
 
-        // --- phase: read_theme_round_trips ---
         {
             for t in ReadTheme::ALL {
                 assert_eq!(ReadTheme::from_str(t.as_str()), t);
             }
         }
 
-        // --- phase: read_mode_round_trips_and_defaults_to_paged ---
         {
             for m in ReadMode::ALL {
                 assert_eq!(ReadMode::from_str(m.as_str()), m);
@@ -1327,7 +1320,6 @@ mod tests {
             assert!(!ReadMode::Paged.is_continuous());
         }
 
-        // --- phase: font_kind_round_trips_including_named ---
         {
             for k in [
                 FontKind::Default,
@@ -1340,7 +1332,6 @@ mod tests {
             }
         }
 
-        // --- phase: default_fonts_are_shown_and_unique ---
         {
             let f = default_fonts();
             assert!(
@@ -1355,7 +1346,6 @@ mod tests {
             assert_eq!(ids.len(), f.len(), "font ids are unique");
         }
 
-        // --- phase: composition_style_has_stable_storage_names ---
         {
             assert_eq!(CompositionStyle::Book.as_str(), "book");
             assert_eq!(
@@ -1373,7 +1363,6 @@ mod tests {
     /// Block plain text concatenates spans, body size scales with settings, and progress reads as finished at the end.
     #[test]
     fn reading_values_derive_from_content_and_settings() {
-        // --- phase: block_plain_text_concats_spans ---
         {
             let b = Block::Paragraph {
                 spans: vec![
@@ -1393,7 +1382,6 @@ mod tests {
             assert_eq!(b.plain_text(), "Hello world");
         }
 
-        // --- phase: settings_body_size_scales ---
         {
             let s = Settings {
                 font_scale: 1.5,
@@ -1402,7 +1390,6 @@ mod tests {
             assert!((s.body_size() - Settings::BODY_CONTENT_PX * 1.5).abs() < 0.01);
         }
 
-        // --- phase: progress_is_read_at_the_end ---
         {
             assert!(!Progress::is_read(0.5));
             assert!(Progress::is_read(1.0));
@@ -1412,7 +1399,6 @@ mod tests {
     /// Schemes derive contrasting ink and accents from their paper, stay neutral in dark, maximal in high contrast, and recompute on slot changes.
     #[test]
     fn scheme_palettes_derive_contrasting_parts() {
-        // --- phase: scheme_from_dark_bg_derives_light_ink_and_contrasting_accent ---
         {
             let s = ColorScheme::from_bg("u1", "Midnight", [0x12, 0x14, 0x1C]);
             assert!(s.dark, "a dark background yields a dark scheme");
@@ -1428,14 +1414,12 @@ mod tests {
             );
         }
 
-        // --- phase: scheme_from_light_bg_derives_dark_ink ---
         {
             let s = ColorScheme::from_bg("u2", "Paper", [0xF3, 0xEE, 0xE2]);
             assert!(!s.dark, "a light background yields a light scheme");
             assert!(luminance(s.ink) < 0.3, "ink is near-black on a light paper");
         }
 
-        // --- phase: scheme_derived_parts_sit_between_page_and_ink ---
         {
             let s = ColorScheme::from_bg("u3", "Warm", [0x20, 0x1C, 0x18]);
             let (page, edge, ink, dim, _rule, _code) = s.palette_parts();
@@ -1446,7 +1430,6 @@ mod tests {
             assert_ne!(dim, ink);
         }
 
-        // --- phase: dark_scheme_is_neutral_not_brown ---
         {
             let dark = default_schemes()
                 .into_iter()
@@ -1458,7 +1441,6 @@ mod tests {
             assert!(luminance(dark.page) < 0.2, "still a dark page");
         }
 
-        // --- phase: high_contrast_builtin_is_maximal_contrast ---
         {
             let hc = default_schemes()
                 .into_iter()
@@ -1475,7 +1457,6 @@ mod tests {
             assert_eq!(ReadTheme::HighContrast.as_str(), "high-contrast");
         }
 
-        // --- phase: set_slot_recomputes_dark_from_paper ---
         {
             let mut s = default_schemes()[0].clone(); // Light
             assert!(!s.dark);

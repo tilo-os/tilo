@@ -33,8 +33,8 @@ app gets on a real system:
              show in Today's window, which holds none of them itself (today-*.png); one is
              marked done by its box, a checkbox Tasks' window names ("Mark ... done"), another
              from its row's menu, pressed by name as a tool presses it, and Today's "Morning
-             cleanup", pressed by name, runs on them and asks the person before changing Tasks
-             and Notes
+             cleanup", found by the action it runs and pressed where its header stands it, runs
+             on them and asks the person before changing Tasks and Notes
   places     a window grouped beside another, too narrow for Tasks' sidebar, still reaches its
              places through its own toggle, pressed by name as a tool presses a control, though
              another window goes by that name too: Inbox chosen there takes that window to the
@@ -197,14 +197,18 @@ def toolkit_word(name: str, key: str) -> str:
     return say("crates/sdk/ui-core", key, window_language(name))
 
 
-def doing(name: str, ty: str, action: str) -> str:
-    """What the app `name`'s action `action` on its records of `ty` is known by: the record kind it
-    acts on and the operation, in the app's own ids, which no composition and no language changes.
+def doing(name: str, ty: str, action: str, on: str | None = None) -> str:
+    """What the app `name`'s action `action`, run on records of the app `on`'s type `ty`, is known
+    by: the record kind it acts on and the operation, in the apps' own ids, which no composition
+    and no language changes.
 
-    `ty` is the type as the app declares it (`Tasks`, `Notebook`): the kind the app publishes its
-    records under is `tl.` and the app's id before it. `action` is looked up in the app's ids lock
-    (`apps/tl/<name>/app.ids`), as every declaration there is named (`new_task = qymo5lg2`)."""
-    return "\x1f".join((f"tl.{app_id(name)}.{ty}", app_id_of(name, action)))
+    `ty` is the type as its app declares it (`Tasks`, `Notebook`): the kind that app publishes the
+    records under is `tl.` and the app's id before it. `on` names the app holding those records,
+    when it is not the one declaring the action (`today`'s cleanup runs on `tasks`' tasks). `action`
+    is looked up in the ids lock of the app that declares it (`apps/tl/<name>/app.ids`), as every
+    declaration there is named (`new_task = qymo5lg2`)."""
+    kind = f"tl.{app_id(on or name)}.{ty}"
+    return "\x1f".join((kind, app_id_of(name, action)))
 
 
 def app_word(name: str, declared: str, attribute: str | None = None, **args) -> str:
@@ -711,11 +715,12 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     into Tasks' Today since: Today reads them from Tasks' own record, live, and its window names
     them as its own controls. Two of them are finished in Tasks: one by its box, the other from its
     row's menu, opened where the row stands and run by the command a tool presses by name, both
-    standing in Tasks' history. Its "Morning cleanup" is a control of that window too, pressed here
-    as a tool or an assistive technology presses it: with tasks done in Tasks it clears them and
-    files "Morning: 2 done" in Notes, or asks the person's leave to change those two apps, which
-    this check denies: an app's change of another app is made only with the person's leave
-    (`docs/architecture/apps.md`)."""
+    standing in Tasks' history. Its "Morning cleanup" is a control of that window too: it runs
+    Today's action on Tasks' record, so it is found by that action and that record's kind and
+    pressed where it stands, as a tool or an assistive technology presses it: with tasks done in
+    Tasks it clears them and files "Morning: 2 done" in Notes, or asks the person's leave to
+    change those two apps, which this check denies: an app's change of another app is made only
+    with the person's leave (`docs/architecture/apps.md`)."""
     today = app_id("today")
     held = ["Water the plants", "Call the plumber"]
     # What Today's window offers by name: the card's rows, read off Tasks' record, and the
@@ -723,7 +728,7 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     focus(session, next(w for w in session.windows() if w.get("app_id") == today))
     until("Tasks' tasks in Today's card", lambda: (lambda shown: shown if all(
         title in shown for title in held) else None)(named(session)), 30)
-    cleanup = doing("today", "Today", "morning_cleanup")
+    cleanup = doing("today", "Tasks", "morning_cleanup", on="tasks")
     session.wait_doing(cleanup)
     done = mark_done(session, held[0])
     menu = menu_complete(session, held[1])

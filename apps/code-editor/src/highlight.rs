@@ -1,10 +1,5 @@
 //! Syntax highlighting for the editor view.
 //!
-//! Tokenizing is the toolkit's grammar-backed highlighter
-//! ([`ui::widget::code_editor::SyntaxHighlighter`]) and colours come from the
-//! theme's shared syntax palette (`theme.tokens.syntax`); this module keeps
-//! what is specific to the editor view: the incremental per-line cache that
-//! re-parses only the edited region.
 
 #[cfg(test)]
 use ui::widget::code_editor::TokenKind;
@@ -18,15 +13,12 @@ fn highlighter(language: Language) -> SyntaxHighlighter {
     SyntaxHighlighter::for_token_or_plain(language.grammar_token())
 }
 
-/// Tokenize one line, counting the parse in tests so cache reuse is provable.
 fn highlight_line(state: &mut SyntaxState, line: &str) -> Vec<Span> {
     #[cfg(test)]
     PARSED_LINES.with(|count| count.set(count.get().saturating_add(1)));
     state.highlight_line(line)
 }
 
-/// Outgoing tokenizer state for each cached line. Cache admission includes both
-/// parse and scope stacks: identical text alone cannot close a multiline edit.
 #[derive(Default)]
 pub(crate) struct IncrementalHighlights {
     language: Option<Language>,
@@ -34,8 +26,6 @@ pub(crate) struct IncrementalHighlights {
 }
 
 impl IncrementalHighlights {
-    /// Update spans without changing the tokenizer or its newline convention.
-    /// Returns the number of lines actually tokenized (not scanned for equality).
     pub(crate) fn update(
         &mut self,
         language: Language,
@@ -109,9 +99,6 @@ impl IncrementalHighlights {
     }
 }
 
-/// A continuous large-file parse, delivered in bounded row batches through
-/// the host background executor. Its receiver belongs to one immutable line
-/// snapshot; dropping it prevents stale work entering a replacement buffer.
 pub(crate) struct BackgroundHighlights {
     receiver: std::sync::mpsc::Receiver<HighlightBatch>,
     background: ui::rt::background::Background,
@@ -177,8 +164,6 @@ impl BackgroundHighlights {
         Some(receiver)
     }
 
-    /// Admit one completed batch without waiting. Returning false retires the
-    /// completed/refused job. Unknown rows continue drawing their exact text.
     pub(crate) fn collect(&mut self, spans: &mut Vec<Vec<Span>>) -> bool {
         match self.receiver.try_recv() {
             Ok(mut batch) => {
@@ -234,7 +219,6 @@ mod tests {
         }
         assert_eq!(highlighter(Language::PlainText).name(), "Plain Text");
 
-        // Rust: keyword and string are classified.
         let mut state = highlighter(Language::Rust).start();
         let spans = state.highlight_line("let s = \"hello\";");
         let first = &spans[0];

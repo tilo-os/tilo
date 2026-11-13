@@ -18,14 +18,24 @@ from typing import Any, Literal, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
+    "Measurement",
     "Results",
 ]
 
+class Measurement(TypedDict):
+    at_ms: int
+    ping: float
+    jitter: float
+    download: float
+    upload: float
+    server: str
+    device: str
+
 class Results(Resource):
     """Internet speed test — `speed-test.results`."""
-    __surface__ = "so.tilo.speed-test@3fb52e93b9c21f28"
+    __surface__ = "so.tilo.speed-test@303db65a9e1defad"
     @property
-    def results(self) -> Any:
+    def results(self) -> list[Measurement]:
         """Read only."""
         return self.fields["results"]
 

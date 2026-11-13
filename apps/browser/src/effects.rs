@@ -1,12 +1,10 @@
-//! What a browser window does that changes no document: navigating its
-//! page, reading and operating the page for an agent, its library and
-//! settings presentations, history and site data on this device, Picture in
-//! Picture, zoom, downloads and extensions.
+//! What a browser window does that changes no document: navigating its page,
+//! reading and operating the page for an agent, its library and settings,
+//! history and site data on this device, Picture in Picture, zoom, downloads and
+//! extensions.
 //!
-//! Every effect reaches this device's engine, files or portals, so only the
-//! person at it may invoke them. Each rides the row of what it acts on —
-//! the page, the history, a download, the library — which the window
-//! publishes; only showing the page again rides the browser itself.
+//! Only the person at the device may invoke them: each reaches the engine, the
+//! files or a portal here.
 
 use ui::tilo_resource::{self, Effect};
 use ui::webview::{
@@ -17,12 +15,10 @@ use ui::webview::{
 /// How long a settle waits for the page to go quiet, and at most, by default.
 const PAGE_SETTLE_QUIET_MS: u32 = 500;
 const PAGE_SETTLE_TIMEOUT_MS: u32 = 10_000;
-/// Moves the pointer makes between a drag's two ends by default.
 const PAGE_DRAG_STEPS: u32 = 8;
 
-/// One `kind=move x=10 y=10 element=d1e4` step of a pointer gesture, or
-/// nothing when a field is missing or unreadable; the engine then refuses
-/// the gesture as out of bounds.
+/// One `kind=move x=10 y=10 element=d1e4` step of a pointer gesture; nothing
+/// when a field is missing or unreadable.
 fn pointer_step(text: &str) -> Option<PointerStep> {
     let mut kind = None;
     let mut element = None;
@@ -889,12 +885,8 @@ pub enum BrowserEffect {
     },
 }
 
-/// A frame id taken from the page outline, which every engine then checks
-/// against the bounds it accepts. The frame is named only when the caller
-/// named one: an absent frame is the page itself.
-/// The frame a caller named, as the outline writes it: a frame is a number, so
-/// a number and its text name the same frame, and the outline's own
-/// `[frame=1]` carries the id it names.
+/// A frame id from the outline, which the engine then checks against its
+/// bounds; an absent frame is the page itself.
 fn page_frame(frame: Option<String>) -> Option<FrameId> {
     frame
         .filter(|frame| !frame.trim().is_empty())
@@ -902,7 +894,6 @@ fn page_frame(frame: Option<String>) -> Option<FrameId> {
 }
 
 impl BrowserEffect {
-    /// What the window does for this effect.
     pub fn operation(self) -> BrowserOperation {
         let page = BrowserOperation::Page;
         match self {
@@ -1190,7 +1181,6 @@ impl BrowserEffect {
     }
 }
 
-/// The library's sections.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LibrarySection {
     History,
@@ -1199,28 +1189,21 @@ pub enum LibrarySection {
     Extensions,
 }
 
-/// What the person asks of an installed extension, by the id Chromium
-/// gives it.
+/// What the person asks of an installed extension, by the id Chromium gives it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExtensionRequest {
     TurnOn(String),
     TurnOff(String),
-    /// Pin its button to the toolbar (`true`) or take it off.
     Pin(String, bool),
     OpenSettings(String),
-    /// What its toolbar button does: open its popup, or tell it of the click.
     Use(String),
-    /// Words for its keyword in the address, as Enter sends them.
     Send(String, String),
-    /// Show its side panel beside the page, or close it.
     OpenSidePanel(String),
     CloseSidePanel(String),
-    /// Take back the access the person allowed it after it was added.
     Revoke(String),
     Remove(String),
 }
 
-/// What Browser does for an effect, once decoded.
 #[derive(Clone, Debug)]
 pub enum BrowserOperation {
     BookmarkPersonalPage {
@@ -1255,7 +1238,6 @@ pub enum BrowserOperation {
     Navigate {
         url: String,
     },
-    /// Another Browser in a desktop tab right after this one.
     OpenInNewTab {
         url: String,
         background: bool,
@@ -1267,24 +1249,20 @@ pub enum BrowserOperation {
         query: String,
     },
     ClearLibraryFilter,
-    /// Open a saved address in the address editor.
     EditAddress {
         profile: String,
     },
-    /// Ask whether to delete a saved address.
     DeleteAddress {
         profile: String,
     },
     ShowSettings,
     ShowPage,
-    /// Forget one visited page (`forget_visit`).
     ForgetVisit {
         url: String,
     },
     ClearHistory,
     RequestWebsiteDataClear,
     TogglePictureInPicture,
-    /// Show the page's article in reader view, or the page again.
     ToggleReaderView,
     ToggleHistoryPause,
     StartDownload {
@@ -1302,40 +1280,37 @@ pub enum BrowserOperation {
     RevealDownload {
         id: String,
     },
-    /// Answer the page's offer to download `id`: save it when `allow`.
     AnswerDownload {
         id: String,
         allow: bool,
     },
-    /// Answer the request `id` the window holds: let it leave when `allow`,
-    /// or keep the page as it is.
+    /// Answer the request `id` the window holds: let it leave when `allow`, or
+    /// keep the page as it is.
     AnswerHeldRequest {
         id: String,
         allow: bool,
     },
-    /// Read a completed download's file, bounded and as text.
     ReadDownload {
         id: String,
     },
     Page(PageRequest),
-    /// Answer the page's question `dialog`: OK, Leave or Reload when
-    /// `accept`, else Cancel, with a prompt's `text`.
+    /// Answer the page's question `dialog`: OK, Leave or Reload when `accept`,
+    /// else Cancel, with a prompt's `text`.
     AnswerPageDialog {
         dialog: u32,
         accept: bool,
         text: Option<String>,
     },
-    /// Answer the site's permission request `request`: allow it when
-    /// `allow`, else deny it.
+    /// Answer the site's permission request `request`: allow it when `allow`,
+    /// else deny it.
     AnswerPermission {
         request: u32,
         allow: bool,
     },
     Extension(ExtensionRequest),
-    /// Offer the Web Store item on the page, as Add to Tilo Browser does.
     AddExtension,
-    /// Zoom the page a `step` in (`1`) or out (`-1`), or back to its own
-    /// size (`0`).
+    /// Zoom the page a `step` in (`1`) or out (`-1`), or back to its own size
+    /// (`0`).
     Zoom {
         step: i32,
     },

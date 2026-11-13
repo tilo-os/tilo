@@ -521,7 +521,7 @@ async fn shared_windows(
     let peer = held.peer();
     let doc = peer.admitted_workspace().unwrap();
     tilo_desktop_model::window_share::window_shares(
-        &tilo_desktop_model::projection::workspace_policy_of(doc, workspace),
+        &tilo_peer_state::workspace::policy_of(doc, workspace),
         &tilo_desktop_model::window_share::device_salts(doc),
         tilo_clock::unix_now_ms(),
     )
@@ -535,14 +535,12 @@ async fn grants_of_share(
 ) -> usize {
     let state = workspaces.workspace(workspace).await.unwrap();
     let held = state.lock().await;
-    let grants = tilo_desktop_model::projection::workspace_policy_of(
-        held.peer().admitted_workspace().unwrap(),
-        workspace,
-    )
-    .grants
-    .iter()
-    .filter(|grant| tilo_action_policy::share::is_of_share(grant, share))
-    .count();
+    let grants =
+        tilo_peer_state::workspace::policy_of(held.peer().admitted_workspace().unwrap(), workspace)
+            .grants
+            .iter()
+            .filter(|grant| tilo_action_policy::share::is_of_share(grant, share))
+            .count();
     drop(held);
     grants
 }

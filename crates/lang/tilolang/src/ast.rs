@@ -344,11 +344,15 @@ pub struct Param {
     pub name: Ident,
     pub ty: TypeExpr,
     /// `done: Bool = not item.done`: an action parameter's default, evaluated when the action is
-    /// invoked without it, over the parameters before it, and recorded as the argument.
-    pub default: Option<Expr>,
+    /// invoked without it, over the parameters before it, and recorded as the argument. Boxed:
+    /// most parameters have none, and a parameter stays small enough to pass by value.
+    pub default: Option<Box<Expr>>,
     /// `above: Option<Task> (above)`: the place the view offers the action in supplies it, and
     /// no invocation does: a row of a list gives the row above it in its own visible group.
     pub place: Option<Ident>,
+    /// `saved: Bool (label: "On the Watch later list")`: what the parameter is called where a
+    /// person gives it, when its name in words does not say what it holds.
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

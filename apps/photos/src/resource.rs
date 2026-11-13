@@ -1,13 +1,4 @@
 //! The library's verbs, the places derived from it, and the app.
-//!
-//! Plain fields change through the built-in field edits every path offers
-//! (`PhotoLibrary::paths().photos.item(&id).favorite.set(true)`): starring,
-//! filing in a folder, people and tags, the capture time, a shared place,
-//! shared analysis, the crop and the turn, an album's name and photographs.
-//! The methods below are the operations that are more than setting a field.
-//! Albums are items of their own; folders, people, tags, places and the
-//! timeline are derived from the photographs and published as places that
-//! offer the views and verbs that act on them.
 
 use std::path::PathBuf;
 
@@ -27,9 +18,6 @@ use crate::model::{
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
-/// Bring a library written before every picture was named by its content
-/// up to date. A picture's origin path is no longer stored, and a photograph
-/// kept only by path never had bytes another device could read, so it goes.
 fn upgrade_library(
     doc: &mut tilo_resource::Doc,
     from: u32,
@@ -56,7 +44,6 @@ fn upgrade_library(
     };
     let ids: Vec<String> = doc.keys(&photos).collect();
     for id in ids {
-        // A collection keeps each item under its value key, beside its order.
         let Some(photo) = map(doc, &photos, &id)? else {
             continue;
         };
@@ -80,8 +67,6 @@ fn upgrade_library(
 /// The most photographs one verb changes at once.
 pub(crate) const MAX_BATCH_PHOTOS: usize = 256;
 
-/// The view a photograph opens in: this window, showing it. Declaring it
-/// is what gives each photograph its link (`share-link`).
 fn item_views(field: &str, _item: &Id) -> Vec<ui::tilo_actions::ResourceViewSpec> {
     match field {
         "photos" => vec![
@@ -341,7 +326,6 @@ impl PhotoLibrary {
 /// Why a verb on a photograph is refused when it is gone.
 const GONE: &str = "that photograph is no longer in the library";
 
-/// `name` as a person's label; refused when it cannot be one.
 fn person_label(name: NonBlank) -> Result<String, Refusal> {
     if crate::model::valid_person_label(&name) {
         Ok(name.into_string())
@@ -353,8 +337,6 @@ fn person_label(name: NonBlank) -> Result<String, Refusal> {
 }
 
 impl PhotoLibrary {
-    /// Refuse a change that left a photograph with more names than it may
-    /// carry, rather than dropping one.
     fn within_label_limits(&self) -> Result<(), Refusal> {
         if self
             .all_photos()
@@ -367,9 +349,6 @@ impl PhotoLibrary {
         Ok(())
     }
 
-    /// What the library reads as to a caller with no screen: how many
-    /// photographs and albums it holds, or one photograph or album whole —
-    /// its name, size and content address, its labels and its edits.
     fn content(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         use ui::tilo_resource::Model as _;
         match item {
@@ -388,10 +367,6 @@ impl PhotoLibrary {
         }
     }
 
-    /// Whether the published child `id` is one [`Self::content`] answers:
-    /// a photograph or an album of the library. Each is document state,
-    /// disclosed by its document read, where its `view` or `open` would
-    /// move the person's window.
     fn reads_child(&self, id: &str) -> bool {
         let Some(rest) = id
             .strip_prefix(<Self as tilo_resource::Resource>::KIND)
@@ -409,15 +384,11 @@ impl PhotoLibrary {
             || key("albums").is_some_and(|key| self.albums.get(&key).is_some())
     }
 
-    /// The places derived from the library: favorites, albums, places,
-    /// people, the timeline, folders, tags, and what analysis found; and the
-    /// photo analysis this device runs.
     fn places(&self) -> Vec<Derived<Self>> {
         crate::derived::derived(self)
     }
 }
 
-/// The edit that imports `photo` as an import reads it from a file.
 #[must_use]
 pub fn import(photo: &LibraryPhoto) -> Invoke<PhotoLibrary> {
     PhotoLibrary::IMPORT_PHOTO.with((
@@ -427,8 +398,6 @@ pub fn import(photo: &LibraryPhoto) -> Invoke<PhotoLibrary> {
     ))
 }
 
-/// The edit that puts `photo`, as it is, at the end of the library: a
-/// library written whole, such as a capture's.
 #[must_use]
 pub fn insert(photo: &LibraryPhoto) -> ui::tilo_resource::Edit<PhotoLibrary> {
     PhotoLibrary::paths()
@@ -436,8 +405,6 @@ pub fn insert(photo: &LibraryPhoto) -> ui::tilo_resource::Edit<PhotoLibrary> {
         .insert_as(&photo.item(), usize::MAX, photo)
 }
 
-/// The key of the photograph or album `id` names: its published item id
-/// (`photos.library/photos/<key>`) or the key itself.
 fn item_key(id: &str) -> &str {
     id.strip_prefix(<PhotoLibrary as tilo_resource::Resource>::KIND)
         .and_then(|rest| rest.strip_prefix('/'))
@@ -448,7 +415,6 @@ fn item_key(id: &str) -> &str {
         .unwrap_or(id)
 }
 
-/// The derived place `id` names among `library`'s, as published.
 #[must_use]
 pub fn derived_resource_id(id: &str) -> String {
     format!(
@@ -457,13 +423,11 @@ pub fn derived_resource_id(id: &str) -> String {
     )
 }
 
-/// A photograph's item resource id.
 #[must_use]
 pub fn photo_resource_id(photo: &str) -> String {
     tilo_resource::items::item_resource_id::<PhotoLibrary>("photos", &Id::from_raw(photo))
 }
 
-/// The photograph an item resource id names, if it names one.
 #[must_use]
 pub fn photo_of_resource(resource_id: &str) -> Option<String> {
     match tilo_resource::items::item_of_resource::<PhotoLibrary>(resource_id)? {
@@ -472,13 +436,11 @@ pub fn photo_of_resource(resource_id: &str) -> Option<String> {
     }
 }
 
-/// An album's item resource id.
 #[must_use]
 pub fn album_resource_id(album: &str) -> String {
     tilo_resource::items::item_resource_id::<PhotoLibrary>("albums", &Id::from_raw(album))
 }
 
-/// Framework app: the photos window is the view of [`PhotoLibrary`].
 pub struct PhotosShell;
 
 impl ResourceApp for PhotosShell {
@@ -499,7 +461,6 @@ impl ResourceApp for PhotosShell {
         } else {
             PhotosApp::with_content(content)
         };
-        // Any other place a hit names opens through the view it offers.
         let (live, dispatcher) = (cx.live().clone(), cx.dispatcher());
         cx.on_open(
             move |anchor: &str| -> Result<(), ui::tilo_resource::Refusal> {
@@ -512,12 +473,7 @@ impl ResourceApp for PhotosShell {
                 Ok(())
             },
         );
-        // The shell keeps the sidebar: the library's places as a list
-        // (their counts and the albums under a heading make it one), its
-        // width, its drawer in a narrow window and its keys.
         let places = ui::widget::NavFeed::new();
-        // A narrow window opens on the timeline, the library's own grid;
-        // Back leads to the places.
         let pane = ui::LocalState::new(ui::widget::NavPane::Content);
         let shell = NavShell::new()
             .with_id("photos-shell")
@@ -541,15 +497,10 @@ impl ResourceApp for PhotosShell {
         Some(&CATALOG)
     }
 
-    /// A photograph handed to the launch is kept in the content store and
-    /// imported into the library; the window shows it, and imports a folder
-    /// ([`PhotosApp::launched_on`]).
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<PhotoLibrary>> {
         let (Some(file), Some(content)) = (input.file(), input.content()) else {
             return Vec::new();
         };
-        // The header names the picture's size, which is all the record needs:
-        // its pixels are decoded off the frame when the window shows it.
         let Some((width, height)) = crate::pixels::size(file.bytes()) else {
             tracing::warn!(
                 name = file.name(),
@@ -573,8 +524,6 @@ impl ResourceApp for PhotosShell {
         crate::sample::SCENARIOS
     }
 
-    /// The photographs a scenario shows live in the content store, not the
-    /// document: their bytes are put there before the view is built.
     #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<PhotoLibrary>) {
         crate::sample::put_content(fixture.content());
@@ -602,8 +551,6 @@ mod agent_disclosure_tests {
         }
     }
 
-    /// People, each person and the analysis are disclosed through reads
-    /// that answer what they hold.
     #[test]
     fn people_a_person_and_the_analysis_answer_their_reads() {
         use crate::actions::PhotosEffect;
@@ -648,9 +595,6 @@ mod agent_disclosure_tests {
     }
 }
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source
-/// catalogue beside it.
 #[cfg(test)]
 mod german_window {
     #[test]

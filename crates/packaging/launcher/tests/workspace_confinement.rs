@@ -1,16 +1,8 @@
-//! Paths a sandboxed app can reach, checked by reading them or observing
-//! the access failure.
+//! Paths a sandboxed app can reach, checked by reading them or observing the access
+//! failure.
 //!
-//! These tests start the app under `bwrap`, through the same
-//! `run_with_captured` path the launcher uses, and assert on what a
-//! syscall answered inside the sandbox. **They deliberately do not
-//! assert on the argv** — a bind-list check can pass while the app
-//! still opens the file; the argv is the launcher's intention, not the
-//! boundary.
-//!
-//! Not `#[ignore]`d, unlike other live-bwrap tests here: bwrap is how a
-//! Tilo app runs at all, so a machine that cannot run these cannot run the
-//! Tilo app. They remain enabled so the boundary is checked in every run.
+//! These tests start the app under `bwrap`, through the same `run_with_captured` path
+//! the launcher uses, and assert on what a syscall answered inside the sandbox.
 
 #![allow(
     clippy::expect_used,
@@ -64,9 +56,8 @@ fn run_in_workspace_with_landlock(
     text
 }
 
-/// The host data home a test's launches keep their workspaces tree in, handed
-/// to the launcher rather than set in the environment, so these tests run
-/// side by side.
+/// The host data home a test's launches keep their workspaces tree in, handed to the launcher rather
+/// than set in the environment, so these tests run side by side.
 struct DataHome {
     _dir: tempfile::TempDir,
     path: PathBuf,
@@ -82,14 +73,6 @@ impl DataHome {
 
 #[test]
 fn workspaces_and_apps_cannot_read_each_others_directories() {
-    // Phase `an_app_cannot_read_across_workspaces`.
-    // The claim in `docs/architecture/workspace.md` — "an app opened in a new workspace
-    // starts empty" — as observable behaviour rather than a design statement.
-    //
-    // One app, two workspaces: it writes a record in workspace A, and the same app
-    // in workspace B cannot read it. Both halves matter — without the read
-    // succeeding in workspace A, "not found in B" would be equally consistent
-    // with a fixture that never wrote anything.
     {
         let data = DataHome::new();
 
@@ -136,8 +119,8 @@ fn workspaces_and_apps_cannot_read_each_others_directories() {
             "naming the host path must not reach it either: {by_host_path}"
         );
 
-        // The workspace-B directory is genuinely empty of the record, rather than
-        // holding a copy the app happened not to open.
+        // The workspace-B directory is genuinely empty of the record, rather than holding a copy the
+        // app happened not to open.
         let listing = run_in_workspace(&data, Some("workspace-b"), &["readdir", "/run/tilo/app"]);
         assert!(
             !listing.contains("record.txt"),
@@ -155,9 +138,6 @@ fn workspaces_and_apps_cannot_read_each_others_directories() {
              workspace B proves nothing about workspaces"
         );
     }
-    // Phase `a_workspace_cannot_read_the_personal_workspace`.
-    // The personal workspace is a workspace, not a bypass — an app launched into a
-    // workspace must not reach it either.
     {
         let data = DataHome::new();
 
@@ -173,10 +153,6 @@ fn workspaces_and_apps_cannot_read_each_others_directories() {
              other workspace"
         );
     }
-    // Phase `one_app_cannot_read_another_apps_directory`.
-    // One app's directory is not another's: two packages in one workspace are
-    // two directories, so a package can't read the state of the app whose
-    // id it happens to know.
     {
         let data = DataHome::new();
 
@@ -211,11 +187,6 @@ fn workspaces_and_apps_cannot_read_each_others_directories() {
     reason = "confinement phases assert production filesystem access in one test"
 )]
 fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
-    // Phase `home_and_the_xdg_variables_all_point_into_the_one_directory`.
-    // Everything the app writes with no thought about where — `$HOME`,
-    // `$XDG_DATA_HOME`, `$XDG_CONFIG_HOME` — has to land in the directory
-    // it was given, or the confinement above applies to one path and
-    // not to the paths apps actually use.
     {
         let data = DataHome::new();
 
@@ -236,8 +207,7 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
             );
         }
 
-        // `cli::standalone_state_dir` is `$XDG_DATA_HOME/<package id>`. An
-        // app using it must end up in the workspace's directory on the host.
+        // `cli::standalone_state_dir` is `$XDG_DATA_HOME/<package id>`.
         let wrote = run_in_workspace(
             &data,
             Some("workspace-a"),
@@ -262,17 +232,11 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
             host.display()
         );
     }
-    // Phase `the_read_profile_is_all_there_is_and_it_is_read_only`.
-    // The read profile is a ceiling, not a floor: a path outside it isn't
-    // in the namespace at all, and a path inside it can't be written.
     {
         let data = DataHome::new();
 
-        // Outside the profile: the user's own files, the shadow file, the
-        // collaborative mount, the host's programs. `/home` and the invoking
-        // user's home are named explicitly since these tests keep their data
-        // home in a tempdir under `/tmp` (which the sandbox covers with a tmpfs) — this closes the reading that would otherwise only
-        // prove `/tmp` is a tmpfs.
+        // Outside the profile: the user's own files, the shadow file, the collaborative mount, the
+        // host's programs.
         let real_home = std::env::var("HOME").expect("HOME is set for the test process");
         let outside_the_profile: Vec<String> = [
             "/etc/shadow".to_string(),
@@ -293,9 +257,7 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
             );
         }
 
-        // The account file is generated sandbox data, not a bind of the
-        // host database. Require the complete single-record contents, then
-        // attempt a real write and check both the sandbox and host bytes.
+        // The account file is generated sandbox data, not a bind of the host database.
         let host_accounts = std::fs::read("/etc/passwd").expect("host account database");
         let (uid, gid) = (
             rustix::process::geteuid().as_raw(),
@@ -336,10 +298,9 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
             "the profile must actually deliver fonts: {read}"
         );
 
-        // And not writable: an app that could rewrite `/etc/ld.so.cache` would
-        // choose what every later launch loads, and one that could drop a font
-        // file could do it for every other app on the machine. Asserted by
-        // attempting the write, not by reading the bind flag back out of an argv.
+        // And not writable: an app that could rewrite `/etc/ld.so.cache` would choose what every later
+        // launch loads, and one that could drop a font file could do it for every other app on the
+        // machine.
         for target in [
             "/usr/share/fonts/tilo-confinement-probe",
             "/etc/ld.so.cache",
@@ -358,8 +319,8 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
             );
         }
 
-        // The app's own directory is writable, so the failures above are the
-        // read-only mount, not a fixture that can't write at all.
+        // The app's own directory is writable, so the failures above are the read-only mount, not a
+        // fixture that can't write at all.
         let ok = run_in_workspace(
             &data,
             Some("workspace-a"),
@@ -370,10 +331,6 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
             "the app's own directory must be writable: {ok}"
         );
     }
-    // Phase `a_manifest_that_names_a_path_is_refused_at_launch`.
-    // The launch-time half of the refusal, on the `run` path: a
-    // manifest naming a path is refused before bwrap is spawned, and
-    // nothing it named is created.
     {
         let data = DataHome::new();
 
@@ -418,8 +375,8 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
 
 #[test]
 fn fedora_nss_trust_module_resolves_inside_the_app_sandbox() {
-    // NSS loads this module dynamically through Fedora's system alternative,
-    // so DT_NEEDED checks cannot observe a broken /etc/alternatives link.
+    // NSS loads this module dynamically through Fedora's system alternative, so DT_NEEDED checks
+    // cannot observe a broken /etc/alternatives link.
     let library = "/usr/lib64/libnssckbi.so";
     let host = std::fs::read(library).expect("Fedora NSS trust module is required");
     assert_eq!(
@@ -439,8 +396,8 @@ fn fedora_nss_trust_module_resolves_inside_the_app_sandbox() {
     );
 }
 
-/// Launch the fixture with `grants` written as the compositor's capability
-/// file, Landlock enforced, and return its stdout.
+/// Launch the fixture with `grants` written as the compositor's capability file, Landlock enforced, and
+/// return its stdout.
 fn run_with_grants(
     data: &DataHome,
     grants: &[(String, collab_types::caps::Access)],
@@ -498,8 +455,8 @@ fn run_with_grants(
 fn a_home_grant_never_reaches_tilos_private_configuration() {
     use collab_types::caps::Access;
 
-    // Built before the home is replaced: the fixture compiles with `rustc`
-    // from the developer's toolchain, which lives under the real `HOME`.
+    // Built before the home is replaced: the fixture compiles with `rustc` from the developer's
+    // toolchain, which lives under the real `HOME`.
     let _ = workspacetest_payload();
     let home = tilo_test_env::TestHome::new().expect("temporary home");
     let store = home.config().join("tilo");
@@ -522,7 +479,6 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
     let home_dir = home.home().display().to_string();
     let path = |p: &std::path::Path| p.display().to_string();
 
-    // Phase `a_writable_home_grant_hides_and_protects_the_store`.
     {
         let data = DataHome::new();
         let grant = [(home_dir, Access::Write)];
@@ -554,8 +510,8 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
             );
         }
 
-        // Nor can the app plant a trust root in the store's place: writing it,
-        // or moving the real store aside to write one where it was.
+        // Nor can the app plant a trust root in the store's place: writing it, or moving the real
+        // store aside to write one where it was.
         for target in [&attestors, &revoked] {
             let line = run(&["writeabs", &path(target), "planted"]);
             assert!(line.starts_with("ERR "), "{line}");
@@ -592,7 +548,6 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
             "the write beside the store reached the host"
         );
     }
-    // Phase `a_read_only_config_grant_hides_the_store`.
     {
         let data = DataHome::new();
         let grant = [(path(home.config()), Access::Read)];
@@ -604,7 +559,6 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
             "the grant still lists ~/.config: {listing}"
         );
     }
-    // Phase `a_grant_naming_the_store_is_refused`.
     {
         let data = DataHome::new();
         for granted in [path(&store), path(&store.join("identity"))] {
@@ -616,7 +570,6 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
             );
         }
     }
-    // Phase `a_documents_grant_is_unchanged`.
     {
         let data = DataHome::new();
         let documents = path(note.parent().expect("documents"));
@@ -631,8 +584,8 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
     drop(home);
 }
 
-/// Run the fixture as Settings, the one package the launcher gives parts of
-/// the session's configuration, with Landlock enforced as in production.
+/// Run the fixture as Settings, the one package the launcher gives parts of the session's
+/// configuration, with Landlock enforced as in production.
 fn run_as_settings(data: &DataHome, argv: &[&str]) -> String {
     let manifest = ManifestView {
         package_id: "so.tilo.settings".to_string(),
@@ -665,8 +618,8 @@ fn run_as_settings(data: &DataHome, argv: &[&str]) -> String {
     reason = "one session configuration, probed phase by phase through the production launch"
 )]
 fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
-    // Built before the home is replaced: the fixture compiles with `rustc`
-    // from the developer's toolchain, which lives under the real `HOME`.
+    // Built before the home is replaced: the fixture compiles with `rustc` from the developer's
+    // toolchain, which lives under the real `HOME`.
     let _ = workspacetest_payload();
     let home = tilo_test_env::TestHome::new().expect("temporary home");
     let host = home.config().join("tilo");
@@ -699,7 +652,6 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
     let data = DataHome::new();
     let run = |argv: &[&str]| run_as_settings(&data, argv);
 
-    // Phase `the_trust_lists_registries_and_records_are_not_there`.
     for private in [
         "trusted-attestors.toml",
         "revoked-keys.toml",
@@ -712,8 +664,8 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
             "{private} must not reach the Settings sandbox: {line}"
         );
     }
-    // A trust list written where the session keeps them lands in the app's
-    // own directory, never on the host.
+    // A trust list written where the session keeps them lands in the app's own directory, never on the
+    // host.
     let planted = run(&[
         "writeabs",
         &format!("{config}/trusted-attestors.toml"),
@@ -725,9 +677,8 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
         "# trusted attestors"
     );
 
-    // Phase `the_identity_store_is_not_there`: the root secret, the active
-    // selector and the records are the host's, administered behind its
-    // identity actions.
+    // Phase `the_identity_store_is_not_there`: the root secret, the active selector and the records
+    // are the host's, administered behind its identity actions.
     for private in [
         "identity/secrets/0123abcd.key",
         "identity/active",
@@ -745,7 +696,6 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
         "the identity store must not be listable from Settings: {listing}"
     );
 
-    // Phase `the_workspace_tree_reads_and_refuses_writes`.
     assert_eq!(
         run(&["read", &format!("{config}/state.json")]),
         format!(r#"OK {config}/state.json {{"workspaces":[]}}"#)
@@ -760,9 +710,8 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
         r#"{"workspaces":[]}"#
     );
 
-    // Phase `the_settings_document_is_not_there`: Settings writes through
-    // the shell's settings service, so a write where the session keeps the
-    // document never reaches the host's.
+    // Phase `the_settings_document_is_not_there`: Settings writes through the shell's settings
+    // service, so a write where the session keeps the document never reaches the host's.
     let session = format!("{config}/records/device.automerge");
     let line = run(&["read", &session]);
     assert!(
@@ -776,7 +725,6 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
         "only the shell writes the settings document"
     );
 
-    // Phase `the_account_stores_stay_writable`.
     let wrote = run(&[
         "writeabs",
         &format!("{config}/accounts/store.json"),
@@ -802,10 +750,9 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
     drop(home);
 }
 
-/// An app's cgroup is out of its reach: its own place is the root of its
-/// cgroup namespace, the hierarchy (every app's cgroup, named by app, with
-/// its counters) is hidden behind an empty read-only directory, and no
-/// other cgroupfs can be mounted to reach it.
+/// An app's cgroup is out of its reach: its own place is the root of its cgroup namespace, the
+/// hierarchy (every app's cgroup, named by app, with its counters) is hidden behind an empty read-only
+/// directory, and no other cgroupfs can be mounted to reach it.
 #[test]
 fn an_app_can_neither_see_nor_reach_the_cgroup_hierarchy() {
     let data = DataHome::new();

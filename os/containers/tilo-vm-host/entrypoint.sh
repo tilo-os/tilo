@@ -164,10 +164,18 @@ if [ -n "${TILO_TAKE_WORK_RELAY:-}" ]; then
   mkdir -p -m 0700 "$profile" "$member/home"
   chown tilo-hosted:tilo-hosted "$profile" "$member/home"
   chmod 0700 "$profile"
+  # The member's home, where it keeps its workspaces' files, is on the state
+  # disk, under /var/lib. A workspace's VM sees a folder shared with it at the
+  # path it has here, and /var/lib is the guest's own, so no folder under it is
+  # shared: the member reaches its home at /home/tilo-member instead.
+  home=/home/tilo-member
+  mkdir -p "$home"
+  mountpoint -q "$home" || mount --bind "$member/home" "$home" \
+    || { say "could not mount the member's home at $home"; exit 1; }
   (
     while :; do
       # The profile names the member's identity and config itself.
-      HOME=$member/home \
+      HOME=$home \
         TILO_RUNTIME_PROFILE=$profile TILO_HOSTED_VM_SOCKET=$run/hosted.sock \
         TILO_HOSTED_PLANS=${TILO_VM_PLANS:-} \
         setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all -- \

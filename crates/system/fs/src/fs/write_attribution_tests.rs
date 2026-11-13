@@ -1,5 +1,4 @@
-//! The versions this mount makes of the paths the desktop session leases
-//! carry the agent it names in the record's own history.
+//! Versions made under a leased path record the agent the session names.
 
 use super::*;
 use collab_types::Ed25519PublicKey;
@@ -20,10 +19,6 @@ fn actor_and_signer() -> (FileActor, SigningKey) {
     )
 }
 
-/// The desktop session names the agent an action ran for. The versions this
-/// mount then makes of the leased paths carry the agent in the record's
-/// history, and Files' history read returns it with them. Paths the lease
-/// does not name stay the person's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_leased_writes_carry_their_agent_in_history() {
     use fs_protocol::files::{FileHistoryReadQueryV1, FileHistoryReadValueV1};
@@ -60,7 +55,6 @@ async fn session_leased_writes_carry_their_agent_in_history() {
     let report = fs.create_empty_file(folder, "q3.txt").unwrap();
     fs.record_version(report, fs_protocol::FileProvenance::Create, None);
     fs.commit_content(report, b"written for Ada").unwrap();
-    // A rename inside the leased folder is Scribe's too.
     fs.rename_named(folder, "q3.txt", folder, "q4.txt").unwrap();
     let notes = fs
         .create_empty_file(crate::namespace::ROOT_INO, "notes.txt")

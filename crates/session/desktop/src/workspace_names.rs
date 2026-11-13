@@ -10,7 +10,12 @@ pub(crate) fn made(name: Option<&str>, held: &[Workspace]) -> String {
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .map_or_else(|| numbered(held), str::to_owned);
-    let taken = |candidate: &str| held.iter().any(|workspace| workspace.name == candidate);
+    // A workspace nobody named is held under the word the desk gives it, so a workspace asking for
+    // that word is numbered beside it rather than standing as its twin.
+    let taken = |candidate: &str| {
+        held.iter()
+            .any(|workspace| tilo_desktop_surface::names::workspace(&workspace.name) == candidate)
+    };
     if !taken(&wanted) {
         return wanted;
     }
@@ -69,6 +74,16 @@ mod tests {
             "Reading",
             "a name nobody holds is the name asked for"
         );
+    }
+
+    /// A desk whose one workspace nobody named still holds the word it reads by: a workspace the
+    /// person calls that is numbered beside it, never its twin.
+    #[test]
+    fn the_word_an_unnamed_workspace_reads_by_is_taken() {
+        crate::i18n::ensure();
+        let tree = held(&[""]);
+        assert_eq!(made(Some("Workspace"), &tree), "Workspace 2");
+        assert_eq!(made(Some("Later"), &tree), "Later");
     }
 
     #[test]

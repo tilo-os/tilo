@@ -1,32 +1,7 @@
 //! The cgroup an app runs in.
 //!
-//! Every launch is one transient scope of the systemd user manager,
-//! `app-tilo-<escaped app id>-<launcher pid>.scope` in `app.slice` (see
-//! [`crate::scope`]). The launcher moves itself into it before it forks the
-//! app, so the app and everything it starts are inside it rather than chased
-//! into it afterwards. One unit per app is what makes an app one thing for
-//! resource accounting (its memory is charged to its own cgroup, never the
-//! compositor's), for the OOM killer, and for logout or a compositor crash,
-//! which stop the app and everything it forked instead of leaving it running
-//! with no display.
-//!
-//! The session writes the tier an app runs in as the cgroup files systemd
-//! would write for the same resource-control properties
-//! ([`crate::priority::tier_properties`] through [`set_tier`]), so the tier a
-//! launch starts in and the one it is moved to are one write, and its memory
-//! watch reclaims from and ends what it reads here ([`footprint`],
-//! [`memory_events`], [`reclaim`], [`kill`]).
-//!
-//! Who may write what: the scope belongs to the person's uid, like everything
-//! in their user manager, so only processes outside a sandbox can write it at
-//! all, and those are the compositor, the session and the launcher before it
-//! enters the sandbox (unconfined host applications could equally write any
-//! other cgroup of the user manager, scopes included, and are not confined by
-//! design). A sandboxed app sees no `/sys/fs/cgroup` ([`crate::profile`]
-//! hides it), has no capability to mount one, and lives in a cgroup
-//! namespace rooted at its own cgroup (`bwrap --unshare-all`), where the
-//! kernel's `nsdelegate` refuses a move out of that cgroup and a write of its
-//! own limits even to a process that could reach the files.
+//! Every launch is one transient scope of the systemd user manager, `app-tilo-<escaped
+//! app id>-<launcher pid>.scope` in `app.slice` (see [`crate::scope`]).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -36,8 +11,7 @@ use crate::priority::{Property, Tier};
 /// Where the cgroup2 hierarchy is mounted.
 pub const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 
-/// systemd's mapping of an `IOWeight` (1..10000, default 100) onto BFQ's
-/// weight (1..1000, default 100).
+/// systemd's mapping of an `IOWeight` (1..10000, default 100) onto BFQ's weight (1..1000, default 100).
 #[must_use]
 pub fn bfq_weight(io_weight: u64) -> u64 {
     const DEFAULT: u64 = 100;
@@ -68,8 +42,7 @@ pub fn bfq_weight(io_weight: u64) -> u64 {
     }
 }
 
-/// The cgroup files and values that carry systemd resource properties. A
-/// property with no file here is not one an app cgroup takes.
+/// The cgroup files and values that carry systemd resource properties.
 #[must_use]
 pub fn property_writes(props: &[Property]) -> Vec<(&'static str, String)> {
     let mut writes = Vec::new();
@@ -87,18 +60,12 @@ pub fn property_writes(props: &[Property]) -> Vec<(&'static str, String)> {
     writes
 }
 
-/// Write `props` into the app cgroup at `dir`. A file that does not exist
-/// is a controller the machine does not have (no `io` without BFQ or iocost):
-/// skipped, as systemd skips it.
-///
-/// # Errors
-///
-/// The first failed write, with the file it was for.
+/// Write `props` into the app cgroup at `dir`.
 pub fn apply(dir: &Path, props: &[Property]) -> Result<(), String> {
     for (file, value) in property_writes(props) {
         let path = dir.join(file);
-        // cgroupfs refuses to create a file (EACCES) rather than report it
-        // missing, so look before writing.
+        // cgroupfs refuses to create a file (EACCES) rather than report it missing, so look before
+        // writing.
         if !path.exists() {
             continue;
         }
@@ -124,9 +91,9 @@ pub fn tier_of(dir: &Path) -> Option<Tier> {
     }
 }
 
-/// The cgroup directory the process `pid` runs in, whatever unit or scope
-/// made it: where a launch's own writes go when the host gave it no app scope
-/// (a session without a user manager runs the app in its own cgroup).
+/// The cgroup directory the process `pid` runs in, whatever unit or scope made it: where a launch's own
+/// writes go when the host gave it no app scope (a session without a user manager runs the app in its
+/// own cgroup).
 #[must_use]
 pub fn cgroup_of_pid(pid: u32) -> Option<PathBuf> {
     let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
@@ -139,20 +106,9 @@ pub fn own_cgroup() -> Option<PathBuf> {
     cgroup_of_pid(std::process::id())
 }
 
-/// Put the cgroup this process runs in at [`Tier::Session`]: the compositor
-/// and the desk placing, drawing and answering a window are what a person
-/// waits on when they open something, so they answer before every app.
-///
-/// The image sets that weight on the compositor's logind scope before the
-/// session starts (`os/etc/systemd/system/session-.scope.d`); this is the same
-/// tier carried by the session itself, so a session a host started without
-/// those units, or one started from a terminal, is served the same way. A
-/// cgroup already weighted at or above the session tier is left as it is, so
-/// this never lowers what systemd set, nor a launch's own boost.
-///
-/// # Errors
-///
-/// The first failed write, as [`apply`].
+/// Put the cgroup this process runs in at [`Tier::Session`]: the compositor and the desk placing,
+/// drawing and answering a window are what a person waits on when they open something, so they answer
+/// before every app.
 pub fn claim_session_weight() -> Result<(), String> {
     match own_cgroup() {
         Some(dir) => raise_session_weight(&dir),
@@ -168,20 +124,14 @@ fn raise_session_weight(dir: &Path) -> Result<(), String> {
     set_tier(dir, Tier::Session, None)
 }
 
-/// Put the cgroup at `dir` in `tier`, writing the files a launch is born
-/// with ([`crate::priority::tier_properties`] through [`apply`]).
-///
-/// # Errors
-///
-/// The first failed write, as [`apply`].
+/// Put the cgroup at `dir` in `tier`, writing the files a launch is born with
+/// ([`crate::priority::tier_properties`] through [`apply`]).
 pub fn set_tier(dir: &Path, tier: Tier, total: Option<u64>) -> Result<(), String> {
     apply(dir, &crate::priority::tier_properties(tier, total))
 }
 
-/// Make the app cgroup at `dir` one OOM group (`on`) or one victim (`off`):
-/// the kernel then ends everything in it together when it picks any of it.
-/// A cgroup without the memory controller has no such file and nothing to
-/// set.
+/// Make the app cgroup at `dir` one OOM group (`on`) or one victim (`off`): the kernel then ends
+/// everything in it together when it picks any of it.
 pub fn set_oom_group(dir: &Path, on: bool) -> io::Result<()> {
     let path = dir.join("memory.oom.group");
     if !path.exists() {
@@ -225,9 +175,8 @@ pub fn memory_events(dir: &Path) -> MemoryEvents {
     }
 }
 
-/// What the cgroup at `dir` holds that only it can give back: anonymous
-/// memory in RAM (`memory.stat` `anon`) plus what of it went to swap.
-/// `memory.current` where the breakdown is missing.
+/// What the cgroup at `dir` holds that only it can give back: anonymous memory in RAM (`memory.stat`
+/// `anon`) plus what of it went to swap.
 #[must_use]
 pub fn footprint(dir: &Path) -> Option<u64> {
     let anon = read_keyed(dir, "memory.stat", "anon");
@@ -236,8 +185,7 @@ pub fn footprint(dir: &Path) -> Option<u64> {
         .or_else(|| read_u64(dir, "memory.current"))
 }
 
-/// Ask the kernel to reclaim `bytes` from the cgroup at `dir` now. It may
-/// reclaim less (`EAGAIN`); what it got is still freed.
+/// Ask the kernel to reclaim `bytes` from the cgroup at `dir` now.
 pub fn reclaim(dir: &Path, bytes: u64) -> io::Result<()> {
     match std::fs::write(dir.join("memory.reclaim"), bytes.to_string()) {
         Err(error) if error.raw_os_error() == Some(libc::EAGAIN) => Ok(()),
@@ -250,8 +198,7 @@ fn unified_path(cgroup: &str) -> Option<&str> {
     cgroup.lines().find_map(|line| line.strip_prefix("0::"))
 }
 
-/// Whether a cgroup directory name is a launch's own scope
-/// ([`crate::scope::unit_name`]).
+/// Whether a cgroup directory name is a launch's own scope ([`crate::scope::unit_name`]).
 fn is_app_scope(name: &str) -> bool {
     name.strip_prefix(crate::scope::UNIT_PREFIX)
         .and_then(|rest| rest.strip_suffix(".scope"))
@@ -270,10 +217,9 @@ fn app_of_scope(name: &str) -> Option<(String, u32)> {
     Some((crate::scope::unescape_name(escaped), pid.parse().ok()?))
 }
 
-/// The `app-tilo-<app id>-<pid>.scope` a `/proc/<pid>/cgroup` text places a
-/// process in, as a path below [`CGROUP_ROOT`]; `None` for a process outside
-/// the app slice's own scopes, and for one in another unit of the slice (a
-/// service, the manager itself).
+/// The `app-tilo-<app id>-<pid>.scope` a `/proc/<pid>/cgroup` text places a process in, as a path below
+/// [`CGROUP_ROOT`]; `None` for a process outside the app slice's own scopes, and for one in another
+/// unit of the slice (a service, the manager itself).
 #[must_use]
 pub fn scope_of(cgroup: &str) -> Option<String> {
     let path = unified_path(cgroup)?;
@@ -292,16 +238,15 @@ pub fn scope_of(cgroup: &str) -> Option<String> {
     None
 }
 
-/// The app cgroup a `/proc/<pid>/cgroup` text places a process in: the scope
-/// of its own a launch asked for. A process in a cgroup an app created below
-/// its own counts as in that app.
+/// The app cgroup a `/proc/<pid>/cgroup` text places a process in: the scope of its own a launch asked
+/// for.
 #[must_use]
 pub fn app_cgroup_at(cgroup: &str) -> Option<String> {
     scope_of(cgroup)
 }
 
-/// Whether this process is in an app's cgroup already: then it has one and
-/// must not ask the manager for a second.
+/// Whether this process is in an app's cgroup already: then it has one and must not ask the manager for
+/// a second.
 #[must_use]
 pub fn current_is_app_cgroup() -> bool {
     std::fs::read_to_string("/proc/self/cgroup")
@@ -331,8 +276,8 @@ pub fn processes(dir: &Path) -> Vec<u32> {
     pids
 }
 
-/// End every process in the app cgroup at `dir` at once, those that left
-/// its process tree (`setsid`, a double fork) included.
+/// End every process in the app cgroup at `dir` at once, those that left its process tree (`setsid`, a
+/// double fork) included.
 pub fn kill(dir: &Path) -> io::Result<()> {
     std::fs::write(dir.join("cgroup.kill"), "1")
 }
@@ -349,8 +294,8 @@ pub struct Stats {
     pub memory_low: Option<u64>,
     /// CPU time used, in microseconds.
     pub cpu_usec: Option<u64>,
-    /// Its CPU weight: 10 000 while it opens, 1 000 for the session, 800 in
-    /// the foreground tier, 50 in the background.
+    /// Its CPU weight: 10 000 while it opens, 1 000 for the session, 800 in the foreground tier, 50 in
+    /// the background.
     pub cpu_weight: Option<u64>,
     /// Processes in it the kernel killed for memory.
     pub oom_kills: Option<u64>,
@@ -377,8 +322,7 @@ fn read_keyed(dir: &Path, file: &str, key: &str) -> Option<u64> {
         })
 }
 
-/// Read the counters of the app cgroup at `dir`. A counter whose controller
-/// the machine lacks is `None`.
+/// Read the counters of the app cgroup at `dir`.
 #[must_use]
 pub fn stats(dir: &Path) -> Stats {
     Stats {
@@ -395,8 +339,8 @@ pub fn stats(dir: &Path) -> Stats {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct RunningApp {
     pub app_id: String,
-    /// The cgroup's path below [`CGROUP_ROOT`]: what the journal records as
-    /// `_SYSTEMD_CGROUP` for the app's own entries.
+    /// The cgroup's path below [`CGROUP_ROOT`]: what the journal records as `_SYSTEMD_CGROUP` for the
+    /// app's own entries.
     pub cgroup: String,
     pub stats: Stats,
 }
@@ -448,8 +392,8 @@ fn mib(bytes: Option<u64>) -> String {
     )
 }
 
-/// `apps` as a table for a terminal: id, tier, processes, memory, CPU time
-/// and OOM kills, then the cgroup to match the journal on.
+/// `apps` as a table for a terminal: id, tier, processes, memory, CPU time and OOM kills, then the
+/// cgroup to match the journal on.
 #[must_use]
 pub fn format_table(apps: &[RunningApp]) -> String {
     use std::fmt::Write as _;
@@ -524,8 +468,7 @@ mod tests {
                     .join("app-tilo-so.tilo.notes-4126.scope")
             );
         }
-        // The app slice holds more than app scopes: a service, the manager
-        // itself, and the session.
+        // The app slice holds more than app scopes: a service, the manager itself, and the session.
         for other in [
             "0::/user.slice/user-1000.slice/user@1000.service/app.slice/cc-model-router.service\n",
             "0::/user.slice/user-1000.slice/user@1000.service/app.slice\n",
@@ -647,8 +590,8 @@ mod tests {
             "a cgroup nothing weighted carries the session's own weight"
         );
         assert_eq!(tier_of(dir.path()), Some(Tier::Session));
-        // What the image's units already set is left as it is, and a launch
-        // that boosted its cgroup is never lowered by the session.
+        // What the image's units already set is left as it is, and a launch that boosted its cgroup is
+        // never lowered by the session.
         for weight in ["1000", "10000"] {
             std::fs::write(dir.path().join("cpu.weight"), weight).unwrap();
             raise_session_weight(dir.path()).unwrap();

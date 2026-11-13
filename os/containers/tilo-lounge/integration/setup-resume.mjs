@@ -70,10 +70,15 @@ const check = (ok, what, detail = '') => {
   return Boolean(ok);
 };
 
+// The flow drives two tabs of one browser and reads the one behind: a setup
+// is one, whichever tab shows it, and a tab that went back says so to the
+// other through storage. A browser throttles or freezes a tab nobody looks
+// at, and a starved machine does it at once, so the step it answers would
+// never come: every tab here answers as the front one does.
 const browser = await launch({args: [
-  '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
+  '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
 ]});
 const finish = async () => {

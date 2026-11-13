@@ -1,20 +1,13 @@
-//! What guided setup offers the palette, agents and scripts: its effects and
-//! the live rows of the setup in progress.
-//!
-//! Setup choices describe local navigation and a reviewable plan on this
-//! computer. They are effects of the imager resource, never document
-//! actions, and never carry folder paths or installation authority into the
-//! shared document.
+//! What guided setup offers the palette, agents and scripts: its effects, and the
+//! rows it publishes.
 
 use tilo_actions::{ActionParam, ActionSpec, ParamType, ResourcePresentation};
 use ui::framework::{EffectStatus, LiveRow};
 use ui::tilo_resource::{self, ActionRef, Effect};
 
-/// The live row of the setup in progress, beneath the imager resource.
 pub const SETUP_ROW_ID: &str = "imager.setup";
 
 /// Guided setup's effects. Each answers with the setup's path-free status
-/// ([`SetupProjection`]) as it stands afterwards.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "imager.setup")]
 pub enum SetupEffect {
@@ -24,7 +17,6 @@ pub enum SetupEffect {
     /// Read this computer's Desktop readiness and current installation phase.
     #[effect(returns, kind = "read")]
     ReadDesktopStatus,
-    /// Install the exact reviewed Desktop release after a fresh host probe.
     #[effect(returns)]
     #[effect(label = "imager-setup-action-install-desktop")]
     InstallDesktop,
@@ -37,35 +29,27 @@ pub enum SetupEffect {
     /// Recheck Desktop availability without installing anything.
     #[effect(returns, kind = "read")]
     RecheckDesktop,
-    /// Continue setup.
     #[effect(returns, kind = "read")]
     #[effect(label = "imager-setup-action-next")]
     ContinueSetup,
-    /// Download Tilo.
     #[effect(returns)]
     #[effect(label = "imager-setup-action-start-download")]
     StartInternalDownload,
-    /// Pause download.
     #[effect(returns)]
     #[effect(label = "imager-setup-action-pause-download")]
     PauseInternalDownload,
-    /// Resume download.
     #[effect(returns)]
     #[effect(label = "imager-setup-action-resume-download")]
     ResumeInternalDownload,
-    /// Cancel download.
     #[effect(returns)]
     #[effect(label = "imager-setup-action-cancel-download")]
     CancelInternalDownload,
-    /// Discard unfinished download data.
     #[effect(returns)]
     #[effect(label = "imager-setup-action-discard-download")]
     DiscardInternalDownload,
-    /// Keep download for later.
     #[effect(returns)]
     #[effect(label = "imager-setup-action-release-download")]
     ReleaseInternalDownload,
-    /// Set Tilo size.
     #[effect(returns)]
     #[effect(label = "imager-setup-action-internal-set-target-size")]
     SetInternalTargetSize {
@@ -81,52 +65,41 @@ pub enum SetupEffect {
         )]
         directory: String,
     },
-    /// Install Tilo alongside the current system.
-    ///
-    /// Installs (or continues) exactly the reviewed plan with this digest.
     #[effect(returns)]
     #[effect(label = "imager-setup-action-internal-install")]
     InstallInternal {
         #[param("Digest of the reviewed installation plan")]
         reviewed: String,
     },
-    /// Restart into the Tilo installer.
     #[effect(returns)]
     #[effect(label = "imager-setup-action-internal-restart")]
     RestartInternal,
-    /// Restart later.
     #[effect(returns)]
     #[effect(label = "imager-setup-action-internal-restart-later")]
     RestartInternalLater,
-    /// Start the Tilo installer on the next restart.
     #[effect(returns)]
     #[effect(label = "imager-setup-action-internal-retry")]
     RetryInternal {
         #[param("Id of the unfinished installer operation")]
         operation_id: String,
     },
-    /// Remove the Tilo installer.
     #[effect(returns)]
     #[effect(label = "imager-setup-action-internal-remove")]
     RemoveInternal {
         #[param("Id of the unfinished installer operation")]
         operation_id: String,
     },
-    /// Restart to firmware settings.
     #[effect(returns)]
     #[effect(label = "imager-setup-action-internal-firmware-settings")]
     InternalFirmwareSettings,
-    /// Turn off Fast Startup.
     #[effect(returns)]
     #[effect(label = "imager-setup-action-internal-disable-fast-startup")]
     InternalDisableFastStartup,
-    /// Check this computer again.
     #[effect(returns, kind = "read")]
     #[effect(label = "imager-setup-action-internal-recheck")]
     RecheckInternal,
 }
 
-/// Which Full Tilo installation commands may run now.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "one independent availability flag per published action"
@@ -150,50 +123,38 @@ pub struct InternalAvailability {
     pub recheck: bool,
 }
 
-/// Path-free state of the Full Tilo installation on this computer.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct InternalProjection {
-    /// `gated`, `checking`, `no-release`, `unsupported` or `ready`.
     pub readiness: &'static str,
     pub on_review: bool,
-    /// Download worker phase (`none` before any download).
     pub download: &'static str,
     pub target_gib: Option<u64>,
     pub min_gib: Option<u64>,
     pub max_gib: Option<u64>,
-    /// Digest `setup.internal.install` must name; changes with the plan.
     pub reviewed: Option<String>,
     pub shrink_bytes: Option<u64>,
     pub staging_bytes: Option<u64>,
-    /// Stable blocker IDs from the host probe.
     pub blockers: Vec<&'static str>,
-    /// `idle`, `running`, `succeeded` or `failed`.
     pub run: &'static str,
-    /// Helper action of the latest run (`stage`, `arm`, `remove`).
     pub run_action: Option<&'static str>,
     pub failure: Option<String>,
-    /// Unfinished staging operation the resume card offers.
     pub pending_operation: Option<String>,
     pub availability: InternalAvailability,
 }
 
-/// Component-level compatibility as the semantic surface publishes it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct HardwareComponentProjection {
     pub kind: &'static str,
     pub name: String,
     pub present: bool,
     pub status: &'static str,
-    /// What the report's evidence can establish for the selected release.
     pub applicability: &'static str,
-    /// The typed outcome; the interface localizes it.
     pub reason: imager_backend::support_report::SupportReason,
     pub evidence: Vec<imager_backend::support_report::Evidence>,
     pub remedy: Option<imager_backend::support_report::Remedy>,
     pub critical: bool,
 }
 
-/// The destination identity and its component results.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct HardwareProjection {
     pub source: &'static str,
@@ -264,9 +225,7 @@ impl HardwareProjection {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct SetupProjection {
-    /// The reviewed experience: `desktop` or `full_os`.
     pub experience: &'static str,
-    /// Whether the read-only computer check may continue.
     pub next: bool,
     pub internal: InternalProjection,
     pub hardware: Option<HardwareProjection>,
@@ -280,8 +239,6 @@ impl SetupProjection {
     }
 }
 
-/// An effect that cannot run now: `code` names why for programs, `reason`
-/// for people.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Blocked {
     pub id: &'static str,
@@ -301,7 +258,6 @@ fn block(
     }
 }
 
-/// Why the Full Tilo commands that need the review are unavailable.
 fn review_gate(state: &InternalProjection) -> (&'static str, &'static str) {
     if state.on_review {
         (
@@ -316,8 +272,6 @@ fn review_gate(state: &InternalProjection) -> (&'static str, &'static str) {
     }
 }
 
-/// Each Full Tilo command: its effect id, its label, whether it may run now,
-/// and the code and reason (a message key) when it may not.
 fn internal_commands(
     state: &InternalProjection,
 ) -> [(&'static str, &'static str, bool, &'static str, &'static str); 16] {
@@ -442,7 +396,6 @@ fn internal_commands(
     ]
 }
 
-/// The setup effects that cannot run in `state`, with why.
 #[must_use]
 pub fn blocked(state: &SetupProjection) -> Vec<Blocked> {
     let mut blocked = Vec::new();
@@ -468,8 +421,6 @@ pub fn blocked(state: &SetupProjection) -> Vec<Blocked> {
     blocked
 }
 
-/// The setup effects as callers see them now: what is unavailable, and the
-/// Full Tilo commands in the person's language.
 #[must_use]
 pub fn statuses(state: &SetupProjection) -> Vec<EffectStatus> {
     let effect = |id| ActionRef::<SetupEffect, ()>::new(id, &[], SetupEffect::kind());
@@ -499,15 +450,12 @@ fn gated(spec: ActionSpec, available: bool, code: &str, reason: &str) -> ActionS
     }
 }
 
-/// `effect` bound to the row it is offered on, as `label`.
 fn bound(effect: &SetupEffect, label: impl Into<String>) -> ActionSpec {
     let mut spec = effect.bound();
     spec.type_mut().label = label.into();
     spec
 }
 
-/// `effect` offered on a row as `label`, with what the row knows already
-/// bound and `param` asked of the caller.
 fn asking(effect: &SetupEffect, label: impl Into<String>, param: ActionParam) -> ActionSpec {
     let mut spec = effect.bound_asking_params(vec![param]);
     spec.type_mut().label = label.into();
@@ -641,9 +589,6 @@ fn hardware_row(hardware: &HardwareProjection) -> LiveRow {
     row
 }
 
-/// The setup in progress as one live row beneath the imager resource: the
-/// selection with its folders, the suggested folders, the review, what may
-/// run now, and the Full Tilo installation.
 #[must_use]
 pub fn row(state: &SetupProjection) -> LiveRow {
     let experience = match state.experience {
@@ -668,8 +613,6 @@ pub fn row(state: &SetupProjection) -> LiveRow {
     root
 }
 
-/// A delivery retry writes the prepared account capsule, so it is distinct
-/// from the read-only native package recheck.
 pub(super) fn desktop_preparation_row(retry: bool) -> LiveRow {
     LiveRow::new(
         "imager.setup.desktop-preparation",
@@ -794,10 +737,8 @@ mod tests {
         SetupEffect::from_payload(&encoded.payload).unwrap()
     }
 
-    /// Internal install row commands, availability and payload.
     #[test]
     fn internal_row_offers_gated_commands_bound_to_the_reviewed_digest() {
-        // Catches an install command reachable only by clicking (spec §8).
         let actions = internal_actions(&projection(InternalProjection::default()));
         for (id, ..) in internal_commands(&InternalProjection::default()) {
             let action = actions
@@ -848,8 +789,6 @@ mod tests {
             .unwrap();
         assert_eq!(code(restart), Some("internal_not_staged"));
 
-        // Catches an install or removal that does not name what the invoker
-        // saw, which is what lets the view refuse a stale invocation.
         let state = projection(InternalProjection {
             on_review: true,
             reviewed: Some("a".repeat(64)),

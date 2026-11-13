@@ -6,24 +6,16 @@ use crate::workspace::read::collections::Collections;
 use crate::workspace::read::{self, Capacity, LegacyRead, ReadError, WorkspaceRead};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
-use tilo_action_policy::{Grant, Role};
+use tilo_action_policy::Role;
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 
 trait Decode {
     fn identity(&self, key: &str, bytes: &[u8]) -> Result<GovernedIdentity, Error>;
-    fn grant(&self, bytes: &[u8]) -> Result<Grant, Error>;
-    fn member(&self, bytes: &[u8]) -> Result<Role, Error>;
 }
 struct Legacy;
 impl Decode for Legacy {
     fn identity(&self, _key: &str, bytes: &[u8]) -> Result<GovernedIdentity, Error> {
         GovernedIdentity::decode(bytes).map_err(|_| policy(MediaPolicyError::Malformed))
-    }
-    fn grant(&self, bytes: &[u8]) -> Result<Grant, Error> {
-        serde_json::from_slice(bytes).map_err(|_| policy(MediaPolicyError::Malformed))
-    }
-    fn member(&self, bytes: &[u8]) -> Result<Role, Error> {
-        serde_json::from_slice(bytes).map_err(|_| policy(MediaPolicyError::Malformed))
     }
 }
 /// The identity rows as their governance state decoded them once, the rest
@@ -35,12 +27,6 @@ impl Decode for Decoded<'_> {
             Some(identity) => Ok(identity.clone()),
             None => Legacy.identity(key, bytes),
         }
-    }
-    fn grant(&self, bytes: &[u8]) -> Result<Grant, Error> {
-        Legacy.grant(bytes)
-    }
-    fn member(&self, bytes: &[u8]) -> Result<Role, Error> {
-        Legacy.member(bytes)
     }
 }
 fn policy(error: MediaPolicyError) -> Error {
@@ -68,6 +54,7 @@ pub(super) fn legacy(
     project(
         &LegacyRead(workspace),
         &Legacy,
+        &crate::members::replay_declared(workspace),
         extra,
         &mut Work {
             collections: Collections::unqualified(),
@@ -85,6 +72,7 @@ pub(super) fn decoded(
     project(
         &LegacyRead(&**workspace),
         &Decoded(workspace),
+        &crate::members::replay_declared(workspace),
         extra,
         &mut Work {
             collections: Collections::unqualified(),
@@ -100,38 +88,26 @@ pub(super) fn decoded(
 fn project<'a, R: WorkspaceRead, D: Decode>(
     workspace: &R,
     decoder: &D,
+    membership: &tilo_action_policy::WorkspacePolicy,
     extra: impl IntoIterator<Item = &'a RevocationEntry>,
     work: &mut Work,
 ) -> Result<[u8; 32], Error> {
     let owner = read::strict_string(workspace, &workspace.root(), "owner").map_err(strict_error)?;
     let owner_key = super::canonical_key(&owner).map_err(policy)?;
-    let grant_map =
-        read::strict_map(workspace, &workspace.root(), "grants").map_err(strict_error)?;
+    // The membership as the log makes it: who is in, and each grant by id.
     let mut grants = BTreeMap::new();
-    workspace
-        .visit_entries(&grant_map, read::Selection::All, &mut |key, values| {
-            let bytes = read::strict_bytes_of(values).map_err(strict_error)?;
-            let value = decoder.grant(&bytes)?;
-            let encoded = work.encoded(&value)?;
-            let key = work.text(key)?;
-            work.tree_entry::<String, Vec<u8>>()?;
-            grants.insert(key, encoded);
-            Ok(())
-        })
-        .map_err(visit_error)?;
-    let member_map =
-        read::strict_map(workspace, &workspace.root(), "members").map_err(strict_error)?;
+    for grant in &membership.grants {
+        let encoded = work.encoded(grant)?;
+        let key = work.text(grant.id.as_str())?;
+        work.tree_entry::<String, Vec<u8>>()?;
+        grants.insert(key, encoded);
+    }
     let mut members = BTreeMap::new();
-    workspace
-        .visit_entries(&member_map, read::Selection::All, &mut |key, values| {
-            let bytes = read::strict_bytes_of(values).map_err(strict_error)?;
-            let role = decoder.member(&bytes)?;
-            let key = work.text(key)?;
-            work.tree_entry::<String, Role>()?;
-            members.insert(key, role);
-            Ok(())
-        })
-        .map_err(visit_error)?;
+    for (person, role) in &membership.members {
+        let key = work.text(person)?;
+        work.tree_entry::<String, Role>()?;
+        members.insert(key, *role);
+    }
     let peers = read::strict_map(workspace, &workspace.root(), "peers").map_err(strict_error)?;
     let mut roster = BTreeSet::new();
     workspace

@@ -1,10 +1,4 @@
 //! Offline-first Places primitives for Photos.
-//!
-//! The map UI consumes this module rather than a network SDK: every marker is
-//! made from explicitly shared [`PhotoLocation`] records, and the projection
-//! works with a calm reference grid when no locally cached basemap exists.
-//! That is both more useful than an empty error page on a train and more
-//! honest than quietly sending a person's photo coordinates to a tile host.
 
 use std::collections::BTreeMap;
 
@@ -16,9 +10,6 @@ use crate::model::{LibraryPhoto, PhotoLocation};
 pub const MIN_ZOOM: f64 = 1.0;
 pub const MAX_ZOOM: f64 = 18.0;
 
-/// One deterministic marker cluster. It retains photo ids rather than image
-/// bytes, allowing a marker or a screen reader to open the exact canonical
-/// photo resource without materialising every thumbnail.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlaceCluster {
     pub key: String,
@@ -35,9 +26,6 @@ impl PlaceCluster {
     }
 }
 
-/// Local map camera using WGS-84 degrees. The conversion is Web-Mercator-ish
-/// for familiar panning behaviour, but it does not promise navigational
-/// accuracy; Photos uses it for photo browsing only.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MapViewport {
     pub latitude: f64,
@@ -65,9 +53,6 @@ impl MapViewport {
         }
     }
 
-    /// Pan by CSS/logical pixels in a viewport of `width × height`. This is
-    /// intentionally pure so pointer drag, touch drag and keyboard arrows all
-    /// lead to identical camera state.
     #[must_use]
     pub fn panned(self, dx: f64, dy: f64, width: f64, height: f64) -> Self {
         if width <= 0.0 || height <= 0.0 {
@@ -84,10 +69,6 @@ impl MapViewport {
         .clamped()
     }
 
-    /// The camera that shows every one of `points` (latitude, longitude)
-    /// inside a `width × height` viewport, `margin` pixels clear of its
-    /// edges, as close as that allows. One point is shown at a city's
-    /// scale; none leaves the default camera.
     #[must_use]
     pub fn fitting(points: &[(f64, f64)], width: f64, height: f64, margin: f64) -> Self {
         let Some(&(first_lat, first_lon)) = points.first() else {
@@ -103,8 +84,6 @@ impl MapViewport {
         }
         let room_x = (width - 2.0 * margin).max(1.0);
         let room_y = (height - 2.0 * margin).max(1.0);
-        // Pixels per degree that fit both spans; a single place opens at a
-        // regional scale rather than the deepest zoom.
         let fit = (room_x / (east - west).max(f64::EPSILON))
             .min(room_y / (north - south).max(f64::EPSILON));
         let zoom = (fit * 360.0 / 256.0).log2().min(6.0);
@@ -116,8 +95,6 @@ impl MapViewport {
         .clamped()
     }
 
-    /// Project one location into local viewport pixels. `None` means invalid
-    /// geometry, never a hidden fallback coordinate.
     #[must_use]
     pub fn project(self, location: &PhotoLocation, width: f64, height: f64) -> Option<(f64, f64)> {
         if !(location.is_valid() && width.is_finite() && height.is_finite()) {
@@ -130,9 +107,6 @@ impl MapViewport {
         Some((x, y))
     }
 
-    /// Convert a deliberate click in the local reference map back to WGS-84
-    /// coordinates. This is the inverse of [`Self::project`] and has no map
-    /// service or geocoding dependency.
     #[must_use]
     pub fn unproject(self, x: f64, y: f64, width: f64, height: f64) -> Option<(f64, f64)> {
         if !(x.is_finite() && y.is_finite() && width > 0.0 && height > 0.0) {
@@ -149,10 +123,6 @@ impl MapViewport {
     }
 }
 
-/// Group photos into their canonical, addressable places for a readable marker
-/// layer.  A map viewport may change its scale, but it must not change what a
-/// marker *means*: activating one always opens the same shared collection,
-/// never whichever photograph happened to be first in a transient bucket.
 #[must_use]
 pub fn clusters<'a>(photos: impl IntoIterator<Item = &'a LibraryPhoto>) -> Vec<PlaceCluster> {
     let mut grouped = BTreeMap::<String, (String, f64, f64, Vec<String>)>::new();
@@ -167,8 +137,6 @@ pub fn clusters<'a>(photos: impl IntoIterator<Item = &'a LibraryPhoto>) -> Vec<P
         let entry = grouped
             .entry(key.clone())
             .or_insert_with(|| (location.display_name(), 0.0, 0.0, Vec::new()));
-        // Prefer the first explicit label: collection order is stable and that
-        // avoids random marker titles when several camera records merge.
         entry.1 += location.latitude;
         entry.2 += location.longitude;
         entry.3.push(photo.id.clone());

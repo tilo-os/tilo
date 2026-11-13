@@ -48,6 +48,7 @@ use crate::workspace::{UserId, Workspace};
 const WORKSPACES_KEY: &str = "workspaces";
 pub(crate) const ACTIVE_KEY: &str = "active";
 const VIEW_KEY: &str = "view_v1";
+const DISPLAYS_KEY: &str = "displays_v1";
 const LOCAL_KEY: &str = "local_v1";
 const AUTHORS_KEY: &str = "authors_v1";
 const GRANTS_KEY: &str = "grants";
@@ -541,9 +542,28 @@ impl View {
     }
 }
 
+/// What this device's displays show of the desk: the windows they are partitioned into, and the
+/// group covering its display. A display is the device's, so nothing of this reaches a workspace.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Displays {
+    #[serde(default, skip_serializing_if = "OutputPartition::is_empty")]
+    outputs: OutputPartition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fullscreen: Option<GroupId>,
+}
+
+/// Whether a document keeps the whole view of the desk or the displays' part of it alone.
+#[derive(Clone, Copy)]
+enum Showing {
+    /// Every field of [`View`]: a host whose document is the only store of the desk.
+    Whole,
+    /// [`Displays`] alone: a host whose workspace records hold the layout and the person's view.
+    Displays,
+}
+
 /// What a workspace holds that this device reads and no other device needs:
-/// the defaults for opening each kind of resource, which windows this device
-/// streams to which peer, and the fields an older build wrote there.
+/// the defaults for opening each kind of resource, and which windows this
+/// device streams to which peer.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Local {
     #[serde(default, skip_serializing_if = "default_apps_unset")]
@@ -553,8 +573,6 @@ struct Local {
         skip_serializing_if = "crate::shared_surfaces::SharedSurfaces::is_empty"
     )]
     shared_surfaces: crate::shared_surfaces::SharedSurfaces,
-    #[serde(flatten)]
-    retired_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Local {
@@ -562,7 +580,6 @@ impl Local {
         Self {
             default_apps: workspace.default_apps.clone(),
             shared_surfaces: workspace.shared_surfaces.clone(),
-            retired_fields: workspace.retired_fields.clone(),
         }
     }
 
@@ -570,13 +587,10 @@ impl Local {
     fn apply(self, workspace: &mut Workspace) {
         workspace.default_apps = self.default_apps;
         workspace.shared_surfaces = self.shared_surfaces;
-        workspace.retired_fields = self.retired_fields;
     }
 
     fn is_empty(&self) -> bool {
-        default_apps_unset(&self.default_apps)
-            && self.shared_surfaces.is_empty()
-            && self.retired_fields.is_empty()
+        default_apps_unset(&self.default_apps) && self.shared_surfaces.is_empty()
     }
 }
 
@@ -597,11 +611,39 @@ pub fn seed(doc: &mut AutoCommit, desktop: &DesktopTree) {
 /// that keeps every change of the desk as its history uses this to write a drag once
 /// it is over: a resize writes the view on every frame.
 pub fn seed_of_the_view(doc: &mut AutoCommit, desktop: &DesktopTree) -> bool {
+    seed_showing(doc, desktop, Showing::Whole)
+}
+
+/// [`seed_of_the_view`] for a host whose workspace records hold the layout and each person's view
+/// of it: the document keeps the desk and what this device's displays show of it alone.
+pub fn seed_of_displays(doc: &mut AutoCommit, desktop: &DesktopTree) -> bool {
+    seed_showing(doc, desktop, Showing::Displays)
+}
+
+fn seed_showing(doc: &mut AutoCommit, desktop: &DesktopTree, showing: Showing) -> bool {
     let before = doc.pending_ops();
     if doc.uint_at(&ROOT, ACTIVE_KEY) != Some(desktop.active.raw()) {
         let _ = doc.put(&ROOT, ACTIVE_KEY, ScalarValue::Uint(desktop.active.raw()));
     }
-    put_json_if_changed(doc, &ROOT, VIEW_KEY, &View::of(desktop));
+    match showing {
+        Showing::Whole => {
+            put_json_if_changed(doc, &ROOT, VIEW_KEY, &View::of(desktop));
+        }
+        Showing::Displays => {
+            // The person's view of the layout is a record of the workspace: this document keeps
+            // none of it.
+            delete_if_present(doc, &ROOT, VIEW_KEY);
+            let displays = Displays {
+                outputs: desktop.outputs.clone(),
+                fullscreen: desktop.fullscreen,
+            };
+            if displays.outputs.is_empty() && displays.fullscreen.is_none() {
+                delete_if_present(doc, &ROOT, DISPLAYS_KEY);
+            } else {
+                put_json_if_changed(doc, &ROOT, DISPLAYS_KEY, &displays);
+            }
+        }
+    }
     let after_view = doc.pending_ops();
     if let Some(list) = child_object(doc, &ROOT, WORKSPACES_KEY, ObjType::List) {
         sync_list(
@@ -848,7 +890,7 @@ fn rebuild_strips(doc: &AutoCommit, entry: &ObjId, ws: &mut Workspace) {
             ws.strips.get_mut(at)
         } else {
             ws.strips
-                .push(Strip::new(strip_id, name.as_deref().unwrap_or("Main")));
+                .push(Strip::new(strip_id, name.as_deref().unwrap_or_default()));
             ws.strips.last_mut()
         };
         let Some(strip) = strip else {
@@ -899,6 +941,18 @@ pub fn rebuild_view(doc: &AutoCommit, desktop: &mut DesktopTree) {
             }
         }
     }
+}
+
+/// Read what [`seed_of_displays`] recorded of this device's displays into `desktop`.
+pub fn rebuild_displays(doc: &AutoCommit, desktop: &mut DesktopTree) {
+    let Some(bytes) = doc.bytes_at(&ROOT, DISPLAYS_KEY) else {
+        return;
+    };
+    let Ok(displays) = serde_json::from_slice::<Displays>(&bytes) else {
+        return;
+    };
+    desktop.outputs = displays.outputs;
+    desktop.fullscreen = displays.fullscreen;
 }
 
 fn view_of(doc: &AutoCommit) -> Option<View> {
@@ -1055,7 +1109,7 @@ pub fn only_moves_the_view(change: &automerge::Change) -> bool {
             op.obj == ObjectId::Root
                 && !op.insert
                 && matches!(op.action, OpType::Put(_))
-                && matches!(&op.key, Key::Map(key) if key == ACTIVE_KEY || key == VIEW_KEY)
+                && matches!(&op.key, Key::Map(key) if key == ACTIVE_KEY || key == VIEW_KEY || key == DISPLAYS_KEY)
         })
 }
 

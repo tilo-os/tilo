@@ -5,17 +5,14 @@ use vello::kurbo::{Affine, Rect};
 
 use crate::num;
 
-/// An image block's `anchor` attr (`inline` | `paragraph` | `page`).
 pub(super) fn anchor(block: &BlockView) -> &str {
     block.str_attr("anchor").unwrap_or("inline")
 }
 
-/// An image block's `wrap` attr (`none` | `left` | `right` | `both`).
 pub(super) fn wrap(block: &BlockView) -> &str {
     block.str_attr("wrap").unwrap_or("none")
 }
 
-/// Source-relative crop insets in `[0, 1)`, decoded from ten-thousandths.
 pub(super) fn crop(block: &BlockView) -> (f64, f64, f64, f64) {
     let edge = |key: &str| match block.attrs.get(key) {
         Some(AttrVal::Int(value)) if (0..=9_500).contains(value) => {
@@ -81,7 +78,6 @@ pub(super) fn crop_is_active(crop: (f64, f64, f64, f64)) -> bool {
     crop != (0.0, 0.0, 0.0, 0.0)
 }
 
-/// A page-relative free object's persisted position.
 pub(super) fn free_position(block: &BlockView) -> Option<(f64, f64, usize)> {
     let int = |key: &str| block.int_attr(key);
     let (x, y, page) = (int("offset_x")?, int("offset_y")?, int("page")?);
@@ -98,7 +94,6 @@ pub(super) fn free_position(block: &BlockView) -> Option<(f64, f64, usize)> {
     ))
 }
 
-/// Explicit display size `(width, height)` in pixels.
 pub(super) fn explicit_size(block: &BlockView) -> Option<(f64, f64)> {
     let dimension = |key: &str| match block.attrs.get(key) {
         Some(AttrVal::Int(value)) if *value > 0 => Some(num::f64_of_i64(*value)),
@@ -108,7 +103,6 @@ pub(super) fn explicit_size(block: &BlockView) -> Option<(f64, f64)> {
     Some((dimension("width")?, dimension("height")?))
 }
 
-/// Whether following text should flow beside this image.
 pub(super) fn floats(block: &BlockView) -> bool {
     matches!(anchor(block), "paragraph" | "page") && matches!(wrap(block), "left" | "right")
 }
@@ -133,10 +127,8 @@ mod tests {
         }
     }
 
-    /// Valid attributes decode into layout values and malformed geometry degrades to safe defaults.
     #[test]
     fn image_layout_attributes_decode_or_degrade_safely() {
-        // Phase: valid_attributes_decode_into_layout_values.
         {
             let block = image([
                 ("anchor", AttrVal::Str("page".into())),
@@ -156,7 +148,6 @@ mod tests {
             assert_eq!(explicit_size(&block), Some((320.0, 180.5)));
         }
 
-        // Phase: malformed_geometry_degrades_to_safe_defaults.
         {
             let block = image([
                 ("crop_left", AttrVal::Int(9_000)),

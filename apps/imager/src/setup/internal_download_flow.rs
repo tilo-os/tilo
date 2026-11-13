@@ -94,16 +94,11 @@ struct SelectionPreference {
     path: PathBuf,
 }
 
-/// What the page says about the download: its phase, the two catalogue
-/// messages it shows, and what went wrong when its hand-off stopped.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct DownloadPresentation {
     pub(super) phase: Option<WorkerPhase>,
-    /// The message the card's heading says.
     pub(super) title_key: &'static str,
-    /// The message the line under the heading says.
     pub(super) sentence_key: &'static str,
-    /// What went wrong, when the download or its hand-off failed.
     pub(super) failure: Option<String>,
     pub(super) pending: bool,
 }
@@ -140,10 +135,7 @@ pub(super) struct InternalDownloadFlow {
     presentation: DownloadPresentation,
     pending: Option<PendingCommand>,
     revision: u64,
-    /// Consumer for verified downloads: the staging helper handoff.
     staging: Option<StagingLink>,
-    /// The current operation was handed to the staging consumer, so a failure
-    /// is an installation failure over retained verified data.
     consumed: bool,
     #[cfg(test)]
     catalogs: VecDeque<Vec<InternalRelease>>,
@@ -153,9 +145,6 @@ pub(super) struct InternalDownloadFlow {
 
 impl InternalDownloadFlow {
     #[cfg(not(test))]
-    /// The flow reading this computer's saved download selection. A failure
-    /// names, as a catalogue message, what this computer cannot do, so the
-    /// card states it in the window's language instead of the source one.
     pub(super) fn new(
         capabilities: Capabilities,
         staging: StagingLink,
@@ -337,18 +326,15 @@ impl InternalDownloadFlow {
         ))
     }
 
-    /// Follow a capability change (the host probe finished).
     pub(super) fn set_capabilities(&mut self, capabilities: Capabilities) {
         self.capabilities = capabilities;
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// A verified download is held and can be handed to the staging helper.
     pub(super) fn is_ready(&self) -> bool {
         self.pending.is_none() && self.presentation.phase == Some(WorkerPhase::Ready)
     }
 
-    /// Hand the held verified download to the staging consumer.
     pub(super) fn consume(&mut self) -> Result<(), String> {
         if !self.is_ready() {
             return Err(crate::setup::strings::t(
@@ -369,7 +355,6 @@ impl InternalDownloadFlow {
         Ok(())
     }
 
-    /// The installation failure the worker reported for a consumed download.
     pub(super) fn consume_failure(&self) -> Option<String> {
         (self.consumed
             && self.pending.is_none()
@@ -510,8 +495,6 @@ impl InternalDownloadFlow {
                 )
             )
         {
-            // Pause and cancel answer with the message naming the control the
-            // person pressed.
             return Err(crate::setup::strings::t(if cancel {
                 "imager-setup-error-download-cancel-unavailable"
             } else {
@@ -633,7 +616,6 @@ impl InternalDownloadFlow {
         }
         let mut next = presentation_from_status(&status);
         if self.consumed && status.phase == WorkerPhase::Failed {
-            // The download itself stayed verified; the installer helper stopped.
             next.title_key = "imager-setup-internal-download-kept";
             next.sentence_key = "imager-download-sentence-handoff-failed";
         }
@@ -682,7 +664,6 @@ fn presentation_from_status(status: &Status) -> DownloadPresentation {
     }
 }
 
-/// The message the card's heading says during `phase`.
 fn download_title_key(phase: WorkerPhase) -> &'static str {
     match phase {
         WorkerPhase::Authenticating
@@ -700,7 +681,6 @@ fn download_title_key(phase: WorkerPhase) -> &'static str {
     }
 }
 
-/// The message the line under the heading says during `phase`.
 fn download_sentence_key(phase: WorkerPhase) -> &'static str {
     match phase {
         WorkerPhase::Authenticating => "imager-download-sentence-checking-release",
@@ -836,7 +816,6 @@ mod tests {
         });
     }
 
-    /// Saved and offered selection, preference round trip and failures.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -860,8 +839,6 @@ mod tests {
             assert!(SelectionKey::decode(&serde_json::to_vec(&old).unwrap()).is_err());
         }
 
-        // Phase `offered_selection_requires_exactly_one_current_host_entry`.
-        // Catches selecting array order when the embedded catalog has zero or several host entries.
         {
             assert!(offered_selection(Vec::new(), "x86_64").is_err());
             assert!(offered_selection(vec![release(), release()], "x86_64").is_err());
@@ -971,15 +948,12 @@ mod tests {
         }
     }
 
-    /// Real worker, duplicate and stale starts.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn internal_download_worker_start_is_idempotent_and_holds_verified_data() {
-        // Phase `real_worker_reaches_held_ready_and_keeps_verified_data_for_later`.
-        // Catches detaching from the real worker, claiming installation, or polling held Ready forever.
         {
             let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
             let server = Server::new(vec![
@@ -1023,8 +997,6 @@ mod tests {
             assert!(!flow.has_pending_operation());
         }
 
-        // Phase `duplicate_start_during_active_download_preserves_token_preference_catalog_and_requests`.
-        // Catches a duplicate Start replacing an active token or repeating selection side effects.
         {
             use std::os::unix::fs::MetadataExt;
 
@@ -1294,8 +1266,6 @@ mod tests {
             wait_for(&mut flow, Phase::Discarded);
         }
 
-        // Phase `dropping_held_ready_releases_leases_and_retains_verified_components`.
-        // Catches leaving held readers/root leases behind when the setup view closes at Ready.
         {
             let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
             let server = Server::new(vec![
@@ -1348,8 +1318,6 @@ mod tests {
             assert_eq!(reopened_server.requests().len(), 1);
         }
 
-        // Phase `dropping_during_authentication_waits_for_cooperative_worker_shutdown`.
-        // Catches dropping the controller while leaving an in-flight worker detached.
         {
             let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
             let (entered_tx, entered_rx) = mpsc::sync_channel(0);

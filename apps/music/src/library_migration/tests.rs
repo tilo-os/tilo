@@ -90,8 +90,6 @@ fn legacy_catalogue_playlists_and_feedback_keep_their_identity_and_order() {
     assert!(!library.recommendations.prefers("not-preferred"));
     assert!(library.recommendations.is_dismissed("tk_a2"));
     assert!(!library.recommendations.is_dismissed("tk_a3"));
-    // A tombstoned playlist and its former list remain in the change graph;
-    // the migration honors deletion instead of reviving it.
     assert_eq!(doc.length(&old_playlists), 3);
     let reopened = AutoCommit::load(&doc.save()).unwrap();
     assert_eq!(
@@ -197,9 +195,6 @@ fn opening_a_retained_profile_migrates_and_restores_live_player_actions() {
     use ui::framework::testing::TestApp;
     use ui::record::{RecordId, RecordKind};
 
-    // A retained profile kept the library in the record of the window that
-    // opened it; the app now keeps it in the workspace's one record, which
-    // adopts what that window record held.
     let mut doc = populated_legacy_library();
     let window = RecordId::workspace_default();
     assert!(ui::record::init_scoped(

@@ -111,10 +111,8 @@ impl WorkspaceAuthority for Native {
                 workspace_id(),
                 "Native execution",
             );
-            workspace.policy = tilo_desktop_model::projection::workspace_policy_of(
-                doc,
-                &workspace_id().to_string(),
-            );
+            workspace.policy =
+                tilo_peer_state::workspace::policy_of(doc, &workspace_id().to_string());
             workspace
                 .policy
                 .grants
@@ -288,7 +286,7 @@ impl TrackerRuns for Native {
                 .turn
                 .as_ref()
                 .and_then(|turn| self.looked.lock().unwrap().get(&turn.message).cloned());
-            let mut policy = tilo_desktop_model::projection::workspace_policy_of(
+            let mut policy = tilo_peer_state::workspace::policy_of(
                 view.peer()
                     .admitted_workspace()
                     .ok_or("native document unavailable")?,

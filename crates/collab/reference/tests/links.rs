@@ -232,7 +232,7 @@ fn target() -> impl Strategy<Value = LinkTarget> {
         .prop_map(|(scope, app)| {
             let mut target = LinkTarget::new(scope);
             if let Some((app, rest)) = app {
-                target.app = Some(AppId::new(app).unwrap());
+                target.app = Some(AppId::parse(&app).unwrap());
                 if let Some((record, resource, view)) = rest {
                     target.record = Some(record);
                     target.resource = resource;

@@ -1968,20 +1968,8 @@ impl Hosted {
     fn is_primary(&self, address: &ActionAddress) -> bool {
         self.instance
             .host()
-            .and_then(|host| {
-                host.find_in_packages(|package| {
-                    package
-                        .meta
-                        .actions
-                        .iter()
-                        .find(|action| {
-                            action.id == address.action
-                                && tilolang_tilo::surface::is_primary(action)
-                        })
-                        .map(|_| ())
-                })
-            })
-            .is_some()
+            .and_then(|host| host.published_action(&address.resource, &address.action))
+            .is_some_and(|action| tilolang_tilo::surface::is_primary(&action))
     }
 
     /// Publish a change to the surface that moved only labels (a note's title typed into) as
@@ -2163,7 +2151,7 @@ fn door_ask(
     match invocation {
         Invocation::Action {
             app,
-            action,
+            name,
             subject: Some(subject),
             from,
             ..
@@ -2179,10 +2167,11 @@ fn door_ask(
                     .to_json(),
                 );
             }
+            // The app's door takes it by the name it publishes it under.
             Some((
                 app.clone(),
                 subject.id_string(),
-                action.clone(),
+                name.clone(),
                 tilo_actions::remote::InvokeArgument::Json(arguments),
             ))
         }
@@ -2190,7 +2179,7 @@ fn door_ask(
         Invocation::Edit {
             app,
             target,
-            field_id,
+            field,
             value,
             ..
         } => {
@@ -2200,7 +2189,8 @@ fn door_ask(
             };
             let value = tilolang_tilo::runtime::value::to_argument(value).unwrap_or_default();
             let arguments = serde_json::Map::from_iter([
-                ("field".to_owned(), field_id.clone().into()),
+                // The field as its type names it, which the door's edit takes.
+                ("field".to_owned(), field.clone().into()),
                 ("value".to_owned(), value),
             ]);
             Some((

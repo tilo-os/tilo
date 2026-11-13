@@ -355,7 +355,6 @@ impl StatePeer {
         let before = doc.get_heads();
         let identities = governed_map(&doc, "peer_identities_v1")?;
         let names = governed_map(&doc, "peers")?;
-        let grants = governed_map(&doc, "grants")?;
         doc.set_actor(self.workspace_actor_of(key));
         for identity in &write.identities {
             let id = hex::encode(identity.device_cert.device_public_key);
@@ -368,21 +367,25 @@ impl StatePeer {
             doc.put(&names, &id, identity.device_cert.device_label.as_str())
                 .map_err(err)?;
         }
-        for id in &write.revoke {
-            if doc.get(&grants, id.as_str()).map_err(err)?.is_some() {
-                doc.delete(&grants, id.as_str()).map_err(err)?;
-            }
-        }
+        let held = doc.workspace_policy(&self.core.workspace).grants.clone();
+        let mut changes: Vec<tilo_action_policy::Change> = write
+            .revoke
+            .iter()
+            .filter(|id| held.iter().any(|grant| grant.id == **id))
+            .map(|id| tilo_action_policy::Change::Revoke(id.clone()))
+            .collect();
         for grant in &write.grant {
             if grant.node.workspace_id() != Some(self.core.workspace.as_str()) {
                 return Err(format!("grant {:?} names another workspace", grant.id));
             }
-            doc.put(
-                &grants,
-                grant.id.as_str(),
-                automerge::ScalarValue::Bytes(serde_json::to_vec(grant).map_err(err)?),
-            )
-            .map_err(err)?;
+            match held.iter().find(|kept| kept.id == grant.id) {
+                Some(kept) if kept == grant => continue,
+                Some(_) if !write.revoke.contains(&grant.id) => {
+                    changes.push(tilo_action_policy::Change::Revoke(grant.id.clone()));
+                }
+                _ => {}
+            }
+            changes.push(tilo_action_policy::Change::Grant(grant.clone()));
         }
         if write.program.is_some() || write.drop_program.is_some() {
             let programs = match doc.get(ROOT, PROGRAMS).map_err(err)? {
@@ -404,7 +407,9 @@ impl StatePeer {
             }
         }
         doc.commit();
-        self.write_governance(doc, &before, key, now)
+        let membership = (!changes.is_empty())
+            .then_some(crate::members::MembershipOpCommand::Project { changes });
+        self.write_membership(doc, &before, key, now, membership)
     }
 }
 impl StatePeer {

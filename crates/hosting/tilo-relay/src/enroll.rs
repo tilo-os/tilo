@@ -578,26 +578,13 @@ fn bounded_home_peer_registry(
     identity_root: &std::path::Path,
     user: [u8; 32],
 ) -> anyhow::Result<Vec<u8>> {
-    let path = tilo_relay::home_peer_registry_path(identity_root);
-    let entries = match read_bounded(&path, "home-peer registry")? {
-        Some(bytes) => checked_home_peers(&bytes, "home-peer registry")?,
-        None => Vec::new(),
-    };
+    let peers = tilo_relay::read_home_peers(&tilo_relay::home_peer_registry_path(identity_root))?;
     Ok(serde_json::to_vec_pretty(
-        &entries
+        &peers
             .into_iter()
             .filter(|entry| entry.user_public_key == hex::encode(user))
             .collect::<Vec<_>>(),
     )?)
-}
-
-fn valid_relay_endpoint_hint(entry: &HomePeerRegistration) -> bool {
-    entry.relay_endpoint.as_ref().is_none_or(|endpoint| {
-        !endpoint.is_empty()
-            && hex::decode(&entry.relay_service_node_id)
-                .ok()
-                .is_some_and(|service| service.as_slice() == endpoint.id.as_bytes())
-    })
 }
 
 fn public_identity_record(user: [u8; 32], display_name: &str) -> anyhow::Result<Vec<u8>> {
@@ -635,46 +622,6 @@ fn validate_public_identity(bytes: &[u8], user: [u8; 32]) -> anyhow::Result<()> 
         bail!("approval returned an identity containing private or mismatched key material");
     }
     Ok(())
-}
-
-/// The home-peer registrations `bytes` hold, checked as a verifier reads
-/// them ([`valid_home_peer_registration`]): within their bound and each of
-/// its bounded verified schema.
-fn checked_home_peers(
-    bytes: &[u8],
-    description: &str,
-) -> anyhow::Result<Vec<HomePeerRegistration>> {
-    let registrations: Vec<HomePeerRegistration> =
-        serde_json::from_slice(bytes).with_context(|| format!("{description} is invalid"))?;
-    if registrations.len() > 128
-        || registrations
-            .iter()
-            .any(|entry| !valid_home_peer_registration(entry))
-    {
-        bail!("{description} violates its bounded verified schema");
-    }
-    Ok(registrations)
-}
-
-fn valid_home_peer_registration(entry: &HomePeerRegistration) -> bool {
-    entry.schema_version == HomePeerRegistration::CURRENT_SCHEMA
-        && entry.relay_workspace_ids.len() <= 4096
-        && tilo_relay::valid_home_peer_label(&entry.label)
-        && hex::decode(&entry.device_node_id)
-            .ok()
-            .is_some_and(|key| key.len() == 32)
-        && hex::decode(&entry.relay_service_node_id)
-            .ok()
-            .is_some_and(|key| key.len() == 32)
-        && hex::decode(&entry.user_public_key)
-            .ok()
-            .is_some_and(|key| key.len() == 32)
-        && valid_relay_endpoint_hint(entry)
-        && entry.device_cert.as_ref().is_some_and(|cert| {
-            verify_device_cert(cert).is_ok()
-                && hex::encode(cert.device_public_key) == entry.device_node_id
-                && hex::encode(cert.user_public_key) == entry.user_public_key
-        })
 }
 
 /// The bytes of `path`, when it exists and is within the size a registration
@@ -724,7 +671,8 @@ fn checked_personal_projection(
         .context("approval returned an invalid device fleet")?;
     validate_public_identity(identity, user)?;
 
-    let incoming = checked_home_peers(transferred_peers, "the approval's home peers")?;
+    let incoming = tilo_relay::checked_home_peers(transferred_peers)
+        .context("the approval's home peers are not a registry this build accepts")?;
     if incoming
         .iter()
         .any(|entry| entry.user_public_key != identity_id)
@@ -775,11 +723,9 @@ fn checked_personal_projection(
             }),
         );
 
-    let peers_path = tilo_relay::home_peer_registry_path(identity_root);
-    let mut existing = match read_bounded(&peers_path, "existing home-peer registry")? {
-        Some(bytes) => checked_home_peers(&bytes, "existing home-peer registry")?,
-        None => Vec::new(),
-    };
+    let mut existing =
+        tilo_relay::read_home_peers(&tilo_relay::home_peer_registry_path(identity_root))
+            .context("the existing home-peer registry is not one this build accepts")?;
 
     // A response projects routes for one identity. Do not use it as a global
     // snapshot and erase other identities' independently verified routes.
@@ -930,10 +876,12 @@ fn commit_staged_personal_enrollment(
     checkpoint(PersonalCommitCheckpoint::Fleet)?;
     let fleet = install_staged_fleet(identity_root, marker, &stage_dir)?;
     checkpoint(PersonalCommitCheckpoint::HomePeers)?;
-    tilo_files::native::atomic::write_creating_parent_with_mode(
+    let staged_peers =
+        tilo_relay::checked_home_peers(&std::fs::read(staged(&stage_dir, "home-peers.json"))?)
+            .context("the staged home peers are not a registry this build accepts")?;
+    tilo_relay::write_home_peers(
         &tilo_relay::home_peer_registry_path(identity_root),
-        &std::fs::read(staged(&stage_dir, "home-peers.json"))?,
-        0o644,
+        &staged_peers,
     )?;
     checkpoint(PersonalCommitCheckpoint::Registry)?;
     let registry_json = std::fs::read(staged(&stage_dir, "registry.json"))?;
@@ -1107,14 +1055,12 @@ fn register_home_peer(
     relay_workspace_ids: &[u64],
     relay_endpoint: Option<iroh_base::EndpointAddr>,
 ) -> anyhow::Result<()> {
-    let path = tilo_relay::home_peer_registry_path(identity_root);
     if !tilo_relay::valid_home_peer_label(&cert.device_label) || relay_workspace_ids.len() > 4096 {
         bail!("home-peer registration exceeds its bounded schema");
     }
-    let mut registrations = match read_bounded(&path, "existing home-peer registry")? {
-        Some(bytes) => checked_home_peers(&bytes, "existing home-peer registry")?,
-        None => Vec::new(),
-    };
+    let mut registrations =
+        tilo_relay::read_home_peers(&tilo_relay::home_peer_registry_path(identity_root))
+            .context("the existing home-peer registry is not one this build accepts")?;
     let device_node_id = hex::encode(cert.device_public_key);
     registrations.retain(|entry| entry.device_node_id != device_node_id);
     registrations.push(HomePeerRegistration {
@@ -1127,14 +1073,9 @@ fn register_home_peer(
         device_cert: Some(cert.clone()),
         relay_workspace_ids: relay_workspace_ids.to_vec(),
     });
-    if registrations.len() > 128 {
-        bail!("home-peer registry is full");
-    }
-    registrations.sort_by(|left, right| left.device_node_id.cmp(&right.device_node_id));
-    tilo_files::native::atomic::write_creating_parent_with_mode(
-        &path,
-        &serde_json::to_vec_pretty(&registrations)?,
-        0o644,
+    tilo_relay::write_home_peers(
+        &tilo_relay::home_peer_registry_path(identity_root),
+        &registrations,
     )?;
     Ok(())
 }
@@ -1146,12 +1087,9 @@ fn response_preimage(payload: &ResponsePayload) -> anyhow::Result<Vec<u8>> {
 }
 
 /// Sign a device certificate using the authenticated person root.
-fn sign_root_cert(cert: &mut DeviceCert, root: &(impl RootSigner + ?Sized)) -> anyhow::Result<()> {
-    if cert.user_public_key != root.public_key() {
-        bail!("device certificate names a different identity than the signing root");
-    }
-    let digest = tilo_user_identity::device_cert_signing_digest(cert)?;
-    cert.signature = root.sign_message(&digest)?;
+fn sign_root_cert(cert: &mut DeviceCert, root: &dyn RootSigner) -> anyhow::Result<()> {
+    tilo_user_identity::sign_device_cert(cert, root)
+        .context("sign the device certificate with the person's root")?;
     verify_device_cert(cert).context("signed device certificate does not verify")?;
     Ok(())
 }

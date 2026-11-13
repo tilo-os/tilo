@@ -34,7 +34,6 @@ fn cell_presence_follows_insertions_and_rename_without_moving_the_local_selectio
         "remote presence cannot move our selection"
     );
 
-    // A different sheet and malformed/oversized scopes cannot paint a label.
     app.active_sheet = 1;
     let mut elsewhere = Scene::new();
     app.draw_cell_presence(&mut elsewhere, Affine::IDENTITY, &mut tr, &theme, &presence);

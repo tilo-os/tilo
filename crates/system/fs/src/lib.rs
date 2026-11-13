@@ -84,8 +84,7 @@ pub mod sync_folder;
 pub mod thumbs;
 #[cfg(feature = "filesystem")]
 pub mod transport_gate;
-/// A workspace's tree as the Files app's person record: the writer on the
-/// session's record route, which the daemon that mounts the tree holds.
+/// The workspace tree as the Files app's person record.
 #[cfg(feature = "filesystem")]
 pub mod tree_record;
 #[cfg(feature = "filesystem")]
@@ -125,9 +124,9 @@ pub use hydration::Hydrator;
 #[cfg(feature = "filesystem")]
 pub use identity::{
     CertifiedIdentityError, CertifiedMountIdentity, MountIdentity, PeerCredentials,
-    RevocationListLoadError, WorkspaceShareIssuerError, identity_paths,
-    load_certified_mount_identity, load_certified_mount_identity_once_valid, load_mount_identity,
-    load_revocation_list, load_workspace_share_issuer, revocation_list_path,
+    WorkspaceShareIssuerError, identity_paths, load_certified_mount_identity,
+    load_certified_mount_identity_once_valid, load_mount_identity, load_revocation_list,
+    load_workspace_share_issuer, revocation_list_path,
 };
 #[cfg(feature = "filesystem")]
 pub use namespace::history::{HistoryError, RecordHistorySnapshot};
@@ -171,7 +170,6 @@ mod native_mount_selection_tests {
     }
 }
 
-/// Deterministic incompressible bytes for content tests.
 #[cfg(test)]
 mod test_bytes {
     pub(crate) fn pseudo(len: usize, seed: u64) -> Vec<u8> {

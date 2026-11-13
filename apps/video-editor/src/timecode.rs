@@ -1,14 +1,8 @@
-//! Timecode formatting helpers.
-//!
-//! A non-linear editor speaks two clocks at once: wall-clock seconds
-//! (what the user thinks in) and frame counts (what export and trimming
-//! snap to). These helpers convert between the two and render the
-//! `HH:MM:SS:FF` / `MM:SS` strings shown across the ruler, transport,
-//! and inspector. Everything is pure — no rendering, no state.
+//! Timecode: conversions between wall-clock seconds and frame counts, and the strings the
+//! ruler, transport and inspector show.
 
-/// Render `seconds` at `fps` as `MM:SS:FF` (drop the hours when zero) or
-/// `HH:MM:SS:FF` when the clip runs past an hour. The frame field is the
-/// fractional remainder quantised to the frame grid.
+/// `MM:SS:FF` (no hours when zero) or `HH:MM:SS:FF` past an hour, with the frame field the
+/// remainder quantised to the frame grid.
 pub fn timecode(seconds: f64, fps: f64) -> String {
     let fps = if fps <= 0.0 { 30.0 } else { fps };
     let seconds = seconds.max(0.0);
@@ -77,13 +71,9 @@ mod tests {
     }
 }
 
-/// Parse a typed timecode into seconds.
-///
-/// Accepts what a person actually types rather than one rigid shape:
-/// `90` (seconds), `1:30` (M:SS), `1:30:15` (M:SS:FF at `fps`), and
-/// `1:02:03:04` (H:MM:SS:FF). Returns `None` for anything that is not a
-/// number in every field — a jump to a garbled time would be worse than
-/// refusing, because the user would not know where they had gone.
+/// Accepts what a person types rather than one rigid shape: `90` (seconds), `1:30` (M:SS),
+/// `1:30:15` (M:SS:FF at `fps`) and `1:02:03:04` (H:MM:SS:FF). `None` for anything that is not
+/// a number in every field: jumping to a garbled time is worse than refusing.
 pub fn parse(input: &str, fps: f64) -> Option<f64> {
     let fps = if fps <= 0.0 { 30.0 } else { fps };
     let trimmed = input.trim();

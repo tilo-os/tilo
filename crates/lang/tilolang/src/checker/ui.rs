@@ -203,6 +203,7 @@ impl Checker<'_> {
             ty: ty.clone(),
             default: None,
             place: false,
+            label: None,
             entry: false,
         };
         // The handler runs in a frame of its own, as an argument computed from view state does:

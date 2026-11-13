@@ -157,9 +157,6 @@ mod availability_control_tests {
                 wake.send_modify(|generation| *generation = generation.wrapping_add(1));
             });
 
-            // The transfer outlasts any unpin: persisting the unpinned
-            // registry is a durable write, which a loaded disk can hold for
-            // longer than any fixed transfer time.
             let cancelled = await_current_pinned_hydration(
                 tokio::time::sleep(tilo_test_env::hang_bound()),
                 &candidate,
@@ -279,8 +276,6 @@ mod availability_control_tests {
             fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
                 .unwrap();
 
-            // Created after the pin: no direct registry row is needed for the
-            // effective projection to inherit the stable directory policy.
             let child = namespace
                 .lock_recover()
                 .create_file(folder, "later.txt", None, 0, 2)
@@ -354,7 +349,6 @@ mod availability_control_tests {
         fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
             .unwrap();
 
-        // This file did not exist when its stable parent was pinned.
         let child = namespace
             .lock()
             .unwrap()
@@ -376,11 +370,7 @@ mod availability_control_tests {
                 .unwrap()
                 .set_content_revision(child, &first_revision, 2)
         );
-        // Issue the same wake used after a local namespace publish. It must not
-        // wait for the deliberately slow repair scan.
         fs.wake_pinned_hydration();
-        // No peer is configured yet. The worker records an actionable error
-        // and a durable backoff rather than spinning or claiming success.
         wait_for_availability(&registry, record_id, |record| {
             record.transfer.last_error.is_some()
                 && record.transfer.retry_count > 0
@@ -390,9 +380,6 @@ mod availability_control_tests {
         drop(fs);
         drop(registry);
 
-        // A process restart reopens the queued policy/error state. Once the
-        // peer is reachable the inherited promise completes without another
-        // user action.
         hydrator.add_peer(source_endpoint.addr());
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(&registry_path).unwrap(),
@@ -407,8 +394,6 @@ mod availability_control_tests {
                 && record.transfer.last_error.is_none()
         })
         .await;
-        // A later immutable version invalidates the old residency proof and
-        // is hydrated under the same durable ancestor pin.
         let second_version = fs_protocol::FileVersionId::new();
         let second_revision = fs_protocol::ContentRevisionV1 {
             version_id: second_version,
@@ -435,11 +420,6 @@ mod availability_control_tests {
         close_pinned_test_source(source_router, source_endpoint, client_endpoint).await;
     }
 
-    /// "Keep offline" holds a file's bytes against the cache budget exactly
-    /// while a pin covers it: a file already read in full is kept from the
-    /// pass that sees the pin, its bytes go back to the cache once no pin
-    /// covers it, and a file only this device holds is never made
-    /// evictable by either.
     #[tokio::test]
     async fn keep_offline_holds_bytes_against_the_cache_budget_only_while_pinned() {
         use crate::store::area::Retention;
@@ -450,7 +430,6 @@ mod availability_control_tests {
         let bytes = |byte: u8| vec![byte; usize::try_from(size).unwrap()];
         let read = store.write_content(&bytes(1)).await.unwrap().unwrap();
         let authored = store.write_content(&bytes(2)).await.unwrap().unwrap();
-        // `read` came from a peer and was read in full: a cached copy.
         store
             .files()
             .set_retention(read.as_bytes(), Retention::Cached)
@@ -527,10 +506,6 @@ mod availability_control_tests {
         endpoint.close().await;
     }
 
-    /// A file already here when it is pinned is held before the pass that
-    /// sees the pin fetches anything: what that pass downloads counts
-    /// against a full cache budget when it lands, and must not push out a
-    /// file the same pin covers.
     #[tokio::test]
     async fn a_pinned_download_never_evicts_a_file_the_same_pin_already_holds() {
         use crate::store::area::Retention;
@@ -551,7 +526,6 @@ mod availability_control_tests {
         let client_endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let here = store.write_content(&bytes(1)).await.unwrap().unwrap();
-        // `here` came from a peer and was read in full: a cached copy.
         store
             .files()
             .set_retention(here.as_bytes(), Retention::Cached)
@@ -578,7 +552,6 @@ mod availability_control_tests {
             .with_availability(Arc::clone(&registry));
         let (_wake, wakes) = tokio::sync::watch::channel(0_u64);
         let files = store.files();
-        // The cache is full: whatever lands next makes room by eviction.
         files.set_budget(0);
 
         fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
@@ -607,7 +580,6 @@ mod availability_control_tests {
         close_pinned_test_source(source_router, source_endpoint, client_endpoint).await;
     }
 
-    /// How many times the mount's pin worker has come back to wait.
     fn worker_turns(fs: &QuickFS) -> u64 {
         fs.pinned_hydration
             .as_ref()
@@ -616,8 +588,6 @@ mod availability_control_tests {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Waits for `turns` more turns of the mount's pin worker, looking every
-    /// `every`.
     async fn after_turns(fs: &QuickFS, turns: u64, every: Duration) {
         let from = worker_turns(fs);
         tilo_test_env::within(format!("{turns} turns of the pin worker"), async {
@@ -663,10 +633,6 @@ mod availability_control_tests {
         })
         .await;
         let walks = || namespace.lock().unwrap().node_entry_read_count();
-        // Counted in the worker's own turns, not in time: however slowly
-        // its ticks come, each one is a chance to walk. The pass that
-        // observes the worker's own registry writes runs first: settled once
-        // two ticks in a row walk nothing.
         let settled = loop {
             let before = walks();
             after_turns(&fs, 2, repair).await;
@@ -681,8 +647,6 @@ mod availability_control_tests {
             "ticks with nothing changed must not walk the namespace"
         );
 
-        // A change that arrives without a wake (as a remote apply does) is
-        // still repaired, now on the namespace's own announcement.
         let late = {
             let mut namespace = namespace.lock().unwrap();
             let ino = namespace
@@ -700,11 +664,6 @@ mod availability_control_tests {
         endpoint.close().await;
     }
 
-    /// #4130. The faults the repair tick existed for, with no tick to
-    /// lean on (an hour's backstop): a pinned folder gains a file through a
-    /// namespace change no FUSE callback saw (as a remote apply does), and
-    /// a folder is pinned by a registry writer other than this mount (as
-    /// the storage socket does). Each is hydrated on its own announcement.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pins_are_repaired_on_announcements_without_a_tick() {
         let dir = tempfile::tempdir().unwrap();
@@ -745,8 +704,6 @@ mod availability_control_tests {
         })
         .await;
 
-        // Another writer of the registry pins a folder this mount never
-        // touched; the worker learns of it from the registry alone.
         let (root, other, inside) = {
             let mut namespace = namespace.lock().unwrap();
             let other = namespace
@@ -761,8 +718,6 @@ mod availability_control_tests {
                 namespace.record_id_for(inside).unwrap(),
             )
         };
-        // Let the pass those namespace changes start finish first, so only
-        // the registry's announcement can bring the pin.
         let turns = worker_turns(&fs);
         tilo_test_env::within("the pass the namespace changes start", async {
             while worker_turns(&fs) == turns {
@@ -1039,8 +994,6 @@ mod availability_control_tests {
             EvictionRequestState::Completed { .. }
         ));
         let queue = Arc::new(tokio::sync::Mutex::new(queue));
-        // Simulate a new immutable revision arriving after the old request
-        // completed but before daemon restart recovery runs.
         let newer_version = fs_protocol::FileVersionId::new();
         let mut current = registry.lock_recover().get(record_id).cloned().unwrap();
         current.current_version = Some(newer_version);
@@ -1103,10 +1056,6 @@ mod thumb_tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     async fn thumbnails_are_generated_verified_and_published() {
-        // Phase `host_generates_a_thumbnail_and_records_its_hash`.
-        // The headline: the host generates a preview from a file's local
-        // content, serves it as metadata, records its blob hash on the node so
-        // it projects to peers, and a second request hits the cache.
         {
             let dir = tempfile::tempdir().unwrap();
             let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
@@ -1119,7 +1068,6 @@ mod thumb_tests {
                     .unwrap()
             };
 
-            // No thumbnail recorded yet.
             assert!(namespace.lock_recover().thumb_hash(ino).is_none());
 
             let thumb = fs.thumbnail_for(ino).expect("host generates a preview");
@@ -1135,9 +1083,6 @@ mod thumb_tests {
                 "the preview is far smaller than the source"
             );
 
-            // The thumbnail's blob hash is now on the node (so it reaches
-            // peers), and the blob is a content blob in the store that peers
-            // can hydrate.
             let tbh = namespace
                 .lock_recover()
                 .thumb_hash(ino)
@@ -1147,7 +1092,6 @@ mod thumb_tests {
                 "the thumbnail blob is stored for peers"
             );
 
-            // A second request returns the identical bytes from the cache.
             let again = fs.thumbnail_for(ino).expect("cached");
             assert_eq!(
                 again, thumb,
@@ -1158,9 +1102,6 @@ mod thumb_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn thumbnails_survive_remounts_and_are_absent_without_content() {
-        // Phase `thumbnail_survives_a_remount`.
-        // A preview survives a remount: a fresh mount over the same cache
-        // directory serves the same thumbnail without re-reading the file's content.
         {
             let dir = tempfile::tempdir().unwrap();
             let png = solid_png(320, 240, [200, 60, 30]);
@@ -1176,13 +1117,8 @@ mod thumb_tests {
                 fs.thumbnail_for(ino).expect("generated")
             };
 
-            // A brand-new mount (fresh store, content NOT local) over the same
-            // thumb cache still serves the preview, confirming it came from the
-            // persistent cache, not a re-decode.
             let (namespace2, store2, fs2) = fixture(dir.path().join("thumbs")).await;
-            // Same content hash → same cache key. Register the node without the bytes.
             let mh = store2.write_content(&png).await.unwrap().unwrap();
-            // Remove the content so it is not local on this mount.
             let ino2 = {
                 let mut ns = namespace2.lock_recover();
                 ns.create_file(ROOT_INO, "pic.png", Some(&mh), png.len() as u64, 1)
@@ -1196,14 +1132,10 @@ mod thumb_tests {
                 "same content → same cached preview after remount"
             );
         }
-        // Phase `no_local_content_and_badge_types_yield_no_thumbnail`.
-        // A file whose content is not local yields no thumbnail (the host never
-        // hydrates content just to preview it); a badge-only type never does either.
         {
             let dir = tempfile::tempdir().unwrap();
             let (namespace, _store, fs) = fixture(dir.path().join("thumbs")).await;
 
-            // A projected image: a hash the store never ingested (not local).
             let projected = iroh_blobs::Hash::from([3u8; 32]);
             let img_ino = {
                 let mut ns = namespace.lock_recover();
@@ -1215,7 +1147,6 @@ mod thumb_tests {
                 "no preview without local content — never hydrate the file to make one"
             );
 
-            // A non-previewable type is never a thumbnail regardless of content.
             let zip_ino = {
                 let mut ns = namespace.lock_recover();
                 ns.create_file(ROOT_INO, "bundle.zip", Some(&projected), 4096, 1)
@@ -1228,24 +1159,17 @@ mod thumb_tests {
         }
     }
 
-    /// The projected-preview-before-content path: a peer with only replicated
-    /// metadata (thumbnail blob hash + blob) shows a preview WITHOUT the
-    /// file's content ever being local.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_replicated_thumbnail_is_served_before_content() {
         let dir = tempfile::tempdir().unwrap();
         let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
 
-        // The small thumbnail a host generated, present as a content blob
-        // (as it would be after hydrating the tiny blob from the host).
         let preview = thumbnail::encode_png(
             &thumbnail::image_thumb(&solid_png(256, 256, [90, 200, 120]), 256).unwrap(),
         )
         .unwrap();
         let thumb_blob = store.ingest(preview.clone()).await.unwrap();
 
-        // The file's content is projected (not local), but the node carries the
-        // replicated thumbnail hash.
         let projected = iroh_blobs::Hash::from([5u8; 32]);
         let ino = {
             let mut ns = namespace.lock_recover();
@@ -1397,7 +1321,6 @@ mod predictive_tests {
                 "a record outside the mount's ACL-filtered view cannot enter search metadata"
             );
         }
-        // Phase `record_catalog_v2_pages_without_a_giant_xattr_and_refuses_stale_revisions`.
         {
             let (namespace, fs) = fixture().await;
             {
@@ -1441,7 +1364,6 @@ mod predictive_tests {
                 "a namespace revision invalidates a page cursor rather than mixing rows"
             );
         }
-        // Phase `record_catalog_v2_refuses_pages_after_a_live_acl_generation_change`.
         {
             const ME: [u8; 32] = [0xA3; 32];
             let (namespace, fs) = fixture().await;
@@ -1469,14 +1391,11 @@ mod predictive_tests {
 
     #[tokio::test]
     async fn v3_record_catalog_hides_denied_rows_and_fails_closed_on_revoke() {
-        // Phase `record_catalog_v3_hides_denied_corpus_and_stably_reaches_visible_rows`.
         {
             const ME: [u8; 32] = [0xA4; 32];
             let (namespace, fs) = fixture().await;
             let visible_record = {
                 let mut ns = namespace.lock_recover();
-                // A deliberately large denied prefix must not change either the
-                // public manifest shape or the work of the visible page.
                 for index in 0..(fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES * 2) {
                     ns.create_file(ROOT_INO, format!("hidden-{index:04}"), None, 0, 1)
                         .unwrap();
@@ -1506,9 +1425,6 @@ mod predictive_tests {
                     .is_none()
             );
 
-            // This would have leaked through a raw count, offset, source
-            // revision, or freshly-issued initial token.  It is indistinguishable
-            // to the restricted authority.
             namespace
                 .lock_recover()
                 .create_file(ROOT_INO, "another-hidden.txt", None, 0, 1)
@@ -1520,7 +1436,6 @@ mod predictive_tests {
                     .is_some()
             );
         }
-        // Phase `record_catalog_v3_visible_change_resets_and_acl_revoke_fails_closed`.
         {
             const ME: [u8; 32] = [0xA5; 32];
             let (namespace, fs) = fixture().await;
@@ -1580,7 +1495,6 @@ mod predictive_tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     async fn v3_record_catalog_pages_large_views_off_the_request_path() {
-        // Phase `record_catalog_v3_pages_a_large_visible_view_without_source_rescans`.
         {
             const ME: [u8; 32] = [0xA6; 32];
             let (namespace, fs) = fixture().await;
@@ -1636,7 +1550,6 @@ mod predictive_tests {
                 "manifest, page, and exact record requests use the retained snapshot, never Namespace pages"
             );
         }
-        // Phase `record_catalog_v3_refreshes_coalesced_acl_revisions_off_request_path`.
         {
             const ME: [u8; 32] = [0xA7; 32];
             let (namespace, fs) = fixture().await;
@@ -1656,9 +1569,6 @@ mod predictive_tests {
                 serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
             let page_reads = namespace.lock_recover().record_index_page_read_count();
 
-            // A denied record stays hidden whatever the ACL revision says.
-            // Several revisions coalesce to the latest watch value, not one
-            // traversal per received delta.
             namespace
                 .lock_recover()
                 .create_file(ROOT_INO, "hidden-remote.txt", None, 0, 1)
@@ -1706,7 +1616,6 @@ mod predictive_tests {
                 serde_json::from_slice(&updated.unwrap()).unwrap();
             assert_ne!(updated.revision, before.revision);
         }
-        // Phase `record_catalog_v3_acl_worker_does_not_keep_dropped_mount_alive`.
         {
             const ME: [u8; 32] = [0xA8; 32];
             let (_namespace, fs) = fixture().await;
@@ -1751,14 +1660,12 @@ mod predictive_tests {
         let initial = fs.acl_visible_record_index().unwrap();
         assert_eq!(initial.acl_evaluations, rows());
 
-        // A notification that moved no row keeps the retained view as is.
         fs.refresh_acl_visible_record_index();
         assert!(Arc::ptr_eq(
             &initial,
             &fs.acl_visible_record_index().unwrap()
         ));
 
-        // A new row and a moved row are the only ones judged again.
         let revealed = {
             let mut ns = namespace.lock_recover();
             ns.create_file(visible, "late.txt", None, 0, 2).unwrap();
@@ -1853,7 +1760,6 @@ mod history_integration_tests {
 
         drop(fs);
         drop(history);
-        // The document carries the versions, so the bytes a restart reads do.
         let reopened =
             Namespace::from_bytes("reopened-history", &namespace.lock_recover().save()).unwrap();
         assert_eq!(
@@ -1935,8 +1841,6 @@ mod history_integration_tests {
     }
 }
 
-/// Counts the bytes each thread allocates (cumulative, never decremented),
-/// so a test can bound what a read path copies.
 mod allocation_count {
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::cell::Cell;
@@ -1948,33 +1852,26 @@ mod allocation_count {
     }
 
     fn add(bytes: usize) {
-        // A thread being torn down has no counter left; nothing is measured there.
         let _ = ALLOCATED.try_with(|count| count.set(count.get().saturating_add(bytes as u64)));
     }
 
-    // SAFETY: every call forwards to the system allocator with the caller's
-    // arguments; the counter only records sizes.
     unsafe impl GlobalAlloc for Counting {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             add(layout.size());
-            // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract, which `System` shares.
             unsafe { System.alloc(layout) }
         }
 
         unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
             add(layout.size());
-            // SAFETY: as for `alloc`.
             unsafe { System.alloc_zeroed(layout) }
         }
 
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            // SAFETY: `ptr` came from this allocator, i.e. from `System`, with this layout.
             unsafe { System.dealloc(ptr, layout) }
         }
 
         unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
             add(new_size);
-            // SAFETY: as for `dealloc`, and the caller upholds `realloc`'s size contract.
             unsafe { System.realloc(ptr, layout, new_size) }
         }
     }
@@ -1982,7 +1879,6 @@ mod allocation_count {
     #[global_allocator]
     static COUNTING: Counting = Counting;
 
-    /// Bytes this thread allocated while running `run`.
     pub fn allocated_by(run: impl FnOnce()) -> u64 {
         let before = ALLOCATED.with(Cell::get);
         run();
@@ -1990,8 +1886,6 @@ mod allocation_count {
     }
 }
 
-/// FUSE writes stage per inode and read the committed content only where
-/// a read or the commit needs it.
 mod write_stage_tests {
     use super::*;
 
@@ -2002,8 +1896,6 @@ mod write_stage_tests {
 
     use crate::test_bytes::pseudo;
 
-    /// A peer serving committed content, and a mount on another endpoint
-    /// that knows the files by namespace entry only.
     struct Remote {
         dir: tempfile::TempDir,
         router: Router,
@@ -2043,7 +1935,6 @@ mod write_stage_tests {
             }
         }
 
-        /// A file whose committed content only the peer holds.
         async fn file(&self, name: &str, bytes: &[u8]) -> (u64, Hash) {
             let hash = self
                 .source_store
@@ -2060,7 +1951,6 @@ mod write_stage_tests {
             (ino, hash)
         }
 
-        /// Content bytes this mount has received from peers.
         fn fetched(&self) -> u64 {
             let (ranges, blobs) = self.fs.hydrator.received_bytes();
             ranges.saturating_add(blobs)
@@ -2104,8 +1994,6 @@ mod write_stage_tests {
             LEN as u64 + 1,
             "stat sees the staged length"
         );
-        // Read-your-writes across the boundary: the base's tail comes from
-        // the peer, the appended byte from the stage.
         let StagedRead::Missing(missing) = remote
             .fs
             .read_staged(ino, LEN as u64 - 3, 16)
@@ -2143,13 +2031,9 @@ mod write_stage_tests {
         let (rewritten, _) = remote.file("notes.txt", &pseudo(300_000, 2)).await;
         let (open, _) = remote.file("open.bin", &pseudo(2 * 1024 * 1024, 3)).await;
 
-        // `: > big.iso` on a file nobody has open commits it empty.
         assert_eq!(remote.fs.truncate_inode(unopened, 0), Ok(()));
-        // `open(O_TRUNC)` then a write: the truncation commits, the write
-        // stages over nothing.
         assert_eq!(remote.fs.truncate_inode(rewritten, 0), Ok(()));
         assert_eq!(remote.fs.write_buffer(rewritten, 0, b"fresh"), Ok(5));
-        // A truncation of an open file only shortens its stage.
         assert_eq!(remote.fs.write_buffer(open, 7, b"x"), Ok(1));
         assert_eq!(remote.fs.truncate_inode(open, 0), Ok(()));
         assert_eq!(remote.fs.presented_attr(open).unwrap().0.size, 0);
@@ -2202,10 +2086,7 @@ mod write_stage_tests {
         let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
             .with_write_stage_dir(dir.path().join("stage"));
 
-        // The write is accepted: it does not need the base.
         assert_eq!(fs.write_buffer(ino, 200_000, b"tail"), Ok(4));
-        // The commit does, and no peer has it: close reports the failure and
-        // the committed content is untouched, never replaced by zeros.
         assert_eq!(fs.flush_inode(ino), Err(EIO));
         assert_eq!(fs.ns().hash_for(ino), Some(elsewhere));
         assert_eq!(fs.ns().getattr(ino).unwrap().size, 200_000);
@@ -2259,8 +2140,6 @@ mod write_stage_tests {
                     fs.flush_inode(large)
                 });
                 entered.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-                // `large` is mid-commit with its stage locked. Another
-                // inode's read, write and stat must not wait for it.
                 let (done_tx, done) = std::sync::mpsc::channel();
                 let other = scope.spawn(move || {
                     let _runtime = handle.enter();
@@ -2297,9 +2176,6 @@ mod write_stage_tests {
         endpoint.close().await;
     }
 
-    /// What a program writes to a document's file reads back as written, though Markdown would
-    /// join the paragraph's two lines; an edit of the document itself changes the file, as its
-    /// projection.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_document_reads_back_the_bytes_written_until_the_document_is_edited() {
         let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
@@ -2339,7 +2215,6 @@ mod write_stage_tests {
         })
         .await
         .unwrap();
-        // Edited as a document, it reads as the document's projection from then on.
         {
             let mut ns = namespace.lock().unwrap();
             let block = ns.document_insert_block(doc, None, "paragraph").unwrap();
@@ -2353,8 +2228,6 @@ mod write_stage_tests {
         endpoint.close().await;
     }
 
-    /// `chmod` and a create's mode are the record's on the FUSE plane: a checkout's script is
-    /// executable, setuid never sticks, a directory keeps setgid.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_mode_given_to_a_file_or_directory_is_kept_without_setuid() {
         let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
@@ -2399,8 +2272,6 @@ mod write_stage_tests {
         let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics);
         assert!(fs.is_document(doc));
 
-        // About 4 MiB of markdown, written and committed the way an editor
-        // saves it, then closed.
         let paragraph = "Collaboration lives below applications. ".repeat(50);
         let mut text = String::new();
         while text.len() < 4 * 1024 * 1024 + 64 * 1024 {
@@ -2415,7 +2286,6 @@ mod write_stage_tests {
         fs.settle_last_close(doc, true);
         assert!(fs.stage(doc).is_none());
 
-        // `stat` exports once; a change to another file keeps that export.
         let size = fs.presented_attr(doc).unwrap().0.size;
         assert!(size >= 4 * 1024 * 1024, "export is {size} bytes");
         let exported = fs.document_export(doc).unwrap();
@@ -2461,10 +2331,6 @@ mod write_stage_tests {
     }
 }
 
-/// A FUSE `read` and `getattr` of a local file read the inode under one
-/// namespace lock, and that single read still enforces every visibility
-/// rule the separate lookups did: ACL revocation, a move out of the view,
-/// unlink, and the open-handle exception for an unlinked inode.
 #[cfg(test)]
 mod read_lock_tests {
     use super::*;
@@ -2484,8 +2350,6 @@ mod read_lock_tests {
         file: u64,
     }
 
-    /// A mount over a namespace holding `/shared/a.txt`, whose content is
-    /// already in the local store.
     async fn fixture() -> Fixture {
         let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
@@ -2522,7 +2386,6 @@ mod read_lock_tests {
         fs.namespace_locks.load(Ordering::Relaxed)
     }
 
-    /// What the FUSE `read` callback would reply with.
     #[derive(Debug, PartialEq, Eq)]
     enum Reply {
         Data(Vec<u8>),
@@ -2533,7 +2396,6 @@ mod read_lock_tests {
         Reply::Data(BYTES.to_vec())
     }
 
-    /// The whole file through the production read planner.
     fn read_all(fs: &QuickFS, ino: u64, fh: u64) -> Reply {
         match fs.plan_read(ino, fh, 0, 4096) {
             ReadPlan::Local(data) => Reply::Data(data),
@@ -2549,7 +2411,6 @@ mod read_lock_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn read_takes_namespace_lock_once() {
-        // Without an ACL, and with one (the path is then built and checked).
         for acl in [None, Some(shared_read_policy())] {
             let Fixture {
                 endpoint, fs, file, ..

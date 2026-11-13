@@ -814,7 +814,6 @@ mod tests {
     )]
     #[test]
     fn search_hits_resolve_to_canonical_book_locations() {
-        // --- phase: canonical_results_and_exact_lazy_resources ---
         {
             let books = sample_books();
             let provider = BookSearchProvider::new(&books, &[]);
@@ -833,7 +832,6 @@ mod tests {
             assert_eq!(resource.actions.len(), 1);
         }
 
-        // --- phase: body_substrings_share_the_sole_book_snapshot ---
         {
             let books: Arc<Vec<Arc<Book>>> =
                 Arc::new(sample_books().into_iter().map(Arc::new).collect());
@@ -863,7 +861,6 @@ mod tests {
             assert!(Arc::ptr_eq(&books, &provider.books.books));
         }
 
-        // --- phase: full_text_hits_resolve_to_the_exact_canonical_block_location ---
         {
             let books = vec![Book {
                 id: "stable-book".into(),
@@ -912,7 +909,6 @@ mod tests {
             );
         }
 
-        // --- phase: body_phrase_crosses_inline_but_not_block_boundaries ---
         {
             let mut beta = crate::model::Span::plain("beta");
             beta.space_before = true;
@@ -946,7 +942,6 @@ mod tests {
             assert_eq!(locations("beta gamma"), 0);
         }
 
-        // --- phase: remote_metadata_hydrates_and_opens_the_canonical_workspace_book ---
         {
             let entry = LibraryEntry {
                 id: "book:remote".into(),
@@ -1001,7 +996,6 @@ mod tests {
     )]
     #[test]
     fn index_bounds_work_and_memory_on_large_libraries() {
-        // --- phase: million_scalar_book_keeps_its_prose_by_reference ---
         {
             let books = Arc::new(vec![Arc::new(Book {
                 id: "large".into(),
@@ -1035,7 +1029,6 @@ mod tests {
             assert_eq!(Arc::strong_count(&books), 2);
         }
 
-        // --- phase: late_metadata_hit_is_found_within_the_search_bound ---
         {
             let (provider, hit) =
                 assert_late_hit_reachable(|corpus| late_hit_library(corpus, false), 3_000);
@@ -1046,7 +1039,6 @@ mod tests {
             assert!(provider.books.resolve(&address).is_some());
         }
 
-        // --- phase: late_body_only_hit_is_found_within_the_search_bound ---
         {
             let (provider, hit) =
                 assert_late_hit_reachable(|corpus| late_hit_library(corpus, true), 3_000);
@@ -1056,7 +1048,6 @@ mod tests {
             assert!(provider.books.resolve(&address).is_some());
         }
 
-        // --- phase: late_metadata_posting_avoids_a_library_scan ---
         {
             let books = (0..3_000)
                 .map(|i| Book {
@@ -1072,7 +1063,6 @@ mod tests {
             assert_eq!(page.results[0].title, "Library volume 2999");
         }
 
-        // --- phase: prose_no_chapter_contains_ends_without_inspecting_the_library ---
         {
             let books = (0..1_000)
                 .map(|index| Book {
@@ -1094,7 +1084,6 @@ mod tests {
             assert!(first.next.is_none(), "no chapter holds the query's grams");
         }
 
-        // --- phase: chapters_holding_the_words_out_of_order_do_not_match ---
         {
             // Every chapter holds each word of "dog cat" but not the phrase.
             let books = (0..40)
@@ -1123,7 +1112,6 @@ mod tests {
             assert_eq!(inspected, 0);
         }
 
-        // --- phase: rebuilds_over_the_same_books_reuse_the_prose_index ---
         {
             let books: Arc<Vec<Arc<Book>>> =
                 Arc::new(sample_books().into_iter().map(Arc::new).collect());
@@ -1181,7 +1169,6 @@ mod tests {
             );
         }
 
-        // --- phase: membership_snapshots_keep_existing_book_allocations ---
         {
             let books: Arc<Vec<Arc<Book>>> = Arc::new(vec![Arc::new(Book {
                 id: "kept".into(),
@@ -1235,7 +1222,6 @@ mod tests {
 
     #[test]
     fn body_pages_clamp_and_resume_without_prose_copies() {
-        // --- phase: body_pages_are_clamped_and_complete ---
         {
             let books = (0..257)
                 .map(|i| Book {
@@ -1266,7 +1252,6 @@ mod tests {
             assert_eq!(seen, 257);
         }
 
-        // --- phase: oversized_single_block_is_found_directly ---
         {
             let books = vec![Book {
                 id: "huge".into(),
@@ -1288,7 +1273,6 @@ mod tests {
             assert_eq!(page.results.len(), 1, "the index finds the tail directly");
         }
 
-        // --- phase: million_scalar_multi_span_paragraph_is_found_directly ---
         {
             let mut tail = crate::model::Span::plain("tail-needle");
             tail.space_before = true;
@@ -1317,7 +1301,6 @@ mod tests {
     /// Continuations from an earlier projection and duplicate rows fail closed.
     #[test]
     fn hostile_or_stale_cursors_and_rows_fail_closed() {
-        // --- phase: duplicate_rows_fail_closed ---
         {
             let book = Book {
                 id: "duplicate".into(),
@@ -1342,7 +1325,6 @@ mod tests {
     )]
     #[test]
     fn exact_resources_share_the_reader_action_contracts() {
-        // --- phase: exact_annotation_resource_exports_the_same_delete_action_as_the_reader ---
         {
             let mut note = Annotation::new("book", AnnoKind::Note, 0, 0).with_note("keep me");
             note.id = uuid::Uuid::from_u128(42);
@@ -1376,7 +1358,6 @@ mod tests {
             );
         }
 
-        // --- phase: exact_resources_preserve_book_and_annotation_action_contracts ---
         {
             let book = Book {
                 id: "book".into(),

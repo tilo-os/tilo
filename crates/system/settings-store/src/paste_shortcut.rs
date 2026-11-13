@@ -15,7 +15,6 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};
 
-/// Settings section and key that hold the per-app overrides.
 pub const SECTION: &str = "input";
 pub const KEY: &str = "paste_shortcuts";
 
@@ -37,7 +36,6 @@ pub const TERMINAL_PATTERNS: [&str; 11] = [
     "ptyxis",
 ];
 
-/// The chord that pastes in an app.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PasteShortcut {
     CtrlV,
@@ -95,10 +93,6 @@ pub fn resolve(app_id: &str, overrides: &BTreeMap<String, String>) -> PasteShort
         .unwrap_or_else(|| default_for(app_id))
 }
 
-/// The chord that pastes in a window whose app goes by `ids` (what its
-/// window announces, then the id the app is installed under): the
-/// person's override for the first id that has one, else [`default_for`]
-/// the first id.
 #[must_use]
 pub fn resolve_ids(ids: &[&str], overrides: &BTreeMap<String, String>) -> PasteShortcut {
     ids.iter()
@@ -197,8 +191,6 @@ mod tests {
     fn an_app_chosen_by_its_installed_id_pastes_as_set_whatever_its_window_says() {
         let mut overrides = BTreeMap::new();
         overrides.insert("org.example.MyTerm".to_owned(), "ctrl_shift_v".to_owned());
-        // The window announces its WM class; the app is installed as the
-        // desktop-file id the app chooser answered with.
         assert_eq!(
             resolve_ids(&["myterm-window", "org.example.MyTerm"], &overrides),
             PasteShortcut::CtrlShiftV

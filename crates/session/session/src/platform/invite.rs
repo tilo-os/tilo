@@ -82,7 +82,7 @@ impl Workspace for DeskWorkspace {
     fn name(&self) -> Option<String> {
         self.handle.read(|tree| {
             tree.active_workspace()
-                .map(|workspace| workspace.name.clone())
+                .map(|workspace| tilo_desktop_surface::names::workspace(&workspace.name))
         })
     }
 

@@ -1,6 +1,9 @@
+# Was der Schreibtisch nennt, was niemand benannt hat
+desk-unnamed-workspace = Arbeitsbereich
+desk-unnamed-strip = Leiste { $number }
+
 # Obere Leiste
 continuity-dismiss = Ausblenden
-topbar-workspace-fallback = Arbeitsbereich
 topbar-sharing-agent-controls = Agent steuert: { $name }
 topbar-sharing-agent-viewing = Agent sieht zu: { $name }
 topbar-sharing-person-controls = Steuert: { $name }
@@ -240,6 +243,7 @@ activity-event-revoked-capabilities = { $count ->
         [one] Eine Berechtigung entzogen
        *[other] { $count } Berechtigungen entzogen
     }
+activity-event-membership = Mitglieder des Arbeitsbereichs geändert
 activity-event-created = Arbeitsbereich erstellt
 activity-event-created-named = Arbeitsbereich „{ $name }“ erstellt
 activity-event-updated = Arbeitsbereich aktualisiert
@@ -275,38 +279,6 @@ activity-capability-unknown = eine Berechtigung
 activity-capability-this-workspace = diesen Arbeitsbereich
 activity-capability-one-shared-file = eine geteilte Datei
 activity-capability-network = Netzwerk { $host }
-activity-capability-role = { $role ->
-        [owner] Eigentümer
-        [moderator] Moderierende
-        [editor] Bearbeitende
-        [commenter] Kommentierende
-       *[viewer] Betrachtende
-    }
-activity-grant = { $kinds ->
-        [read] Lesen
-        [undoable] Änderungen
-        [outside] Wirkungen nach außen
-        [read-undoable] Lesen und Änderungen
-        [read-outside] Lesen und Wirkungen nach außen
-        [undoable-outside] Änderungen und Wirkungen nach außen
-        [none] nichts
-       *[all] alles
-    } { $answer ->
-        [deny] verweigert
-        [ask] nach Rückfrage
-       *[allow] erlaubt
-    } für { $node } an { $subject }
-activity-grant-task = Aufgabe { $task }
-activity-grant-shortcut = Kurzbefehl { $shortcut }
-activity-grant-bot = Bot { $bot }
-activity-grant-foreign-device = Geräte, die nicht die eigenen sind
-activity-member = { $person } als { $role ->
-        [owner] Eigentümer
-        [moderator] Moderierende
-        [editor] Bearbeitende
-        [commenter] Kommentierende
-       *[viewer] Betrachtende
-    }
 activity-capability-a-person = eine Person
 activity-capability-agent = Agent { $agent }
 activity-capability-invite-token = ein Einladungstoken
@@ -656,7 +628,6 @@ workspace-settings-review-activity = Zuerst Aktivität prüfen
 workspace-settings-remove-person = Person entfernen
 workspace-settings-keep-permission = Berechtigung behalten
 workspace-settings-revoke-permission = Berechtigung entziehen
-workspace-settings-workspace-fallback = Arbeitsbereich
 workspace-settings-identity-title = Identität des Arbeitsbereichs
 workspace-settings-identity-description = Dieser Name erscheint in der oberen Leiste, in Einladungen und in geteilten Aktivitäten.
 workspace-settings-name-label = Name des Arbeitsbereichs
@@ -954,7 +925,6 @@ activity-morning-next = Nächste ausgewählte Quelle
 desktop-window-opened-elsewhere = { $person } hat { $app } geöffnet
 # Strip switcher: the strip ribbon grown into labels, one per strip of the workspace.
 strip-switcher-a11y = Leisten
-strip-switcher-unnamed = Leiste { $number }
 strip-switcher-new-strip = Neue Leiste
 strip-switcher-rename-named = { $name } umbenennen
 strip-switcher-name-placeholder = Name der Leiste
@@ -1235,7 +1205,6 @@ task-programs-run-detail = Führt ein Programm als Schritt der Aufgabe aus und a
 
 ## What a grant covers when it covers the whole tree
 workspace-settings-scope-everything = Alles
-activity-grant-everything = Alles
 
 ## Actions
 

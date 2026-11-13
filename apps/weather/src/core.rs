@@ -1,23 +1,5 @@
-//! Shared weather state and the two **content panels** it renders.
-//!
-//! Per the HIG §1b, weather is *not* a sidebar+content app — it is an
-//! **overview + detail** pair of content panels:
-//!
-//! * the **overview** is a *contentful* city list (each row carries quick
-//!   per-city info — the current condition and temperature); and
-//! * the **detail** is the full forecast for the selected city
-//!   (`detail`).
-//!
-//! The window shell ([`ui::widget::NavShell`]) owns the
-//! breakpoint, the side-by-side↔push transition and the Back button. This
-//! module owns the *content* of the two panes plus the state they share (the
-//! model, the add-place search, direct manipulation of the list) and the
-//! network request queue the app pumps.
-//!
-//! [`Core`] is held once behind an `Rc<RefCell<…>>`; the two pane widgets
-//! (see [`crate::panes`]) borrow it to draw and to route input, and the root
-//! [`crate::app::WeatherApp`] borrows it to present the document, pump the network
-//! worker, and drive the shell.
+//! The state the two content panels share, and their content: the saved-place
+//! list that is the overview, and the selected place's forecast.
 
 #[cfg(test)]
 use automerge::AutoCommit;
@@ -57,29 +39,20 @@ use crate::units::Units;
 use crate::wxcode::Sky;
 pub use detail::RETRY_KEY;
 
-/// How long a recently-typed query stays "fresh" before we fire a geocode.
 const GEOCODE_DEBOUNCE: Duration = Duration::from_millis(220);
-/// Where places typed into the search come from, as a placeholder names it.
 const GEOCODER: &str = "Open-Meteo";
 
-/// An intent the overview raises for the shell to act on (push the detail
-/// in). Consumed by the root widget after routing an event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavIntent {
     ShowDetail,
 }
 
-/// What the forecast is telling the person about its own freshness. Only
-/// the two lasting problems are shown; progress is the refresh button's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ForecastNotice {
-    /// The last refresh failed; the forecast on screen is older.
     UpdateFailed,
-    /// No connection; the forecast on screen is the last one saved.
     Offline,
 }
 
-/// The parts of an event the overview's routing needs.
 pub(crate) struct OverviewEventCtx<'a> {
     pub(crate) event: &'a WindowEvent,
     pub(crate) scale_factor: f64,
@@ -92,8 +65,6 @@ pub(crate) struct OverviewEventCtx<'a> {
 }
 
 impl OverviewEventCtx<'_> {
-    /// Run `f` with a toolkit [`ui::widget::EventCtx`] over this event's
-    /// document and focus, returning whether the widget handled it.
     fn with_widget_ctx(&mut self, f: impl FnOnce(&mut ui::widget::EventCtx<'_>)) -> bool {
         let mut handled = false;
         f(&mut ui::widget::EventCtx {
@@ -110,104 +81,64 @@ impl OverviewEventCtx<'_> {
     }
 }
 
-/// All mutable weather state shared by the two panes and the root widget.
 pub struct Core {
     pub model: WeatherModel,
-    /// Display units — read from the shared Settings store (`region`), never
-    /// toggled inside this app.
+    /// Display units, read from the shared Settings store; never toggled here.
     pub units: Units,
 
     last_mouse: Point,
 
-    // --- overview: saved-place direct manipulation ---
-    /// Press classifier: distinguishes a click from a vertical reorder-drag
-    /// from a horizontal delete-swipe once the pointer moves.
     press: Option<PointerPress>,
-    /// The per-place context menu and, by item index, the action each row
-    /// runs (`None` for a separator).
     menu: ContextMenu,
     menu_actions: Vec<Option<EntryAction>>,
     menu_target: Option<usize>,
-    /// The reusable drag-to-reorder model (live gap + reflow + floating
-    /// ghost). Armed once a press classifies as a vertical reorder; commits
-    /// the `(from, to)` move on drop and restores the order on cancel.
     reorder: DragController<LocationId>,
     over_rect: Rect,
-    /// The scrolling band the saved-place rows stand in.
     list_rect: Rect,
-    /// One row's height, measured from the row face at the last paint.
     row_h: f64,
     over_list_top: f64,
     over_scroll: f64,
     over_max_scroll: f64,
     over_bar: Scrollbar,
-    /// The track the list's scroll thumb runs in, as last painted.
     over_track: Rect,
-    /// How far left a row must be swiped to remove it, from the theme.
     swipe_commit: f64,
-    /// How far one notch of a scroll wheel moves a list: three lines of
-    /// body text, from the theme at the last paint.
     wheel_step: f64,
-    /// The empty state's "Add place" action, while it shows.
     empty_action: Option<Rect>,
-    /// Whether the list and the forecast stand side by side, as last laid
-    /// out. Then the empty state takes the forecast's wide column instead of
-    /// the narrow list.
+    /// Whether the list and the forecast sit side by side, as last laid out; the
+    /// empty state then takes the forecast's column.
     pub(crate) side_by_side: bool,
 
-    // --- add a place: the shared Autocomplete, shown while adding ---
-    /// The shared type-ahead field + suggestion overlay. Owns the query text,
-    /// caret / selection / clipboard, and the arrow-key / Enter / Esc
-    /// navigation of the geocoded matches. Weather feeds it results reactively
-    /// (the geocode is a debounced network side effect), never a synchronous
-    /// suggester closure. It shows only while a place is being added.
     search: Autocomplete,
-    /// The field's on-screen rect (set each draw).
     search_field_rect: Rect,
-    /// The add-place popover around the field, while a place is added.
     add_panel: Rect,
-    /// The last query text folded into the geocode machinery, for change
-    /// detection against the field's live text.
     search_query: String,
     search_results: Vec<SavedLocation>,
     search_seq: u64,
     pending_query_at: Option<Instant>,
-    /// Since when the places being typed are on their way: the first
-    /// keystroke of a search with no matches shown yet. Their placeholder
-    /// steps on from then, however many keys follow.
+    /// When the typed query was first sent: the placeholder's clock starts here and
+    /// later keys do not restart it.
     search_asked: Option<Instant>,
     geocode_cache: HashMap<String, Vec<SavedLocation>>,
     geocode_inflight: bool,
 
-    // --- detail: forecast ---
     detail_rect: Rect,
-    /// The scrolling band of the forecast body.
     body_rect: Rect,
     scroll: f64,
     max_scroll: f64,
     body_bar: Scrollbar,
     body_track: Rect,
     body_content_h: f64,
-    /// Where the out-of-date notice's Retry button takes a pointer, while
-    /// it shows.
     retry_rect: Option<Rect>,
-    /// Where the forecast's age line landed, as last painted: the bounds of
-    /// the reading assistive technology hears.
+    /// The age line's bounds, from the last paint: what assistive technology hears.
     updated_rect: Rect,
 
-    // --- detail: the horizontally-scrollable 24h strip ---
     hourly_scroll_x: f64,
     hourly_max_scroll: f64,
-    /// The strip's visible band (absolute coords, updated each draw).
     hourly_viewport: Rect,
-    /// The strip's scrollbar track (absolute coords, updated each draw).
     hourly_track: Rect,
-    /// Full width of all 24 columns (for the scrollbar metrics).
     hourly_content_w: f64,
-    /// Shared scrollbar interaction model for the strip's horizontal axis.
     hourly_bar: Scrollbar,
 
-    // --- network coordination (drained by the app's net pump) ---
     outbox: Vec<Request>,
     inflight: usize,
     content_generation: u64,
@@ -216,16 +147,11 @@ pub struct Core {
     pub status: String,
     notice: Option<ForecastNotice>,
 
-    // --- shell intent (consumed by the root widget) ---
     nav_request: Option<NavIntent>,
 
-    /// Where saved-place edits go: the framework's dispatcher, which applies
-    /// them to the document and presents the result back. Network data stays
-    /// local to this process and never reaches the document.
+    /// Where saved-place edits go; network data never reaches the record.
     dispatcher: Option<ui::framework::Dispatcher<Weather>>,
-    /// The default place the document named when last presented.
     default_location: Option<LocationId>,
-    /// The forecasts a capture shows in place of the network's.
     fixture_forecasts: Option<std::rc::Rc<WeatherModel>>,
 }
 
@@ -293,8 +219,7 @@ impl Core {
         }
     }
 
-    /// Take raw requests for offline consumers. Live dispatch uses the ticketed
-    /// path below, preserving the identity assigned at enqueue time.
+    /// Take the queued requests without their tickets; live dispatch keeps them.
     pub fn take_outbox(&mut self) -> Vec<Request> {
         std::mem::take(&mut self.outbox)
             .into_iter()
@@ -318,8 +243,8 @@ impl Core {
         self.next_ticket
     }
 
-    /// Capture only the synchronous enqueue operation following this marker.
-    /// Later dispatch batches cannot change an invocation's request ownership.
+    /// The weather tickets queued after `marker`; a later dispatch cannot change who
+    /// owns them.
     pub(crate) fn queued_weather_tickets_after(
         &self,
         marker: u64,
@@ -335,7 +260,7 @@ impl Core {
             .collect()
     }
 
-    /// Dispatch retains each request's original ticket and content incarnation.
+    /// Take the queued requests, remembering each one's ticket and generation.
     pub(crate) fn take_tracked_outbox(&mut self) -> Vec<Request> {
         let requests = std::mem::take(&mut self.outbox);
         for request in &requests {
@@ -356,8 +281,7 @@ impl Core {
         requests
     }
 
-    /// Fail only requests still awaiting a response after the worker channel
-    /// closes. These flow through the normal ticket reducer, exactly once.
+    /// Fail the requests still awaiting a reply, through the normal ticket reducer.
     pub(crate) fn disconnected_responses(&self) -> Vec<Response> {
         self.dispatched
             .iter()
@@ -372,36 +296,30 @@ impl Core {
             .collect()
     }
 
-    /// Submit saved-place edits through `dispatcher`.
     pub(crate) fn attach(&mut self, dispatcher: ui::framework::Dispatcher<Weather>) {
         self.dispatcher = Some(dispatcher);
     }
 
-    /// Show `forecasts` for the places a capture stages, in place of fetched
-    /// ones.
     #[cfg(feature = "samples")]
     pub(crate) fn show_fixture_forecasts(&mut self, forecasts: std::rc::Rc<WeatherModel>) {
         self.fixture_forecasts = Some(forecasts);
     }
 
-    /// Submit one saved-place edit or verb. The model already previews it;
-    /// the document presents the result back, or the stored state when the
-    /// edit is refused.
+    /// The model has already previewed the edit; the record's answer replaces it.
     fn submit(&self, submit: impl Submit<Weather>) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.submit(submit);
         }
     }
 
-    /// Adopt the presented saved places, invalidating stale gestures and
-    /// unsent effects. Dispatched effects retain their real settlement count.
-    /// The place on view stays this window's, unless the document's default
-    /// place changed.
+    /// Adopt the presented places, dropping the gestures and unsent work they
+    /// invalidate. The place on view stays this window's unless the record's default
+    /// changed.
     pub(crate) fn adopt_saved_places(&mut self, persisted: &mut WeatherModel) {
         let changed = self.model.locations != persisted.locations;
         for l in &persisted.locations {
-            // A cached reading belongs to a place's coordinates: one that
-            // moved must be fetched again.
+            // A cached reading belongs to a place's coordinates: one that moved is fetched
+            // again.
             if self.model.locations.iter().any(|old| same_place(old, l)) {
                 if let Some(s) = self.model.snapshots.get(&l.id) {
                     persisted.snapshots.insert(l.id, s.clone());
@@ -463,19 +381,14 @@ impl Core {
         self.model = persisted.clone();
     }
 
-    /// Take a pending shell navigation intent, if any.
     pub fn take_nav_request(&mut self) -> Option<NavIntent> {
         self.nav_request.take()
     }
 
-    /// Whether a fetch is currently in flight (drives frame pumping).
     pub fn is_fetching(&self) -> bool {
         self.inflight > 0
     }
 
-    /// Whether a geocode is armed or in flight: the places typed are on
-    /// their way. The armed one fires at [`Self::search_deadline`], and the
-    /// answer wakes the app when it lands.
     pub fn search_pending(&self) -> bool {
         self.geocode_inflight || self.pending_query_at.is_some()
     }
@@ -484,26 +397,20 @@ impl Core {
         self.pending_query_at.map(|at| at + GEOCODE_DEBOUNCE)
     }
 
-    /// Whether the city list holds the pointer and the keyboard right now:
-    /// a place is being added, its menu is open, or a row is being dragged.
-    /// The forecast beside it takes no input meanwhile, so a key typed into
-    /// the field or a click on a menu row that overlaps the forecast never
-    /// reaches the forecast too.
+    /// Whether the list has the pointer and the keyboard; the forecast takes no input
+    /// meanwhile.
     pub(crate) fn overview_owns_input(&self) -> bool {
         self.search.is_editing() || self.menu.is_open() || self.reorder.is_active()
     }
 
-    /// The lasting problem the forecast shows above itself, if any.
     pub(crate) fn notice(&self) -> Option<ForecastNotice> {
         self.notice
     }
 
-    /// Show `notice` above the forecast (a scenario, or the live pump).
     pub(crate) fn set_notice(&mut self, notice: Option<ForecastNotice>) {
         self.notice = notice;
     }
 
-    /// Queue a forecast + air-quality fetch for every saved location.
     pub fn refresh_all(&mut self) {
         let units = self.units;
         let mut reqs: Vec<Request> = Vec::new();
@@ -529,11 +436,8 @@ impl Core {
         }
     }
 
-    /// Queue a fetch for every saved place that has no forecast and none on
-    /// the way. A change to the saved places fences the requests already
-    /// sent, so a place added a moment earlier would otherwise wait on a
-    /// reply that is discarded and show "Loading the forecast" for good.
-    /// Returns whether anything was queued.
+    /// Fetch every place with no forecast and none on the way: changed places fence
+    /// the requests already sent, so a place just added would load forever.
     pub(crate) fn fetch_missing_forecasts(&mut self) -> bool {
         let pending: std::collections::HashSet<LocationId> = self
             .outbox
@@ -561,10 +465,7 @@ impl Core {
         !missing.is_empty()
     }
 
-    /// Open a saved city by id: select it, reset the forecast scroll, refresh
-    /// its forecast, and raise the show-detail push intent — the same path a
-    /// tap on the city list takes. Returns `false` (touching nothing) for an
-    /// id that is not a saved city. Used by the platform search's activation.
+    /// Open a saved place by id: select it, fetch it and raise the push intent.
     pub fn open_location(&mut self, id: LocationId) -> bool {
         let Some(pos) = self.model.locations.iter().position(|l| l.id == id) else {
             return false;
@@ -573,9 +474,7 @@ impl Core {
         true
     }
 
-    /// Queue an update for exactly one durable saved location. This powers the
-    /// per-location resource operation, so agent and keyboard-oriented flows
-    /// can refresh the forecast in view without re-fetching every city.
+    /// Fetch one saved place's forecast; false for an id that is not saved.
     pub fn refresh_location_by_id(&mut self, id: LocationId) -> bool {
         let Some(index) = self
             .model
@@ -589,7 +488,6 @@ impl Core {
         true
     }
 
-    /// Refresh the city currently displayed in the detail pane.
     pub fn refresh_selected_forecast(&mut self) {
         self.refresh_selected();
     }
@@ -604,8 +502,6 @@ impl Core {
         }
     }
 
-    /// Select the saved place `id` (a rail row's id), as a click on its row
-    /// in the list does.
     pub(crate) fn select_place(&mut self, id: &str) {
         if let Some(index) = self
             .model
@@ -617,8 +513,6 @@ impl Core {
         }
     }
 
-    /// The saved places as the overview's rail shows them: each one's id,
-    /// name and current condition glyph, and the selected one's id.
     pub(crate) fn rail_places(&self) -> (Vec<(String, String, Icon)>, Option<String>) {
         let places = self
             .model
@@ -639,8 +533,6 @@ impl Core {
         (places, selected)
     }
 
-    /// Select the place at `index`, reset the forecast scroll, refresh it,
-    /// and ask the shell to show its forecast.
     fn select_index(&mut self, index: usize) {
         self.model.select(index);
         self.scroll = 0.0;
@@ -649,9 +541,7 @@ impl Core {
         self.nav_request = Some(NavIntent::ShowDetail);
     }
 
-    /// Move the overview selection by `delta` (arrow-key navigation of the
-    /// city list), re-fetch the newly selected city's forecast and reset the
-    /// forecast scroll. Returns true when the selection actually moved.
+    /// Move the selection, fetch the new place and reset the scroll.
     fn move_selection(&mut self, delta: i64) -> bool {
         if self.model.locations.is_empty() {
             return false;
@@ -686,7 +576,6 @@ impl Core {
         }
     }
 
-    /// Apply a completed network response to the model / search results.
     pub fn apply_response(&mut self, resp: Response) {
         match resp {
             Response::Tracked {
@@ -697,8 +586,7 @@ impl Core {
                 let Some((_, _, search_seq)) = self.dispatched.remove(&ticket) else {
                     return;
                 };
-                // Failures carry no query sequence of their own. Fence them
-                // with the dispatched request, just like successful results.
+                // A failure carries no query of its own: fence it with the dispatched request.
                 if search_seq.is_some_and(|seq| seq != self.search_seq) {
                     return;
                 }
@@ -738,8 +626,6 @@ impl Core {
                     if !key.is_empty() {
                         self.geocode_cache.insert(key, results.clone());
                     }
-                    // The dropdown surfaces match/no-match state; the forecast
-                    // notice is reserved for the forecast itself.
                     self.search_results = results;
                     self.sync_search_view();
                 }
@@ -752,8 +638,6 @@ impl Core {
                 }
                 RequestKind::Geocode => {
                     self.geocode_inflight = false;
-                    // A failed geocode must resolve the dropdown's spinner into
-                    // an honest state rather than spin forever.
                     self.search_results.clear();
                     self.search_asked = None;
                     self.search.set_arriving(None);
@@ -766,9 +650,6 @@ impl Core {
         }
     }
 
-    /// Push the current search state into the shared [`Autocomplete`]: real
-    /// suggestion rows when there are matches, else an honest loading or
-    /// "no matches" status line — all inside the shared overlay.
     fn sync_search_view(&mut self) {
         if !self.search.is_editing() {
             return;
@@ -781,8 +662,6 @@ impl Core {
         } else if self.search_asked.is_none() {
             self.search_asked = Some(ui::time::now());
         }
-        // The places come from the geocoder; the dropdown's placeholder
-        // says so once they take a while.
         self.search.set_arriving(self.search_asked.map(|asked| {
             ui::arriving::ArrivalClock::new(asked, ui::arriving::Source::host(GEOCODER))
         }));
@@ -796,9 +675,8 @@ impl Core {
             let sugg: Vec<Suggestion> = self
                 .search_results
                 .iter()
-                // The place's name leads; its region and country trail as the
-                // row's detail, so Paris, France and Paris, Texas stay
-                // distinguishable at every width.
+                // The name leads and the region and country follow, so Paris, France and Paris,
+                // Texas stay apart.
                 .map(|r| Suggestion::labelled(result_value(r), &r.name).with_detail(r.subtitle()))
                 .collect();
             self.search.set_suggestions(sugg);
@@ -814,13 +692,9 @@ impl Core {
         self.search.open();
     }
 
-    // ---- geocoding (debounced + cached) -----------------------------
-
-    /// React to the search field's text changing: cache lookup for instant
-    /// matches, arm the debounce, and refresh the dropdown's view.
     fn on_query_changed(&mut self, text: &str) {
-        // Invalidate immediately, not after the debounce: an older response
-        // must never be displayed or cached under the newly typed query.
+        // Invalidate now, not after the debounce: an older response must never show or
+        // cache under a newer query.
         self.search_seq += 1;
         self.geocode_inflight = false;
         self.search_query = text.to_string();
@@ -831,8 +705,6 @@ impl Core {
             self.sync_search_view();
             return;
         }
-        // Show cached matches instantly; otherwise the dropdown shows its
-        // loading state until the debounced geocode lands.
         if let Some(hit) = self.geocode_cache.get(&key) {
             self.search_results = hit.clone();
         } else {
@@ -842,8 +714,6 @@ impl Core {
         self.sync_search_view();
     }
 
-    /// If the debounce window elapsed, queue the geocode request now. Called
-    /// once per frame by the app.
     pub fn maybe_fire_geocode(&mut self) {
         let Some(at) = self.pending_query_at else {
             return;
@@ -866,12 +736,9 @@ impl Core {
             seq: self.search_seq,
             query: q,
         });
-        // The spinner in the dropdown reflects the now-in-flight geocode.
         self.sync_search_view();
     }
 
-    /// Show and focus the add-place field with an empty query. Called by the
-    /// header's Add button and the empty state's action.
     pub(crate) fn begin_search(&mut self) {
         self.search_seq += 1;
         self.close_menu();
@@ -883,7 +750,6 @@ impl Core {
         self.geocode_inflight = false;
     }
 
-    /// Hide the add-place field and clear its transient state.
     fn end_search(&mut self) {
         self.search_seq += 1;
         self.search.close();
@@ -895,11 +761,8 @@ impl Core {
         self.geocode_inflight = false;
     }
 
-    /// Resolve an accepted autocomplete value back to a geocoded place and add
-    /// it. The encoded "Name, Region, Country" value identifies the exact match
-    /// (so arrowing to the second "Paris" adds the right one); a bare typed
-    /// query (Enter with no highlight) falls back to the top match. Returns
-    /// true when a place was actually added.
+    /// Add the place an accepted value names: the encoded "Name, Region, Country"
+    /// picks the exact match, a bare query the top one.
     fn commit_search_pick(&mut self, value: &str) -> bool {
         let picked = self
             .search_results
@@ -913,8 +776,7 @@ impl Core {
             });
         if let Some(loc) = picked {
             self.model.add_location(loc);
-            // Persist the retained identity/rank after coordinate deduplication,
-            // and the selection that add_location made in the live model.
+            // Persist the id and rank `add_location` kept after deduplication.
             let Some(location) = self.model.selected_location().cloned() else {
                 return false;
             };
@@ -925,11 +787,8 @@ impl Core {
             self.nav_request = Some(NavIntent::ShowDetail);
             return true;
         }
-        // Enter while still loading: arm an immediate geocode so the field
-        // resolves to real matches rather than doing nothing. If the clock's
-        // too young for the debounce to backdate (never in practice outside
-        // a fresh boot), just start the debounce fresh from now instead of
-        // panicking.
+        // Enter while loading arms an immediate geocode; a clock too young to backdate
+        // starts the debounce fresh.
         if !self.search_query.trim().is_empty() {
             self.pending_query_at = Some(
                 ui::time::now()
@@ -939,8 +798,6 @@ impl Core {
         }
         false
     }
-
-    // ---- per-entry actions (swipe ⇔ menu parity) --------------------
 
     fn apply_entry_action(&mut self, index: usize, action: EntryAction) -> bool {
         match action {
@@ -967,8 +824,6 @@ impl Core {
         }
     }
 
-    /// Open the per-place menu for the row at `index`, anchored at the
-    /// pointer, the row marked as its target.
     fn open_menu(&mut self, index: usize, at: Point) {
         let mut menu = ContextMenu::new();
         let mut actions = Vec::new();
@@ -1001,7 +856,6 @@ impl Core {
         self.menu_target = None;
     }
 
-    /// Apply a row the menu reported chosen.
     fn apply_menu_selection(&mut self, item: usize) -> bool {
         let action = self.menu_actions.get(item).copied().flatten();
         let target = self.menu_target;
@@ -1012,14 +866,6 @@ impl Core {
         }
     }
 
-    // =================================================================
-    // OVERVIEW pane — the contentful city list (master)
-    // =================================================================
-
-    /// Semantic projection of the painted saved-place list. The visual rows
-    /// are painted faces, so expose their stable model identity and current
-    /// readings explicitly instead of leaving screen-reader users with an
-    /// unnamed canvas.
     pub fn overview_accessibility(&self, rect: Rect) -> AccessNode {
         let total = self.model.locations.len();
         let items = self
@@ -1070,8 +916,6 @@ impl Core {
             .with_keyed_action_routes("weather-overview")
     }
 
-    /// The rect of the saved-place row at `index` as last painted, or
-    /// `None` before the first paint and for an index past the list.
     fn row_rect(&self, index: usize) -> Option<Rect> {
         (index < self.model.locations.len() && self.row_h > 0.0).then(|| {
             let y = self.over_list_top + index as f64 * self.row_h;
@@ -1093,14 +937,13 @@ impl Core {
         let ctx = &mut PaintCtx::new(scene, t, tr, theme);
         let sp = &theme.tokens.spacing;
         let inset = f64::from(sp.s2);
-        // The field and the rows' text start on the column's content edge,
-        // where the column's title starts; a row's lift bleeds past it.
+        // The field and rows start on the column's content edge; a row's lift bleeds past
+        // it.
         let gutter = ui::chrome::column_gutter(theme);
         let edge = gutter - ui::chrome::row_bleed(theme);
         let top = rect.y0 + inset;
 
-        // While a place is being added, its field stands in a popover from
-        // the header's Add button (drawn in the overlay).
+        // The field shows in a popover under the header's Add button.
         if !self.search.is_editing() {
             self.search_field_rect = Rect::ZERO;
             self.add_panel = Rect::ZERO;
@@ -1129,8 +972,6 @@ impl Core {
         self.draw_place_list(ctx);
     }
 
-    /// The scrolling saved-place rows: the toolkit's list rows, a live gap
-    /// and a floating ghost while one is dragged, and the list's scroll bar.
     fn draw_place_list(&mut self, ctx: &mut PaintCtx<'_>) {
         let list = self.list_rect;
         let count = self.model.locations.len();
@@ -1139,8 +980,8 @@ impl Core {
         self.over_scroll = self.over_scroll.clamp(0.0, self.over_max_scroll);
         self.over_list_top = list.y0 - self.over_scroll;
 
-        // Re-pin the live insertion gap to the cursor against this frame's
-        // geometry so a held drag reflows correctly even as the list scrolls.
+        // Re-pin the insertion gap to this frame's geometry, so a held drag reflows as the
+        // list scrolls.
         let metrics = self.list_metrics();
         self.reorder.sync_insertion(&metrics);
         let dragging = self.reorder.from_index();
@@ -1149,8 +990,8 @@ impl Core {
             .then(|| self.row_at(self.last_mouse))
             .flatten();
 
-        // Where the place at `index` stands in the list as it shows: its own
-        // slot, the drop slot while it is dragged, or its reflowed slot.
+        // Where the place shows: its slot, the drop slot while dragged, or its reflowed
+        // slot.
         let slot = |index: usize| -> usize {
             if Some(index) == dragging {
                 return self.reorder.insertion().unwrap_or(index);
@@ -1177,8 +1018,8 @@ impl Core {
                 ..Interaction::default()
             };
             let mut face = text.face(loc, i == selected, interaction);
-            // Separators follow the order the rows stand in, so a held drag
-            // keeps them between its reflowed neighbours.
+            // Separators follow the shown order, so a drag keeps them between its reflowed
+            // neighbours.
             let below = slot(i) + 1;
             if below < count {
                 face = face.separator(slot(selected) == below);
@@ -1197,8 +1038,6 @@ impl Core {
             face.paint(ctx, row);
         }
 
-        // The live drop target: a rule in your colour where the dragged
-        // place will land.
         if let Some(gap) = self.reorder.insertion() {
             let rule = f64::from(ctx.theme.tokens.metrics.chrome_rule_px) * 2.0;
             let y = self.over_list_top + gap as f64 * self.row_h;
@@ -1209,8 +1048,6 @@ impl Core {
         }
         ctx.scene.pop_layer();
 
-        // The dragged place floats free under the cursor, drawn last so it
-        // rides above the reflowing list.
         if let Some(i) = dragging
             && let (Some(loc), Some(ghost)) = (
                 self.model.locations.get(i),
@@ -1242,8 +1079,6 @@ impl Core {
         }
     }
 
-    /// The overview's floating parts, painted in the window's top layer:
-    /// the add-place suggestions and the per-place menu.
     pub fn draw_overview_overlay(
         &mut self,
         scene: &mut Scene,
@@ -1260,9 +1095,6 @@ impl Core {
         }
     }
 
-    /// The add-place form: the shared anchored floating Panel, opening below
-    /// the header's Add button on its trailing edge, with its caption over
-    /// the search field. The field's matches float below it.
     fn draw_add_popover(
         &mut self,
         scene: &mut Scene,
@@ -1312,20 +1144,14 @@ impl Core {
         self.search.draw_overlay(scene, t, tr, theme, presence);
     }
 
-    /// The open menu's panel, which captures the pointer while it shows.
     pub fn overview_modal_capture(&self) -> Option<Rect> {
         self.menu.modal_capture()
     }
 
-    /// The thin vertical track the list's scroll thumb runs in, at the
-    /// list's trailing edge, as last painted.
     fn list_track(&self) -> Rect {
         self.over_track
     }
 
-    /// The reorderable saved-place list's geometry this frame, for the
-    /// toolkit's [`DragController`]. `over_list_top` is the scroll-adjusted
-    /// leading edge of the first row, set during `draw_overview`.
     fn list_metrics(&self) -> ListMetrics {
         ListMetrics::uniform(
             self.over_list_top,
@@ -1349,13 +1175,12 @@ impl Core {
         (0..self.model.locations.len()).find(|&i| self.row_rect(i).is_some_and(|r| r.contains(p)))
     }
 
-    /// Handle an event routed to the overview pane. Returns true if consumed.
     pub(crate) fn handle_overview_event(&mut self, mut ctx: OverviewEventCtx<'_>) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = ctx.event {
             self.last_mouse =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
-        // Keep the shared field placed so its overlay hit-tests correctly.
+        // Keep the field placed so its overlay hit-tests correctly.
         if self.search.is_editing() {
             // A press on the popover around the field keeps it open.
             if matches!(
@@ -1384,11 +1209,6 @@ impl Core {
         handled
     }
 
-    /// While a place is being added the shared Autocomplete owns typing and
-    /// arrow/Enter/Esc navigation of the geocoded matches. Returns
-    /// `Some(consumed)` when the field fully handled the event (the caller
-    /// should return immediately), or `None` to fall through to the list's
-    /// own gesture handling.
     fn route_search_field(&mut self, ctx: &mut OverviewEventCtx<'_>) -> Option<bool> {
         let before = self.search.text().to_string();
         let mut ac_handled = false;
@@ -1429,16 +1249,15 @@ impl Core {
                 if self.commit_search_pick(&value) {
                     self.end_search();
                 } else {
-                    // Nothing to pick yet (Enter while loading): keep the
-                    // edit open and show the honest loading state.
+                    // Nothing to pick yet: keep the edit open, still loading.
                     self.search.open();
                     self.sync_search_view();
                 }
                 return Some(true);
             }
             AutocompleteOutcome::Cancelled => {
-                // A click-outside cancel is not consumed — fall through so
-                // the same press can still engage a row beneath the field.
+                // A click outside cancels without consuming, so the press reaches the row under
+                // the field.
                 self.end_search();
             }
             AutocompleteOutcome::None => {}
@@ -1448,8 +1267,7 @@ impl Core {
         if text_changed {
             self.on_query_changed(&after);
         }
-        // Consume anything the field acted on — a handled key/click or a
-        // text edit — so a keystroke never leaks past the focused field.
+        // A keystroke never leaks past the focused field.
         if ac_handled || text_changed {
             Some(true)
         } else {
@@ -1457,8 +1275,6 @@ impl Core {
         }
     }
 
-    /// After the open menu saw an event: run what it chose. An open menu
-    /// keeps the event (a press outside it only closes it).
     fn finish_menu_event(&mut self, event: &WindowEvent) -> bool {
         if let Some(item) = self.menu.take_selection() {
             self.apply_menu_selection(item);
@@ -1470,7 +1286,6 @@ impl Core {
         !matches!(event, WindowEvent::CursorMoved { .. })
     }
 
-    /// The list's own gesture handling. Returns `(handled, changed)`.
     fn dispatch_overview_event(&mut self, event: &WindowEvent) -> (bool, bool) {
         use winit::event::{ElementState, KeyEvent, MouseButton};
 
@@ -1523,17 +1338,13 @@ impl Core {
         ) {
             self.over_scroll = off;
         }
-        // Drive the reusable reorder model only while the gesture is a
-        // vertical reorder. A horizontal delete-swipe drops any pending
-        // drag so the two gestures never fight for the same pointer.
+        // Only a vertical gesture drives the reorder; a horizontal swipe drops the drag.
         if let Some(press) = self.press {
             if press.is_reorder() {
                 let metrics = self.list_metrics();
                 if !self.reorder.is_pending()
                     && let Some(loc) = self.model.locations.get(press.index)
                 {
-                    // Lazily arm the drag the moment it classifies as a
-                    // reorder, grabbing the row at the press point.
                     let grab = press.origin.y - metrics.slot_lead(press.index);
                     self.reorder.begin(loc.id, press.index, grab, press.origin);
                 }
@@ -1604,7 +1415,6 @@ impl Core {
         };
         if press.is_reorder() {
             if let Some((from, to)) = self.reorder.commit() {
-                // Commit the live insertion the controller tracked.
                 changed = self.model.move_location(from, to);
                 if changed && let Some(location) = self.model.locations.get(to) {
                     self.submit(
@@ -1614,7 +1424,6 @@ impl Core {
                     );
                 }
             } else {
-                // Dropped in place (or never activated): no change.
                 self.reorder.cancel();
             }
         } else if press.is_swipe() {
@@ -1628,8 +1437,6 @@ impl Core {
         (true, changed)
     }
 
-    /// Keys while the list itself has the keyboard (typing into the
-    /// add-place field is the field's, routed above).
     fn handle_overview_key(&mut self, logical_key: &winit::keyboard::Key) -> (bool, bool) {
         use winit::keyboard::{Key, NamedKey};
 
@@ -1637,17 +1444,12 @@ impl Core {
         let mut changed = false;
         match logical_key {
             Key::Named(NamedKey::Escape) => {
-                // Escape abandons an in-flight reorder, snapping the list
-                // back to its original order (the model was never touched —
-                // the drag is purely visual until drop).
+                // Escape abandons the drag; the model is untouched until drop.
                 if self.reorder.cancel() {
                     self.press = None;
                     handled = true;
                 }
             }
-            // Arrow up/down move the highlighted city; the detail pane
-            // follows the selection live (side-by-side) and a fresh
-            // forecast is fetched for it.
             Key::Named(NamedKey::ArrowDown) => {
                 changed = self.move_selection(1);
                 handled = true;
@@ -1656,9 +1458,7 @@ impl Core {
                 changed = self.move_selection(-1);
                 handled = true;
             }
-            // Enter opens the forecast for the highlighted city — the only
-            // way to reach the detail by keyboard in the narrow push
-            // layout, where it isn't shown yet.
+            // Enter shows the forecast; in the narrow layout it is the only keyboard way in.
             Key::Named(NamedKey::Enter) if self.model.selected_location().is_some() => {
                 self.refresh_selected();
                 self.nav_request = Some(NavIntent::ShowDetail);
@@ -1669,12 +1469,9 @@ impl Core {
         (handled, changed)
     }
 
-    /// Stage a forecast fetched `ago` ago, so a capture shows the age the page
-    /// states: minutes ago for a fresh one, hours for one that has gone stale.
     pub fn seed_fetched(&mut self, ago: std::time::Duration) {
-        // The toolkit's clock, which the page reads the age back with: a
-        // capture renders against a fixed instant, and an age measured from
-        // the process clock would read as "just now" there.
+        // The toolkit's clock, which the page reads the age back with; the process clock
+        // would read as "just now" in a capture.
         let now = u64::try_from(ui::clock::local_now().timestamp()).unwrap_or_default();
         let fetched_at = now.saturating_sub(ago.as_secs());
         for snapshot in self.model.snapshots.values_mut() {
@@ -1685,11 +1482,6 @@ impl Core {
         }
     }
 
-    /// Stage a live mid-drag reorder of the second saved place for a headless
-    /// shot: the row floats free as a ghost under the cursor while the rest
-    /// of the list has reflowed to open a gap near the tail where it will
-    /// land. Insertion is finalised by `sync_insertion` against real geometry
-    /// during the shot's draw pass.
     pub fn seed_drag(&mut self) {
         if self.model.locations.is_empty() {
             return;
@@ -1701,7 +1493,6 @@ impl Core {
         let row_h = if self.row_h > 0.0 {
             self.row_h
         } else {
-            // Before the first paint: the row at the default theme.
             crate::presentation::row_height(&mut TextRenderer::new(), &Theme::dark())
         };
         let top = if self.row_h > 0.0 {
@@ -1711,22 +1502,16 @@ impl Core {
         };
         let x = self.list_rect.center().x.max(row_h);
         let start = Point::new(x, top + (from as f64 + 0.5) * row_h);
-        // Past the last place, the drop rule showing just above the ghost.
         let target = Point::new(x, start.y + 2.2 * row_h);
-        // Grab the row at its vertical centre so the ghost sits on the cursor.
         self.reorder.begin(id, from, row_h / 2.0, start);
         self.last_mouse = target;
         let m = ListMetrics::uniform(top, row_h, 0.0, self.model.locations.len());
         self.reorder.pointer_moved(target, &m);
-        // Keep the classifier in the reorder state so a release commits it
-        // like a real in-flight drag.
         let mut press = PointerPress::new(from, start);
         press.update(target);
         self.press = Some(press);
     }
 
-    /// Stage the per-place menu open on the second place for a headless
-    /// shot.
     pub fn seed_menu(&mut self) {
         let Some(row) = self.row_rect(1.min(self.model.locations.len().saturating_sub(1))) else {
             return;
@@ -1736,9 +1521,6 @@ impl Core {
         self.open_menu(1.min(self.model.locations.len() - 1), at);
     }
 
-    /// Stage the add-place field with a query and a set of geocoded matches
-    /// (headless shot / test — the offscreen path can't await a live
-    /// geocode). Drives the real shared [`Autocomplete`].
     pub fn seed_search(&mut self, query: &str, results: Vec<SavedLocation>) {
         self.search.begin_edit();
         self.search.set_text(query); // after begin_edit: caret at end, no select
@@ -1749,14 +1531,11 @@ impl Core {
         self.sync_search_view();
     }
 
-    /// Like [`seed_search`](Self::seed_search) but with the top match already
-    /// highlighted — for a headless shot of the overlay mid-navigation.
     pub fn seed_search_highlighted(&mut self, query: &str, results: Vec<SavedLocation>) {
         self.seed_search(query, results);
         self.search.set_highlight(Some(0));
     }
 
-    /// Stage the overlay's loading state (a geocode in flight).
     pub fn seed_search_loading(&mut self, query: &str) {
         self.search.begin_edit();
         self.search.set_text(query);
@@ -1767,7 +1546,6 @@ impl Core {
         self.sync_search_view();
     }
 
-    /// Stage the overlay's "no matches" state.
     pub fn seed_search_empty(&mut self, query: &str) {
         self.search.begin_edit();
         self.search.set_text(query);
@@ -1808,9 +1586,6 @@ impl Core {
     pub fn menu_is_open(&self) -> bool {
         self.menu.is_open()
     }
-    /// The live rect the production hit-test would match for a given
-    /// context-menu action, so tests click the *real* target rather than a
-    /// recomputed guess.
     #[cfg(test)]
     pub fn menu_item_rect(&self, action: EntryAction) -> Option<Rect> {
         let index = self.menu_actions.iter().position(|a| *a == Some(action))?;
@@ -1824,13 +1599,10 @@ impl Core {
     pub fn search_query(&self) -> &str {
         self.search.text()
     }
-    /// Test seam: the number of suggestion rows the shared overlay currently
-    /// offers (proves the autocomplete is populated from real geocode data).
     #[cfg(test)]
     pub fn search_suggestion_count(&self) -> usize {
         self.search.suggestions().len()
     }
-    /// Test seam: the keyboard-highlighted suggestion's display label, if any.
     #[cfg(test)]
     pub fn search_highlight_label(&self) -> Option<String> {
         self.search.highlighted().map(|s| s.label.clone())
@@ -1847,35 +1619,24 @@ impl Core {
     pub fn hourly_viewport_rect(&self) -> Rect {
         self.hourly_viewport
     }
-    /// Test seam: the live insertion boundary the reorder controller tracks
-    /// this frame, or `None` when no reorder is in flight.
     #[cfg(test)]
     pub fn reorder_insertion_for_test(&self) -> Option<usize> {
         self.reorder.insertion()
     }
-    /// Test seam: index of the row currently being dragged, if any.
     #[cfg(test)]
     pub fn reorder_from_for_test(&self) -> Option<usize> {
         self.reorder.from_index()
     }
-    /// Test seam: the reflow shift (logical px) the controller applies to the
-    /// non-dragged row at `i` while a drag is live.
     #[cfg(test)]
     pub fn reorder_item_shift_for_test(&self, i: usize) -> f64 {
         self.reorder.item_shift(i, &self.list_metrics())
     }
 }
 
-// =====================================================================
-// The sun's arc: content drawing beside the forecast's hero
-// =====================================================================
-
-/// The sun's arc across the day, its dot placed by the observation time
-/// between sunrise and sunset, with both times under the horizon.
 pub(crate) struct SunArc {
     sunrise: String,
     sunset: String,
-    /// Where the sun stands: 0 at sunrise, 1 at sunset.
+    /// 0 at sunrise, 1 at sunset.
     fraction: f64,
     is_day: bool,
     width: f64,
@@ -1926,7 +1687,6 @@ impl SunArc {
         let baseline = label_y - s2;
         let cx = area.center().x;
         let radius = self.radius;
-        // The horizon, on the ground the arc stands on.
         ui::surface::separator(
             ctx.scene,
             ctx.transform,
@@ -1993,23 +1753,15 @@ impl SunArc {
     }
 }
 
-// =====================================================================
-// Free helpers
-// =====================================================================
-
-/// A thin scroll track along the trailing edge of `area`: the thumb is the
-/// theme's `s1` wide, an `s1` in from the edge.
 fn scroll_track(area: Rect, theme: &Theme) -> Rect {
     let s1 = f64::from(theme.tokens.spacing.s1);
     Rect::new(area.x1 - 2.0 * s1, area.y0 + s1, area.x1 - s1, area.y1 - s1)
 }
 
-/// How far one notch of a scroll wheel moves: three lines of body text.
 fn wheel_step(theme: &Theme) -> f64 {
     f64::from(theme.text(TextRole::Body).line_height_px()) * 3.0
 }
 
-/// A wheel delta in logical pixels: each notch moves `step` pixels.
 fn wheel_dy(delta: winit::event::MouseScrollDelta, step: f64) -> f64 {
     match delta {
         winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(y) * step,
@@ -2017,7 +1769,6 @@ fn wheel_dy(delta: winit::event::MouseScrollDelta, step: f64) -> f64 {
     }
 }
 
-/// The horizontal part of a wheel delta in logical pixels.
 fn wheel_dx(delta: winit::event::MouseScrollDelta, step: f64) -> f64 {
     match delta {
         winit::event::MouseScrollDelta::LineDelta(x, _) => f64::from(x) * step,
@@ -2025,8 +1776,6 @@ fn wheel_dx(delta: winit::event::MouseScrollDelta, step: f64) -> f64 {
     }
 }
 
-/// The "No places yet" empty state in `rect`, returning where its Add place
-/// action is.
 pub(crate) fn paint_no_places(ctx: &mut PaintCtx<'_>, rect: Rect, mouse: Point) -> Option<Rect> {
     let glyph = |ctx: &mut PaintCtx<'_>, r: Rect| {
         crate::icon::draw_icon(
@@ -2050,9 +1799,8 @@ pub(crate) fn paint_no_places(ctx: &mut PaintCtx<'_>, rect: Rect, mouse: Point) 
     )
 }
 
-/// The encoded, unambiguous value for a geocoded search result — its display
-/// name plus subtitle — so the accepted [`Autocomplete`] value maps back to the
-/// exact place (two cities named "Paris" stay distinct).
+/// The value naming one geocoded result exactly, so Paris, France and Paris,
+/// Texas stay apart.
 fn result_value(loc: &SavedLocation) -> String {
     format!("{}, {}", loc.name, loc.subtitle())
 }

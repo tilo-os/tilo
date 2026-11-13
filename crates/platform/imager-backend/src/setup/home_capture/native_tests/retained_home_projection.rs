@@ -1,6 +1,5 @@
-//! Actual signed service / root-mounted FUSE boundary qualification only.
-//! This does NOT manufacture InstalledRetainedLaunchInput or claim certified
-//! Shell/installed-source admission. Those separate native fixtures stay required.
+//! Signed-service and root-mounted FUSE boundary qualification only; this manufactures no
+//! installed admission and no Shell success receipt.
 use super::super::runtime::TrustedCaptureService;
 use super::credentials::assert_kernel_credentials;
 use launcher::{
@@ -55,8 +54,6 @@ fn denied() -> io::Error {
     io::ErrorKind::PermissionDenied.into()
 }
 
-// These are explicitly disposable native fixture credentials, not a person
-// proof or retained installed consent. Production admission isn't overridden.
 struct FixtureAuthority(Arc<AtomicBool>, File);
 impl ServiceAuthority for FixtureAuthority {
     fn check(&self) -> io::Result<()> {
@@ -135,9 +132,6 @@ fn bounded_fixture_error(error: &launcher::run::RunError) -> (String, bool) {
     (text.value, text.truncated)
 }
 fn observe_canonical_worker_debug(root: &Path) {
-    // Fixture-only: generated source bytes, IdentitySource None and public SDK.
-    // Read the existing canonical bounded managed-child log, never add a
-    // worker channel or alter confinement. Capture may still finish asynchronously.
     let path = root.join("launcher-debug-output.log");
     let result: io::Result<serde_json::Value> = (|| {
         let mut file = File::options()
@@ -261,9 +255,6 @@ impl Worker {
             }
             Err(_) => ("other-launch-refusal", "none", None, None),
         };
-        // This test uses only disposable private source bytes, IdentitySource
-        // None and public signed artifacts. Preserve its actual launch cause,
-        // capped during formatting, in JSON rather than a UI/runtime logger.
         let diagnostic = run.result.as_ref().err().map(bounded_fixture_error);
         eprintln!(
             "RETAINED_SUPERVISOR_RESULT {}",
@@ -314,9 +305,6 @@ fn launch(service: TrustedCaptureService, worker: &Worker, argument: &str) -> Se
     }
 }
 
-// Numeric test-only observation of the same held descriptor and current kernel
-// table used by production coordinate admission. No source names or bytes leave
-// this disposable fixture, and the existing admission assertion stays intact.
 fn observe_held_coordinate(role: &str, file: &File) {
     assert!(matches!(role, "source" | "runtime"));
     let metadata = file.metadata().unwrap();
@@ -391,8 +379,6 @@ fn source_worker(
         .expect("actual pinned signed source/target worker required");
     observe_held_coordinate("source", &file);
     {
-        // Match the real exclusion descriptor: runtime is metadata custody,
-        // never an extra source grant or readable worker projection.
         let runtime = File::options()
             .read(true)
             .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -461,8 +447,7 @@ fn target_worker(
     (worker, endpoint)
 }
 
-// A test transport adapter over the REAL source worker; not the production
-// installed relay. Finite canonical server admission bounds all these callbacks.
+// A test transport over the real source worker, not the installed relay.
 struct Bridge {
     source: ServiceEndpoint,
     target: Arc<TargetProjectionEndpoint>,
@@ -728,17 +713,13 @@ impl Drop for Consumer {
     }
 }
 fn consumer(view: &File, state: &File, source: &File) -> (Consumer, UnixStream) {
-    // The real qualification executable may live behind a root-private
-    // ancestor. Stage only this actual executable under a separate root-owned
-    // searchable probe directory; source/control workspaces remain 0700.
+    // Stage only the executable in a separate root-owned searchable probe directory; source,
+    // state and control directories stay 0700.
     let probe = tempfile::Builder::new()
         .prefix("tilo-target-probe-")
         .permissions(std::fs::Permissions::from_mode(0o711))
         .tempdir_in("/run")
         .unwrap();
-    // TempDir's creation mode is still restricted by the private 077 umask.
-    // Make only this root-owned executable probe searchable after creation;
-    // source, state, and control workspaces retain their private permissions.
     let probe_directory = File::open(probe.path()).unwrap();
     probe_directory
         .set_permissions(std::fs::Permissions::from_mode(0o711))
@@ -773,7 +754,6 @@ fn consumer(view: &File, state: &File, source: &File) -> (Consumer, UnixStream) 
         .env("TILO_HOME_TARGET_STDIO_FIXTURE", "1");
     unsafe {
         command.pre_exec(move || {
-            // Duplicate away from the destination range before replacing any fd.
             let mut owned = Vec::new();
             for fd in descriptors {
                 let copy = libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 100);
@@ -821,8 +801,8 @@ fn target_stdio_child() {
     let view = PathBuf::from("/proc/self/fd/70").join(NAME);
     let state = PathBuf::from("/proc/self/fd/71/personal-state");
     let bare_source = PathBuf::from("/proc/self/fd/72").join(NAME);
-    // Kernel FUSE statfs must traverse the actual source worker and guarded
-    // relay; compare stable capacity/units, not concurrently changing free space.
+    // FUSE statfs traverses the source worker and guarded relay; compare stable capacity and units,
+    // not free space that changes concurrently.
     let observe_capacity = |descriptor| {
         let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
         // SAFETY: fixture-owned live descriptors; successful fstatvfs fills stats.
@@ -1061,8 +1041,7 @@ fn full_home_fixture(alias_mode: bool, writable: bool) {
     chown(&source_dir, SOURCE_UID, SOURCE_GID);
     let source_path = source_dir.join(NAME);
     std::fs::write(&source_path, b"original source bytes").unwrap();
-    // Neither source nor target owns this leaf. Only the original source
-    // supplementary group can open it; target has no such group.
+    // Neither source nor target owns this leaf; only the source supplementary group can open it.
     chown(&source_path, FILE_OWNER, SOURCE_GROUP);
     std::fs::set_permissions(&source_path, std::fs::Permissions::from_mode(0o060)).unwrap();
     let before = std::fs::metadata(&source_path).unwrap();
@@ -1100,9 +1079,8 @@ fn full_home_fixture(alias_mode: bool, writable: bool) {
     )
     .unwrap();
     if alias_mode {
-        // This fixture's original namespace spelling is deliberately different
-        // from its root-private backing-store path and the target private HOME.
-        // This tests namespace presentation, never installed source admission.
+        // The namespace spelling differs from the root-private backing path and the target HOME;
+        // this tests presentation, never installed source admission.
         std::os::unix::fs::symlink(alias_path().join(NAME), source_dir.join("absolute-file"))
             .unwrap();
         std::os::unix::fs::symlink("/outside-home/secret", source_dir.join("outside-file"))
@@ -1112,9 +1090,6 @@ fn full_home_fixture(alias_mode: bool, writable: bool) {
         chown(&executable, SOURCE_UID, SOURCE_GID);
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    // Bwrap resolves the held state descriptor to its named path after the
-    // target UID drop. Keep target-owned state under a searchable parent, as
-    // ordinary app state is, independently of the root-private source fixture.
     let target_state = tempfile::Builder::new()
         .prefix("tilo-native-target-state-")
         .permissions(std::fs::Permissions::from_mode(0o700))
@@ -1227,13 +1202,11 @@ fn full_home_fixture(alias_mode: bool, writable: bool) {
         unreadable_observed,
         "source UID enumerates unreadable metadata without bytes"
     );
-    // Open the actual original-UID iterator while search is permitted, then
-    // remove search access to its parent. readDir on the held OFD still works;
-    // nofollow child stat must be denied to this non-root source worker.
+    // Open the iterator while search is permitted, then remove search from its parent: readDir on
+    // the held OFD still works, and a nofollow child stat is denied.
     let denied_cursor = client.open_cursor(ROOT_DIRECTORY).unwrap();
     std::fs::set_permissions(&source_dir, std::fs::Permissions::from_mode(0o400)).unwrap();
     let denied_page = client.cursor_page(denied_cursor, 0);
-    // Restore actual source policy before asserting, including a failed reply.
     std::fs::set_permissions(&source_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     let denied_page = denied_page.unwrap();
     assert!(!denied_page.entries.is_empty());
@@ -1271,8 +1244,6 @@ fn full_home_fixture(alias_mode: bool, writable: bool) {
     projection.observe_ready().unwrap();
     let view = projection.held_view().unwrap();
     if alias_mode {
-        // Genuine signed source/target and FixtureAuthority boundary only.
-        // This grants no installed Shell/ordinary GUI success receipt.
         let mut exposure = launcher::owned_service::target_projection::FixtureExposure::prepare(
             Arc::clone(&projection),
             writable,
@@ -1371,8 +1342,7 @@ fn full_home_fixture(alias_mode: bool, writable: bool) {
     drop(runtime);
     let client = bridge.client.lock().unwrap().take().unwrap();
     client.retire().unwrap();
-    // Release the endpoint's held mounted view and all root transport custody
-    // before retiring the original source service namespace.
+    // Release the mounted view and all root transport custody before retiring the source namespace.
     drop(bridge);
     drop(projection);
     source.retire().unwrap();
@@ -1384,9 +1354,8 @@ fn alias_path() -> PathBuf {
     PathBuf::from(OsString::from_vec(b"/home/original-\xff".to_vec()))
 }
 
-/// Narrow confinement qualification over the existing actual signed workers
-/// and their real root-mounted FUSE view. Fixture authority is NOT installed
-/// person/record/Shell authority and never bypasses those production checks.
+/// Narrow confinement qualification over the real signed workers and their root-mounted FUSE
+/// view; fixture authority never bypasses production admission.
 fn qualify_alias_consumer(
     exposure: &mut launcher::owned_service::target_projection::FixtureExposure,
     state_dir: &Path,
@@ -1498,8 +1467,7 @@ fn qualify_alias_iteration(
     for (key, value) in launcher::appdir::sandbox_env() {
         argv.extend(["--setenv".into(), key, value]);
     }
-    // These are the exact production baseline/clone3 programs, not a weaker
-    // test-specific filter. Bwrap consumes them only after mount setup.
+    // The exact production baseline/clone3 programs, not a weaker test filter.
     let mut baseline = tempfile::tempfile().unwrap();
     baseline
         .write_all(
@@ -1589,7 +1557,6 @@ fn qualify_alias_iteration(
             Ok(())
         });
     }
-    // Token is owned before any possible inherited view delivery.
     exposure.mark_possible_delivery().unwrap();
     let mut consumer = Consumer {
         child: command.spawn().unwrap(),
@@ -1693,9 +1660,7 @@ fn native_alias_stdio_child() {
         b"original source bytes".as_slice()
     };
     let mut signal = unsafe { UnixStream::from_raw_fd(74) };
-    // Canonical bwrap preserves the ordinary invoking UID/GID. Its --dev
-    // devpts preparation uses an intermediate namespace UID/GID 0, then
-    // maps the final ordinary IDs to that intermediate identity.
+    // bwrap keeps the invoking UID/GID; its --dev devpts preparation uses an intermediate UID/GID 0.
     assert_eq!(rustix::process::getuid().as_raw(), TARGET_UID);
     assert_eq!(rustix::process::geteuid().as_raw(), TARGET_UID);
     assert_eq!(rustix::process::getgid().as_raw(), TARGET_GID);
@@ -1730,9 +1695,8 @@ fn native_alias_stdio_child() {
         assert_eq!(values.len(), 1);
         assert_eq!(values[0].trim(), expected);
     }
-    // Source and root receipts are never inherited into this test consumer.
-    // Close all nonstandard descriptors except its owned qualification socket
-    // before actual Landlock enforcement.
+    // Close every nonstandard descriptor except the owned qualification socket before Landlock
+    // enforcement.
     assert_eq!(
         unsafe { libc::syscall(libc::SYS_close_range, 3_u32, 73_u32, 0_u32) },
         0

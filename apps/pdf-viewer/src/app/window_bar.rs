@@ -15,9 +15,6 @@ use crate::actions::PdfEffect;
 use crate::model::{HighlightColor, Tool, colour_label};
 
 impl PdfApp {
-    /// The window bar's slots for what the reader shows now. Open stands in
-    /// the bar's menu whether or not a document is open, so it is always in
-    /// the same place; the rest act on the open document.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         let bar = &self.bar;
         let open = bar
@@ -111,8 +108,6 @@ impl PdfApp {
         }
     }
 
-    /// The zoom menu's entries: in and out, and the two fits, each showing
-    /// whether it is the one in force.
     fn zoom_entries(&self) -> Vec<ui::window_toolbar::ToolbarAction> {
         let bar = &self.bar;
         vec![
@@ -141,8 +136,6 @@ impl PdfApp {
         ]
     }
 
-    /// Run what the person did in the window's bar, then declare the slots
-    /// for what the reader shows now.
     pub(super) fn run_window_toolbar(&mut self) {
         for event in ui::window_toolbar::take_events() {
             self.run_window_bar_event(&event);
@@ -151,8 +144,6 @@ impl PdfApp {
         ui::window_toolbar::declare(Some(self.window_toolbar()));
     }
 
-    /// Run one thing the person did in the window's bar: the published
-    /// effect its slot stands for.
     pub(crate) fn run_window_bar_event(&mut self, event: &ToolbarEvent) {
         let effect = match (event, self.bar.pressed(event)) {
             (_, Some(effect @ PdfEffect::OpenPdf { .. })) => effect,
@@ -164,9 +155,6 @@ impl PdfApp {
         self.run_effect(&effect);
     }
 
-    /// Run `effect` as the person's own press: the view effects through
-    /// [`Self::show`], Open and Save through the pickers, as
-    /// [`Self::answer_effect`] runs them for the palette and agents.
     pub(super) fn run_effect(&mut self, effect: &PdfEffect) {
         if self.show(effect) {
             return;
@@ -183,7 +171,6 @@ impl PdfApp {
 
 #[cfg(test)]
 impl PdfApp {
-    /// The bar's entry named `name`, a menu's item too.
     pub(crate) fn bar_entry(&self, name: &str) -> ToolbarAction {
         let toolbar = self.window_toolbar();
         toolbar
@@ -195,7 +182,6 @@ impl PdfApp {
             .unwrap_or_else(|| panic!("the bar has {name}: {toolbar:?}"))
     }
 
-    /// Press the bar's entry named `name`, as the desktop hands it over.
     pub(crate) fn press_bar(&mut self, name: &str) {
         let id = self.bar_entry(name).id;
         self.run_window_bar_event(&ToolbarEvent::Action { id });

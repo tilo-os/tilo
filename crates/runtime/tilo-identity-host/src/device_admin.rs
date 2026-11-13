@@ -14,7 +14,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use tilo_actions::remote::identity_admin::FleetDevice;
-use tilo_user_identity::{IdentityPaths, RevocationEntry, RevocationReason};
+use tilo_user_identity::{DeviceRole, IdentityPaths, RevocationEntry, RevocationReason};
 
 use crate::device_fleet::DeviceFleetStore;
 
@@ -23,47 +23,20 @@ pub const ENROLL: &str = "/usr/libexec/tilo/tilo-enroll";
 /// The privileged helper that admits a discovered device.
 pub const CONTROL_HELPER: &str = "/usr/libexec/tilo-home-peer-control";
 
-/// The kind of device a pairing admits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PairRole {
-    /// Another of the person's own devices.
-    PersonalDevice,
-    /// An always-on home server that keeps the person's workspaces.
-    HomePeer,
+/// The `tilo-enroll` command that listens for a device of `role`.
+#[must_use]
+pub const fn discover_command(role: DeviceRole) -> &'static str {
+    match role {
+        DeviceRole::Personal => "discover-device",
+        DeviceRole::Host => "discover",
+    }
 }
 
-impl PairRole {
-    /// The role `text` names: `personal-device` or `home-peer`.
-    pub fn parse(text: &str) -> Result<Self, String> {
-        match text.trim() {
-            "personal-device" => Ok(Self::PersonalDevice),
-            "home-peer" => Ok(Self::HomePeer),
-            _ => Err("role must be personal-device or home-peer".into()),
-        }
-    }
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::PersonalDevice => "personal-device",
-            Self::HomePeer => "home-peer",
-        }
-    }
-
-    /// The `tilo-enroll` command that listens for a device of this role.
-    #[must_use]
-    pub const fn discover_command(self) -> &'static str {
-        match self {
-            Self::PersonalDevice => "discover-device",
-            Self::HomePeer => "discover",
-        }
-    }
-
-    const fn approve_command(self) -> &'static str {
-        match self {
-            Self::PersonalDevice => "approve-device",
-            Self::HomePeer => "approve-enrollment",
-        }
+/// The helper's command that admits a device of `role`.
+const fn approve_command(role: DeviceRole) -> &'static str {
+    match role {
+        DeviceRole::Personal => "approve-device",
+        DeviceRole::Host => "approve-enrollment",
     }
 }
 
@@ -80,9 +53,9 @@ pub struct Candidate {
 
 impl Candidate {
     #[must_use]
-    pub fn answer(&self, role: PairRole) -> serde_json::Value {
+    pub fn answer(&self, role: DeviceRole) -> serde_json::Value {
         serde_json::json!({
-            "role": role.as_str(),
+            "role": role.name(),
             "device": self.device_node_id,
             "service": self.relay_service_node_id,
             "label": self.label,
@@ -110,7 +83,7 @@ pub fn discovered(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<Candida
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Approval {
-    pub role: PairRole,
+    pub role: DeviceRole,
     pub device: String,
     /// The relay service node id it announced, in lowercase hex.
     pub service: String,
@@ -159,7 +132,7 @@ pub fn approval_args(
     paths: &PersonPaths,
     workspace_ids: &[u64],
 ) -> Vec<OsString> {
-    let mut args: Vec<OsString> = [CONTROL_HELPER, approval.role.approve_command()]
+    let mut args: Vec<OsString> = [CONTROL_HELPER, approve_command(approval.role)]
         .into_iter()
         .map(OsString::from)
         .collect();
@@ -171,7 +144,7 @@ pub fn approval_args(
     args.push(approval.device.clone().into());
     args.push("--expected-service".into());
     args.push(approval.service.clone().into());
-    if approval.role == PairRole::HomePeer {
+    if approval.role == DeviceRole::Host {
         for id in workspace_ids {
             args.push("--workspace-id".into());
             args.push(id.to_string().into());
@@ -234,7 +207,7 @@ pub fn proposed_certificate(
             user_public_key: person,
             device_public_key: key(&candidate.device_node_id)?,
             device_label: candidate.label.clone(),
-            capabilities: tilo_user_identity::DeviceRole::Personal.capabilities(),
+            capabilities: DeviceRole::Personal.capabilities(),
             // As a certificate issued here: a minute back, for a new device
             // whose clock trails.
             issued_at_ns: now_ns.saturating_sub(60 * 1_000_000_000),
@@ -255,7 +228,7 @@ pub fn approved_args(
     paths: &PersonPaths,
     approved_cert: &Path,
 ) -> Vec<OsString> {
-    let mut args: Vec<OsString> = vec![PairRole::PersonalDevice.approve_command().into()];
+    let mut args: Vec<OsString> = vec![approve_command(DeviceRole::Personal).into()];
     for (flag, value) in [
         ("--identity-root", paths.root.as_os_str()),
         ("--identity-dir", paths.dir.as_os_str()),
@@ -723,12 +696,12 @@ mod tests {
 
     #[test]
     fn keys_roles_and_discoveries_are_checked_before_anything_runs() {
-        assert_eq!(PairRole::parse("home-peer"), Ok(PairRole::HomePeer));
+        assert_eq!(DeviceRole::parse("home-peer"), Some(DeviceRole::Host));
         assert_eq!(
-            PairRole::parse(" personal-device "),
-            Ok(PairRole::PersonalDevice)
+            DeviceRole::parse(" personal-device "),
+            Some(DeviceRole::Personal)
         );
-        assert!(PairRole::parse("server").is_err());
+        assert!(DeviceRole::parse("server").is_none());
         assert_eq!(
             node_id(&DEVICE.to_ascii_uppercase(), "device"),
             Ok(DEVICE.into())
@@ -759,7 +732,7 @@ mod tests {
             dir: PathBuf::from("/home/person/.config/tilo/identity"),
         };
         let approval = Approval {
-            role: PairRole::HomePeer,
+            role: DeviceRole::Host,
             device: DEVICE.into(),
             service: SERVICE.into(),
             workspace_ids: None,
@@ -787,7 +760,7 @@ mod tests {
         );
         let personal = approval_args(
             &Approval {
-                role: PairRole::PersonalDevice,
+                role: DeviceRole::Personal,
                 ..approval
             },
             &paths,

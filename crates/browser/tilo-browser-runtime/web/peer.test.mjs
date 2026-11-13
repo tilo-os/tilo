@@ -445,7 +445,7 @@ test('a host that answers the page that it does not let it in is said at once', 
   runtime.peer.emit('admitting');
   const error = await ready.then(() => assert.fail('let in'), failed => failed);
   assert.equal(error.code, 'not-let-in');
-  assert.equal(failureCause(error), 'host-silent');
+  assert.equal(failureCause(error), 'host-refused');
   assert.equal(error.sessionError, 'device not in workspace membership');
   await peer.dispose();
 });

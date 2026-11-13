@@ -2370,6 +2370,42 @@ fn the_composer_fits_the_narrowest_conversation_beside_the_channels() {
     }
 }
 
+/// A message's author line in a narrow window, as a card's: a long name ends in an ellipsis
+/// and the time beside it stays whole, inside the conversation.
+#[test]
+fn a_narrow_window_keeps_a_messages_time_whole_beside_a_long_name() {
+    let (mut app, mut doc) = app_with_doc();
+    let name = "Book the room for the whole marketing team on Friday";
+    app.workspace_agent_names
+        .insert("planner".into(), name.into());
+    let channel = app.active_channel.clone();
+    let id = crate::testing::say(&mut doc, "agent:planner", &channel, "On it.");
+    app.reload(&doc);
+    render_frame(&mut app, 320.0, 480.0);
+    render_frame(&mut app, 320.0, 480.0);
+    let parts = app.painted_messages.get(&id).expect("the message is drawn");
+    let (name, _) = parts.author.clone().expect("its author is drawn");
+    let (time, clock) = parts.time.clone().expect("its time is drawn");
+    let style = ui::theme::Theme::dark()
+        .text(ui::tokens::TextRole::Caption)
+        .numeric();
+    let whole = ui::text_render::TextRenderer::new()
+        .measure_style(&clock, None, &style)
+        .0;
+    assert!(
+        (time.width() - f64::from(whole)).abs() < 1.0,
+        "the time `{clock}` is drawn whole ({whole}), not cut to {time:?}"
+    );
+    assert!(
+        name.x1 <= time.x0,
+        "the name ends before the time: {name:?}, {time:?}"
+    );
+    assert!(
+        time.x1 <= app.content_rect().x1,
+        "inside the window: {time:?}"
+    );
+}
+
 #[test]
 fn the_attached_call_window_rests_below_the_header_row() {
     for (w, h) in [(1280.0, 800.0), (800.0, 600.0)] {

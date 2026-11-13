@@ -1,5 +1,4 @@
-//! A host without the Tilo filesystem projection never acknowledges a
-//! control command or reports a projected state.
+//! A host without the Tilo filesystem projection never fails a read.
 
 use host_fs::attributes::{get, remove, set};
 use std::io;

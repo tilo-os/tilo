@@ -21,20 +21,15 @@ use ui::widget::{
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum TabMenuRow {
     Act(TabAction),
-    /// Open the colour popover for the tab.
     PickColour,
     ClearColour,
 }
 
-/// What the document-settings sheet laid out last frame: the sheet itself and
-/// every option's hit rect, so a click between frames lands on what was shown.
 pub(super) struct SettingsSheet {
     pub modal: ModalLayout,
     pub options: Vec<SettingChip>,
 }
 
-/// One painted piece of the settings body, in coordinates relative to the
-/// sheet's body.
 enum SettingsBlock {
     Heading(&'static str, Rect),
     Chip(SettingKind, Rect),
@@ -42,14 +37,10 @@ enum SettingsBlock {
     Note(&'static str, Rect),
 }
 
-/// The footer line of the settings sheet: what the options apply to, and what
-/// "Default" means.
 const SETTINGS_NOTE: &str =
     "These settings apply to this workbook only. Default follows your system settings.";
 
 impl SheetsApp {
-    /// The File menu's rows: New sheet, then the three imports, then the
-    /// three exports.
     pub(super) fn file_menu_rows() -> Vec<MenuRow> {
         let mut rows = Vec::new();
         for (index, (label, item)) in Self::file_menu_items().into_iter().enumerate() {
@@ -83,13 +74,10 @@ impl SheetsApp {
         self.rect.inset(-self.metrics.s2)
     }
 
-    /// `anchor` with `gap` of air above and below, so a menu or popover stands
-    /// clear of what opened it (and of that thing's focus ring).
     fn float_anchor(anchor: Rect, gap: f64) -> Rect {
         Rect::new(anchor.x0, anchor.y0 - gap, anchor.x1, anchor.y1 + gap)
     }
 
-    /// Close every floating surface.
     pub(super) fn close_overlays(&mut self) {
         self.tab_menu.close();
         self.tab_menu_target = None;
@@ -100,8 +88,6 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    /// Re-anchor whatever is open after a reflow, so a menu follows its button
-    /// and the tab menu follows its tab.
     pub(super) fn relayout_overlays(&mut self) {
         if let Some(target) = self.tab_menu_target {
             let tab = self.tab_anchor(target);
@@ -115,7 +101,6 @@ impl SheetsApp {
         }
     }
 
-    /// The rect of tab `idx`, or the add button's when it has none.
     fn tab_anchor(&self, idx: usize) -> Rect {
         self.tab_rects
             .iter()
@@ -123,8 +108,6 @@ impl SheetsApp {
             .map_or(self.add_tab_rect, |(rect, _)| *rect)
     }
 
-    /// Open the right-click menu for sheet tab `idx`, closing any other
-    /// overlay first.
     pub(super) fn open_tab_menu(&mut self, idx: usize) {
         self.close_overlays();
         self.tab_rename = None;
@@ -165,7 +148,6 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    /// Run the row the open tab menu just reported, if any.
     fn drain_tab_menu(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(target) = self.tab_menu_target else {
             return;
@@ -181,8 +163,6 @@ impl SheetsApp {
                     self.run_tab_action(doc, target, TabAction::SetColor(None));
                 }
                 Some(TabMenuRow::PickColour) => {
-                    // The menu closed itself; the colour popover takes the
-                    // same anchor and the target stays.
                     let tab = self.tab_anchor(target);
                     self.tab_colour
                         .set_anchor(Self::float_anchor(tab, self.metrics.s2));
@@ -198,7 +178,6 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    /// Run the colour the open popover just chose, if any.
     fn drain_tab_colour(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(target) = self.tab_menu_target else {
             return;
@@ -253,8 +232,6 @@ impl SheetsApp {
                 .swatch(slot)
                 .is_none_or(|have| have.color != swatch.color)
         });
-        // A choice made elsewhere (or a sync that landed after the popover
-        // opened) changes which swatch is marked, so the picker follows it.
         let shown = Some((target, current));
         if stale || self.tab_colour_shown != shown {
             self.tab_colour_shown = shown;
@@ -266,9 +243,6 @@ impl SheetsApp {
         }
     }
 
-    /// Route an event to whatever floats over the sheet. A floating surface is
-    /// modal: while one is open it takes every event. Returns whether the
-    /// event was consumed.
     pub(super) fn route_overlays(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
         if self.cell_menu.is_open() {
             self.cell_menu
@@ -294,8 +268,6 @@ impl SheetsApp {
         false
     }
 
-    /// The choices of a settings strip: "Default" (inherit) first, then each
-    /// style in display order.
     fn setting_strip(kind: usize) -> Vec<(&'static str, SettingKind)> {
         let mut strip = vec![(
             "Default",
@@ -320,10 +292,6 @@ impl SheetsApp {
         strip
     }
 
-    /// Lay the settings body out in `width`, relative to the body's top-left:
-    /// a heading over each control, the currencies as wrapping chips, the date
-    /// and time styles as segmented strips, and the closing note. Returns the
-    /// blocks and the body's height.
     fn settings_blocks(
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -340,7 +308,6 @@ impl SheetsApp {
         let mut blocks = Vec::new();
         let mut y = 0.0;
 
-        // Currency: Default first, then every code, wrapping inside the body.
         blocks.push(SettingsBlock::Heading(
             "Currency",
             Rect::new(0.0, y, width, y + heading_h),
@@ -369,7 +336,6 @@ impl SheetsApp {
         }
         y += chip_h + group;
 
-        // Date and time styles: one segmented strip each.
         for (heading, strip_kind) in [("Date format", 0), ("Time format", 1)] {
             blocks.push(SettingsBlock::Heading(
                 heading,
@@ -379,8 +345,6 @@ impl SheetsApp {
             let strip = Self::setting_strip(strip_kind);
             let labels: Vec<&str> = strip.iter().map(|(label, _)| *label).collect();
             let wanted = SegmentedFace::intrinsic_width(&labels, ControlSize::Small, tr, theme);
-            // The shared partition gives a long label ("Language") the room
-            // it needs instead of cutting it to an equal share.
             let rects = SegmentedFace::partition(
                 Rect::new(0.0, y, wanted.min(width), y + strip_h),
                 &labels,
@@ -407,7 +371,6 @@ impl SheetsApp {
         (blocks, y)
     }
 
-    /// The date strip's segment rects when the settings body is `width` wide.
     #[cfg(test)]
     pub(super) fn settings_strip_rects(
         tr: &mut TextRenderer,
@@ -426,8 +389,6 @@ impl SheetsApp {
             .unwrap_or_default()
     }
 
-    /// Lay the settings sheet out and remember where everything landed, so a
-    /// click between frames lands on what was painted.
     fn layout_settings_sheet(
         &self,
         tr: &mut TextRenderer,
@@ -491,8 +452,6 @@ impl SheetsApp {
             .close_hovered(sheet.modal.close.is_some_and(hovered));
         modal_dialog::paint_backdrop(scene, transform, tr, theme, &sheet.modal, &spec);
 
-        // The body stands on the sheet, so it is measured and inked against
-        // the sheet's ground, not the window's.
         let on_sheet = theme.on_ground(ui::chrome::panel_ground(theme));
         let (ink, dim) = modal_dialog::ink(theme);
         for block in &blocks {
@@ -548,9 +507,6 @@ impl SheetsApp {
         self.settings_sheet = Some(sheet);
     }
 
-    /// A press while the settings sheet is open: an option applies, Done or the
-    /// close control dismisses, a click on the scrim dismisses, anything on
-    /// the sheet itself is swallowed. Always consumed (the sheet is modal).
     pub(super) fn try_settings_panel_click(
         &mut self,
         p: Point,
@@ -589,7 +545,6 @@ impl SheetsApp {
             .map(|option| option.kind)
     }
 
-    /// Paint everything that floats, in the window's top layer.
     pub(super) fn paint_overlays(
         &mut self,
         scene: &mut Scene,

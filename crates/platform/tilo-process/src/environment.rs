@@ -46,8 +46,8 @@ pub(crate) fn decode_continuation(hex: &str, schema: &str) -> Option<Continuatio
 /// and each reader applies its own documented fallback.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HostIdentity {
-    /// The installed package this process runs as.
-    pub package_id: Option<String>,
+    /// The app this process runs as.
+    pub app_id: Option<String>,
     /// A development-time application id, used when no package id is set.
     pub development_app_id: Option<String>,
     /// The human-readable application name.
@@ -79,18 +79,17 @@ pub struct HostIdentity {
 /// drift apart; a mismatch would have the bus refuse the player and leave
 /// it out of the desktop's now-playing controls.
 #[must_use]
-pub fn media_player_bus_name(package_id: &str) -> String {
-    format!("org.mpris.MediaPlayer2.{package_id}")
+pub fn media_player_bus_name(app_id: &str) -> String {
+    format!("org.mpris.MediaPlayer2.{app_id}")
 }
 
 impl HostIdentity {
-    /// The MPRIS bus name this process's media player goes by: its
-    /// package's ([`media_player_bus_name`]) when launched as one, else
-    /// `fallback_app_id`'s, so an app run outside a launcher still names
-    /// its player.
+    /// The MPRIS bus name this process's media player goes by: its app's
+    /// ([`media_player_bus_name`]), else `fallback_app_id`'s, so an app run
+    /// outside a launcher still names its player.
     #[must_use]
     pub fn media_player_bus_name(&self, fallback_app_id: &str) -> String {
-        media_player_bus_name(self.package_id.as_deref().unwrap_or(fallback_app_id))
+        media_player_bus_name(self.app_id.as_deref().unwrap_or(fallback_app_id))
     }
 }
 

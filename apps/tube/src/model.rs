@@ -1,14 +1,5 @@
-//! Pure data model for Tube. Everything here is plain serde-able data —
-//! no toolkit types, no colours, no IO. The model is device-local presentation
-//! state. Explicit collaboration boundaries live in `actions`: subscriptions
-//! and settings are structured Automerge actions, while fetched catalogues,
-//! playback and navigation stay local. Watch history is a private, per-user
-//! CRDT projection: it syncs between that user's devices but is not a shared
-//! collaborator feed.
-//!
-//! Colours are never stored: thumbnails derive a deterministic gradient
-//! from a seed string at draw time (`util::seed_gradient`) so the model
-//! stays theme-agnostic and the OS keeps control of the palette.
+//! Pure data model for Tube. Everything here is plain serde-able data — no toolkit types, no
+//! colours, no IO.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,21 +9,14 @@ use ui::tilo_resource::{self, Model};
 pub type VideoId = String;
 pub type ChannelId = String;
 
-/// Normalize a channel display name for matching: one creator can arrive
-/// under slightly different ids (a search's creator row, a video's byline),
-/// so cards reconcile avatars by this normalized name as well as by id.
 pub fn norm_channel_name(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
-/// `SponsorBlock` segment categories. These map 1:1 onto the official
-/// `SponsorBlock` API category strings (`api_key`), so the same enum is
-/// used both for the on-screen seek-bar markers and for the live query.
 #[derive(
     Model, Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord,
 )]
 pub enum Category {
-    /// An absent category reads as one nothing else matches.
     #[default]
     Sponsor,
     SelfPromo,
@@ -75,8 +59,7 @@ impl Category {
         Category::ALL.into_iter().find(|c| c.api_key() == s)
     }
 
-    /// The catalogue message naming this category on the seek bar legend and
-    /// in the settings rows.
+    /// The catalogue message naming this category on the seek bar legend and in the settings rows.
     pub fn message(self) -> &'static str {
         match self {
             Category::Sponsor => "tube-category-sponsor",
@@ -90,8 +73,7 @@ impl Category {
         }
     }
 
-    /// The catalogue message describing this category, shown under its name
-    /// in the settings rows.
+    /// The catalogue message describing this category, shown under its name in the settings rows.
     pub fn blurb(self) -> &'static str {
         match self {
             Category::Sponsor => "tube-category-sponsor-blurb",
@@ -105,10 +87,6 @@ impl Category {
         }
     }
 
-    /// The official `SponsorBlock` colour identity (RGB), kept here so the
-    /// seek-bar legend matches what users already recognise. These are the
-    /// brand colours of the *data source*, not OS chrome — chrome (panels,
-    /// text, surfaces) still comes from the [`ui::theme::Theme`].
     pub fn rgb(self) -> (u8, u8, u8) {
         match self {
             Category::Sponsor => (0x00, 0xd4, 0x00),
@@ -123,9 +101,6 @@ impl Category {
     }
 }
 
-/// How Tube treats a `SponsorBlock` category, per-category. This is the
-/// Grayjay-style three-way mode (not a plain on/off): each category can be
-/// auto-skipped, merely marked with a manual skip button, or ignored entirely.
 #[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SkipMode {
     /// An absent mode reads as the one most videos want.
@@ -250,8 +225,7 @@ pub enum SearchType {
 impl SearchType {
     pub const ALL: [SearchType; 3] = [SearchType::Video, SearchType::Playlist, SearchType::Creator];
 
-    /// The stable name [`crate::actions::TubeEffect::FilterSearch`] names
-    /// this type by.
+    /// The stable name [`crate::actions::TubeEffect::FilterSearch`] names this type by.
     pub fn id(self) -> &'static str {
         match self {
             SearchType::Video => "video",
@@ -269,10 +243,6 @@ impl SearchType {
     }
 }
 
-/// Multi-select type filter for the search results. All three types are shown
-/// by default; the *first* click on any chip narrows to just that type
-/// (deselecting the others), and subsequent clicks toggle individual chips.
-/// Toggling everything off is treated as "show all" so the results never dead-end.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, orthogonal filter chip toggle (video/playlist/ \
@@ -283,8 +253,6 @@ pub struct SearchTypeFilter {
     pub video: bool,
     pub playlist: bool,
     pub creator: bool,
-    /// True until the user has interacted; the first interaction is the
-    /// "narrow to just this type" click.
     pub pristine: bool,
 }
 
@@ -300,8 +268,6 @@ impl Default for SearchTypeFilter {
 }
 
 impl SearchTypeFilter {
-    /// Whether type `t` is currently selected (and thus its results shown + its
-    /// chip highlighted).
     pub fn shows(&self, t: SearchType) -> bool {
         match t {
             SearchType::Video => self.video,
@@ -310,9 +276,6 @@ impl SearchTypeFilter {
         }
     }
 
-    /// Apply a click on the chip for type `t`. The first click narrows to just
-    /// `t`; later clicks toggle `t`. If a toggle would leave nothing selected,
-    /// revert to the all-selected (pristine) default.
     pub fn click(&mut self, t: SearchType) {
         if self.pristine {
             self.video = t == SearchType::Video;
@@ -332,11 +295,6 @@ impl SearchTypeFilter {
     }
 }
 
-/// A channel / uploader.
-///
-/// A declared resource type: a channel the catalogue publishes is an item
-/// resource of this type, found by "youtube channels of …" with nothing Tube
-/// writes for it ([`resource`](ui::tilo_resource::resource)).
 #[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Channel {
     pub id: ChannelId,
@@ -433,42 +391,26 @@ impl Video {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     pub sponsorblock_enabled: bool,
-    /// Per-category [`SkipMode`] (auto-skip / show / off). Absent key defaults
-    /// to auto-skip (matches the upstream extension default of "skip everything
-    /// but filler").
     pub categories: BTreeMap<String, SkipMode>,
-    /// `DeArrow` master switch. When off, neither titles nor thumbnails are
-    /// replaced regardless of the two sub-toggles below.
     pub dearrow_enabled: bool,
-    /// Replace clickbait titles with the community-sourced factual one.
     #[serde(default = "default_true")]
     pub dearrow_titles: bool,
     pub dearrow_thumbnails: bool,
-    /// Show the crowdsourced dislike count (Return `YouTube` Dislike) on the watch
-    /// page alongside likes.
     #[serde(default = "default_true")]
     pub return_dislike_enabled: bool,
     pub autoplay: bool,
     pub show_comments: bool,
     pub preferred_quality: String,
-    /// How fast the video plays: 1.0 is the video's own speed. The speeds a
-    /// person can choose are `PLAYBACK_SPEEDS`.
     #[serde(default = "default_speed")]
     pub playback_speed: f32,
-    /// The caption track the person chose, by language code, or `None` for no
-    /// captions. A video without that track plays without captions rather
-    /// than with the wrong ones.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caption_language: Option<String>,
 }
 
-/// serde default for the playback speed: a video's own speed.
 fn default_speed() -> f32 {
     1.0
 }
 
-/// serde default helper (a `#[serde(default)]` bool defaults to `false`; several
-/// of our flags want to default *on* when absent from older persisted state).
 fn default_true() -> bool {
     true
 }
@@ -481,8 +423,6 @@ impl Default for Settings {
     fn default() -> Self {
         let mut categories = BTreeMap::new();
         for c in Category::ALL {
-            // Filler ignored by default, everything else auto-skipped — the
-            // SponsorBlock community default.
             let mode = if c == Category::Filler {
                 SkipMode::Disabled
             } else {
@@ -507,9 +447,6 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// The effective [`SkipMode`] for a category: the master switch forces
-    /// `Disabled` when `SponsorBlock` is off; otherwise the stored per-category
-    /// mode (defaulting to auto-skip for an absent key).
     pub fn mode_of(&self, c: Category) -> SkipMode {
         if !self.sponsorblock_enabled {
             return SkipMode::Disabled;
@@ -520,41 +457,30 @@ impl Settings {
             .unwrap_or(SkipMode::Skip)
     }
 
-    /// Whether the category is marked/considered at all (Show or Auto-skip).
     pub fn category_enabled(&self, c: Category) -> bool {
         self.mode_of(c).is_enabled()
     }
 
-    /// Whether the playhead entering this category should auto-skip it.
     pub fn should_auto_skip(&self, c: Category) -> bool {
         matches!(self.mode_of(c), SkipMode::Skip)
     }
 
-    /// Whether this category should offer a manual "Skip" button (Show mode).
     pub fn should_show_skip(&self, c: Category) -> bool {
         matches!(self.mode_of(c), SkipMode::Show)
     }
 
-    /// Whether `DeArrow` title replacement is active (master + titles sub-toggle).
     pub fn dearrow_titles_on(&self) -> bool {
         self.dearrow_enabled && self.dearrow_titles
     }
 
-    /// Whether `DeArrow` thumbnail replacement is active (master + thumbs toggle).
     pub fn dearrow_thumbs_on(&self) -> bool {
         self.dearrow_enabled && self.dearrow_thumbnails
     }
 }
 
-/// Where the catalogue currently on screen came from. Drives the top-bar
-/// status pill ("Live" vs "Sample") so the user always knows whether they are
-/// looking at real `YouTube` data or the bundled offline sample.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DataSource {
-    /// True once a live backend has returned data this session.
     pub live: bool,
-    /// Short human label for the pill (e.g. "offline — sample data",
-    /// "live (rustypipe)", "connecting…").
     pub label: String,
 }
 
@@ -567,14 +493,11 @@ impl Default for DataSource {
     }
 }
 
-/// Which screen the app is showing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Route {
     Home,
     Trending,
     Subscriptions,
-    /// A collaboratively shared set of videos. Membership is synchronised,
-    /// while playback order deliberately stays local to each viewer.
     Queue,
     Watch(VideoId),
     Channel(ChannelId),
@@ -599,143 +522,71 @@ impl Route {
     }
 }
 
-/// The complete application state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TubeModel {
     pub videos: Vec<Video>,
     pub channels: Vec<Channel>,
-    /// Playlists we've seen (from search results / opened playlist pages).
     #[serde(default)]
     pub playlists: Vec<Playlist>,
-    /// Canonical local channel ids plus normalized `YouTube` channel URLs pulled
-    /// before this device has fetched that channel's metadata. URL entries are
-    /// intentionally retained so paired-device libraries round-trip safely.
     pub subscriptions: Vec<ChannelId>,
-    /// Shared watch-queue membership projected from the document. Queue order is
-    /// deliberately not a collaborative presentation concern: keyed membership
-    /// makes concurrent add/remove operations converge without one client
-    /// silently reordering another client's queue.
     #[serde(default)]
     pub queue: Vec<VideoId>,
-    /// The person's watch history, newest first, as their own record holds
-    /// it ([`crate::history::WatchHistory`]); never part of the shared library.
-    /// Ids without loaded metadata stay, so a refresh cannot drop history.
     pub history: Vec<VideoId>,
-    /// Where each video in that history was left, in milliseconds: what makes
-    /// "continue watching" the minute you stopped at, and what the history
-    /// page's rows say. An empty entry is a video watched to its end.
     #[serde(default)]
     pub history_positions: BTreeMap<VideoId, u64>,
-    /// The caption tracks the open video offers.
     #[serde(default)]
     pub caption_tracks: Vec<crate::captions::CaptionTrack>,
-    /// The caption lines of the open video, when a track is on and loaded.
     #[serde(default)]
     pub captions: Vec<crate::captions::CaptionCue>,
-    /// The video `captions` belong to, so a page can never show one video's
-    /// words over another's picture.
     #[serde(default)]
     pub captions_of: VideoId,
-    /// Why the captions are not on screen when the person asked for them
-    /// (loading, none offered, the track would not download).
     #[serde(default)]
     pub captions_notice: Option<String>,
-    /// The quality label of the stream actually playing (`720p`), so the page
-    /// can say what the choice got rather than repeat what was asked for.
     #[serde(default)]
     pub stream_quality: String,
-    /// Shown when the watch history could not be stored.
     #[serde(default)]
     pub history_notice: Option<String>,
     pub settings: Settings,
     pub route: Route,
-    /// Last submitted, device-local search query. The editable top-bar buffer
-    /// is a toolkit [`ui::LocalState`] owned by `TubeApp`; it is copied here
-    /// only when the user submits so this route can render independently.
     pub search_query: String,
-    /// Playhead position (seconds) on the current watch page.
     pub playhead: f64,
     pub playing: bool,
-    /// The video no source would play, and what `YouTube` said if it
-    /// refused: its watch page says so where the picture would be and
-    /// offers to try again, rather than standing on a still poster.
     #[serde(skip)]
     pub unplayable: Option<Unplayable>,
-    /// Videos the user has liked this session (local, mirrored into the CRDT).
-    /// The watch page's like pill reads this to render its active state + the
-    /// incremented count.
     #[serde(default)]
     pub liked: Vec<VideoId>,
-    /// Durable comment-like membership, keyed by the stable source-content
-    /// identity used by the action layer. Unlike fetched comments themselves,
-    /// these are user mutations mirrored from the collaborative document.
     #[serde(default)]
     pub comment_likes: BTreeSet<String>,
-    /// Transient user-facing notices — auto-skip confirmations, worker status,
-    /// "link copied" acknowledgements — rendered as a toast stack on the watch
-    /// page. Newest first, capped.
     #[serde(default)]
     pub notices: Vec<String>,
-    /// Provenance of the on-screen catalogue (sample vs live).
     #[serde(default)]
     pub data_source: DataSource,
-    /// The query whose live results are held in `search_hits`. Lets the
-    /// search screen render the backend's exact ordered result set (which a
-    /// local substring filter would otherwise mangle for multi-word queries)
-    /// while still falling back to the local filter when there are no live
-    /// hits.
     #[serde(default)]
     pub search_hits_query: String,
-    /// Ordered video ids returned by the live backend for `search_hits_query`.
     #[serde(default)]
     pub search_hits: Vec<VideoId>,
-    /// Ordered playlist ids returned by the live backend for `search_hits_query`.
     #[serde(default)]
     pub search_playlist_hits: Vec<PlaylistId>,
-    /// Ordered creator/channel ids returned by the live backend for
-    /// `search_hits_query`.
     #[serde(default)]
     pub search_channel_hits: Vec<ChannelId>,
-    /// The active multi-select type filter on the search results.
     #[serde(default)]
     pub search_type_filter: SearchTypeFilter,
-    /// The video whose live "up next" list is held in `related_hits`.
     #[serde(default)]
     pub related_of: VideoId,
-    /// Ordered related-video ids returned by the live backend for `related_of`.
     #[serde(default)]
     pub related_hits: Vec<VideoId>,
-    /// Crowdsourced dislike counts (Return `YouTube` Dislike), keyed by video id.
-    /// Kept off [`Video`] so the API result folds in without a catalogue rewrite.
     #[serde(default)]
     pub dislikes: BTreeMap<VideoId, u64>,
-    /// `DeArrow` community thumbnail URLs (a rendered frame at the top-voted
-    /// timestamp, or a submitted image), keyed by video id. Used in place of the
-    /// clickbait frame when `DeArrow` thumbnails are enabled.
     #[serde(default)]
     pub dearrow_thumb_url: BTreeMap<VideoId, String>,
-    /// Whether the home/trending feed is currently being fetched from the live
-    /// backend. Drives the Home skeleton so a cold, empty catalogue reads as
-    /// "loading" rather than a blank page. The online app starts `true` (it fetches
-    /// on launch); the hermetic `--shots`/sample path leaves it `false`.
     #[serde(default)]
     pub feed_loading: bool,
-    /// A user-legible reason the newest Home request could not be queued. This
-    /// is distinct from offline provenance: queue saturation is local and
-    /// retryable, not evidence that the network is unavailable.
     #[serde(default)]
     pub feed_error: Option<String>,
-    /// Why the newest feed request found no source, when the device is
-    /// online: Home names that cause instead of claiming to be offline.
-    /// A session's own network state, never persisted.
     #[serde(skip)]
     pub sources_unreached: Option<crate::api::Unreached>,
-    /// Whether a search is in flight, so the results screen shows a skeleton
-    /// instead of a premature "No results".
     #[serde(default)]
     pub search_loading: bool,
-    /// A user-legible reason the newest search could not be queued. Cleared on
-    /// each fresh submission and on a result response.
     #[serde(default)]
     pub search_error: Option<String>,
 }
@@ -789,9 +640,6 @@ impl TubeModel {
         self.videos.iter().find(|v| v.id == id)
     }
 
-    /// The end (seconds) of the show-mode `SponsorBlock` segment the playhead
-    /// is inside on the open watch page: what Skip jumps to. `None` off the
-    /// watch route, with `SponsorBlock` off, or outside every such segment.
     pub fn show_skip_end(&self) -> Option<f64> {
         if !self.settings.sponsorblock_enabled {
             return None;
@@ -814,8 +662,6 @@ impl TubeModel {
         self.playlists.iter().find(|p| p.id == id)
     }
 
-    /// Insert or update a playlist by id, preserving an already-fetched video
-    /// list when the incoming record (e.g. a search-result stub) carries none.
     pub fn upsert_playlist(&mut self, p: Playlist) {
         if let Some(slot) = self.playlists.iter_mut().find(|x| x.id == p.id) {
             let keep_ids = std::mem::take(&mut slot.video_ids);
@@ -828,7 +674,6 @@ impl TubeModel {
         }
     }
 
-    /// Playlists to render for `query`: the backend's ordered playlist hits.
     pub fn search_playlists_display(&self, query: &str) -> Vec<&Playlist> {
         if self.search_hits_query != query {
             return Vec::new();
@@ -839,8 +684,6 @@ impl TubeModel {
             .collect()
     }
 
-    /// Creators (channels) to render for `query`: the backend's ordered channel
-    /// hits.
     pub fn search_creators_display(&self, query: &str) -> Vec<&Channel> {
         if self.search_hits_query != query {
             return Vec::new();
@@ -851,10 +694,6 @@ impl TubeModel {
             .collect()
     }
 
-    /// Return the durable subscription key associated with a channel. A key
-    /// can be the local catalogue id or a normalized URL imported before this
-    /// device learned that id; callers must use this key when unsubscribing so
-    /// an imported subscription is not accidentally left active.
     pub fn subscription_key(&self, id: &str) -> Option<&str> {
         self.subscriptions.iter().find_map(|subscription| {
             let matches = subscription == id
@@ -876,27 +715,18 @@ impl TubeModel {
         self.liked.iter().any(|l| l == id)
     }
 
-    /// Whether a video is a member of the shared watch queue.
     pub fn is_queued(&self, id: &str) -> bool {
         self.queue.iter().any(|queued| queued == id)
     }
 
-    /// The like count to display for a video: the base count plus one while the
-    /// user has liked it this session, so the pill's number tracks its state.
     pub fn display_likes(&self, v: &Video) -> u64 {
         v.likes + u64::from(self.is_liked(&v.id))
     }
 
-    /// The crowdsourced dislike count for a video (Return `YouTube` Dislike), once
-    /// fetched. `None` until it lands (or when disabled).
     pub fn dislikes_of(&self, id: &str) -> Option<u64> {
         self.dislikes.get(id).copied()
     }
 
-    /// The thumbnail URL to display for `v`, honouring the DeArrow-thumbnails
-    /// setting: the community thumbnail when enabled and available, otherwise the
-    /// video's own thumbnail. Keeps the DeArrow/original choice in one place so
-    /// every card + poster stays consistent.
     pub fn display_thumbnail_url<'a>(&'a self, v: &'a Video) -> &'a str {
         if self.settings.dearrow_thumbs_on()
             && let Some(url) = self.dearrow_thumb_url.get(&v.id)
@@ -907,20 +737,16 @@ impl TubeModel {
         &v.thumbnail_url
     }
 
-    /// What the watch page of `video` says about it not playing, if it did not.
     #[must_use]
     pub fn unplayable(&self, video: &str) -> Option<&Unplayable> {
         self.unplayable.as_ref().filter(|u| u.video == video)
     }
 
-    /// Push a transient notice onto the front of the toast stack (newest first,
-    /// capped so it stays a compact strip).
     pub fn push_notice(&mut self, msg: impl Into<String>) {
         self.notices.insert(0, msg.into());
         self.notices.truncate(8);
     }
 
-    /// Videos uploaded by channels the user is subscribed to.
     pub fn subscription_feed(&self) -> Vec<&Video> {
         self.videos
             .iter()
@@ -939,14 +765,10 @@ impl TubeModel {
             .collect()
     }
 
-    /// Where `video` was left, in milliseconds, when reopening it should
-    /// continue rather than start at the beginning.
     #[must_use]
     pub fn resume_at_ms(&self, video: &str) -> Option<u64> {
         let position = self.history_positions.get(video).copied()?;
         let duration = self.video(video).map(|v| u64::from(v.duration) * 1000);
-        // A video left within the tolerance of its end is watched: replaying
-        // it should start at the beginning, not at the credits.
         duration
             .is_none_or(|duration| {
                 duration == 0
@@ -956,8 +778,6 @@ impl TubeModel {
             .filter(|position| *position > 0)
     }
 
-    /// How far into `video` the playhead is, as a fraction of it, for a row
-    /// that says "12:34 of 1:02:00" and a bar that shows how much is left.
     #[must_use]
     pub fn watched_fraction(&self, video: &str) -> Option<f64> {
         let position = self.resume_at_ms(video)?;
@@ -965,7 +785,6 @@ impl TubeModel {
         (duration > 0.0).then(|| (position as f64 / 1000.0 / duration).clamp(0.0, 1.0))
     }
 
-    /// The caption track the person chose, from the ones this video offers.
     #[must_use]
     pub fn chosen_caption_track(&self) -> Option<&crate::captions::CaptionTrack> {
         let language = self.settings.caption_language.as_deref()?;
@@ -974,8 +793,6 @@ impl TubeModel {
             .find(|track| track.language == language)
     }
 
-    /// Insert or update a video by id, preserving any `SponsorBlock` segments /
-    /// comments already fetched for it (a fresh list item carries neither).
     pub fn upsert_video(&mut self, v: Video) {
         if let Some(slot) = self.videos.iter_mut().find(|x| x.id == v.id) {
             let keep_sponsor = std::mem::take(&mut slot.sponsor);
@@ -984,8 +801,6 @@ impl TubeModel {
             let keep_thumb = std::mem::take(&mut slot.thumbnail_url);
             let keep_likes = slot.likes;
             *slot = v;
-            // Search and related items carry no like count; keep the one a
-            // detail fetch or the votes answer already gave.
             if slot.likes == 0 {
                 slot.likes = keep_likes;
             }
@@ -998,9 +813,6 @@ impl TubeModel {
             if slot.dearrow_title.is_none() {
                 slot.dearrow_title = keep_dearrow;
             }
-            // A later detail/related fetch may not carry a thumbnail URL; keep
-            // the one a search/feed item already resolved so the card image
-            // doesn't blank out on refresh.
             if slot.thumbnail_url.is_empty() {
                 slot.thumbnail_url = keep_thumb;
             }
@@ -1009,10 +821,6 @@ impl TubeModel {
         }
     }
 
-    /// Insert or replace a channel by id, preserving a real avatar/banner the
-    /// record already holds when the incoming one carries none — a later
-    /// avatar-less list item (or a creator row whose avatar URL didn't resolve)
-    /// must never blank a photo an earlier item already resolved.
     pub fn upsert_channel(&mut self, c: Channel) {
         if let Some(slot) = self.channels.iter_mut().find(|x| x.id == c.id) {
             let keep_avatar = std::mem::take(&mut slot.avatar_url);
@@ -1029,9 +837,6 @@ impl TubeModel {
         }
     }
 
-    /// Make sure a minimal channel entry exists so avatars, subscribe and the
-    /// channel page have at least a name to show for a video's uploader (live
-    /// feed items reference channels we haven't fetched a full page for yet).
     pub fn ensure_channel_stub(&mut self, id: &str, name: &str) {
         if id.is_empty() || self.channels.iter().any(|c| c.id == id) {
             return;
@@ -1049,10 +854,6 @@ impl TubeModel {
         });
     }
 
-    /// Record a channel's real avatar URL (carried on a feed/search list item)
-    /// when we don't already hold one, so Home/Search cards paint the real
-    /// creator icon without waiting on a separate channel-page fetch. A
-    /// no-op for empty ids/urls or when a real avatar is already known.
     pub fn note_channel_avatar(&mut self, id: &str, url: &str) {
         if id.is_empty() || url.is_empty() {
             return;
@@ -1064,11 +865,6 @@ impl TubeModel {
         }
     }
 
-    /// Stamp `url` as the avatar for every avatar-less channel record that
-    /// matches `id` OR the normalized display `name`. This reconciles an avatar
-    /// discovered under one data source's channel identity (e.g. rustypipe, or a
-    /// channel-page fetch whose returned id differs from the search item's) onto
-    /// the exact record the video cards read. Returns true if anything changed.
     pub fn adopt_channel_avatar(&mut self, id: &str, name: &str, url: &str) -> bool {
         if url.is_empty() {
             return false;
@@ -1086,10 +882,6 @@ impl TubeModel {
         changed
     }
 
-    /// Fill any avatar-less channel record from another record describing the
-    /// same creator (same normalized name) that already carries an avatar. One
-    /// creator can arrive as two records, only one of which has the photo;
-    /// this bridges them so every card resolves.
     pub fn reconcile_channel_avatars(&mut self) {
         let mut by_name: BTreeMap<String, String> = BTreeMap::new();
         for ch in &self.channels {
@@ -1111,8 +903,6 @@ impl TubeModel {
         }
     }
 
-    /// Replace the whole catalogue with a freshly-fetched live set, marking the
-    /// data source live and synthesising channel stubs for its uploaders.
     pub fn adopt_live_catalogue(&mut self, videos: Vec<Video>, label: impl Into<String>) {
         for v in &videos {
             self.ensure_channel_stub(&v.channel_id, &v.channel_name);
@@ -1120,7 +910,6 @@ impl TubeModel {
         }
         self.videos = videos;
         self.reconcile_channel_avatars();
-        // Stale local ordering hints no longer apply to the new catalogue.
         self.search_hits.clear();
         self.search_hits_query.clear();
         self.related_hits.clear();
@@ -1131,7 +920,6 @@ impl TubeModel {
         };
     }
 
-    /// Simple case-insensitive title/channel search.
     pub fn search(&self, q: &str) -> Vec<&Video> {
         let q = q.trim().to_lowercase();
         if q.is_empty() {
@@ -1147,9 +935,6 @@ impl TubeModel {
             .collect()
     }
 
-    /// Results to render for `query`: the backend's exact ordered live hits
-    /// when we have them for this query, otherwise the local substring filter
-    /// (offline / before a live response lands).
     pub fn search_display(&self, query: &str) -> Vec<&Video> {
         if self.search_hits_query == query
             && let Some(hits) = self.known_videos(&self.search_hits)
@@ -1159,9 +944,6 @@ impl TubeModel {
         self.search(query)
     }
 
-    /// "Up next" list to render for a watch page: the backend's real
-    /// recommendations when we have them for this video, otherwise the local
-    /// same-category heuristic.
     pub fn related_display(&self, id: &str) -> Vec<&Video> {
         if self.related_of == id
             && let Some(hits) = self.known_videos(&self.related_hits)
@@ -1171,15 +953,11 @@ impl TubeModel {
         self.related(id)
     }
 
-    /// The videos of `ids` this model knows, in order; `None` when it knows
-    /// none of them.
     fn known_videos(&self, ids: &[VideoId]) -> Option<Vec<&Video>> {
         let hits: Vec<&Video> = ids.iter().filter_map(|id| self.video(id)).collect();
         (!hits.is_empty()).then_some(hits)
     }
 
-    /// "Up next" suggestions for a watch page: same category first, then
-    /// fill with the rest, excluding the current video.
     pub fn related(&self, id: &str) -> Vec<&Video> {
         let cat = self
             .video(id)
@@ -1199,7 +977,6 @@ impl TubeModel {
         same
     }
 
-    /// Distinct categories present, for the home "chips" filter bar.
     pub fn categories(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for v in &self.videos {
@@ -1219,7 +996,6 @@ mod tests {
     fn sponsorblock_categories_default_cycle_and_round_trip() {
         {
             let s = Settings::default();
-            // Sponsor auto-skips by default; Filler is off.
             assert!(s.category_enabled(Category::Sponsor));
             assert_eq!(s.mode_of(Category::Sponsor), SkipMode::Skip);
             assert!(s.should_auto_skip(Category::Sponsor));
@@ -1353,10 +1129,7 @@ mod tests {
     fn channel_records_reconcile_avatars_without_losing_data() {
         {
             let mut m = TubeModel::default();
-            // Two records for the same creator: the card reads the id-A stub (empty).
             m.channels.push(chan("UC_A", "Blender Studio", ""));
-            // An avatar arrives keyed by a DIFFERENT id but the same name — must land
-            // on the id-A record so its cards resolve.
             let changed = m.adopt_channel_avatar("UC_B", "Blender Studio", "https://yt3/av");
             assert!(changed, "adopt reported a change");
             assert_eq!(
@@ -1387,15 +1160,11 @@ mod tests {
         {
             let mut m = TubeModel::default();
             m.upsert_channel(chan("UC_A", "Creator", "https://yt3/good"));
-            // A later avatar-less record for the same channel (e.g. a creator row
-            // whose URL didn't resolve) must not blank the working photo.
             m.upsert_channel(chan("UC_A", "Creator", ""));
             assert_eq!(m.channel("UC_A").unwrap().avatar_url, "https://yt3/good");
         }
         {
             let mut m = TubeModel::default();
-            // The video card's uploader record (id A) has no avatar; a creator-row
-            // record (id B) for the same creator has one. Reconcile must fill A.
             m.channels.push(chan("UC_A", "Blender Studio", ""));
             m.channels
                 .push(chan("UC_B", "Blender Studio", "https://yt3/bs"));
@@ -1418,7 +1187,6 @@ mod tests {
                 video_count: 3,
                 video_ids: vec!["a".into(), "b".into(), "c".into()],
             });
-            // A later stub (from a fresh search) carries no ids — the fetched list stays.
             m.upsert_playlist(Playlist {
                 id: "PL1".into(),
                 title: "Mix".into(),
@@ -1441,9 +1209,6 @@ mod tests {
             );
         }
         {
-            // A video/channel carrying real image URLs survives a serde round-trip
-            // (the model is mirrored into the CRDT as JSON), and sparse JSON without
-            // the optional fields deserializes with empty defaults.
             let mut v = sample_video();
             v.thumbnail_url = "https://i.ytimg.com/vi/x/hqdefault.jpg".into();
             let json = serde_json::to_string(&v).unwrap();
@@ -1509,10 +1274,8 @@ mod tests {
     }
 }
 
-/// A video no source played.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unplayable {
     pub video: VideoId,
-    /// `YouTube`'s own words when it refused, such as a bot check.
     pub said: Option<String>,
 }

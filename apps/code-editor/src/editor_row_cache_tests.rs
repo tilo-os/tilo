@@ -21,7 +21,6 @@ use ui::widget::Widget as _;
 use vello::Scene;
 use vello::kurbo::Affine;
 
-/// An editor over `lines` short Rust lines in a 600 by 400 view.
 fn view_of(doc: &mut AutoCommit, lines: usize) -> EditorView {
     let source = (0..lines).fold(String::new(), |mut source, line| {
         use std::fmt::Write as _;
@@ -36,7 +35,6 @@ fn view_of(doc: &mut AutoCommit, lines: usize) -> EditorView {
     view
 }
 
-/// One frame through the production draw.
 fn painted(view: &mut EditorView, renderer: &mut TextRenderer, theme: &Theme) -> Scene {
     let mut scene = Scene::new();
     view.draw_child(
@@ -49,13 +47,11 @@ fn painted(view: &mut EditorView, renderer: &mut TextRenderer, theme: &Theme) ->
     scene
 }
 
-/// The frame a view paints when it keeps no row at all.
 fn repainted(view: &mut EditorView, renderer: &mut TextRenderer, theme: &Theme) -> Scene {
     view.forget_rows_kept();
     painted(view, renderer, theme)
 }
 
-/// The lines the frame has in view, as the draw counts them.
 fn visible_lines(view: &EditorView) -> usize {
     let rows = view.visible_rows();
     (rows.first_line + rows.n_visible).min(view.lines.len()) - rows.first_line
@@ -108,7 +104,6 @@ fn an_edit_keeps_the_rows_it_did_not_change() {
     let rows = visible_lines(&view);
     painted(&mut view, &mut renderer, &theme);
 
-    // A line past the screen changes: no row in view paints differently.
     let object = view.text_obj.clone().expect("the view is bound");
     let offscreen = view.char_index(rows + 3, 0);
     EditorDoc::splice(&mut doc, &object, offscreen, 0, "// remote\n");
@@ -126,8 +121,6 @@ fn an_edit_keeps_the_rows_it_did_not_change() {
         "an edit off the screen",
     );
 
-    // A line in view changes: it is painted fresh, and its neighbours are
-    // still reused.
     let in_view = view.char_index(rows / 2, 0);
     EditorDoc::splice(&mut doc, &object, in_view, 0, "let");
     doc.commit();
@@ -203,8 +196,6 @@ fn the_editors_own_text_zoom_paints_every_row_fresh() {
     painted(&mut view, &mut renderer, &theme);
     assert!(view.rows_kept_counts().0 > 0, "the rows are kept");
 
-    // The editor's text zoom flows through the theme it draws with, so a row
-    // shaped at the old size must not be replayed at the new one.
     view.set_text_zoom(1.25);
     let zoomed = painted(&mut view, &mut renderer, &theme);
     assert_eq!(
@@ -235,8 +226,6 @@ fn another_font_epoch_paints_every_row_fresh() {
     painted(&mut view, &mut renderer, &theme);
     assert!(view.rows_kept_counts().0 > 0, "the rows are kept");
 
-    // New fonts shape different glyphs; the rows are kept per font epoch,
-    // so none of them may be reused.
     renderer.bump_generation();
     let after = painted(&mut view, &mut renderer, &theme);
     assert_eq!(
@@ -304,9 +293,6 @@ fn another_geometry_or_horizontal_scroll_paints_every_row_fresh() {
         "another editor box",
     );
 
-    // The rows are kept where they stand in the buffer, so a scroll that
-    // only moves them reuses them: one line down, only the row that came
-    // into view is painted. The primary row is above the screen by then.
     let rows = visible_lines(&view);
     view.scroll_y = 1.0;
     let scrolled = painted(&mut view, &mut renderer, &theme);
@@ -344,8 +330,6 @@ fn other_highlight_spans_over_the_same_text_paint_fresh() {
     let plain = painted(&mut view, &mut renderer, &theme);
     painted(&mut view, &mut renderer, &theme);
 
-    // The same source, resolved to other spans: a rollback, a late
-    // highlight or a re-parse must not show the previous paint.
     let line = 4;
     view.spans[line] = vec![ui::widget::code_editor::Span::new(
         0..3,
@@ -377,8 +361,6 @@ fn a_state_that_must_never_come_from_a_kept_row_is_painted_fresh() {
     let mut renderer = TextRenderer::new();
     let before = painted(&mut view, &mut renderer, &theme);
 
-    // A diagnostic and a find match first: stepping to the current match
-    // moves the caret, and the selection below stays where the test puts it.
     view.set_diagnostics(&[LspDiagnostic {
         range: Range {
             start: Position {
@@ -402,7 +384,6 @@ fn a_state_that_must_never_come_from_a_kept_row_is_painted_fresh() {
         }],
         Some(0),
     );
-    // A selection across four rows, the primary one first.
     view.carets[0] = Caret {
         line: 0,
         col: 0,
@@ -433,8 +414,6 @@ fn a_state_that_must_never_come_from_a_kept_row_is_painted_fresh() {
         );
     }
 
-    // The input method's composition is drawn at the primary caret, whose
-    // row is fresh for the same reason.
     let mut handled = false;
     view.handle_ime(
         &winit::event::Ime::Preedit("ka".to_owned(), Some((2, 0))),
@@ -532,9 +511,6 @@ fn a_long_line_is_painted_fresh_and_never_kept() {
 fn a_row_past_the_whole_line_clip_paints_when_a_scroll_brings_it_in() {
     let mut doc = AutoCommit::new();
     let mut view = view_of(&mut doc, 80);
-    // A viewport that is not a whole number of rows: the last row the frame
-    // counts lies past the bottom edge (and past the whole-line clip) and
-    // paints nothing this frame.
     view.rect = Rect::new(0.0, 0.0, 600.0, 410.0);
     let theme = Theme::dark();
     let mut renderer = TextRenderer::new();
@@ -551,8 +527,6 @@ fn a_row_past_the_whole_line_clip_paints_when_a_scroll_brings_it_in() {
         "the last counted row stands past the bottom edge"
     );
 
-    // A jump of several rows brings that row onto the screen: it must paint
-    // itself, not replay the nothing it kept.
     view.scroll_y = 9.0;
     let jumped = painted(&mut view, &mut renderer, &theme);
     assert_same_paint(
@@ -571,8 +545,6 @@ fn an_optimistic_edit_and_its_rollback_never_replay_a_row_from_the_other_text() 
     painted(&mut view, &mut renderer, &theme);
     painted(&mut view, &mut renderer, &theme);
 
-    // The person types a line the app has not dispatched yet: the view
-    // shows it, so the rows below it hold other lines than they did.
     view.carets = vec![Caret::at(4, 0)];
     view.edit_at_carets(|core, _| core.insert("// refused\n"));
     let optimistic = painted(&mut view, &mut renderer, &theme);
@@ -582,8 +554,6 @@ fn an_optimistic_edit_and_its_rollback_never_replay_a_row_from_the_other_text() 
         "an optimistic edit",
     );
 
-    // The app refuses the edit: the view rolls back to the document, and no
-    // row may replay what it painted of the refused text.
     view.reconcile_from_doc(&doc);
     let rolled = painted(&mut view, &mut renderer, &theme);
     assert_same_paint(

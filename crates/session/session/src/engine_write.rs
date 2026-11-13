@@ -29,7 +29,7 @@ impl Writing {
     /// `write`, run off the loop, which `wake` wakes once it is done.
     pub(crate) fn write(
         wake: tilo_service::Wake,
-        write: impl Future<Output = Written> + Send + 'static,
+        write: impl Future<Output = Written> + tilo_rt::MaybeSend + 'static,
     ) -> Self {
         Self::new(wake, write, || {
             Err("the write's task stopped before it answered".to_owned())
@@ -37,12 +37,12 @@ impl Writing {
     }
 }
 
-impl<T: Send + 'static> Polled<T> {
+impl<T: tilo_rt::MaybeSend + 'static> Polled<T> {
     /// Start `work` off the loop; `wake` wakes the loop once it is done, and `gone` is its answer
     /// should the task running it stop first.
     pub(crate) fn new(
         wake: tilo_service::Wake,
-        work: impl Future<Output = T> + Send + 'static,
+        work: impl Future<Output = T> + tilo_rt::MaybeSend + 'static,
         gone: impl FnOnce() -> T + 'static,
     ) -> Self {
         Self {

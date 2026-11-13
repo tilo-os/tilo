@@ -23,7 +23,7 @@ use std::sync::Arc;
 use collab_types::claim::ClaimedAction;
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
-    DEFAULT_ROOM, DocumentMutation, Ed25519PublicKey, OpKind, ReceiptSurface, Record, Role,
+    DEFAULT_WORKSPACE, DocumentMutation, Ed25519PublicKey, OpKind, ReceiptSurface, Record, Role,
     RoleAttestation, Signature, SignedOp, SurfaceSource, Surfaces, UnitPath, ValidationError,
     generate_keypair, sign_event, sign_op, validate_inbound_op,
 };
@@ -101,7 +101,7 @@ fn change_payload(change: Change, seq: u64) -> Vec<u8> {
 
 /// The node a comment on `artifact` is decided at.
 fn comments_of(artifact: ArtifactId) -> TreePath {
-    TreePath::workspace(DEFAULT_ROOM)
+    TreePath::workspace(DEFAULT_WORKSPACE)
         .app(APP)
         .kind(KIND)
         .resource(artifact.0.to_string())
@@ -324,7 +324,7 @@ fn finer_grants_narrow_extend_and_block_on_the_real_path() {
     );
 
     let finance = TreePath::root()
-        .push(tilo_action_policy::Level::Workspace, DEFAULT_ROOM)
+        .push(tilo_action_policy::Level::Workspace, DEFAULT_WORKSPACE)
         .app(APP);
     state.grants.push(grant(
         "finance",
@@ -397,7 +397,7 @@ fn finer_grants_narrow_extend_and_block_on_the_real_path() {
     state.grants.push(Grant::new(
         "blocked",
         person.clone(),
-        TreePath::workspace(DEFAULT_ROOM),
+        TreePath::workspace(DEFAULT_WORKSPACE),
         KindSet::ALL,
         Answer::Deny,
         Subject::Role(Role::Owner),

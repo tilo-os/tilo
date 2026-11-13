@@ -1,22 +1,7 @@
-//! Smooth, non-blocking graph zoom.
-//!
-//! Wheel zoom used to feel stepwise and laggy: every notch jumped the view to a
-//! new scale AND synchronously re-sampled the whole curve / surface on the same
-//! frame, so a fast scroll stuttered. These animators fix both halves:
-//!
-//!  * **Animate toward a target.** The model view is set to the target scale
-//!    immediately (so the change registers at once and persists in the CRDT),
-//!    but the *displayed* view eases toward it with a frame-rate-independent
-//!    exponential approach, zooming around the cursor. The host keeps pumping
-//!    frames while [`ZoomAnim2d::active`] / [`ZoomAnim3d::active`] is set.
-//!
-//!  * **Don't block the frame on a resample.** While the zoom is animating we
-//!    do NOT re-sample the geometry. Instead we replay the last-sampled
-//!    polylines / surface cells under a cheap affine (a uniform scale + shift
-//!    for 2D, a scale-about-centre for 3D) that reproduces the zoom exactly for
-//!    a pure scale change. The single re-sample happens once, when the
-//!    animation settles — mirroring how the map keeps drawing cached tiles
-//!    while new ones stream in.
+//! Eased graph zoom. The model view takes the target scale at once, so the
+//! change persists, while the displayed view eases toward it around the cursor.
+//! Sampled geometry is replayed under an affine until the ease settles, so a
+//! wheel notch never re-samples a curve on the frame.
 
 use ui::time::Instant;
 
@@ -24,11 +9,9 @@ use vello::kurbo::{Affine, Point};
 
 use crate::model::View2d;
 
-/// Exponential approach rate for the zoom ease (~0.13s to converge). A touch
-/// snappier than the sidebar flap so a zoom feels immediate yet fluid.
+/// Exponential approach rate, about 0.13 s to converge.
 const ZOOM_RATE: f64 = 20.0;
-/// Upper bound (seconds) on the per-frame delta, so a stale clock (first frame
-/// after a pause) can't teleport the ease.
+/// Caps the per-frame delta, so a stale clock cannot jump the ease.
 const MAX_DT: f64 = 0.1;
 
 fn dt_since(last: &mut Option<Instant>) -> f64 {
@@ -38,23 +21,15 @@ fn dt_since(last: &mut Option<Instant>) -> f64 {
     dt
 }
 
-/// Eased 2D graph zoom. Eases the *scale* toward the model target and derives
-/// the centre each frame from a fixed anchor (the world point under the cursor
-/// when the gesture began), so the point under the cursor stays pinned to the
-/// cursor throughout the whole animation — not just at the endpoints.
+/// Eases the scale toward the model's and derives the centre each frame from an
+/// anchor, so the point under the cursor stays pinned throughout the ease.
 #[derive(Clone, Debug)]
 pub struct ZoomAnim2d {
-    /// The eased view actually drawn this frame.
     display: View2d,
-    /// The view the curve cache was last sampled at (for the cheap affine).
     sampled: View2d,
     active: bool,
-    /// World point that must stay under [`Self::anchor_screen`] throughout the
-    /// zoom (captured at gesture start).
     anchor_world: Point,
-    /// Screen point the anchor is pinned to (the cursor).
     anchor_screen: Point,
-    /// Canvas centre used by the screen↔world projection.
     center: Point,
     last_tick: Option<Instant>,
 }
@@ -72,11 +47,9 @@ impl ZoomAnim2d {
         }
     }
 
-    /// Begin easing toward the (already-updated) model scale, pinning
-    /// `anchor_world` under `anchor_screen` (the cursor) about `center` (the
-    /// canvas centre) for the whole ease. The clock is reset only when not
-    /// already animating, so a burst of wheel notches eases continuously toward
-    /// the moving target instead of stalling at `dt == 0`.
+    /// Pins `anchor_world` under `anchor_screen` about `center`. The clock is
+    /// reset only when not already animating, so a burst of notches eases
+    /// continuously.
     pub fn begin(&mut self, anchor_world: Point, anchor_screen: Point, center: Point) {
         if !self.active {
             self.last_tick = None;
@@ -87,7 +60,6 @@ impl ZoomAnim2d {
         self.active = true;
     }
 
-    /// Jump straight to `v` with no ease (pan / edit / reset / mode switch).
     pub fn settle(&mut self, v: View2d) {
         self.display = v;
         self.sampled = v;
@@ -97,16 +69,13 @@ impl ZoomAnim2d {
     pub fn active(&self) -> bool {
         self.active
     }
-    /// The eased view to draw the grid / trace with.
     pub fn display(&self) -> View2d {
         self.display
     }
-    /// Record the view the curve cache now represents.
     pub fn mark_sampled(&mut self, v: View2d) {
         self.sampled = v;
     }
 
-    /// The centre that pins [`Self::anchor_world`] under the cursor at `scale`.
     fn centre_for(&self, scale: f64) -> (f64, f64) {
         (
             self.anchor_world.x - (self.anchor_screen.x - self.center.x) / scale,
@@ -114,11 +83,9 @@ impl ZoomAnim2d {
         )
     }
 
-    /// Advance one frame toward `target`. Returns whether still animating.
     pub fn tick(&mut self, target: View2d, reduce_motion: bool) -> bool {
         let dt = dt_since(&mut self.last_tick);
         if !self.active {
-            // Track the model 1:1 (pans, edits, and the resting state).
             self.display = target;
             return false;
         }
@@ -129,7 +96,6 @@ impl ZoomAnim2d {
         }
         let a = 1.0 - (-ZOOM_RATE * dt).exp();
         self.display.scale += (target.scale - self.display.scale) * a;
-        // Derive the centre from the fixed anchor so the cursor stays pinned.
         let (cx, cy) = self.centre_for(self.display.scale);
         self.display.cx = cx;
         self.display.cy = cy;
@@ -141,10 +107,8 @@ impl ZoomAnim2d {
         true
     }
 
-    /// The cheap affine mapping the *sampled* screen geometry onto the current
-    /// *eased* view, given the canvas centre. For a pure scale/pan change this
-    /// is a uniform scale + translation, so already-sampled polylines zoom
-    /// without re-evaluating any function.
+    /// Maps sampled screen geometry onto the eased view: a uniform scale and
+    /// translation, so polylines zoom without re-evaluating any function.
     pub fn curve_affine(&self, center: Point) -> Affine {
         let ss = self.sampled.scale;
         let sn = self.display.scale;
@@ -158,9 +122,9 @@ impl ZoomAnim2d {
     }
 }
 
-/// Eased 3D graph zoom. The 3D projection scale is proportional to `view.zoom`
-/// about the canvas centre, so a pure zoom change is a scale-about-centre of the
-/// cached cells — the orbit (yaw/pitch) is untouched and never re-projected.
+/// The projection scales with `view.zoom` about the canvas centre, so a zoom is
+/// a scale about the centre of the cached cells; the orbit is never
+/// re-projected.
 #[derive(Clone, Debug)]
 pub struct ZoomAnim3d {
     display: f64,
@@ -186,7 +150,6 @@ impl ZoomAnim3d {
         self.active = true;
     }
 
-    /// Jump straight to `z` (orbit / edit / mode switch, which re-project anyway).
     pub fn settle(&mut self, z: f64) {
         self.display = z;
         self.sampled = z;
@@ -224,7 +187,7 @@ impl ZoomAnim3d {
         true
     }
 
-    /// Scale factor to apply about the canvas centre to the cached cells.
+    /// Applied about the canvas centre to the cached cells.
     pub fn scale_factor(&self) -> f64 {
         if self.sampled <= 0.0 {
             1.0
@@ -242,8 +205,7 @@ mod tests {
         View2d { cx, cy, scale }
     }
 
-    /// The frame clock the animations read, moved one 60 Hz frame per call
-    /// rather than by however long the machine took.
+    /// One 60 Hz frame per call, not wall time.
     struct FrameClock(Instant);
 
     impl FrameClock {
@@ -251,21 +213,18 @@ mod tests {
             Self(ui::time::now())
         }
 
-        /// Run `tick` at the current frame.
         fn now<T>(&self, tick: impl FnOnce() -> T) -> T {
             ui::time::testing::with_monotonic_time(self.0, tick)
         }
 
-        /// Run `tick` one frame later.
         fn next<T>(&mut self, tick: impl FnOnce() -> T) -> T {
             self.0 += std::time::Duration::from_micros(16_667);
             self.now(tick)
         }
     }
 
-    /// 2D zoom animation: the scale eases monotonically to the target over several
-    /// frames without overshoot, the world point under the cursor stays pinned every
-    /// frame, and reduced motion snaps immediately. Fresh animator per phase.
+    /// The scale eases monotonically without overshoot, the point under the
+    /// cursor stays pinned, and reduced motion snaps.
     #[test]
     fn zoom_2d_eases_to_target_anchored_at_cursor_or_snaps_under_reduced_motion() {
         // phase tick_eases_scale_toward_target_over_frames_without_overshoot
@@ -273,17 +232,14 @@ mod tests {
             let start = v(64.0, 0.0, 0.0);
             let mut z = ZoomAnim2d::new(start);
             let target = v(128.0, 0.0, 0.0);
-            // Cursor at the canvas centre with the origin under it → the derived
-            // centre stays (0,0) at every scale, isolating the scale ease.
             let center = Point::new(400.0, 300.0);
             z.begin(Point::ZERO, center, center);
 
-            // First tick establishes the clock (dt == 0): no jump.
+            // First tick establishes the clock: no jump.
             let mut clock = FrameClock::new();
             assert!(clock.now(|| z.tick(target, false)));
             assert_eq!(z.display().scale, 64.0, "first frame must not teleport");
 
-            // Successive frames strictly approach the target, never overshooting.
             let mut prev = z.display().scale;
             let mut frames = 0;
             for _ in 0..600 {
@@ -316,9 +272,6 @@ mod tests {
 
         // phase zoom_stays_anchored_around_the_cursor
         {
-            // Anchor the world point under a cursor and check it stays put as the
-            // scale eases (the model target keeps it fixed; the ease must too, at
-            // the endpoints and monotonically between).
             let canvas_center = Point::new(400.0, 300.0);
             let cursor = Point::new(560.0, 220.0);
             let start = v(64.0, 0.0, 0.0);
@@ -331,7 +284,6 @@ mod tests {
             };
             let anchor = to_world(cursor, &start);
 
-            // Target: zoom in, re-centred so the anchor stays under the cursor.
             let ts = 160.0;
             let target = View2d {
                 scale: ts,
@@ -344,8 +296,6 @@ mod tests {
             let mut clock = FrameClock::new();
             for _ in 0..600 {
                 let animating = clock.next(|| z.tick(target, false));
-                // Anchor-based easing pins the world point under the cursor EXACTLY,
-                // every frame — not merely at the endpoints.
                 let w = to_world(cursor, &z.display());
                 assert!(
                     (w.x - anchor.x).abs() < 1e-9,
@@ -377,10 +327,8 @@ mod tests {
         }
     }
 
-    /// The cheap transform applied to cached geometry mid-zoom: the 2D curve affine
-    /// is the identity before any ease and scales by display/sampled about the
-    /// cursor anchor; the 3D zoom eases and its scale factor tracks the same ratio.
-    /// Fresh animator per phase.
+    /// The 2D affine is the identity before any ease and scales by
+    /// display/sampled; the 3D scale factor tracks the same ratio.
     #[test]
     fn sampled_geometry_transform_tracks_display_to_sampled_ratio() {
         // phase curve_affine_is_identity_before_any_ease
@@ -389,8 +337,6 @@ mod tests {
             let mut z = ZoomAnim2d::new(start);
             z.mark_sampled(start);
             z.begin(Point::ZERO, Point::ZERO, Point::new(400.0, 300.0));
-            // display == sampled → the cheap transform is the identity, so the very
-            // first animated frame is pixel-identical to the sampled curve.
             let a = z.curve_affine(Point::new(400.0, 300.0));
             let c = a.as_coeffs();
             assert!((c[0] - 1.0).abs() < 1e-9 && (c[3] - 1.0).abs() < 1e-9);
@@ -399,21 +345,17 @@ mod tests {
 
         // phase curve_affine_scales_about_the_cursor_anchor
         {
-            // A doubled display scale (cx/cy chosen to keep a world point fixed at
-            // the canvas centre) yields k == 2 about that centre.
             let center = Point::new(400.0, 300.0);
             let sampled = v(64.0, 0.0, 0.0);
             let mut z = ZoomAnim2d::new(sampled);
             z.mark_sampled(sampled);
             z.begin(Point::ZERO, center, center);
-            // Drive the display to a doubled scale (same centre) while leaving the
-            // sampled view at 64 — a reduced-motion tick snaps display without
-            // re-marking the cache, so the affine ratio is genuinely 128/64 == 2.
+            // A reduced-motion tick snaps the display without re-marking the
+            // cache, so the ratio is really 128/64.
             z.tick(v(128.0, 0.0, 0.0), true);
             let a = z.curve_affine(center);
             let c = a.as_coeffs();
             assert!((c[0] - 2.0).abs() < 1e-9, "k must equal the scale ratio");
-            // The canvas centre is the fixed point: a*center == center.
             let mapped = a * center;
             assert!((mapped.x - center.x).abs() < 1e-6 && (mapped.y - center.y).abs() < 1e-6);
         }
@@ -430,7 +372,6 @@ mod tests {
             for _ in 0..600 {
                 let animating = clock.next(|| z.tick(2.0, false));
                 frames += 1;
-                // scale_factor is display/sampled; sampled stays 1.0 → tracks display.
                 assert!((z.scale_factor() - z.display() / 1.0).abs() < 1e-9);
                 if !animating {
                     break;

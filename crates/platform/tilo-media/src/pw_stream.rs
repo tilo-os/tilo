@@ -1,25 +1,15 @@
 //! Native `PipeWire` audio streams that report device timing.
 //!
-//! A playback stream pulls its audio from a [`PlaybackSource`] inside the
-//! stream's process callback, handing it the local `CLOCK_MONOTONIC` time at
-//! which the first sample of the block will leave the speaker. That time comes
-//! from `pw_stream_get_time`: the cycle's timestamp plus the delay to the
-//! device plus whatever is still queued in the stream, so a
-//! [`SyncPlayout`] behind it can schedule
-//! against the moment the listener hears a sample rather than the moment it
-//! was written.
+//! A playback stream pulls from a [`PlaybackSource`] inside the process callback
+//! and hands it the local `CLOCK_MONOTONIC` time at which the first sample of the
+//! block leaves the speaker (`pw_stream_get_time`: the cycle's timestamp, the delay
+//! to the device and what is still queued), so a [`SyncPlayout`] behind it schedules
+//! against when the listener hears a sample rather than when it was written.
 //!
-//! A capture stream records one chosen node, named by its `object.serial`.
-//! Only that node: the stream asks the session manager never to fall back to
-//! the default source (which may be the microphone), and it watches the graph
-//! to confirm that the only link into it comes from the chosen node. Audio is
-//! delivered once that is confirmed; any other link fails the stream.
-//!
-//! Each stream runs its own `PipeWire` loop on a dedicated thread, never on the
-//! compositor's. Opening a stream goes through the [`AudioStreams`] trait, so
-//! the code that decides what to play or record is tested against a fake
-//! backend without a `PipeWire` daemon; the rendering and verification logic
-//! here is pure and tested the same way.
+//! A capture stream records one chosen node, named by its `object.serial`: it asks
+//! the session manager never to fall back to the default source, and delivers audio
+//! only once the sole link into it comes from that node. Each stream runs its own
+//! `PipeWire` loop on a dedicated thread, never on the compositor's.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -27,23 +17,16 @@ use std::sync::{Arc, Mutex};
 use crate::sync_playout::{ChannelRole, ClockMapping, SyncPlayout};
 use tilo_lock::MutexRecover as _;
 
-/// Nanoseconds per second.
 const NS_PER_SECOND: i64 = 1_000_000_000;
 
-/// How far a capture cycle's measured start may stray from where the
-/// previous cycle ended and still count as continuous. Cycle timestamps
-/// jitter by a few microseconds; a real discontinuity (an xrun, a suspended
-/// device) is a whole quantum or more.
+// Cycle timestamps jitter by a few microseconds; a real discontinuity (an xrun, a
+// suspended device) is a whole quantum or more.
 pub const CAPTURE_CONTINUITY_TOLERANCE_NS: i64 = 2_000_000;
 
-/// Bytes per sample of the playback stream's `F32LE` format.
 const F32_BYTES: usize = 4;
 
-/// Bytes per sample of the capture stream's `S16LE` format.
 pub const S16_BYTES: usize = 2;
 
-/// This device's `CLOCK_MONOTONIC` in nanoseconds: the clock `PipeWire`
-/// timestamps its graph cycles with.
 #[cfg(unix)]
 #[allow(
     clippy::useless_conversion,
@@ -55,8 +38,6 @@ pub fn monotonic_now_ns() -> i64 {
         tv_sec: 0,
         tv_nsec: 0,
     };
-    // SAFETY: `time` is a valid, writable timespec for the duration of the
-    // call, and CLOCK_MONOTONIC is always available on Linux.
     let status = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut time) };
     if status != 0 {
         return 0;
@@ -66,8 +47,6 @@ pub fn monotonic_now_ns() -> i64 {
         .saturating_add(i64::from(time.tv_nsec))
 }
 
-/// Hosts without a `CLOCK_MONOTONIC` report the clock as unreadable, as a
-/// failed `clock_gettime` does.
 #[cfg(not(unix))]
 pub fn monotonic_now_ns() -> i64 {
     0
@@ -95,25 +74,16 @@ fn saturate_i128(value: i128) -> i64 {
     i64::try_from(value).unwrap_or(if value < 0 { i64::MIN } else { i64::MAX })
 }
 
-/// One `pw_time` report, converted to nanoseconds and stream frames.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DeviceTiming {
-    /// `CLOCK_MONOTONIC` nanoseconds at the start of the graph cycle this
-    /// report describes.
     pub now_ns: i64,
-    /// Time between the stream and the device, including every filter on the
-    /// path. May be negative.
     pub delay_ns: i64,
-    /// Frames the stream holds that the graph has not consumed yet: queued
-    /// buffers plus the resampler's history.
+    // Frames the stream holds that the graph has not consumed: queued buffers plus the
+    // resampler's history.
     pub queued_frames: u64,
 }
 
 impl DeviceTiming {
-    /// Builds a report from `pw_time`'s raw fields. `delay` counts ticks of
-    /// the graph rate `rate_num / rate_denom` seconds; `queued_bytes` and
-    /// `buffered_frames` count the stream's own format, `stride` bytes per
-    /// frame.
     pub fn from_raw(
         now_ns: i64,
         rate_num: u32,
@@ -139,14 +109,10 @@ impl DeviceTiming {
         }
     }
 
-    /// Whether the report describes a running graph. Before the first cycle
-    /// `pw_time` is all zeros.
     pub const fn is_live(&self) -> bool {
         self.now_ns > 0
     }
 
-    /// Local time at which the next frame written to a playback stream leaves
-    /// the speaker.
     pub fn playback_presentation_ns(&self, rate: u32) -> i64 {
         let queued = frames_to_ns(i64::try_from(self.queued_frames).unwrap_or(i64::MAX), rate);
         self.now_ns
@@ -154,10 +120,6 @@ impl DeviceTiming {
             .saturating_add(queued)
     }
 
-    /// Local time at which the first of the `frames` frames a capture stream
-    /// delivers this cycle entered the device: the buffer ends where the
-    /// device delay before the cycle start puts it, and spans its own
-    /// duration before that.
     pub fn capture_origin_ns(&self, frames: usize, rate: u32) -> i64 {
         let span = frames_to_ns(i64::try_from(frames).unwrap_or(i64::MAX), rate);
         self.now_ns
@@ -166,33 +128,21 @@ impl DeviceTiming {
     }
 }
 
-/// Where a stream's timing comes from: the live stream in production, a
-/// scripted clock in tests.
 pub trait StreamClock {
-    /// The stream's current timing report, if it has one.
     fn timing(&self) -> Option<DeviceTiming>;
-    /// The local monotonic time now.
     fn now_ns(&self) -> i64;
 }
 
-/// Audio for a playback stream, pulled from its process callback.
 pub trait PlaybackSource: Send + 'static {
-    /// Fills `out` (interleaved `f32`, the stream's channel count per frame)
-    /// whose first frame leaves the speaker at local monotonic time
-    /// `presentation_ns`. Always fills the whole buffer.
     fn render(&mut self, presentation_ns: i64, out: &mut [f32]);
 }
 
-/// A [`SyncPlayout`] and the clock mapping it renders against, shared between
-/// the thread that receives frames and the stream that plays them.
 #[derive(Debug)]
 pub struct SyncPlayoutState<C> {
     pub playout: SyncPlayout,
     pub clock: C,
 }
 
-/// Plays a shared [`SyncPlayout`]: the receiving side pushes frames and
-/// updates the clock through the same `Arc`.
 pub struct SyncPlaybackSource<C> {
     shared: Arc<Mutex<SyncPlayoutState<C>>>,
 }
@@ -212,7 +162,6 @@ impl<C: ClockMapping + Send + 'static> PlaybackSource for SyncPlaybackSource<C> 
     }
 }
 
-/// Where the last timing report of a stream is kept for its owner to read.
 #[derive(Debug, Default)]
 pub struct StreamStatus {
     stop: AtomicBool,
@@ -229,7 +178,6 @@ impl StreamStatus {
         self.failure.lock_recover().clone()
     }
 
-    /// Records the first failure; later ones are consequences of it.
     pub fn fail(&self, reason: impl Into<String>) {
         let mut failure = self.failure.lock_recover();
         if failure.is_none() {
@@ -250,8 +198,6 @@ impl StreamStatus {
     }
 }
 
-/// The body of a playback stream's process callback: asks the source for one
-/// block at the right presentation time and writes it as `F32LE`.
 pub struct PlaybackRenderer {
     source: Box<dyn PlaybackSource>,
     channels: usize,
@@ -276,15 +222,13 @@ impl PlaybackRenderer {
         }
     }
 
-    /// Bytes per interleaved frame.
     pub const fn stride(&self) -> usize {
         self.channels.saturating_mul(F32_BYTES)
     }
 
-    /// Fills `out` with at most `requested_frames` frames (all that fit when
-    /// the graph did not say) and returns the bytes written. The block is
-    /// scheduled at the device's presentation time; before the stream reports
-    /// timing it is scheduled for now.
+    /// Fill `out` with at most `requested_frames` frames (all that fit when the graph
+    /// did not say) and return the bytes written. The block is scheduled at the device's
+    /// presentation time, or for now before the stream reports timing.
     pub fn fill(
         &mut self,
         clock: &dyn StreamClock,
@@ -318,21 +262,14 @@ impl PlaybackRenderer {
     }
 }
 
-/// How a playback stream is opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlaybackConfig {
-    /// `node.name`: stable, so session policy can match it.
+    // `node.name`: stable, so session policy can match it.
     pub node_name: String,
-    /// `node.description`: what a volume mixer shows.
     pub description: String,
     pub rate: u32,
-    /// Interleaved channels the source renders: 1 is played as mono, 2 as
-    /// front left and right.
     pub channels: u16,
-    /// Graph quantum the stream asks for, in frames at `rate`.
     pub latency_frames: u32,
-    /// Play on the sink with this `object.serial` and nowhere else; `None`
-    /// follows the default output.
     pub target_serial: Option<u32>,
 }
 
@@ -349,7 +286,6 @@ impl PlaybackConfig {
         }
     }
 
-    /// Stream properties, as `PipeWire` key/value pairs.
     pub fn properties(&self) -> Vec<(&'static str, String)> {
         let mut properties = vec![
             ("media.type", "Audio".into()),
@@ -376,16 +312,12 @@ impl PlaybackConfig {
     }
 }
 
-/// The node a capture stream records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureTarget {
-    /// The node's `object.serial`.
     pub serial: u32,
-    /// Record what a sink plays (its monitor) rather than a source's output.
     pub monitor_sink: bool,
 }
 
-/// How a capture stream is opened. The format is always `S16LE`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CaptureConfig {
     pub node_name: String,
@@ -399,10 +331,6 @@ pub struct CaptureConfig {
 }
 
 impl CaptureConfig {
-    /// Stream properties, as `PipeWire` key/value pairs. The target is named
-    /// by serial, and every way the session manager could substitute another
-    /// node is switched off: no fallback to a default when the target is
-    /// missing, no reconnect elsewhere when it goes away, no moving it later.
     pub fn properties(&self) -> Vec<(&'static str, String)> {
         let mut properties = vec![
             ("media.type", "Audio".into()),
@@ -421,13 +349,11 @@ impl CaptureConfig {
         properties
     }
 
-    /// Bytes per interleaved frame.
     pub fn stride(&self) -> usize {
         usize::from(self.channels.max(1)).saturating_mul(S16_BYTES)
     }
 }
 
-/// `PipeWire` property values are C strings.
 fn sanitize(value: &str) -> String {
     value
         .chars()
@@ -435,7 +361,6 @@ fn sanitize(value: &str) -> String {
         .collect()
 }
 
-/// A run of captured audio.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CaptureChunk {
     /// Index of the chunk's first frame on this device's monotonic clock,
@@ -447,8 +372,6 @@ pub struct CaptureChunk {
     pub pcm_s16le: Vec<u8>,
 }
 
-/// Stamps capture cycles with frame indices on the monotonic clock, keeping
-/// an uninterrupted capture sample-continuous despite timestamp jitter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureTimeline {
     rate: u32,
@@ -463,8 +386,6 @@ impl CaptureTimeline {
         }
     }
 
-    /// The index of the first of `frames` frames whose first one the device
-    /// captured at `origin_ns`.
     pub fn stamp(&mut self, origin_ns: i64, frames: usize) -> i64 {
         let measured = ns_to_frames(origin_ns, self.rate);
         let tolerance = ns_to_frames(CAPTURE_CONTINUITY_TOLERANCE_NS, self.rate);
@@ -477,27 +398,22 @@ impl CaptureTimeline {
     }
 }
 
-/// What the graph says about a capture stream's input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkVerdict {
-    /// Nothing is linked into the stream yet.
     Waiting,
     /// Only the chosen node is linked into the stream.
     Linked,
-    /// Another node is linked into the stream.
-    Foreign { node: u32 },
-    /// The chosen node left the graph.
+    Foreign {
+        node: u32,
+    },
     TargetGone,
 }
 
-/// Confirms from the registry that a capture stream records exactly the
-/// chosen node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TargetLinkGuard {
     target_serial: u32,
     target_node: Option<u32>,
     own_node: Option<u32>,
-    /// `(output node, input node)` of every link seen.
     links: Vec<(u32, u32)>,
     target_gone: bool,
 }
@@ -513,7 +429,6 @@ impl TargetLinkGuard {
         }
     }
 
-    /// A node appeared in the registry.
     pub fn observe_node(&mut self, id: u32, serial: Option<u32>) {
         if serial == Some(self.target_serial) {
             self.target_node = Some(id);
@@ -521,7 +436,6 @@ impl TargetLinkGuard {
         }
     }
 
-    /// A global left the registry.
     pub fn observe_removal(&mut self, id: u32) {
         if self.target_node == Some(id) {
             self.target_gone = true;
@@ -530,18 +444,15 @@ impl TargetLinkGuard {
             .retain(|&(output, input)| output != id && input != id);
     }
 
-    /// A link appeared in the registry.
     pub fn observe_link(&mut self, output_node: u32, input_node: u32) {
         self.links.push((output_node, input_node));
     }
 
-    /// A known link left the registry. Node ids alone cannot identify link removal.
     pub fn remove_link(&mut self, output_node: u32, input_node: u32) {
         self.links
             .retain(|&(output, input)| output != output_node || input != input_node);
     }
 
-    /// The stream's own node id, once `PipeWire` assigned it.
     pub const fn set_own_node(&mut self, id: u32) {
         self.own_node = Some(id);
     }
@@ -581,10 +492,10 @@ pub fn whole_frames(bytes: &[u8], stride: usize) -> &[u8] {
     bytes.get(..whole).unwrap_or_default()
 }
 
-/// Plays one buffer so that its first frame leaves the speaker at a chosen
-/// local time: the playback half of a timed measurement such as an acoustic
-/// sweep. Frames scheduled before the stream could play them are reported
-/// through [`ScheduleProgress::late_by_ns`] rather than silently shifted.
+/// Play one buffer so its first frame leaves the speaker at a chosen local time, for
+/// a timed measurement such as an acoustic sweep. Frames scheduled before the stream
+/// could play them are reported through [`ScheduleProgress::late_by_ns`] rather than
+/// silently shifted.
 #[derive(Debug)]
 pub struct ScheduledBuffer {
     samples: Arc<[f32]>,
@@ -597,9 +508,8 @@ pub struct ScheduledBuffer {
 /// What a [`ScheduledBuffer`] has played so far, readable from any thread.
 #[derive(Debug, Default)]
 pub struct ScheduleProgress {
-    /// How late the first frame was presented, once known; 0 when on time.
+    // How late the first frame was presented, once known; 0 when on time.
     late_by_ns: Mutex<Option<i64>>,
-    /// Whether the last frame has been handed to the device.
     finished: AtomicBool,
 }
 
@@ -614,7 +524,6 @@ impl ScheduleProgress {
 }
 
 impl ScheduledBuffer {
-    /// `samples` is interleaved `f32` with `channels` per frame.
     pub fn new(samples: Vec<f32>, channels: u16, rate: u32, start_ns: i64) -> Self {
         Self {
             samples: samples.into(),
@@ -638,7 +547,6 @@ impl ScheduledBuffer {
 impl PlaybackSource for ScheduledBuffer {
     fn render(&mut self, presentation_ns: i64, out: &mut [f32]) {
         out.fill(0.0);
-        // The buffer frame presented first, rounded to the nearest frame.
         let half_frame = frames_to_ns(1, self.rate) / 2;
         let first = ns_to_frames(
             presentation_ns
@@ -683,11 +591,8 @@ impl PlaybackSource for ScheduledBuffer {
     }
 }
 
-/// Samples recorded over a time window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapturedWindow {
-    /// Local `CLOCK_MONOTONIC` nanoseconds at which the first frame entered
-    /// the device.
     pub first_sample_ns: i64,
     pub rate: u32,
     pub channels: u16,
@@ -695,9 +600,6 @@ pub struct CapturedWindow {
     pub samples: Vec<i16>,
 }
 
-/// Cuts `[start_ns, start_ns + duration_ns)` out of captured chunks. The
-/// window starts at the first captured frame at or after `start_ns`; gaps are
-/// filled with silence. `None` when no chunk reaches into the window.
 pub fn assemble_window(
     chunks: &[CaptureChunk],
     rate: u32,
@@ -707,7 +609,6 @@ pub fn assemble_window(
 ) -> Option<CapturedWindow> {
     let width = usize::from(channels.max(1));
     let stride = width.saturating_mul(S16_BYTES);
-    // First frame whose capture time is at or after `start_ns`.
     let wanted = ns_to_frames(start_ns.saturating_sub(1), rate).saturating_add(1);
     let end = ns_to_frames(start_ns.saturating_add(duration_ns).saturating_sub(1), rate)
         .saturating_add(1);
@@ -749,21 +650,17 @@ pub fn assemble_window(
 }
 
 /// Sample-accurate timed playback and capture on chosen local nodes, timed by
-/// `PipeWire`'s device clock rather than a subprocess's start-up: the
-/// primitives acoustic calibration measures with. Both calls block until
-/// their window has passed, so run them off the compositor thread (and on two
-/// threads to play and record at once).
+/// `PipeWire`'s device clock rather than a subprocess's start-up: the primitives
+/// acoustic calibration measures with. Both calls block until their window has
+/// passed, so run them off the compositor thread.
 pub struct TimedAudio<'a> {
     streams: &'a dyn AudioStreams,
 }
 
-/// How often a timed call checks on its stream.
 const TIMED_POLL: std::time::Duration = std::time::Duration::from_millis(5);
-/// How long past its window a timed call waits for the device before failing.
 const TIMED_GRACE_NS: i64 = 2_000_000_000;
 
 impl TimedAudio<'static> {
-    /// Timed audio on this device's `PipeWire` daemon.
     pub fn native() -> Self {
         Self {
             streams: native_streams(),
@@ -776,16 +673,16 @@ impl<'a> TimedAudio<'a> {
         Self { streams }
     }
 
-    /// Plays `samples` (interleaved `f32`, `channels` per frame, at `rate`)
-    /// on the sink with `object.serial` `sink_serial`, so that the first
-    /// frame leaves the speaker at local `CLOCK_MONOTONIC` time `start_ns`.
-    /// Returns once the last frame has been handed to the device.
+    /// Play `samples` (interleaved `f32`, `channels` per frame, at `rate`) on the sink
+    /// with `object.serial` `sink_serial`, so the first frame leaves the speaker at
+    /// local `CLOCK_MONOTONIC` time `start_ns`. Returns once the last frame has been
+    /// handed to the device.
     ///
     /// # Errors
     ///
-    /// Fails when the stream cannot start or stops, or [`StreamError::Late`]
-    /// when the device could not present the first frame on time (start the
-    /// call earlier: opening a stream takes tens of milliseconds).
+    /// Fails when the stream cannot start or stops, or [`StreamError::Late`] when the
+    /// device could not present the first frame on time (start the call earlier:
+    /// opening a stream takes tens of milliseconds).
     pub fn play_at(
         &self,
         sink_serial: u32,
@@ -827,14 +724,6 @@ impl<'a> TimedAudio<'a> {
         }
     }
 
-    /// Records `duration_ns` from `target` starting at local
-    /// `CLOCK_MONOTONIC` time `start_ns`. The window starts at the first
-    /// frame captured at or after `start_ns`, whose device time is reported.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the stream cannot start, stops, is linked to anything but
-    /// `target`, or delivers nothing inside the window.
     pub fn capture_window(
         &self,
         target: CaptureTarget,
@@ -893,11 +782,8 @@ impl<'a> TimedAudio<'a> {
 /// Why a stream could not be opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StreamError {
-    /// No `PipeWire` daemon to talk to, or no `PipeWire` support in this build.
     Unavailable(String),
-    /// The daemon refused the stream.
     Setup(String),
-    /// A scheduled buffer's first frame reached the speaker this late.
     Late { by_ns: i64 },
 }
 
@@ -916,9 +802,7 @@ impl std::fmt::Display for StreamError {
 
 impl std::error::Error for StreamError {}
 
-/// A running playback stream. Dropping it stops the stream.
 pub trait PlaybackStream: Send {
-    /// The latest device timing the stream reported.
     fn timing(&self) -> Option<DeviceTiming>;
     /// Why the stream stopped, once it has.
     fn failure(&self) -> Option<String>;
@@ -933,7 +817,6 @@ pub struct ObservedPlayback {
     pub serial: u32,
 }
 
-/// Open an output on the observer's exact connection, pinned to its sink.
 #[cfg(unix)]
 pub fn open_observed_playback(
     config: &PlaybackConfig,
@@ -953,26 +836,20 @@ pub fn open_observed_playback(
     }
 }
 
-/// A running capture stream. Dropping it stops the stream.
 pub trait CaptureStream: Send {
-    /// Everything captured since the last call.
     fn drain(&mut self) -> Result<Vec<CaptureChunk>, String>;
 }
 
-/// Opens audio streams. [`native_streams`] is the real one.
 pub trait AudioStreams: Send + Sync {
-    /// Starts a stream that pulls from `source`.
     fn open_playback(
         &self,
         config: &PlaybackConfig,
         source: Box<dyn PlaybackSource>,
     ) -> Result<Box<dyn PlaybackStream>, StreamError>;
 
-    /// Starts recording `config.target`.
     fn open_capture(&self, config: &CaptureConfig) -> Result<Box<dyn CaptureStream>, StreamError>;
 }
 
-/// The `PipeWire` stream backend of this build.
 pub fn native_streams() -> &'static dyn AudioStreams {
     #[cfg(all(feature = "pipewire", target_os = "linux"))]
     {
@@ -1027,12 +904,8 @@ mod native {
         StreamError, StreamStatus, TargetLinkGuard, frames_to_ns, monotonic_now_ns, whole_frames,
     };
 
-    /// How long opening a stream may take before it is reported as failed.
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
-    /// How long a capture stream may stay unlinked before the chosen node is
-    /// declared unavailable.
     const LINK_TIMEOUT: Duration = Duration::from_secs(3);
-    /// Loop wake-up interval, bounding how late a stop request is noticed.
     const LOOP_TICK: Duration = Duration::from_millis(20);
 
     pub(super) struct PipeWireStreams;
@@ -1109,7 +982,6 @@ mod native {
         .map_err(|error| StreamError::Setup(format!("audio format: {error:?}")))
     }
 
-    /// Joins the worker once the owner lets go of the stream.
     struct Worker {
         status: Arc<StreamStatus>,
         thread: Option<JoinHandle<()>>,
@@ -1124,7 +996,6 @@ mod native {
         }
     }
 
-    /// Spawns a loop thread and waits for it to report the stream connected.
     fn spawn_worker(
         name: &str,
         status: Arc<StreamStatus>,
@@ -1414,7 +1285,6 @@ mod native {
         }
     }
 
-    /// Parses a numeric registry property.
     fn numeric(props: Option<&spa::utils::dict::DictRef>, key: &str) -> Option<u32> {
         props?.get(key)?.parse().ok()
     }
@@ -1662,7 +1532,6 @@ mod tests {
         }
     }
 
-    /// Records the presentation time of each block and writes a ramp.
     struct Recorder {
         seen: Seen,
     }
@@ -1699,7 +1568,6 @@ mod tests {
         let timing = DeviceTiming::from_raw(5_000_000_000, 1, 48_000, 480, 3840, 16, 8);
         assert_eq!(timing.delay_ns, 10_000_000);
         assert_eq!(timing.queued_frames, 496);
-        // A 44.1 kHz graph's ticks convert with its own rate.
         let graph = DeviceTiming::from_raw(1, 1, 44_100, 441, 0, 0, 8);
         assert_eq!(graph.delay_ns, 10_000_000);
     }
@@ -1778,14 +1646,10 @@ mod tests {
         assert!((f32::from_le_bytes(out) - 1.0).abs() < f32::EPSILON);
     }
 
-    /// A shared playout behind the stream plays a frame at its scheduled
-    /// time: the device timing, not the callback time, decides which samples
-    /// come out.
     #[test]
     fn a_sync_playout_plays_at_the_device_presentation_time() {
         let latency = 50_000_000;
         let mut playout = SyncPlayout::new(PlayoutConfig::new(RATE, latency, ChannelRole::Left));
-        // One second of a constant left channel, starting at leader sample 0.
         let samples = (0..RATE).flat_map(|_| [0.5_f32, -0.25]).collect();
         playout.push(&AudioFrame {
             seq: 1,
@@ -1881,7 +1745,6 @@ mod tests {
         let mut timeline = CaptureTimeline::new(RATE);
         let start = 10_000_000_000;
         assert_eq!(timeline.stamp(start, 480), 480_000);
-        // The next cycle's timestamp is 300 µs late; the capture continued.
         assert_eq!(timeline.stamp(start + 10_300_000, 480), 480_480);
         assert_eq!(timeline.stamp(start + 19_900_000, 480), 480_960);
         // A 50 ms hole (an xrun) re-anchors on the measured time, leaving a gap.
@@ -1895,7 +1758,6 @@ mod tests {
         let mut guard = TargetLinkGuard::new(812);
         guard.observe_node(40, Some(812));
         guard.set_own_node(77);
-        // Playback registry entries are reversed by the production listener.
         guard.observe_link(40, 77);
         assert_eq!(guard.verdict(), LinkVerdict::Linked);
         guard.remove_link(40, 77);
@@ -1926,7 +1788,6 @@ mod tests {
         let mut guard = TargetLinkGuard::new(812);
         guard.observe_node(40, Some(812));
         guard.set_own_node(77);
-        // The session manager linked the default source (the microphone).
         guard.observe_link(55, 77);
         assert_eq!(guard.verdict(), LinkVerdict::Foreign { node: 55 });
         guard.observe_link(40, 77);
@@ -1988,7 +1849,6 @@ mod tests {
         let samples = (0..1000).map(|index| index as f32 / 1000.0).collect();
         let mut buffer = ScheduledBuffer::new(samples, 1, RATE, NS_PER_SECOND);
         let progress = buffer.progress();
-        // A block presented 100 frames early: silence, then the ramp.
         let mut out = vec![1.0; 480];
         buffer.render(NS_PER_SECOND - frames_to_ns(100, RATE), &mut out);
         assert!(out[..100].iter().all(|sample| sample.abs() < f32::EPSILON));
@@ -2041,7 +1901,6 @@ mod tests {
             "the gap is silent"
         );
         assert!(window.samples[100..].iter().all(|sample| *sample == 9));
-        // A window before any capture starts at the first captured frame.
         let late = assemble_window(&chunks, RATE, 1, 0, 2 * NS_PER_SECOND).unwrap();
         assert_eq!(late.first_sample_ns, frames_to_ns(47_990, RATE));
         assert!(assemble_window(&chunks, RATE, 1, 0, NS_PER_SECOND / 2).is_none());

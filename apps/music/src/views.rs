@@ -1,12 +1,5 @@
-//! Music's resource types as its views and its search read them, and the
-//! connected streaming catalogue as a remote source.
-//!
-//! Songs, albums, artists and playlists each declare their fields with the
-//! role they play where an item is shown, which fields typed text finds, and
-//! which narrow by a chip: Artist and Year by value, Liked and In library on
-//! or off. The library's items are the local side of every query view; the
-//! catalogue (`YouTube` Music, or Spotify when connected) streams in below
-//! them, its quick suggestions first and its full answer after.
+//! Music's views: the library as query-view items, and the connected catalogue as a
+//! remote source beside it.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -74,8 +67,6 @@ fn year_text(year: u32) -> String {
     }
 }
 
-/// The library's songs, albums, artists and playlists as items: the local
-/// side of a query view.
 pub fn library_items(lib: &Library) -> Vec<Item> {
     let mut items = Vec::with_capacity(
         lib.tracks
@@ -124,8 +115,7 @@ pub fn library_items(lib: &Library) -> Vec<Item> {
     items
 }
 
-/// What a catalogue answer's items carry, so the app can make each playable,
-/// likeable and openable before anything is stored.
+/// Per-item values from a catalogue answer, before anything is stored.
 #[derive(Clone, Debug)]
 pub enum Fetched {
     Track(TrackHit),
@@ -134,7 +124,6 @@ pub enum Fetched {
     Playlist(PlaylistHit),
 }
 
-/// The items of a catalogue answer, best first within each type.
 pub fn bundle_items(bundle: &SearchBundle) -> Vec<Item> {
     let mut items = Vec::new();
     for hit in &bundle.tracks {
@@ -172,8 +161,8 @@ pub fn bundle_items(bundle: &SearchBundle) -> Vec<Item> {
     items
 }
 
-/// Whether the catalogue answers `query`: it has words to look for, and no
-/// chip asks for the person's own marks, which only the library knows.
+/// Whether the catalogue answers `query`: it has words, and no chip asks for the
+/// library's own marks.
 fn catalogue_accepts(query: &QuerySpec) -> bool {
     !query.text.trim().is_empty()
         && !query
@@ -182,9 +171,8 @@ fn catalogue_accepts(query: &QuerySpec) -> bool {
             .any(|chip| chip.key == LIKED || chip.key == IN_LIBRARY)
 }
 
-/// What the catalogue is asked for `query`: its words, and the artist a chip
-/// narrows to, which steers its ranking. Its answer is narrowed by the chips
-/// again here.
+/// What the catalogue is asked for `query`: its words plus the artist a chip narrows
+/// to, which steers its ranking.
 fn catalogue_text(query: &QuerySpec) -> String {
     let mut text = query.text.trim().to_owned();
     for chip in &query.chips {
@@ -198,8 +186,7 @@ fn catalogue_text(query: &QuerySpec) -> String {
     text
 }
 
-/// The connected streaming catalogue as a query view's remote source: its
-/// quick suggestions as the first page, its full search as the second.
+/// The connected catalogue as a query view's remote source.
 pub struct CatalogueSource {
     make: fn() -> Box<dyn MusicBackend>,
     backend: Mutex<Option<Arc<dyn MusicBackend>>>,
@@ -207,8 +194,7 @@ pub struct CatalogueSource {
 }
 
 impl CatalogueSource {
-    /// A source over the backend `make` builds, the first time it is warmed
-    /// or asked (never on the UI thread).
+    /// Builds the backend on first use, off the UI thread.
     pub fn new(make: fn() -> Box<dyn MusicBackend>) -> Self {
         Self {
             make,
@@ -217,8 +203,7 @@ impl CatalogueSource {
         }
     }
 
-    /// The person switched catalogues: the next request builds the backend
-    /// again, which follows the choice.
+    /// The person switched catalogues: the next request builds the backend again.
     pub fn source_changed(&self) {
         *self.backend.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
@@ -288,16 +273,13 @@ impl RemoteSource for CatalogueSource {
     }
 }
 
-/// What a remote section says when its catalogue could not answer: plainly
-/// that it could not be reached, the cause left to the log.
+/// A remote section's line when its catalogue could not answer; the cause goes to the log.
 fn unreachable_text(label: &str, cause: &str) -> String {
     tracing::info!(target: "music::search", %cause, "catalogue search failed");
     format!("{label} can\u{2019}t be reached right now.")
 }
 
-/// A stand-in catalogue for captures and tests: it answers from a fixed set
-/// of songs, albums, artists and playlists that are not in the sample
-/// library, so a capture of the remote section is the same on every machine.
+/// A fixed stand-in catalogue for captures and tests, the same on every machine.
 pub struct SampleCatalogue;
 
 impl SampleCatalogue {

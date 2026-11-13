@@ -5,7 +5,7 @@
 //! render, a unit test and a live session resolve the same copy. The locale
 //! follows the usual POSIX variables and falls back per message to `en-US`.
 
-ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US", "de-DE"]);
 
 /// The pages' and settings' names, shared with the desktop palette
 /// ([`settings_store::index`]). Every window offers them, so they ride along
@@ -48,12 +48,6 @@ pub fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
     } else {
         local
     }
-}
-
-/// The languages Settings, and so the desktop, can show: English and every
-/// language with an installed pack.
-pub fn languages() -> Vec<&'static str> {
-    CATALOG.languages()
 }
 
 /// The English names of a `(label, value)` table, as an effect's or verb's

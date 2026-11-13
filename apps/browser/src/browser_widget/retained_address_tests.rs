@@ -1,4 +1,3 @@
-// Included in the BrowserWidget production-path test module.
 #[test]
 fn hosted_address_edits_retain_the_page_and_its_viewport() {
     struct Hosted;

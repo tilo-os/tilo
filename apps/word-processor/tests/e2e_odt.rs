@@ -1,8 +1,3 @@
-//! End-to-end: author a `.odt`, open it in the word processor, edit it, save,
-//! reopen, and verify the edits persisted through the `.odt` codec + file I/O.
-//! This exercises the whole stack — file bytes ↔ ODF codec ↔ canonical CRDT ↔
-//! the app's actions — the way the integrated OS app does.
-
 #![allow(
     clippy::unwrap_used,
     reason = "in a test these are the assertion, not a hazard"
@@ -21,7 +16,6 @@ fn temp_path(name: &str) -> PathBuf {
     p
 }
 
-/// Append `text` to the end of the paragraph `block`.
 fn append_to(app: &mut App, block: &str, text: &str) {
     let at = snapshot(app)
         .blocks
@@ -49,7 +43,6 @@ fn append_to(app: &mut App, block: &str, text: &str) {
     reason = "one scenario test: each phase is a former standalone test kept as a scoped block"
 )]
 fn odt_and_markdown_edits_survive_save_and_reload() {
-    // Phase: open_edit_save_reload_odt.
     {
         let path = temp_path("doc.odt");
         let mut author = open();
@@ -64,7 +57,6 @@ fn odt_and_markdown_edits_survive_save_and_reload() {
         let mut app = launched(&path);
         assert_eq!(texts(&app), ["alpha"]);
 
-        // Edit: append " beta" to the paragraph, then a new paragraph "gamma".
         let first = last_block(&app);
         append_to(&mut app, &first, " beta");
         apply(
@@ -81,7 +73,6 @@ fn odt_and_markdown_edits_survive_save_and_reload() {
         std::fs::remove_file(&path).ok();
     }
 
-    // Phase: open_edit_save_reload_markdown.
     {
         let path = temp_path("doc.md");
         std::fs::write(&path, b"# Title\n\nbody\n").unwrap();
@@ -97,7 +88,6 @@ fn odt_and_markdown_edits_survive_save_and_reload() {
         std::fs::remove_file(&path).ok();
     }
 
-    // Phase: table_created_in_editor_survives_odt_save_reload.
     {
         let path = temp_path("table.odt");
         let mut app = open();
@@ -117,7 +107,6 @@ fn odt_and_markdown_edits_survive_save_and_reload() {
         );
         save_as(&mut app, &path);
 
-        // Title paragraph + a 2x2 table whose first cell kept "X".
         assert_eq!(
             texts(&launched(&path)),
             ["Title", "X", "", "", ""],
@@ -126,11 +115,9 @@ fn odt_and_markdown_edits_survive_save_and_reload() {
         std::fs::remove_file(&path).ok();
     }
 
-    // Phase: custom_named_style_survives_odt_save_reload.
     {
         let path = temp_path("styled.odt");
 
-        // Author: a paragraph carrying a user-defined named style.
         let mut app = open();
         apply(
             &mut app,
@@ -176,7 +163,6 @@ fn odt_and_markdown_edits_survive_save_and_reload() {
         );
         save_as(&mut app, &path);
 
-        // Reopen: the style is back in the stylesheet, still applied to the block.
         let reopened = launched(&path);
         assert_eq!(texts(&reopened), ["Heading text"]);
         let sheet = reopened.read_document(|doc| {
@@ -191,7 +177,6 @@ fn odt_and_markdown_edits_survive_save_and_reload() {
         assert_eq!(cs.color, [0xc0, 0x20, 0x20], "color round-tripped");
         assert_eq!(cs.align, "center");
         assert_eq!(cs.space_after, 10.0);
-        // Built-ins must still resolve (the import only writes referenced named styles).
         assert_eq!(
             sheet.get("body").name,
             "Body",

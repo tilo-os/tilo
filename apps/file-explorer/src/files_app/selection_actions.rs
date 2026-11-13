@@ -1,4 +1,4 @@
-//! Window-local selection through the same typed door as pointer and keyboard work.
+//! Window-local selection, through the same typed door agents use.
 
 use super::{FilesState, MAX_ANSWERED_ENTRIES};
 use crate::i18n::t;
@@ -36,7 +36,6 @@ impl FilesState {
         Ok(())
     }
 
-    /// A bounded answer with stable row identities, never selected indices.
     pub(super) fn selection_answer(&self) -> serde_json::Value {
         let entries = self.displayed_entries();
         let selected = self.selection.selected();
@@ -199,8 +198,6 @@ mod tests {
         let before = retained.observed();
         std::fs::rename(&path, root.path().join("original.txt")).unwrap();
         std::fs::write(&path, b"replacement").unwrap();
-        // Selecting the same published row again cannot silently reopen its
-        // pathname. The selection and retained descriptor still name "shown".
         let id = FilesState::entry_resource_id(&files.state().entries[0]);
         invoke(
             &mut files,
@@ -249,8 +246,6 @@ mod tests {
         assert!(files.state().refresh_metadata_preserving_view());
         assert_eq!(files.state().selection.selected().len(), 1);
         assert!(files.state().shown_selection.objects[&path].1.is_none());
-        // An explicit deselection and selection of the new listing may retain
-        // the replacement: this is a new user selection, not a passive update.
         invoke(&mut files, "clear-selection", &serde_json::json!({})).unwrap();
         let entry = files
             .state()
@@ -285,8 +280,6 @@ mod tests {
 
     #[test]
     fn selection_descriptor_budget_is_bounded_even_for_select_all() {
-        // The full budget is one descriptor per entry; an app launch raises
-        // the open-file limit to fit it (macOS starts processes at 256).
         tilo_process::raise_open_file_limit();
         let root = tempfile::tempdir().unwrap();
         for index in 0..=MAX_MOVE_ENTRIES {

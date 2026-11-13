@@ -36,9 +36,9 @@ enum Seen<'a> {
 
 fn seen(tile: &TileContent) -> Seen<'_> {
     match tile {
-        TileContent::Foreign { app_id, .. }
-        | TileContent::LocalApp { app_id, .. }
-        | TileContent::PeerWindow { app_id, .. } => Seen::App(app_id.to_lowercase()),
+        TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => {
+            Seen::App(app_id.to_lowercase())
+        }
         TileContent::HostedWindow { app_id, host, .. } => Seen::Hosted { app: app_id, host },
         other => Seen::Other(other),
     }
@@ -54,21 +54,12 @@ fn same_content(a: &Tab, b: &Tab) -> bool {
 }
 
 /// `tile` as the record holds it: no surface handle, which means nothing on
-/// another device, and a peer's window as the app window it is.
-fn written(tile: &TileContent, tab_title: &str) -> TileContent {
+/// another device, and no note of what this device made of it.
+fn written(tile: &TileContent) -> TileContent {
     match tile {
         TileContent::Foreign { app_id, .. } => TileContent::Foreign {
             app_id: app_id.clone(),
             surface_id: 0,
-        },
-        TileContent::PeerWindow { app_id, label, .. } => TileContent::LocalApp {
-            app_id: app_id.clone(),
-            label: if label.is_empty() {
-                tab_title.to_owned()
-            } else {
-                label.clone()
-            },
-            note: String::new(),
         },
         TileContent::LocalApp { app_id, label, .. } => TileContent::LocalApp {
             app_id: app_id.clone(),
@@ -194,7 +185,7 @@ pub fn write(
                         .map(|tab| match held_tabs.get(&tab.id) {
                             Some(held) if same_content(held, tab) => (*held).clone(),
                             _ => Tab {
-                                tile: written(&tab.tile, &tab.title),
+                                tile: written(&tab.tile),
                                 ..tab.clone()
                             },
                         })

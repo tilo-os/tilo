@@ -1,11 +1,4 @@
-//! Quick Look: Space shows the selected file large, without opening an app.
-//!
-//! Pictures, PDFs, ebooks and videos show their picture (decoded off the UI
-//! thread by the shared thumbnail generator, at the size the sheet needs);
-//! text shows its first lines; anything else its icon. The sheet names the
-//! file and says what it is. Space or Escape closes it; the arrow keys move
-//! through the folder with it open. A file whose bytes are not on this device
-//! is never fetched just to be previewed.
+//! Quick Look: Space shows the selected file large, drawn over the file view.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -18,23 +11,17 @@ use vello::peniko::ImageData as PenikoImage;
 
 use crate::model::Entry;
 
-/// The longest edge a picture is decoded at.
 const PICTURE_EDGE: u32 = 1600;
-/// How much of a text file is read, and how many of its lines are shown.
 const TEXT_BYTES: usize = 64 * 1024;
 const TEXT_LINES: usize = 80;
 
-/// What the sheet shows in its body.
 enum Art {
-    /// A picture being decoded.
     Loading(Receiver<Option<thumbnail::generate::RgbaThumb>>),
     Picture(PenikoImage),
     Text(String),
-    /// Nothing to show but what the file is.
     Plain,
 }
 
-/// The file being previewed.
 pub(crate) struct Preview {
     name: String,
     detail: String,
@@ -44,7 +31,6 @@ pub(crate) struct Preview {
 }
 
 impl Preview {
-    /// Preview `entry`; `local` says its bytes are on this device.
     pub(crate) fn of(entry: &Entry, local: bool) -> Self {
         let art = if !local || entry.is_dir {
             Art::Plain
@@ -67,7 +53,6 @@ impl Preview {
         }
     }
 
-    /// Take a decoded picture when it is ready; whether the sheet changed.
     pub(crate) fn poll(&mut self) -> bool {
         let Art::Loading(rx) = &self.art else {
             return false;
@@ -85,13 +70,10 @@ impl Preview {
         }
     }
 
-    /// Whether a picture is still being decoded (the window checks back).
     pub(crate) fn is_loading(&self) -> bool {
         matches!(self.art, Art::Loading(_))
     }
 
-    /// Whether a click at `point` closes the sheet (its close button or
-    /// outside it).
     pub(crate) fn closes_at(&self, point: Point) -> bool {
         self.layout.as_ref().is_some_and(|layout| {
             matches!(layout.hit(point), Some(ModalHit::Close)) || layout.dismisses(point)
@@ -106,7 +88,6 @@ impl Preview {
         &self.detail
     }
 
-    /// Paint the sheet over `window`.
     pub(crate) fn paint(
         &mut self,
         scene: &mut vello::Scene,
@@ -183,8 +164,6 @@ impl Preview {
     }
 }
 
-/// `width` × `height` scaled to fit inside `area`, centred, never enlarged
-/// past twice its size.
 fn fit(area: Rect, width: f64, height: f64) -> Rect {
     if width <= 0.0 || height <= 0.0 {
         return area;
@@ -220,7 +199,6 @@ fn is_text(entry: &Entry) -> bool {
             .is_some_and(|ext| TEXT.contains(&ext.to_ascii_lowercase().as_str()))
 }
 
-/// The first lines of a text file; `None` when it isn't text after all.
 fn read_text(path: &Path) -> Option<String> {
     use std::io::Read as _;
     let mut bytes = Vec::new();
@@ -236,8 +214,6 @@ fn read_text(path: &Path) -> Option<String> {
     Some(text.lines().take(TEXT_LINES).collect::<Vec<_>>().join("\n"))
 }
 
-/// What the file is: its size (or that it is a folder) and when it last
-/// changed.
 fn detail_line(entry: &Entry) -> String {
     use crate::i18n::{arg, t, t_args};
     let what = if entry.is_dir {

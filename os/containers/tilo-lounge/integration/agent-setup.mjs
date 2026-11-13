@@ -39,10 +39,10 @@ const mark = clock();
 const report = {site, relay, at: new Date().toISOString(), steps: []};
 const tabs = [];
 const browsers = [];
-// As the gate's other pages: the test certificates, a software GPU, a job container's small
-// /dev/shm, and no sandbox where the gate runs as root.
+// As the gate's other pages: a software GPU, a job container's small /dev/shm,
+// and no sandbox where the gate runs as root. The stack is plain http on this
+// machine, so no certificate stands in the page's way.
 const browserArgs = [
-  '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
   // Chromium's own log on stderr: why a renderer or the GPU process died is said there.

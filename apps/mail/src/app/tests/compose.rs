@@ -74,7 +74,6 @@ fn compose_send_accepts_recipients_in_any_header_field() {
         ("", "", ""),
     ] {
         let (mut app, mut doc) = app();
-        // Replace the engine with an in-memory backend: no SMTP or other network IO.
         let (requests, outgoing) = std::sync::mpsc::channel();
         let (_events, incoming) = std::sync::mpsc::channel();
         app.state().engine = Some(EngineHandle {
@@ -501,9 +500,6 @@ fn composer_opens_privately_seeds_replies_and_saves_drafts_in_place() {
         }
     }
 
-    // Phase `a_file_chosen_by_contents_is_attached`: where files have no
-    // paths (a browser page) the chooser hands over contents, which are
-    // staged like an opened file's.
     {
         let (mut app, mut doc) = app();
         app.compose.open_blank();

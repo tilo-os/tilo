@@ -1,12 +1,6 @@
-//! Document files read as Markdown and converted to other formats, without
-//! opening them.
-//!
-//! Writer links the document codecs, so it is where a file is read "as
-//! text" or written again in another format for anyone who asks: a person
-//! from the palette, an agent summarising a `.docx` or turning a Markdown
-//! summary into a PDF. Neither touches the document open in the window. The
-//! conversions are [`tilo_doc_codecs::convert`], so every caller reads a
-//! document as Markdown and writes Markdown as a document the same way.
+//! Document files read as Markdown and written in another format, without opening
+//! them. The conversions are [`tilo_doc_codecs::convert`], so every caller reads a
+//! document the same way and the window's own document is untouched.
 
 use std::path::{Path, PathBuf};
 
@@ -14,43 +8,27 @@ use tilo_doc_codecs::convert;
 
 pub const CONVERSIONS: &[&str] = &["pdf", "docx", "odt", "md", "html", "rtf", "txt"];
 
-/// What a read answers: a part of the document as text, or the picture it
-/// is instead. Either way what the caller learns is a value of this one
-/// shape, published as the read's return type.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, ui::tilo_resource::JsonSchema)]
 pub struct ReadDocument {
-    /// The file or content read, as it was named.
     pub file: String,
-    /// The format it was read as (`markdown`, `text`), or `picture`.
     pub format: String,
-    /// The text of this part, for a document that has text.
     pub text: Option<String>,
-    /// The character this part starts at.
     pub from: Option<usize>,
-    /// The character to read on from, when the read goes on.
     pub next: Option<usize>,
-    /// How many characters the whole text has.
     pub total: Option<usize>,
-    /// The picture's content address, when the read answered a picture.
     pub picture: Option<String>,
-    /// The picture's media type.
     pub media_type: Option<String>,
-    /// The picture's size in bytes.
     pub bytes: Option<usize>,
-    /// The picture's width in pixels.
     pub width: Option<usize>,
-    /// The picture's height in pixels.
     pub height: Option<usize>,
 }
 
 impl ReadDocument {
-    /// The answer as the JSON a caller reads.
     fn answered(self) -> Result<serde_json::Value, String> {
         serde_json::to_value(self).map_err(|error| error.to_string())
     }
 }
 
-/// The most characters one read answers with.
 pub const MAX_READ_CHARS: usize = 64 * 1024;
 
 fn extension(path: &Path) -> String {
@@ -59,8 +37,6 @@ fn extension(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// The bytes of the file at `path`, at most
-/// [`convert::MAX_DOCUMENT_BYTES`] of them.
 fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
     let (dir, name) = tilo_files::file_at(path)
         .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
@@ -75,7 +51,6 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
         })
 }
 
-/// Refuse a PDF as a source: Writer lays PDFs out but does not read them.
 fn not_a_pdf(path: &Path) -> Result<(), String> {
     if extension(path) == "pdf" {
         return Err(format!(
@@ -86,11 +61,10 @@ fn not_a_pdf(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// What the document `file` says, as Markdown (the text itself for plain
-/// text), from character `from` on, at most [`MAX_READ_CHARS`] of it.
+/// What the document `file` says, as Markdown, from character `from` on, at most
+/// [`MAX_READ_CHARS`] of it.
 ///
 /// # Errors
-///
 /// `path` cannot be read, is too large, is a PDF, or its format refuses it.
 pub fn read_file(path: &Path, from: Option<usize>) -> Result<serde_json::Value, String> {
     let bytes = read_bounded(path)?;
@@ -106,9 +80,6 @@ pub fn read_file(path: &Path, from: Option<usize>) -> Result<serde_json::Value, 
     page(path, format, &text, from.unwrap_or(0)).answered()
 }
 
-/// What the document kept as `content` in `store` says, read as
-/// [`read_file`] reads a file named `name`. Content that is a picture,
-/// whatever its name, answers as one (`picture`).
 pub fn read_content(
     store: &tilo_content::ContentStore,
     (content, name): (&str, &str),
@@ -134,10 +105,6 @@ pub fn read_content(
     page(path, format, &text, from.unwrap_or(0)).answered()
 }
 
-/// The extension `bytes` are read as: the format they hold, whatever
-/// `path` is called (content travels under any name, "Sofia details" for a
-/// Word file); the name's only when they are text, whose kinds (Markdown,
-/// plain) only a name tells apart.
 fn read_as(path: &Path, bytes: &[u8]) -> Result<String, String> {
     match tilo_content::document_format(bytes) {
         Some(format) if format.extension == "pdf" => Err(format!(
@@ -153,7 +120,6 @@ fn read_as(path: &Path, bytes: &[u8]) -> Result<String, String> {
             path.display(),
             tilo_content::opened_by(bytes).unwrap_or_default()
         )),
-        // Text that a name calls a document is read as the text it is.
         None => Ok(match extension(path).as_str() {
             "docx" | "odt" | "rtf" => "txt".to_owned(),
             ext => ext.to_owned(),
@@ -161,15 +127,10 @@ fn read_as(path: &Path, bytes: &[u8]) -> Result<String, String> {
     }
 }
 
-/// The raster picture format `bytes` start with: a scan or a photo, which
-/// has no text to read. An SVG is text and is read as such.
 fn picture_format(bytes: &[u8]) -> Option<tilo_content::ImageFormat> {
     tilo_content::image_format(bytes).filter(|format| format.extension != "svg")
 }
 
-/// The answer for content at `hash` that is a picture: `format` `picture`,
-/// its address under `picture`, its type, size and weight. An agent's host
-/// takes it to show the picture to a model that sees.
 fn picture(
     name: &str,
     hash: &str,
@@ -192,8 +153,6 @@ fn picture(
     }
 }
 
-/// What `bytes` of the file `path` names, read as extension `ext`, say,
-/// and whether as Markdown or as text.
 fn as_text(path: &Path, ext: &str, bytes: &[u8]) -> Result<(&'static str, String), String> {
     let format = match convert::reading(ext) {
         convert::Reading::Markdown | convert::Reading::Document => "markdown",
@@ -204,7 +163,6 @@ fn as_text(path: &Path, ext: &str, bytes: &[u8]) -> Result<(&'static str, String
     Ok((format, text))
 }
 
-/// The part of `text` from character `from` on.
 fn page(path: &Path, format: &str, text: &str, from: usize) -> ReadDocument {
     let total = text.chars().count();
     let from = from.min(total);
@@ -229,8 +187,6 @@ fn page(path: &Path, format: &str, text: &str, from: usize) -> ReadDocument {
     }
 }
 
-/// The document file at `path` written again as format `to` (an extension
-/// from [`CONVERSIONS`]).
 fn converted(path: &Path, to: &str) -> Result<Vec<u8>, String> {
     not_a_pdf(path)?;
     let refused = |error: tilo_doc_codecs::CodecError| {
@@ -319,8 +275,6 @@ mod tests {
         assert!(read_file(&root.path().join("x.pdf"), None).is_err());
     }
 
-    /// A document kept as content (an attachment) reads as Markdown, as a
-    /// file does, by the format its bytes hold whatever its name says.
     #[test]
     fn a_document_kept_as_content_reads_as_markdown() {
         let root = tempfile::tempdir().unwrap();
@@ -354,8 +308,6 @@ mod tests {
         );
     }
 
-    /// Content that is no text document says what it is and what opens it;
-    /// text reads as text, whatever document its name claims.
     #[test]
     fn content_writer_does_not_read_names_what_does() {
         let store = tilo_content::ContentStore::memory();

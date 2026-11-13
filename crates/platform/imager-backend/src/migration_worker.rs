@@ -1,5 +1,3 @@
-//! Background integration for durable, verified folder copies.
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -13,8 +11,7 @@ const RUNNING: u8 = 0;
 const CANCELLATION_REQUESTED: u8 = 1;
 const FINISHED: u8 = 2;
 
-/// Whether this platform currently has the native directory-entry durability
-/// required by journaled copying. Callers must surface the refusal verbatim.
+/// Callers must surface the refusal verbatim.
 pub fn durable_copy_available() -> Result<(), String> {
     migration_durability::supported().map_err(|error| error.to_string())
 }
@@ -25,7 +22,6 @@ enum JobKind {
     Resume,
 }
 
-/// Exact grants and private journal for one reviewed operation.
 #[derive(Clone, Debug)]
 pub struct MigrationJob {
     operation_id: String,
@@ -41,8 +37,8 @@ pub struct MigrationJob {
 }
 
 impl MigrationJob {
-    /// Construct a new operation. This validates representation only; the copy
-    /// engine pins and revalidates every filesystem grant on the worker thread.
+    /// Validates representation only; the copy engine pins and revalidates every grant on the worker
+    /// thread.
     pub fn fresh(
         operation_id: impl Into<String>,
         source: PathBuf,
@@ -102,7 +98,6 @@ impl MigrationJob {
         &self.journal
     }
 
-    /// Build an explicit resume request against the existing private journal.
     pub fn retry(&self) -> Result<Self, String> {
         if !self.journal.is_file() {
             return Err(
@@ -131,7 +126,6 @@ pub enum WorkerEvent {
     Stored(Box<OperationRecord>),
 }
 
-/// Owns the only cancellation flag and receives verified engine events.
 pub struct MigrationWorker {
     cancelled: Arc<AtomicBool>,
     phase: Arc<AtomicU8>,
@@ -141,7 +135,6 @@ pub struct MigrationWorker {
 }
 
 impl MigrationWorker {
-    /// Start one real copy or resume operation on a named background thread.
     pub fn start(job: MigrationJob) -> Result<Self, String> {
         Self::start_inner(job, None)
     }
@@ -248,7 +241,6 @@ impl MigrationWorker {
         })
     }
 
-    /// Request cancellation only while the operation remains active.
     pub fn cancel(&self) -> bool {
         if self
             .phase
@@ -266,8 +258,8 @@ impl MigrationWorker {
         true
     }
 
-    /// Return the next available update. A lost channel becomes one explicit
-    /// interrupted outcome and can never be mistaken for completion.
+    /// A lost channel becomes one explicit interrupted outcome and can never be mistaken for
+    /// completion.
     pub fn try_next(&mut self) -> Option<WorkerEvent> {
         if self.terminal_observed {
             return None;
@@ -292,9 +284,8 @@ impl MigrationWorker {
         }
     }
 
-    /// Block until the engine's terminal channel event arrives. Progress lives
-    /// in a separate slot and never wakes this wait, so a slow runner cannot
-    /// fail a correct result the way a spin-plus-deadline loop can.
+    /// Progress lives in a separate slot and never wakes this wait, so a slow runner cannot fail a
+    /// correct result.
     #[cfg(any(test, feature = "test-support"))]
     #[allow(
         clippy::panic,
@@ -382,15 +373,14 @@ mod tests {
         }
     }
 
-    /// Progress coalescing, completion, cancellation, disconnection and retry.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn migration_worker_terminal_events_are_ordered_and_distinct() {
-        // Phase `progress_burst_is_coalesced_before_the_terminal_event`.
-        // An unread burst must occupy one latest-value slot, without delaying the
+        // An unread burst occupies one latest-value slot without delaying the terminal result or
+        // requiring the UI to consume every per-file update.
         // terminal result or requiring the UI to consume every per-file update.
         {
             let (_temp, job) = fixture();
@@ -420,8 +410,8 @@ mod tests {
             );
         }
 
-        // Phase `completes_only_after_the_verified_report`.
-        // Catches treating progress or a successful thread exit as completion
+        // Catches treating progress or a successful thread exit as completion without the engine's
+        // verified terminal report.
         // without consuming the engine's verified terminal report.
         {
             let (_temp, job) = fixture();
@@ -441,8 +431,8 @@ mod tests {
             assert!(!worker.cancel());
         }
 
-        // Phase `cancellation_is_an_incomplete_terminal_outcome`.
-        // Catches a cancel request being reported as success or discarding verified
+        // Catches a cancel request being reported as success or discarding verified output; the real
+        // engine sees the worker-owned cancellation flag.
         // output. The real engine sees the worker-owned cancellation flag.
         {
             let (_temp, job) = fixture();
@@ -470,8 +460,8 @@ mod tests {
             assert!(!worker.cancel());
         }
 
-        // Phase `explicit_retry_resumes_the_existing_journal`.
-        // Catches retry starting a new overwrite-prone operation instead of asking
+        // Catches retry starting a new overwrite-prone operation instead of asking the journal to
+        // revalidate and resume the retained output.
         // the journal to revalidate and resume the retained verified output.
         {
             let (_temp, fresh) = fixture();

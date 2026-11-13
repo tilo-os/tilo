@@ -8,7 +8,7 @@
 // Then one of them is made someone the workspace lets invite, while their page
 // is open (the operator declares them through the workspace's own socket), and
 // invites a third person from the page's own sheet. That person
-// opens the link the sheet handed over — `https://<site>/i/<handle>#<key>` — in
+// opens the link the sheet handed over — `http://<site>/i/<handle>#<key>` — in
 // a browser of their own, is told who invited them, to what and as what, and
 // joins with no one in the workspace answering for them: an invitation is its
 // inviter's approval.
@@ -33,7 +33,8 @@
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {mkdirSync, writeFileSync} from 'node:fs';
-import {request} from 'node:https';
+import {request as httpRequest} from 'node:http';
+import {request as httpsRequest} from 'node:https';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import * as waits from './waits.mjs';
@@ -105,6 +106,10 @@ const failed = async (message, tab) => {
 // The relay's public directory: who is in the Lounge now, as the relay
 // counts them. Its `here` is the relay's HTTPS page sessions, not the live
 // plane's members: a page the plane never carried still counts here.
+// The relay's origin is plain http on the local stack and https behind a
+// TLS front, so the request takes the module its scheme names.
+const request = (url, ...rest) =>
+  (new URL(url).protocol === 'http:' ? httpRequest : httpsRequest)(url, ...rest);
 const directory = () => new Promise((resolve, reject) => {
   const body = Buffer.from('{}');
   const ask = request(`${relay}/peer/v1/directory`, {
@@ -679,9 +684,9 @@ const open = async name => {
   await until(tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, `${name} arriving`, stepLimit(6));
   return mounted(tab, name);
 };
-// The invitations a site hands over: `https://<site>/i/<handle>#<key>`, the
+// The invitations a site hands over: `<scheme>://<site>/i/<handle>#<key>`, the
 // handle and the key alone, the key never in the part a site's logs see.
-const sealedLink = /^https:\/\/[^/]+\/i\/[A-Za-z0-9_-]{16}#[A-Za-z0-9_-]{43}$/;
+const sealedLink = /^https?:\/\/[^/]+\/i\/[A-Za-z0-9_-]{16}#[A-Za-z0-9_-]{43}$/;
 // The page's words over the page, as a person at a link reads them.
 const pageText = tab => tab.evaluate(`(document.body.innerText || '').replace(/\\s+/g, ' ').trim()`).catch(() => '');
 // A person following a link: before anything is mounted, the page says who
@@ -728,7 +733,6 @@ const nodeValues = tab => tab.evaluate(`JSON.stringify((() => {
 // SwiftShader's WebGPU, as the app SDK's lane runs the bundle: a host GPU in
 // headless Chrome can lose its device mid-run.
 const browserArgs = [
-  '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   // A person's call is heard through a microphone and played through a
   // speaker: this machine has no person at it, so the browser carries both —
@@ -1577,9 +1581,32 @@ try {
     // its title names the sheet without standing anywhere of its own.
     if (!await press(a.tab, 'Invite')) await failed("the bar's invite button could not be pressed", a.tab);
     await waitFor(a.tab, 'Commenter', "the invite sheet's Commenter part");
+    // A sheet slides in over the desk, and a press lands where its controls
+    // stood when the last frame was read: the parts are pressed once they
+    // have stood still for a frame, as a person presses what they see.
+    const atCommenter = async () => JSON.parse(await find(a.tab, 'Commenter'))?.bounds ?? null;
+    for (let frames = 0, was = null; frames < 12; frames += 1) {
+      const now = JSON.stringify(await atCommenter());
+      if (was !== null && now === was) break;
+      was = now;
+      await settle(a.tab, 1);
+    }
     if (!await press(a.tab, 'Commenter')) await failed('the invite sheet offers no Commenter part', a.tab);
-    await until(a.tab, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('add comments, but cannot edit it')`,
-      "the sheet's chosen role under the choice", stepLimit(2));
+    // The line under the choice follows the pick. Where it does not, what the
+    // sheet stood as is kept: the parts it published, where they were drawn,
+    // and the line each one brings, so a press that landed elsewhere and a
+    // line that never followed its press read apart.
+    const rolePicked = `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('add comments, but cannot edit it')`;
+    let pickedIn = false;
+    for (const deadline = Date.now() + stepLimit(2); !pickedIn && Date.now() < deadline;) {
+      pickedIn = Boolean(await a.tab.evaluate(rolePicked).catch(() => false));
+      if (!pickedIn) await sleep(250);
+    }
+    if (!pickedIn) {
+      report.sheet = await dump(a.tab, '8-a-invite-sheet-after-pressing-commenter').catch(() => null);
+      await failed(`"add comments, but cannot edit it" never showed under the role choice: ${JSON.stringify(report.sheet?.names ?? null)}`,
+        a.tab);
+    }
     if (!await press(a.tab, 'Create link')) await failed('the invite sheet offers no Create link', a.tab);
     const made = await (async () => {
       const deadline = Date.now() + stepLimit(3);

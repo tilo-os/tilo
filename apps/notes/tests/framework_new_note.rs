@@ -494,7 +494,7 @@ fn ctrl_n_then_typing_names_the_note_and_enter_goes_on_to_its_body() {
     assert!(
         pages
             .iter()
-            .all(|page| page.title != notes::notebook::UNTITLED),
+            .all(|page| page.title != notes::notebook::NO_TITLE),
         "no Untitled note is left behind: {pages:?}"
     );
     let body = app.read_document(|doc| read::page_block_snapshots(doc, named.id));
@@ -513,7 +513,7 @@ fn ctrl_n_then_typing_names_the_note_and_enter_goes_on_to_its_body() {
         .unwrap();
     assert!(
         rows.iter().any(|row| row == "Groceries")
-            && rows.iter().all(|row| row != notes::notebook::UNTITLED),
+            && rows.iter().all(|row| row != notes::notebook::NO_TITLE),
         "the page tree shows the note under its name: {rows:?}"
     );
 }

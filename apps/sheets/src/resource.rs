@@ -1,14 +1,6 @@
-//! The workbook's verbs, the places derived from it, and the app.
-//!
-//! Plain fields change through the built-in field edits every path offers:
-//! a cell's input, format and boldness, a sheet's name and tab colour, its
-//! place among the sheets, a chart's title and type, a comment's text and
-//! whether it is resolved, the workbook's locale overrides. The view types
-//! into cells that way ([`crate::workbook::cell_edits`]). The methods below
-//! are the operations that are more than setting a field: they address
-//! cells by position (`B3`, `A2:D9`), as people and agents do, and keep
-//! formulas, charts and comments pointing at the cells they meant when rows
-//! and columns move.
+//! The workbook's verbs, the places derived from it and the app. Plain fields change through
+//! the built-in field edits; the methods below address cells by position, as people and agents
+//! do, and keep formulas, charts and comments pointing at the cells they meant.
 
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "samples")]
@@ -40,27 +32,22 @@ pub const MAX_IMPORTED_CELLS: usize = 64 * 1024;
 /// The most sheets one import brings.
 pub const MAX_IMPORTED_SHEETS: usize = 64;
 
-/// One cell a write changes, by its reference. What it leaves out stays as
-/// it is: an input of `""` clears the cell's value.
+/// One cell a write changes, by its reference; what it leaves out stays as it is, and an input
+/// of `""` clears it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CellWrite {
-    /// The cell, e.g. `B3`.
     pub cell: String,
-    /// What to type into it: a value, or a formula starting with `=`; an
-    /// ISO date such as `2026-10-22` (or `2026-10-22T09:30`) becomes a real
-    /// date, and a leading apostrophe (`'007`) marks text.
+    /// What to type: a value or a formula; an ISO date becomes a real date, and a leading apostrophe
+    /// marks text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<String>,
-    /// How it shows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<CellFormat>,
-    /// Bold text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bold: Option<bool>,
 }
 
 impl CellWrite {
-    /// The write of `input` (and `format`, when given) at `addr`.
     pub fn at(addr: Addr, input: impl Into<String>, format: Option<CellFormat>) -> Self {
         Self {
             cell: addr_to_a1(addr.0, addr.1),
@@ -71,54 +58,45 @@ impl CellWrite {
     }
 }
 
-/// One sheet an import brings: its name and its cells.
+/// One sheet an import brings.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ImportedSheet {
     pub name: String,
     pub cells: Vec<CellWrite>,
-    /// Whether the sheet comes hidden, as the file kept it.
+    /// Whether the sheet comes hidden.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
 }
 
-/// A new sheet: where it goes, what it is called and, optionally, its first
-/// content, as rows from A1 or as headers and records keyed by them.
+/// A new sheet: where it goes, its name and, optionally, its first content.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SheetSpec {
-    /// The new sheet's name; the next free `SheetN` when none
+    /// The new sheet's name; the next free `SheetN` when none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// The sheet it goes after (its id or name); the end when none
+    /// The sheet it goes after, by id or name; the end when none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<Id>,
-    /// Its first content: rows of values from A1, "=…" a formula, an ISO date
-    /// such as "2026-10-22" a real date, "'007" text; or use columns and
-    /// records
+    /// Its first content: rows of values from A1, where "=…" is a formula and an ISO date a date.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rows: Option<Vec<Vec<serde_json::Value>>>,
-    /// Header names written as row 1, which records are keyed by, e.g.
-    /// `["Item", "Price", "Qty", "Total"]`
+    /// Header names written as row 1, which records are keyed by.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub columns: Option<Vec<String>>,
-    /// Rows from row 2 as objects keyed by columns, e.g. `[{"Item": "Venue",
-    /// "Price": 145, "Qty": 8, "Total": "=[Price]*[Qty]"}]`; a key left out
-    /// leaves its cell empty. In a formula `[Header]` is that column's cell
-    /// in the same row and `{row}` the row's number (`"=B{row}*C{row}"`)
+    /// Rows from row 2 keyed by column; a key left out leaves its cell empty. In a formula
+    /// `[Header]` is that column's cell in the row and `{row}` its number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub records: Option<Vec<serde_json::Value>>,
-    /// Number formats of its ranges, e.g. `{"D2:D5": "percent", "B2:B9":
-    /// "currency"}`: general, number, currency (or money), percent, date,
-    /// time or text
+    /// Number formats of its ranges: general, number, currency, percent, date, time or text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub formats: Option<std::collections::BTreeMap<String, String>>,
-    /// The spreadsheet's name, when the workbook has none yet
+    /// The spreadsheet's name, when the workbook has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workbook: Option<String>,
 }
 
-/// The format `name` names, as `formats` and `format-cells` take it: a
-/// category (`currency`, `money`, `percent`, `date`, …) or a style
-/// (`currency:EUR`); bare money is in the workbook's `currency`.
+/// The format `name` names: a category or a style like `currency:EUR`, with bare money in the
+/// workbook's currency.
 fn format_named(name: &str, currency: tilo_locale::Currency) -> Result<CellFormat, Refusal> {
     let code = name.trim().to_lowercase();
     let code = match code.as_str() {
@@ -133,8 +111,8 @@ fn format_named(name: &str, currency: tilo_locale::Currency) -> Result<CellForma
     })
 }
 
-/// `writes` with the formats `formats` gives their ranges; a format on a
-/// cell no write names writes the format alone.
+/// `writes` with the formats their ranges ask for; a format on a cell no write names writes the
+/// format alone.
 fn with_formats(
     mut writes: Vec<CellWrite>,
     formats: &std::collections::BTreeMap<String, String>,
@@ -163,8 +141,7 @@ fn with_formats(
     Ok(writes)
 }
 
-/// The writes of JSON `rows` rightward and down from `start`, as
-/// [`crate::cell_actions::cell_input`] reads each value.
+/// The writes of `rows` rightward and down from `start`.
 fn row_writes(start: Addr, rows: &[Vec<serde_json::Value>]) -> Result<Vec<CellWrite>, Refusal> {
     let mut cells = Vec::new();
     for (dr, row) in (0u32..).zip(rows) {
@@ -178,8 +155,7 @@ fn row_writes(start: Addr, rows: &[Vec<serde_json::Value>]) -> Result<Vec<CellWr
     Ok(cells)
 }
 
-/// A new sheet's first content: `rows` from A1, or `columns` as its header
-/// row with `records` keyed by them under it; `None` when it has none.
+/// A new sheet's first content, or `None` when it has none.
 fn first_writes(new: &SheetSpec) -> Result<Option<Vec<CellWrite>>, Refusal> {
     match (&new.rows, &new.columns, &new.records) {
         (Some(_), Some(_), _) => Err(Refusal::new(
@@ -201,9 +177,7 @@ fn first_writes(new: &SheetSpec) -> Result<Option<Vec<CellWrite>>, Refusal> {
     }
 }
 
-/// `write` with its input read as `set-cells` reads a value: an ISO date
-/// a real date, an apostrophe text. A format the write names wins, and one
-/// naming text keeps the input as typed.
+/// `write` with its input read as `set-cells` reads it; a named format wins.
 fn typed_write(write: CellWrite) -> Result<CellWrite, Refusal> {
     let Some(input) = write.input.as_deref() else {
         return Ok(write);
@@ -229,7 +203,7 @@ fn cell_of(reference: &str) -> Result<Addr, Refusal> {
         .ok_or_else(|| Refusal::new(format!("`{reference}` is not a cell such as B3")))
 }
 
-/// `A1` or `A1:D6`, normalised so the first corner is the top-left one.
+/// `A1` or `A1:D6`, normalised so the first corner is the top left.
 pub fn parse_range(text: &str) -> Option<(Addr, Addr)> {
     let (a, b) = text.split_once(':').unwrap_or((text, text));
     let (a, b) = (a1_to_addr(a.trim())?, a1_to_addr(b.trim())?);
@@ -237,7 +211,7 @@ pub fn parse_range(text: &str) -> Option<(Addr, Addr)> {
     (range.1.0 <= MAX_COLUMN && range.1.1 <= MAX_ROW).then_some(range)
 }
 
-/// Cells as people write them: `B3`, or `B3:D9`.
+/// A range as people write it: `B3`, or `B3:D9`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CellRange {
     pub start: Addr,
@@ -275,7 +249,7 @@ fn range_of(text: &str) -> Result<(Addr, Addr), Refusal> {
         .ok_or_else(|| Refusal::new(format!("`{text}` is not a cell or range such as A1:D6")))
 }
 
-/// `start..=end` as people write it: `B3`, or `B3:D9`.
+/// `start..=end` as people write it.
 pub fn range_label(start: Addr, end: Addr) -> String {
     if start == end {
         addr_to_a1(start.0, start.1)
@@ -324,9 +298,8 @@ fn write_into(sheet: &mut Sheet, cells: &[CellWrite]) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// Rewrite the sheet `id` for one inserted or deleted row or column `edit`:
-/// the formulas pointing past it, and the charts and comments it cuts into.
-/// The line itself is inserted or removed by the caller.
+/// Rewrite the sheet for one inserted or deleted row or column: the formulas pointing past it,
+/// and the charts and comments it cuts into.
 fn rewrite_for(book: &mut Workbook, id: &Id, edit: GridEdit) -> Result<Layout, Refusal> {
     let sheet = book.sheet_mut(id)?;
     let layout = sheet.layout();
@@ -389,9 +362,8 @@ fn rewrite_for(book: &mut Workbook, id: &Id, edit: GridEdit) -> Result<Layout, R
     Ok(layout)
 }
 
-/// Where `area` is after deleting the line `edit` names, by the ids of the
-/// lines then at its corners: a deleted first or last line gives way to its
-/// neighbour; `None` when every cell of it goes.
+/// Where `area` is after deleting a line, by the ids of the lines at its corners; `None` when
+/// every cell of it goes.
 fn reanchored(layout: &Layout, edit: GridEdit, area: &Area) -> Option<Area> {
     let (start, end) = Sheet::corners(layout, area)?;
     let (start, end) = edit.map_range(start, end)?;
@@ -445,10 +417,8 @@ fn upgrade(
 impl Workbook {
     /// Add a sheet.
     ///
-    /// With content (rows, or columns and records, and their formats) it is
-    /// one step that answers the cells it wrote; a new workbook's untouched
-    /// blank Sheet1 gives way to it, while every other sheet, a renamed
-    /// blank one included, is kept.
+    /// With content (rows, or columns and records, and their formats) it is one step that answers
+    /// the cells it wrote; a new workbook's blank Sheet1 gives way to it.
     #[action(answers, label = "sheets-add-sheet")]
     pub fn new_sheet(
         &mut self,
@@ -557,10 +527,8 @@ impl Workbook {
 
     /// Update or add a row by its key.
     ///
-    /// The sheet's rows are a collection keyed by the headers in row 1: this
-    /// is the `upsert-item` every collection offers, so a caller addresses a
-    /// row by what it holds rather than by a row number that moves when
-    /// someone else adds or sorts rows.
+    /// Rows are a collection keyed by the headers in row 1, so a caller addresses a row by what it
+    /// holds rather than by a row number that moves.
     #[action(answers, item = sheets, audience = "agents")]
     pub fn upsert_item(
         &mut self,
@@ -591,9 +559,7 @@ impl Workbook {
             return Err(Refusal::new("the row holds no values to write"));
         }
         let target = self.sheet_mut(sheet)?;
-        // A new row under an id of its own: rows reached by position are
-        // named by it (`r7`), so two agents appending at once would write
-        // into one row; inserted afresh, each keeps its own.
+        // A new row under an id of its own, so two agents appending at once do not write into one row.
         if let Some(row) = appended
             && let Ok(at) = usize::try_from(row)
             && at <= target.cells.rows().len()
@@ -1089,8 +1055,7 @@ impl Workbook {
 }
 
 impl Workbook {
-    /// The charts and comment threads of every sheet, as places that open
-    /// where they are and offer what can be done to them.
+    /// The charts and comment threads of every sheet, as places that open where they are.
     fn annotations(&self) -> Vec<Derived<Self>> {
         let mut places = Vec::new();
         for (sheet_id, sheet) in self.sheets.iter() {
@@ -1166,8 +1131,7 @@ impl Workbook {
         places
     }
 
-    /// Every sheet by name and every populated cell by reference, input
-    /// and what it shows; a hit opens it.
+    /// Every sheet by name, and every populated cell by reference, input and value.
     fn search(&self) -> Vec<SearchEntry> {
         let mut entries = Vec::new();
         for (id, sheet) in self.sheets.iter() {
@@ -1193,8 +1157,7 @@ impl Workbook {
 pub const MAX_READ_CELLS: usize = 10_000;
 
 impl Workbook {
-    /// The workbook's sheets by id and name (and whether hidden), with its
-    /// title: what a read without an item answers.
+    /// The workbook's sheets by id and name, with its title.
     fn sheet_listing(&self) -> serde_json::Value {
         let mut listing = serde_json::json!({
             "sheets": self.sheets.iter().map(|(id, sheet)| {
@@ -1220,11 +1183,8 @@ impl Workbook {
         listing
     }
 
-    /// What the workbook holds, for a caller with no screen. With no item,
-    /// its sheets; with a sheet (its id, item id or name), optionally
-    /// narrowed to a range (`Budget!A1:C10`), what each cell shows, row by
-    /// row from the range's top left, and the formula behind each computed
-    /// cell.
+    /// What the workbook holds, for a caller with no screen: its sheets, or one sheet narrowed to a
+    /// range, with what each cell shows and the formula behind it.
     fn read_cells(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let Some(item) = item else {
             return Ok(self.sheet_listing());
@@ -1321,7 +1281,7 @@ impl Workbook {
     }
 }
 
-/// A chart, comment thread or reply, by a resource it is published as.
+/// A chart, comment thread or reply, by the resource it is published as.
 #[derive(Clone, Copy)]
 enum Annotation<'a> {
     Chart(&'a str),
@@ -1329,10 +1289,7 @@ enum Annotation<'a> {
     Reply(&'a str, &'a str),
 }
 
-/// The chart, comment thread or reply the published id `id` names: a
-/// sheet's chart item (`sheets.workbook/sheets/<sheet>/charts/<id>`), a
-/// comment or a reply item (`.../comments/<id>/replies/<id>`), or the place
-/// a chart or thread is derived as (`.../derived/chart:<id>`).
+/// The chart, thread or reply the published id names.
 fn annotation_place(id: &str) -> Option<Annotation<'_>> {
     let rest = id
         .strip_prefix(<Workbook as tilo_resource::Resource>::KIND)?
@@ -1355,7 +1312,7 @@ fn annotation_place(id: &str) -> Option<Annotation<'_>> {
     }
 }
 
-/// Whether the published id `id` names a sheet (`sheets.workbook/sheets/<id>`).
+/// Whether the id names a sheet.
 fn is_sheet_item(id: &str) -> bool {
     id.strip_prefix(<Workbook as tilo_resource::Resource>::KIND)
         .and_then(|rest| rest.strip_prefix("/sheets/"))
@@ -1363,18 +1320,12 @@ fn is_sheet_item(id: &str) -> bool {
 }
 
 impl Workbook {
-    /// Whether `id` is a part of the workbook its read answers: a sheet, a
-    /// chart, a comment thread or a reply. Its read is what discloses it, so
-    /// writing a sheet's cells, editing a chart or replying to a comment
-    /// are offered to whoever may read it, an agent too, where its Open view
-    /// is this window's own.
+    /// Whether `id` is part of what the read answers, offered to whoever may read it.
     fn document_child(_: &Self, id: &str) -> bool {
         is_sheet_item(id) || annotation_place(id).is_some()
     }
 
-    /// What a chart, comment thread or reply is: its sheet and cells, and
-    /// the chart's title and kind, the thread's comment and replies, or the
-    /// reply's text.
+    /// What a chart, thread or reply is: its sheet and cells, and its own content.
     fn read_annotation(&self, place: Annotation<'_>) -> Result<serde_json::Value, String> {
         for (sheet_id, sheet) in self.sheets.iter() {
             let layout = sheet.layout();
@@ -1443,7 +1394,7 @@ impl Workbook {
     }
 }
 
-/// The corners of an A1 range (`B2:D9`, or one cell `C3`), in order.
+/// The corners of an A1 range, or of one cell.
 fn read_range(range: &str) -> Result<(Addr, Addr), String> {
     let refused = || format!("`{range}` is not a range like A1:C10");
     let (start, end) = range.split_once(':').unwrap_or((range, range));
@@ -1455,7 +1406,7 @@ fn read_range(range: &str) -> Result<(Addr, Addr), String> {
     ))
 }
 
-/// The search anchor of the cell at `addr` of the sheet `sheet`.
+/// The search anchor of a cell.
 pub fn cell_anchor(sheet: &Id, (col, row): Addr) -> String {
     format!("cell:{}:{col}:{row}", sheet.as_str())
 }
@@ -1471,8 +1422,7 @@ pub fn parse_cell_anchor(anchor: &str) -> Option<(Id, Addr)> {
 /// Framework app: the sheets grid is the view of [`Workbook`].
 pub struct SheetsShell;
 
-/// Every screenshot scenario: the sample workbook with one surface of the app
-/// in view.
+/// Every capture scenario: the sample workbook with one surface in view.
 #[cfg(feature = "samples")]
 const SCENARIOS: &[&str] = &[
     "docsettings",
@@ -1503,7 +1453,7 @@ const SCENARIOS: &[&str] = &[
 #[cfg(feature = "samples")]
 const SAMPLE_WRITTEN_MS: i64 = 1_767_225_600_000;
 
-/// Whether `scenario` shows the sample's charts and comments.
+/// Whether the scenario shows the sample's charts and comments.
 #[cfg(feature = "samples")]
 fn annotated(scenario: Option<&str>) -> bool {
     matches!(scenario, Some("charts" | "comments"))
@@ -1535,8 +1485,8 @@ impl ResourceApp for SheetsShell {
             .unwrap_or_else(|| <Workbook as ui::tilo_resource::Resource>::LABEL.to_owned())
     }
 
-    /// The annotated scenarios show a workbook other people wrote: Alex
-    /// shared the budget and commented on it, Sam replied.
+    /// The annotated scenarios show a workbook other people wrote: Alex shared it and commented, Sam
+    /// replied.
     #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<Workbook>) {
         if !annotated(fixture.scenario()) {
@@ -1565,10 +1515,8 @@ impl ResourceApp for SheetsShell {
         invokes
     }
 
-    /// The find shots are the window bar's search: its field with a query in
-    /// it, driving the sheet's matches. The grid draws no find of its own.
-    /// Replace opens the search on its replacement, and steps to a match the
-    /// sheet shows beside the options it covers the top of the grid with.
+    /// The find shots are the window bar's search: its field with a query, driving the sheet's
+    /// matches. Replace opens the search on its replacement.
     #[cfg(feature = "samples")]
     fn scenario_input(
         name: Option<&str>,
@@ -1606,8 +1554,6 @@ mod agent_disclosure_tests {
     use ui::framework::testing::TestApp;
     use ui::tilo_actions::ResourceSpec;
 
-    /// The document read of the first resource of `kind` any scenario
-    /// publishes, invoked as `tilo_read` on it does.
     fn read_first(kind: &str) -> ui::serde_json::Value {
         for scenario in <super::SheetsShell as ResourceApp>::scenarios() {
             let mut app = TestApp::<super::SheetsShell>::drive(scenario)

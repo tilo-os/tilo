@@ -1,30 +1,19 @@
-//! Units, and the arithmetic that turns one into another, entirely offline.
-//!
-//! A calculator that has a functions page and a graph still cannot answer
-//! "40 °C in °F", which is one of the things people reach for a calculator
-//! for most. This module holds the quantity table and the conversion; the
-//! page that shows it is [`crate::convert_page`].
-//!
-//! Everything here is arithmetic over a fixed table: nothing is fetched, so a
-//! conversion works with the network off and in a workspace with no server. Money
-//! is the one quantity Tilo cannot convert honestly — a rate is a fact about
-//! the moment, not a definition — so currency is a category that says so
-//! (`Dimension::Currency::rates_note`) rather than a table of stale numbers.
+//! Units and the arithmetic that turns one into another, from a fixed table:
+//! nothing is fetched, so a conversion works with the network off. Money is the
+//! one quantity Tilo cannot convert honestly, since a rate is a fact about the
+//! moment, so currency says why instead of holding stale numbers.
 
-/// A unit: how it is written, what it is called, and how to reach the
-/// quantity's base unit and come back.
+/// How a unit is written and called, and how it reaches the quantity's base
+/// unit and back.
 #[derive(Clone, Copy, Debug)]
 pub struct Unit {
-    /// The symbol the page shows and a converted result carries: `°C`, `km`,
-    /// `m/s`.
     pub symbol: &'static str,
-    /// The unit in words, for assistive technology and the page's title.
     pub name: &'static str,
     to_base: fn(f64) -> f64,
     from_base: fn(f64) -> f64,
 }
 
-/// What a quantity measures. Two values convert only within one dimension.
+/// Two values convert only within one dimension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dimension {
     Length,
@@ -37,7 +26,6 @@ pub enum Dimension {
     Temperature,
 }
 
-/// The quantities the page offers, in the order it offers them.
 pub const DIMENSIONS: [Dimension; 8] = [
     Dimension::Length,
     Dimension::Mass,
@@ -50,7 +38,6 @@ pub const DIMENSIONS: [Dimension; 8] = [
 ];
 
 impl Dimension {
-    /// The quantity's name: the chip's word and the page's heading.
     pub fn label(self) -> String {
         let message = match self {
             Self::Length => "calculator-quantity-length",
@@ -65,7 +52,7 @@ impl Dimension {
         crate::resource::CATALOG.t(message)
     }
 
-    /// A stable slug for the semantic addresses of this quantity's controls.
+    /// Stable: the semantic addresses of its controls embed it.
     pub fn slug(self) -> &'static str {
         match self {
             Self::Length => "length",
@@ -79,7 +66,7 @@ impl Dimension {
         }
     }
 
-    /// The units it offers, in a person's order: the small ones first.
+    /// In a person's order: the small ones first.
     pub fn units(self) -> &'static [Unit] {
         match self {
             Self::Length => &LENGTH,
@@ -93,9 +80,8 @@ impl Dimension {
         }
     }
 
-    /// The units the page starts with: the metric one people mean, and the
-    /// one they usually want it in. Lengths: metres to feet. Mass: kilograms
-    /// to pounds. Temperatures: Celsius to Fahrenheit.
+    /// Lengths: metres to feet. Mass: kilograms to pounds. Temperatures:
+    /// Celsius to Fahrenheit.
     pub fn default_pair(self) -> (usize, usize) {
         match self {
             Self::Length => (2, 5),
@@ -108,8 +94,7 @@ impl Dimension {
     }
 }
 
-/// The unit a page falls back to when the quantity it names has none: a
-/// plain metre, so reading and drawing never index an empty table.
+/// A plain metre, so reading and drawing never index an empty table.
 pub const FALLBACK_UNIT: Unit = Unit {
     symbol: "m",
     name: "metres",
@@ -117,14 +102,12 @@ pub const FALLBACK_UNIT: Unit = Unit {
     from_base: |value| value,
 };
 
-/// A conversion from one unit to another within one quantity.
 pub fn convert(value: f64, from: &Unit, to: &Unit) -> f64 {
     (to.from_base)((from.to_base)(value))
 }
 
-/// The table: each unit with its factor into the quantity's base unit
-/// (metres, kilograms, litres, seconds, metres per second, square metres,
-/// bytes) and the offsets temperature needs.
+/// Each unit with its factor into the quantity's base unit, and the offsets
+/// temperature needs.
 macro_rules! scaled {
     ($symbol:literal, $name:literal, $factor:expr) => {
         Unit {
@@ -199,8 +182,7 @@ static DATA: [Unit; 6] = [
     scaled!("GiB", "gibibytes", 1_073_741_824.0),
 ];
 
-/// Temperature is the one quantity whose units do not share a zero: `40 °C`
-/// is `104 °F`, and neither is a multiple of the other.
+/// Temperature's units do not share a zero: `40 °C` is `104 °F`.
 static TEMPERATURE: [Unit; 3] = [
     Unit {
         symbol: "°C",
@@ -222,8 +204,8 @@ static TEMPERATURE: [Unit; 3] = [
     },
 ];
 
-/// What the page says where a currency conversion would be: Tilo has no
-/// exchange-rate source, and a stale rate is worse than an honest refusal.
+/// Tilo has no exchange-rate source, and a stale rate is worse than an honest
+/// refusal.
 pub const CURRENCY_NOTE: &str = "A rate has to come from somewhere: Tilo has no exchange-rate source here, so this \
      page converts units and not money.";
 
@@ -305,10 +287,8 @@ mod tests {
     }
 }
 
-/// A converted amount as a person reads it: six significant digits, without
-/// the trailing zeros a floating-point sum leaves behind. A conversion is an
-/// approximate fact; printing sixteen digits of it claims a precision neither
-/// the table nor the person typing has.
+/// Six significant digits, without the trailing zeros a float sum leaves. A
+/// conversion is approximate: sixteen digits claim a precision nobody has.
 pub fn format_quantity(value: f64) -> String {
     if !value.is_finite() {
         return "—".to_owned();

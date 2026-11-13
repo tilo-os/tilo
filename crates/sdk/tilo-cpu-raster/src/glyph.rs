@@ -211,7 +211,7 @@ fn build(entry: &mut RunEntry, glyph: u32) -> Option<Outline> {
         _ => DrawSettings::unhinted(entry.size, location),
     };
     let mut path = BezPath::new();
-    outline.draw(settings, &mut Pen(&mut path)).ok()?;
+    vello_encoding::draw_outline(&outline, settings, &mut Pen(&mut path)).ok()?;
     let embolden = entry.embolden;
     if embolden.amount != Diagonal2::new(0.0, 0.0) {
         path = vello_cpu::kurbo::expand_path(

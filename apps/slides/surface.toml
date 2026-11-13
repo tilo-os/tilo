@@ -1,5 +1,7 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "slides.deck"
 label = "Deck"
@@ -18,7 +20,7 @@ fields = [
   { path = "slides.*.elements.*.y", type = "float" },
   { path = "slides.*.elements.*.w", type = "float" },
   { path = "slides.*.elements.*.h", type = "float" },
-  { path = "slides.*.elements.*.body", type = "rich_text", label = true, ops = "sha256:10bf507639fdd4f3" },
+  { path = "slides.*.elements.*.body", type = "rich_text", label = true, ops = "sha256:aceedec5a9b08d74" },
   { path = "slides.*.elements.*.src", type = "text" },
   { path = "slides.*.elements.*.fill", type = "text" },
   { path = "slides.*.elements.*.stroke", type = "text" },

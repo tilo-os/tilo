@@ -1,26 +1,18 @@
 //! The Host target: the device's own login shell, unconfined.
 //!
-//! Everything else this runtime hands out is a guest. The Host target is the
-//! one deliberate exception, and it is narrow on purpose: it is a pty running
-//! the account's login shell (from the passwd database, never from a request)
-//! in the supervisor's own session environment, with no namespace, filter or
-//! Landlock ruleset. What makes it safe to offer is who may ask for it, and
-//! that is decided by [`decide_host`] before any process exists:
+//! The one deliberate exception, and narrow on purpose: a pty running the account's login
+//! shell (from the passwd database, never from a request) in the supervisor's own
+//! environment, with no namespace, filter or Landlock ruleset. [`decide_host`] decides
+//! who may ask before any process exists:
 //!
-//! 1. **Only the Terminal app.** The launcher writes the app id onto a
-//!    sandboxed app's service connection before the app holds it
-//!    ([`read_caller`]); no other app id is ever answered. A connection
-//!    without that preamble comes from a process outside every app sandbox —
-//!    the shell hosting Terminal in-process — which already acts with the
-//!    user's authority.
-//! 2. **Never for an agent.** A session an agent asked for carries
-//!    `requested_by: agent`; the Terminal forwards that, and the supervisor
-//!    refuses it regardless of any allow.
-//! 3. **Only for the device owner.** The person signed in to this session
-//!    must be the person who owns the device ([`DeviceOwnership`]).
-//! 4. **Only after the person allowed it once.** A `CapOverride` on
-//!    `Scope::Device("host-shell")` for the Terminal's app id, in the same
-//!    runtime's store ([`HostPolicy`], next to the environments' homes).
+//! 1. only the Terminal app, whose id the launcher writes onto its sandboxed service
+//!    connection ([`read_caller`]); a connection without that preamble comes from a
+//!    process outside every app sandbox, which already acts with the user's authority;
+//! 2. never for an agent: a session asked for by an agent carries `requested_by: agent`,
+//!    which the Terminal forwards and the supervisor refuses regardless of any allow;
+//! 3. only for the device owner ([`DeviceOwnership`]);
+//! 4. only after the person allowed it once, as a `CapOverride` on
+//!    `Scope::Device("host-shell")` in this runtime's store ([`HostPolicy`]).
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -30,13 +22,8 @@ use collab_types::caps::{
     decide_capability,
 };
 
-/// The device scope of the Host target: `Scope::Device("host-shell")`.
 pub const HOST_SHELL_DEVICE: &str = "host-shell";
 
-/// The person's decisions about the Host target on this device: plain
-/// `CapOverride`s in the shared vocabulary, kept in the runtime's store
-/// (`host-shell.json`). Missing, unreadable or malformed means nothing was
-/// allowed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HostPolicy {
     #[serde(default)]
@@ -50,7 +37,6 @@ pub struct HostPolicy {
 static SESSION_GRANTS: std::sync::Mutex<Vec<CapOverride>> = std::sync::Mutex::new(Vec::new());
 
 impl HostPolicy {
-    /// Every decision in force: those kept on disk and this session's.
     pub fn in_force(store: &crate::store::Store) -> Self {
         let mut policy = Self::load(&Self::path(store));
         if let Ok(session) = SESSION_GRANTS.lock() {
@@ -88,7 +74,6 @@ impl HostPolicy {
         Ok(())
     }
 
-    /// A one-time allow is spent by the session it let open.
     pub fn spend_one_time(app_id: &str) {
         let id = format!("ush-host-shell-{app_id}");
         if let Ok(mut session) = SESSION_GRANTS.lock() {
@@ -96,7 +81,6 @@ impl HostPolicy {
         }
     }
 
-    /// Where the decisions are kept for `store`.
     pub fn path(store: &crate::store::Store) -> PathBuf {
         store.root().join("host-shell.json")
     }
@@ -109,7 +93,6 @@ impl HostPolicy {
             .unwrap_or_default()
     }
 
-    /// Write the decisions that outlive a restart.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let durable = Self {
             capabilities: self
@@ -138,8 +121,6 @@ impl HostPolicy {
         ) == CapDecision::Allow
     }
 
-    /// Record the person's allow for `app_id`; allowing twice rewrites one
-    /// record. Returns its id.
     pub fn allow_host_shell(&mut self, app_id: &str) -> String {
         let id = format!("ush-host-shell-{app_id}");
         self.capabilities.retain(|c| c.id != id);
@@ -156,19 +137,13 @@ impl HostPolicy {
     }
 }
 
-/// The one app that may open the Host target.
 pub const TERMINAL_APP_ID: &str = "so.tilo.terminal";
 
-/// The preamble `tilo-launcher` writes on a sandboxed app's `ush` connection
-/// before handing the descriptor over.
 pub const LAUNCH_MAGIC: [u8; 4] = *b"QUS1";
-/// The handoff's JSON is bounded: it names one app id and one workspace.
 const MAX_HANDOFF_BYTES: u32 = 1024;
 
-/// Who is on the other end of a service connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Caller {
-    /// A sandboxed app, named by the launcher.
     App(String),
     /// A process outside every app sandbox (the shell hosting Terminal
     /// in-process). It already holds the user's authority.
@@ -176,7 +151,6 @@ pub enum Caller {
 }
 
 impl Caller {
-    /// The app id the capability model asks about.
     pub fn app_id(&self) -> &str {
         match self {
             Caller::App(id) => id,
@@ -185,10 +159,6 @@ impl Caller {
     }
 }
 
-/// The launcher's handoff: `QUS1`, a little-endian `u32` length, then
-/// `{"protocol":1,"app_id":"…","workspace":"…"}`. `workspace` is the
-/// workspace the app was launched in, absent for a launch in none: the
-/// app's environments are that workspace's ([`crate::workspace::scope_of`]).
 #[derive(Debug, serde::Deserialize)]
 struct Handoff {
     protocol: u16,
@@ -201,8 +171,6 @@ pub fn encode_handoff(app_id: &str) -> std::io::Result<Vec<u8>> {
     encode_launch_handoff(app_id, None)
 }
 
-/// [`encode_handoff`] for an app launched in `workspace`, as `tilo-launcher`
-/// writes it.
 pub fn encode_launch_handoff(app_id: &str, workspace: Option<&str>) -> std::io::Result<Vec<u8>> {
     let mut handoff = serde_json::json!({ "protocol": 1, "app_id": app_id });
     if let (Some(workspace), Some(fields)) = (workspace, handoff.as_object_mut()) {
@@ -227,9 +195,6 @@ pub fn read_caller(stream: &mut impl Read) -> std::io::Result<(Caller, Vec<u8>)>
     read_handoff(stream).map(|(caller, _, carried)| (caller, carried))
 }
 
-/// [`read_caller`], with the workspace the launcher said the app was
-/// launched in (`None` for the session's own process, and for an app
-/// launched in no workspace).
 pub fn read_handoff(stream: &mut impl Read) -> std::io::Result<(Caller, Option<String>, Vec<u8>)> {
     // One byte first: a request is JSON and never starts with the magic's
     // first byte, so a short request (`{}`) is never waited on for more.
@@ -261,17 +226,14 @@ pub fn read_handoff(stream: &mut impl Read) -> std::io::Result<(Caller, Option<S
     Ok((Caller::App(handoff.app_id), workspace, Vec::new()))
 }
 
-/// Who asked for a session, as the Terminal reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RequestedBy {
     #[default]
     Person,
-    /// An agent, through the Terminal's published actions.
     Agent,
 }
 
-/// Whether the person signed in to this session owns the device.
 pub trait DeviceOwnership {
     fn signed_in_person_owns_device(&self) -> bool;
 }
@@ -326,10 +288,6 @@ impl SessionOwnership {
     }
 }
 
-/// The person signed in to this session, by the principal id the action
-/// door names them with (their root key, hex): what they do at a guest's
-/// shell is theirs in History. `local` when no identity is signed in, the
-/// name an environment's own grants are given by.
 pub fn signed_in_person() -> String {
     SessionOwnership::discover().signed_in().map_or_else(
         || "local".to_owned(),
@@ -377,7 +335,6 @@ pub enum HostDenied {
 }
 
 impl HostDenied {
-    /// The line returned to the app.
     pub fn reason(&self) -> String {
         match self {
             HostDenied::NotTerminal(app) => {
@@ -417,7 +374,6 @@ pub fn decide_host(
     Ok(())
 }
 
-/// The account a Host shell runs as, from the passwd database.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoginAccount {
     pub user: String,
@@ -425,7 +381,6 @@ pub struct LoginAccount {
     pub shell: PathBuf,
 }
 
-/// The real user's passwd entry.
 pub fn login_account() -> Option<LoginAccount> {
     use std::ffi::CStr;
     let uid = rustix::process::getuid().as_raw();
@@ -433,7 +388,6 @@ pub fn login_account() -> Option<LoginAccount> {
     // SAFETY: zeroed passwd is a valid out-parameter for getpwuid_r.
     let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
     let mut result: *mut libc::passwd = std::ptr::null_mut();
-    // SAFETY: every pointer refers to live storage of the stated size.
     let rc = unsafe {
         libc::getpwuid_r(
             uid,
@@ -466,10 +420,6 @@ pub fn login_account() -> Option<LoginAccount> {
     })
 }
 
-/// The command a Host session runs: the login shell as the session's
-/// interactive login shell ([`crate::shell_start`], a `bash` on `rc`), or
-/// the requested program run by the login shell (`argv[0]` prefixed with
-/// `-`). `runs` is the key a marking rc file reads.
 pub fn host_command(
     account: &LoginAccount,
     term: &str,
@@ -516,7 +466,6 @@ fn existing_dir(home: &Path) -> PathBuf {
     }
 }
 
-/// One `sh -c` script that runs `argv` exactly, each word single-quoted.
 fn exec_script(argv: &[String]) -> String {
     let words: Vec<String> = argv
         .iter()
@@ -647,8 +596,6 @@ mod tests {
         assert!(read_caller(&mut std::io::Cursor::new(forged)).is_err());
     }
 
-    /// The launcher says which workspace the app was launched in; a launch
-    /// in none, and an older launcher's handoff, say none.
     #[test]
     fn the_launcher_handoff_carries_the_workspace_the_app_was_launched_in() {
         let workspace = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";

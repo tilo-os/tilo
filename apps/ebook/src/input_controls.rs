@@ -745,7 +745,6 @@ mod tests {
     /// The note composer writes the note as it is typed and Enter finishes; hit testing keeps the card modal and tap-away saves.
     #[test]
     fn note_composer_edits_through_shared_input_and_keeps_its_card_modal() {
-        // --- phase: note_composer_writes_the_note_as_typed_and_enter_finishes ---
         {
             let note = crate::model::Annotation::new("book:x", crate::model::AnnoKind::Note, 0, 0)
                 .with_note("hello");
@@ -803,7 +802,6 @@ mod tests {
             );
         }
 
-        // --- phase: note_hit_testing_keeps_card_modal_and_tap_away_saves ---
         {
             let id = Uuid::new_v4();
             let mut composer = NoteComposer::default();

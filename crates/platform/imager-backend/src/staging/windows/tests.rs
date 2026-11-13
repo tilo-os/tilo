@@ -1,5 +1,4 @@
-//! Fixture tests for the Windows adapter's pure layer. They run on every
-//! development host; the byte fixtures are built with the same 64-bit layout
+//! Fixture tests for the Windows adapter's pure layer; the byte fixtures use the same 64-bit layout
 //! `sys.rs` asserts against `windows-sys` at compile time.
 
 use serde_json::{Value, json};
@@ -65,7 +64,7 @@ const MSR_GUID: &str = "1b2c3d4e-5f60-4b7c-9d8e-9fa0b1c2d3e4";
 const C_GUID: &str = "2c3d4e5f-6071-4c8d-ae9f-a0b1c2d3e4f5";
 const WINRE_GUID: &str = "3d4e5f60-7182-4d9e-bfa0-b1c2d3e4f506";
 
-/// GUID text → the little-endian in-memory / on-disk encoding.
+/// GUID text to the little-endian in-memory and on-disk encoding.
 fn guid_le(text: &str) -> [u8; 16] {
     let hex: String = text.chars().filter(|c| *c != '-').collect();
     let raw: Vec<u8> = (0..16)
@@ -95,7 +94,6 @@ fn put(buf: &mut [u8], at: usize, bytes: &[u8]) {
     buf[at..at + bytes.len()].copy_from_slice(bytes);
 }
 
-/// A `DRIVE_LAYOUT_INFORMATION_EX` output buffer.
 fn layout_buf(style: u32, usable_offset: u64, usable_len: u64, parts: &[Part]) -> Vec<u8> {
     let mut buf = vec![0u8; layout::LAYOUT_HEADER_BYTES + parts.len() * layout::ENTRY_BYTES];
     put(&mut buf, 0, &style.to_le_bytes());
@@ -159,8 +157,7 @@ fn geometry_buf(size: u64, sector: u32) -> Vec<u8> {
     buf
 }
 
-/// Primary GPT header sector and entry array for `parts` (entry index =
-/// partition number).
+/// Primary GPT header sector and entry array for `parts` (entry index = partition number).
 fn gpt(sector: u64, total_sectors: u64, parts: &[Part]) -> (Vec<u8>, Vec<u8>) {
     let entry_sectors = (128 * 128u64).div_ceil(sector);
     let mut entries = vec![0u8; 128 * 128];
@@ -199,8 +196,7 @@ fn gpt(sector: u64, total_sectors: u64, parts: &[Part]) -> (Vec<u8>, Vec<u8>) {
     (header, entries)
 }
 
-/// A typical OEM Windows 11 layout on a 512-byte-sector NVMe disk:
-/// ESP, MSR, C:, WinRE at the end.
+/// A typical OEM Windows 11 layout on a 512-byte-sector NVMe disk: ESP, MSR, C:, WinRE at the end.
 struct Fixture {
     sector: u64,
     total_sectors: u64,
@@ -330,14 +326,12 @@ impl Fixture {
     }
 }
 
-/// GUID, CRC32, extents, truncated layouts and firmware variables.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn windows_binary_encodings_decode_and_reject_truncation() {
-    // Phase `guids_round_trip_through_the_little_endian_encoding`.
     {
         assert_eq!(layout::guid_from_le(guid_le(ESP_TYPE)), ESP_TYPE);
         assert_eq!(
@@ -356,7 +350,6 @@ fn windows_binary_encodings_decode_and_reject_truncation() {
         }
     }
 
-    // Phase `volume_extents_decode`.
     {
         let mut buf = vec![0u8; layout::EXTENTS_FIRST + 2 * layout::EXTENT_BYTES];
         put(&mut buf, 0, &2u32.to_le_bytes());
@@ -373,7 +366,6 @@ fn windows_binary_encodings_decode_and_reject_truncation() {
         assert!(layout::parse_volume_extents(&buf[..40]).is_err());
     }
 
-    // Phase `truncated_or_negative_layouts_are_rejected`.
     {
         let fx = Fixture::oem(512);
         let buf = layout_buf(layout::STYLE_GPT, 34 * 512, GIB, &fx.parts);
@@ -389,14 +381,12 @@ fn windows_binary_encodings_decode_and_reject_truncation() {
     }
 }
 
-/// OEM layout, probe offer, snapshot protection and 4Kn bounds.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn windows_layout_decodes_protects_and_aligns_the_staging_disk() {
-    // Phase `oem_layout_decodes_into_the_staging_disk`.
     {
         let fx = Fixture::oem(512);
         let disk = fx.layout_disk();
@@ -432,7 +422,6 @@ fn windows_layout_decodes_protects_and_aligns_the_staging_disk() {
         assert_eq!(layout.partitions[2].name, "Basic data partition");
     }
 
-    // Phase `oem_layout_probe_offers_full_tilo_with_empty_boot_fields`.
     {
         let fx = Fixture::oem(512);
         let snapshot = fx.snapshot_json("GPT", json!("NVMe"), json!(2));
@@ -460,7 +449,6 @@ fn windows_layout_decodes_protects_and_aligns_the_staging_disk() {
         assert_eq!(facts::basis_error(&observed), None);
     }
 
-    // Phase `snapshot_protects_boot_system_and_lettered_partitions`.
     {
         let fx = Fixture::oem(512);
         let snapshot =
@@ -476,7 +464,6 @@ fn windows_layout_decodes_protects_and_aligns_the_staging_disk() {
         assert!(!protected.contains(&WINRE_GUID.to_string()));
     }
 
-    // Phase `four_k_native_disk_uses_six_sector_gpt_bounds`.
     {
         let fx = Fixture::oem(4096);
         let disk = fx.layout_disk();
@@ -490,7 +477,7 @@ fn windows_layout_decodes_protects_and_aligns_the_staging_disk() {
         let fallback = storage::disk_from_snapshot(&snapshot).unwrap();
         assert_eq!(fallback, disk);
         storage::cross_check(&disk, &snapshot).unwrap();
-        // GPT on-disk verification (elevated helper path).
+        // GPT on-disk verification, the elevated helper path.
         let (header, entries) = gpt(4096, fx.total_sectors, &fx.parts);
         let header = layout::parse_gpt_header(&header).unwrap();
         assert_eq!(header.entries_read_bytes(4096).unwrap(), 16 * 1024);
@@ -498,7 +485,6 @@ fn windows_layout_decodes_protects_and_aligns_the_staging_disk() {
         layout::cross_check_gpt(&disk, &header, &entries).unwrap();
     }
 
-    // Phase `a_misaligned_partition_on_a_4kn_disk_is_refused`.
     {
         let mut fx = Fixture::oem(4096);
         fx.parts[3].offset += 512;
@@ -515,14 +501,12 @@ fn windows_layout_decodes_protects_and_aligns_the_staging_disk() {
     }
 }
 
-/// MBR, dynamic, RAID/spaces/removable/VHD disks.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn windows_unsupported_disks_leave_no_basis() {
-    // Phase `mbr_disk_is_not_gpt_without_a_basis`.
     {
         let fx = Fixture::oem(512);
         let mut snapshot = fx.snapshot_json("MBR", json!("SATA"), json!(2));
@@ -554,7 +538,6 @@ fn windows_unsupported_disks_leave_no_basis() {
         );
     }
 
-    // Phase `dynamic_disk_is_unsupported`.
     {
         let mut fx = Fixture::oem(512);
         fx.parts[2].type_guid = LDM_DATA_TYPE;
@@ -570,7 +553,6 @@ fn windows_unsupported_disks_leave_no_basis() {
         assert!(!facts.offers_full_os());
     }
 
-    // Phase `raid_spaces_removable_and_vhd_boot_disks_are_unsupported`.
     {
         let fx = Fixture::oem(512);
         for bus in [
@@ -610,14 +592,12 @@ fn windows_unsupported_disks_leave_no_basis() {
     }
 }
 
-/// BitLocker, disagreeing readers, missing bounds, ioctl fallback, firmware and remedies.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn windows_blockers_and_remedies_follow_reader_facts() {
-    // Phase `bitlocker_states_map_to_protection_and_blockers`.
     {
         let fx = Fixture::oem(512);
         let run = |value: Value| {
@@ -648,7 +628,6 @@ fn windows_blockers_and_remedies_follow_reader_facts() {
         assert_eq!(storage::bitlocker_state(Some(99)), BitlockerState::Unknown);
     }
 
-    // Phase `disagreeing_readers_leave_no_basis`.
     {
         let fx = Fixture::oem(512);
         let mut snapshot = fx.snapshot_json("GPT", json!("NVMe"), json!(2));
@@ -660,7 +639,6 @@ fn windows_blockers_and_remedies_follow_reader_facts() {
         assert!(facts::basis_error(&observed).unwrap().contains("disagree"));
     }
 
-    // Phase `missing_shrink_bounds_or_snapshot_leave_no_basis`.
     {
         let fx = Fixture::oem(512);
         let mut snapshot = fx.snapshot_json("GPT", json!("NVMe"), json!(2));
@@ -677,7 +655,6 @@ fn windows_blockers_and_remedies_follow_reader_facts() {
         assert_eq!(facts.blockers, vec![Blocker::DiskUnsupported]);
     }
 
-    // Phase `layout_ioctl_failure_falls_back_to_the_cmdlet_disk`.
     {
         let fx = Fixture::oem(512);
         let mut observed = fx.observed(&fx.snapshot_json("GPT", json!("NVMe"), json!(2)));
@@ -686,7 +663,6 @@ fn windows_blockers_and_remedies_follow_reader_facts() {
         assert_eq!(facts.basis.unwrap().disk, fx.layout_disk());
     }
 
-    // Phase `firmware_power_and_hibernation_blockers`.
     {
         let fx = Fixture::oem(512);
         let snapshot = fx.snapshot_json("GPT", json!("NVMe"), json!(2));
@@ -736,7 +712,6 @@ fn windows_blockers_and_remedies_follow_reader_facts() {
         assert!(facts::on_battery(None));
     }
 
-    // Phase `remedies_suspend_bitlocker_before_firmware_restart`.
     {
         let drive = scripts::DriveLetter::new('C').unwrap();
         let program = remedies::firmware_settings_program(drive, true);
@@ -771,7 +746,6 @@ fn windows_blockers_and_remedies_follow_reader_facts() {
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn windows_disk_io_verifies_gpt_preconditions_and_ranges() {
-    // Phase `gpt_verification_catches_corruption_and_renumbering`.
     {
         let fx = Fixture::oem(512);
         let disk = fx.layout_disk();
@@ -809,11 +783,10 @@ fn windows_disk_io_verifies_gpt_preconditions_and_ranges() {
         assert!(error.contains("GPT entry 5"), "{error}");
     }
 
-    // Phase `create_preconditions_and_read_back`.
     {
         let fx = Fixture::oem(512);
         let mut disk = fx.layout_disk();
-        // Shrunk C: leaves room before WinRE.
+        // A shrunk C: leaves room before WinRE.
         let c_last = disk.partitions[2].first_lba + 200 * GIB / 512 - 1;
         disk.partitions[2].last_lba = c_last;
         let esp = NewPartition {
@@ -873,7 +846,6 @@ fn windows_disk_io_verifies_gpt_preconditions_and_ranges() {
         );
     }
 
-    // Phase `raw_io_ranges_and_volume_overlap_rules`.
     {
         assert_eq!(
             ops::io_offset(MIB, GIB, 512, 4096, 8192).unwrap(),
@@ -911,7 +883,6 @@ fn windows_disk_io_verifies_gpt_preconditions_and_ranges() {
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn windows_scripts_carry_only_validated_encoded_values() {
-    // Phase `scripts_interpolate_only_validated_values`.
     {
         assert_eq!(
             scripts::ps_guid(ESP_TYPE).unwrap(),
@@ -978,7 +949,6 @@ fn windows_scripts_carry_only_validated_encoded_values() {
         assert_eq!(scripts::DriveLetter::new('1'), None);
     }
 
-    // Phase `powershell_programs_travel_as_encoded_commands`.
     {
         for (plain, encoded) in [
             ("", ""),

@@ -1,26 +1,15 @@
-//! Materialising the record plane into the live tree.
+//! Materialising the record plane into the live tree. Remote versions reach the live tree only
+//! through here, and only in ways a reader cannot observe half done.
 //!
-//! Remote versions reach the live tree only through here, and only in ways
-//! a reader can never observe half-done (`storage.md` §6.5, §10):
+//! A new or changed small file is staged in the same directory and renamed over its path, so an
+//! open reader keeps the old inode and a new open sees the complete version. A large file becomes a
+//! placeholder filled on first access. Directories are created before their contents, files in the
+//! order their versions were made, and removals last, deepest first. A pass prepares every version
+//! first, then applies them, so the tree moves between states in one quick step; a version that is
+//! not available yet holds back the rest of its author's changeset.
 //!
-//! - a new or changed small file is written to a staging file in the same
-//!   directory and renamed over its path, so an open reader keeps the old
-//!   inode and a new open sees the complete new version;
-//! - a large file becomes a placeholder: exact size and mtime, no bytes,
-//!   filled range by range on first access through the pre-content group;
-//! - directories are created before anything inside them, files follow in
-//!   the order their versions were made (the author's commit time), and
-//!   removals come last, deepest first;
-//! - a pass first prepares every version it will apply (fetching small
-//!   files into staging), and applies them only then, paths that are new
-//!   here before paths that change, so the tree moves from one state to
-//!   the next in one quick step. When a version is not available yet, the
-//!   rest of its author's changeset waits with it (`storage.md` §10, V3):
-//!   a git ref is never shown with its index still missing.
-//!
-//! A path the local user changed since the daemon last wrote it is never
-//! overwritten: the change is captured and published as a local version,
-//! and the record plane's conflict handling takes it from there.
+//! A path the local user changed since the daemon last wrote it is never overwritten: the change is
+//! captured and published as a local version.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -40,21 +29,16 @@ use crate::fs::native_ops::TreeEntry;
 use crate::hydration::Hydrator;
 use crate::namespace::{PosixAttrs, VersionFence};
 
-/// What the projector needs to fence lease-class files.
 pub struct Fencing<'a> {
-    /// This device.
     pub me: [u8; 32],
-    /// Who held a record's lease in an epoch.
     pub holder_of: &'a dyn Fn([u8; 16], u64) -> Option<[u8; 32]>,
     pub now_ms: u64,
 }
 
-/// Whether the current version of a lease-class file may replace what is
-/// materialised (`storage.md` §11.2, fencing). A version tagged with a
-/// tenancy is accepted only from the device that held that epoch, and
-/// never from an epoch older than the one already materialised; a version
-/// written without a lease is accepted only while nobody holds one. A file
-/// without a lease record is not lease-class and always accepted.
+/// Whether the current version of a lease-class file may replace what is materialised. A version
+/// tagged with a tenancy is accepted only from the device that held that epoch, and never from an
+/// epoch older than the materialised one; a version written without a lease is accepted only while
+/// nobody holds one. A file without a lease record is not lease-class and always accepted.
 pub fn fence_accepts(e: &TreeEntry, materialized: Option<VersionFence>, now_ms: u64) -> bool {
     let Some(lease) = e.lease else {
         return true;
@@ -67,10 +51,8 @@ pub fn fence_accepts(e: &TreeEntry, materialized: Option<VersionFence>, now_ms: 
     }
 }
 
-/// Largest symbolic link target (`PATH_MAX`).
 const MAX_LINK_TARGET: u64 = 4096;
 
-/// The permission bits of a local path, as the record plane keeps them.
 fn local_mode(path: &Path) -> Option<u32> {
     let meta = fs::symlink_metadata(path).ok()?;
     let ft = meta.file_type();
@@ -84,10 +66,9 @@ pub fn rel_path(components: &[Vec<u8>]) -> PathBuf {
         .collect()
 }
 
-/// Whether `rel` stays inside the tree it is joined onto: at least one
-/// component, every one of them a plain name. A `..`, a root or a prefix
-/// component would make `live.join(rel)` name something outside `live`,
-/// which this plane writes as root.
+/// Whether `rel` stays inside the tree it is joined onto: at least one component, every one of them
+/// a plain name. A `..`, a root or a prefix component would make `live.join(rel)` name something
+/// outside `live`, which this plane writes as root.
 pub fn confined_rel(rel: &Path) -> bool {
     let mut components = rel.components().peekable();
     components.peek().is_some() && components.all(|c| matches!(c, Component::Normal(_)))
@@ -117,7 +98,6 @@ mod confinement_tests {
     }
 }
 
-/// `path` with its `from` prefix replaced by `to`, if it lies below `from`.
 pub fn rebase(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
     path.strip_prefix(from).ok().map(|rest| {
         if rest.as_os_str().is_empty() {
@@ -128,8 +108,8 @@ pub fn rebase(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
     })
 }
 
-/// Moves the entries of `from` and everything below it to `to`. Returns
-/// each moved entry's old path, new path and record.
+/// Moves the entries of `from` and everything below it to `to`, returning each moved entry's old
+/// path, new path and record.
 pub fn rename_entries<S: std::hash::BuildHasher>(
     map: &mut HashMap<PathBuf, Materialized, S>,
     from: &Path,
@@ -157,31 +137,25 @@ fn record_key(e: &TreeEntry) -> Option<[u8; 16]> {
     e.record.map(|r| *r.0.as_bytes())
 }
 
-/// How long a pass holds a changeset back for one version that does not
-/// arrive, before applying what it can in version order.
+/// How long a pass holds a changeset back for one version that does not arrive, before applying
+/// what it can in version order.
 const HOLD_LIMIT: Duration = Duration::from_secs(60);
 
-/// Directory at the workspace's root where versions are prepared before they
-/// are renamed into place. Its name, like every staging name, is never
-/// captured.
+/// Directory at the workspace's root where versions are prepared before they are renamed into
+/// place. Its name, like every staging name, is never captured.
 pub const STAGING_AREA: &str = ".tilo-staging-area";
 
-/// How a prepared version reaches its path.
 enum Install {
-    /// A staged file or link, renamed into place.
     Staged(PathBuf),
     Placeholder {
         spec: Box<PlaceholderSpec>,
         replace: bool,
     },
-    /// Same content, new mode bits.
     Chmod(u32),
 }
 
-/// One version prepared for the commit step.
 struct Pending {
     rel: PathBuf,
-    /// Nothing is at the path yet.
     new: bool,
     mtime_ms: u64,
     install: Install,
@@ -191,34 +165,29 @@ struct Pending {
 enum Prepared {
     Done,
     Pending(Box<Pending>),
-    /// Its bytes are not reachable right now.
     Unavailable,
 }
 
-/// What one projection pass did.
 #[derive(Debug, Default)]
 pub struct Projection {
-    /// Paths written or created (files, placeholders, directories).
     pub written: Vec<PathBuf>,
-    /// Paths removed from the live tree.
     pub removed: Vec<PathBuf>,
     /// Local renames that followed a record's move (old path, new path).
     pub moved: Vec<(PathBuf, PathBuf)>,
     /// Versions refused by lease fencing; the local file stays.
     pub fenced: Vec<PathBuf>,
-    /// Fenced files this device holds the lease of: it publishes its own
-    /// content again, so the holder's version is the head.
+    /// Fenced files this device holds the lease of: it publishes its own content again, so the
+    /// holder's version is the head.
     pub reassert: Vec<PathBuf>,
-    /// Conflict copies this device made of its own fenced versions before
-    /// taking the holder's; the next epoch publishes them.
+    /// Conflict copies this device made of its own fenced versions before taking the holder's; the
+    /// next epoch publishes them.
     pub conflicts: Vec<PathBuf>,
     /// Paths left alone because they changed locally since the daemon wrote
     /// them.
     pub skipped_dirty: Vec<PathBuf>,
     pub updates: Vec<(PathBuf, Option<Materialized>)>,
     pub files: usize,
-    /// A version this device cannot verify yet stopped the pass; the rest
-    /// follows once it arrives.
+    /// A version this device cannot verify yet stopped the pass; the rest follows once it arrives.
     pub waiting: bool,
     pub waiting_for: Option<PathBuf>,
     pub placeholders: usize,
@@ -233,19 +202,14 @@ pub struct Projector {
     /// Files up to this size are fetched whole and written before they
     /// appear; larger ones start as placeholders.
     pub eager_bytes: u64,
-    /// How long an eager fetch may take before the file falls back to a
-    /// placeholder.
     pub eager_deadline: Duration,
     pub parallel_chunks: usize,
     owner: Option<(u32, u32)>,
     seq: AtomicU64,
-    /// Write gates of lease-class files. A new version of a gated file is
-    /// gated before it is renamed into place (a placeholder right after it
-    /// is created, while it is still a hole), so no writer gets through
-    /// ungated.
+    /// Write gates of lease-class files. A new version of a gated file is gated before it is
+    /// renamed into place, so no writer gets through ungated.
     write_gates: Arc<super::lease::WriteGates>,
     last_unavailable: std::sync::Mutex<Option<String>>,
-    /// The version the last pass stopped at, and since when.
     held: std::sync::Mutex<Option<(PathBuf, u64, std::time::Instant)>>,
 }
 
@@ -287,10 +251,9 @@ impl Projector {
         Ok(())
     }
 
-    /// Brings the live tree to `tree`, the record plane's current state.
-    /// `changesets` are the version-time spans of other devices' latest
-    /// changesets: a version that cannot be applied yet holds back the rest
-    /// of the changeset it belongs to.
+    /// Brings the live tree to `tree`, the record plane's current state. `changesets` are the
+    /// version-time spans of other devices' latest changesets: a version that cannot be applied yet
+    /// holds back the rest of the changeset it belongs to.
     pub fn project(
         &self,
         tree: &[TreeEntry],
@@ -308,8 +271,7 @@ impl Projector {
         for e in dirs {
             let rel = rel_path(&e.path);
             if !e.known {
-                // Placed before the changeset that made it arrived; it
-                // appears with that changeset.
+                // Placed before the changeset that made it arrived; it appears with that changeset.
                 out.waiting = true;
                 out.waiting_for.get_or_insert_with(|| rel.clone());
                 continue;
@@ -331,9 +293,8 @@ impl Projector {
         for e in files {
             let rel = rel_path(&e.path);
             if !e.known {
-                // Content revisions arrive per record, in no particular
-                // order. Nothing made after a version this device cannot
-                // verify yet is shown before it: the next pass continues.
+                // Content revisions arrive per record, in no particular order. Nothing made after a
+                // version this device cannot verify yet is shown before it.
                 stopped_at = Some((rel, e.mtime_ms));
                 break;
             }
@@ -341,8 +302,6 @@ impl Projector {
                 Ok(Prepared::Done) => {}
                 Ok(Prepared::Pending(p)) => pending.push(*p),
                 Ok(Prepared::Unavailable) => {
-                    // Its bytes are not reachable right now; what follows it
-                    // waits, as for an unverified version.
                     stopped_at = Some((rel, e.mtime_ms));
                     break;
                 }
@@ -375,14 +334,12 @@ impl Projector {
         out
     }
 
-    /// Renames local paths whose record the tree now places elsewhere, so
-    /// a moved file keeps its inode, its resident bytes and its open
-    /// readers, and a moved directory takes its subtree along. Returns the
-    /// materialised table as the renames left it, when there were any.
+    /// Renames local paths whose record the tree now places elsewhere, so a moved file keeps its
+    /// inode, its resident bytes and its open readers, and a moved directory takes its subtree
+    /// along. Returns the materialised table as the renames left it, when there were any.
     ///
-    /// A path changed locally since the daemon wrote it is never moved: it
-    /// is captured as the local change it is, and the moved record arrives
-    /// as a new file.
+    /// A path changed locally since the daemon wrote it is never moved: it is captured as the local
+    /// change it is, and the moved record arrives as a new file.
     fn project_moves(
         &self,
         tree: &[TreeEntry],
@@ -450,8 +407,6 @@ impl Projector {
         table
     }
 
-    /// Creates `abs` and any missing ancestors inside the live tree as the
-    /// daemon creates directories.
     fn make_dirs(&self, abs: &Path) -> io::Result<()> {
         if abs.is_dir() {
             return Ok(());
@@ -465,12 +420,10 @@ impl Projector {
         self.make_dir(abs)
     }
 
-    /// Fetches the content of every small file this pass is about to write,
-    /// in a few batched requests, before writing them one by one: many small
-    /// files then cost a few round trips, not one each. Stops at the first
-    /// version not verified yet, like the pass itself.
+    /// Fetches the content of every small file this pass is about to write, in a few batched
+    /// requests, before writing them one by one: many small files then cost a few round trips. Stops
+    /// at the first version not verified yet, like the pass itself.
     fn prefetch_eager(&self, files: &[&TreeEntry], materialized: &HashMap<PathBuf, Materialized>) {
-        /// Bytes prefetched per pass; the rest follow in the next one.
         const PREFETCH_BYTES: u64 = 256 * 1024 * 1024;
         let mut wanted = Vec::new();
         let mut total = 0_u64;
@@ -587,10 +540,9 @@ impl Projector {
         fs::set_permissions(abs, fs::Permissions::from_mode(mode))
     }
 
-    /// From which version time on the pass waits, when it stopped at `rel`
-    /// (version time `mtime_ms`): the start of the changeset that version
-    /// belongs to, or the version itself when no known changeset spans it
-    /// or it has been waited for too long.
+    /// From which version time on the pass waits, when it stopped at `rel` (version time
+    /// `mtime_ms`): the start of the changeset that version belongs to, or the version itself when
+    /// no known changeset spans it or it has been waited for too long.
     fn hold_cut(&self, rel: &Path, mtime_ms: u64, changesets: &[(u64, u64)]) -> u64 {
         let since = {
             let Ok(mut held) = self.held.lock() else {
@@ -617,8 +569,8 @@ impl Projector {
             .min(mtime_ms)
     }
 
-    /// Applies prepared versions: paths new here first, then changed ones,
-    /// each group in version order.
+    /// Applies prepared versions: paths new here first, then changed ones, each group in version
+    /// order.
     fn commit(&self, pending: Vec<Pending>, out: &mut Projection) {
         let (new, changed): (Vec<Pending>, Vec<Pending>) = pending.into_iter().partition(|p| p.new);
         for p in new.into_iter().chain(changed) {
@@ -698,7 +650,6 @@ impl Projector {
         out.updates.push((rel, Some(record)));
     }
 
-    /// Drops prepared versions that are held back.
     fn discard(pending: Vec<Pending>) {
         for p in pending {
             if let Install::Staged(staging) = p.install {
@@ -707,9 +658,8 @@ impl Projector {
         }
     }
 
-    /// Keeps a copy of this device's own fenced version of `rel` next to
-    /// it, named after the tenancy it lost, before the holder's version
-    /// replaces it.
+    /// Keeps a copy of this device's own fenced version of `rel` next to it, named after the tenancy
+    /// it lost, before the holder's version replaces it.
     fn save_conflict(&self, rel: &Path, fence: VersionFence) -> io::Result<PathBuf> {
         let name = rel
             .file_name()
@@ -760,8 +710,8 @@ impl Projector {
                 ..m.clone()
             };
             if !e.posix.symlink && m.mode != Some(e.posix.mode) {
-                // Same bytes, new mode: change it in place unless the file
-                // changed here since the daemon last wrote it.
+                // Same bytes, new mode: change it in place unless the file changed here since the
+                // daemon last wrote it.
                 let abs = self.live.join(rel);
                 let untouched = m.local.is_some() && m.local == LocalStat::of(&abs);
                 let mode_ours = m.mode.is_none() || m.mode == local_mode(&abs);
@@ -865,10 +815,9 @@ impl Projector {
         })))
     }
 
-    /// Prepares one version off to the side: a small file or a link is
-    /// fetched and staged, a large file becomes a placeholder when it is
-    /// installed. `None` when a small file's bytes could not be fetched: a
-    /// small file only appears complete.
+    /// Prepares one version off to the side: a small file or a link is fetched and staged, a large
+    /// file becomes a placeholder when it is installed. `None` when a small file's bytes could not
+    /// be fetched: a small file only appears complete.
     fn prepare_content(
         &self,
         hash: Option<[u8; 32]>,
@@ -877,7 +826,6 @@ impl Projector {
     ) -> io::Result<Option<Install>> {
         let Some(content) = hash.filter(|_| e.size > 0) else {
             if e.posix.symlink {
-                // A link needs a target; an empty one is not one.
                 return Err(io::Error::from_raw_os_error(libc::EINVAL));
             }
             return self
@@ -941,12 +889,10 @@ impl Projector {
         }
     }
 
-    /// Why the last small file could not be fetched, once.
     pub fn take_unavailable(&self) -> Option<String> {
         self.last_unavailable.lock().ok()?.take()
     }
 
-    /// A fresh name in the staging area, which exists afterwards.
     fn staging_path(&self) -> io::Result<PathBuf> {
         let area = self.live.join(STAGING_AREA);
         if !area.is_dir() {
@@ -960,8 +906,6 @@ impl Projector {
         Ok(area.join(format!("{STAGING_PREFIX}{}-{n}", std::process::id())))
     }
 
-    /// Stages a symbolic link to `target`, owned by the local person, with
-    /// the version's mtime.
     fn stage_link(&self, target: &[u8], mtime_ms: u64) -> io::Result<PathBuf> {
         use std::os::unix::ffi::OsStrExt as _;
         let staging = self.staging_path()?;
@@ -979,8 +923,6 @@ impl Projector {
         Ok(staging)
     }
 
-    /// Stages a complete file with the version's bytes, mode and mtime,
-    /// owned by the local person.
     fn stage_file(&self, bytes: &[u8], mtime_ms: u64, mode: u32) -> io::Result<PathBuf> {
         let staging = self.staging_path()?;
         let result = (|| {
@@ -1035,7 +977,6 @@ impl Projector {
     }
 }
 
-/// Sets a symbolic link's own mtime (not its target's).
 fn set_link_mtime(path: &Path, mtime_ms: u64) -> io::Result<()> {
     use std::os::unix::ffi::OsStrExt as _;
     let c = std::ffi::CString::new(path.as_os_str().as_bytes())
@@ -1069,7 +1010,6 @@ fn set_link_mtime(path: &Path, mtime_ms: u64) -> io::Result<()> {
     }
 }
 
-/// Removes staging files a crash left in the live tree.
 pub fn remove_stale_staging(live: &Path) -> io::Result<usize> {
     let mut removed = 0usize;
     let mut stack = vec![live.to_path_buf()];
@@ -1092,7 +1032,6 @@ pub fn remove_stale_staging(live: &Path) -> io::Result<usize> {
     Ok(removed)
 }
 
-/// Every placeholder left by a previous run, from its residency xattr.
 pub fn find_placeholders(live: &Path) -> io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     let mut stack = vec![live.to_path_buf()];

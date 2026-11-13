@@ -34,7 +34,7 @@ use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Type, Value};
 use zbus::{Connection, ObjectServer, interface};
 use zeroize::Zeroizing;
 
-use crate::app::{AppId, UnknownCaller, identify_proven_process, proc_root, trusted_managers};
+use crate::app::{CallerId, UnknownCaller, identify_proven_process, proc_root, trusted_managers};
 use crate::store::{ItemRef, NewItem, Store, StoreError};
 use crate::vault::{Access, LOGIN_COLLECTION, SESSION_COLLECTION};
 
@@ -53,7 +53,7 @@ pub trait CallerResolver: Send + Sync + 'static {
     fn identify<'a>(
         &'a self,
         sender: Option<&'a str>,
-    ) -> Pin<Box<dyn Future<Output = std::result::Result<AppId, UnknownCaller>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<CallerId, UnknownCaller>> + Send + 'a>>;
 
     /// `sender` proved it holds the device identity and named `program` as
     /// its executable (see [`crate::app`]): the program stands in for the
@@ -95,7 +95,8 @@ impl CallerResolver for BusResolver {
     fn identify<'a>(
         &'a self,
         sender: Option<&'a str>,
-    ) -> Pin<Box<dyn Future<Output = std::result::Result<AppId, UnknownCaller>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<CallerId, UnknownCaller>> + Send + 'a>>
+    {
         Box::pin(async move {
             let name = zbus::names::BusName::try_from(sender.ok_or(UnknownCaller::Unreadable)?)
                 .map_err(|_| UnknownCaller::Unreadable)?;
@@ -132,9 +133,9 @@ impl CallerResolver for BusResolver {
 #[derive(Clone, Debug)]
 pub struct Managers {
     /// May list, revoke and forget applications.
-    pub settings: Vec<AppId>,
+    pub settings: Vec<CallerId>,
     /// May ask for a sandboxed app's master secret on its behalf.
-    pub portal: Vec<AppId>,
+    pub portal: Vec<CallerId>,
 }
 
 impl Managers {
@@ -145,7 +146,7 @@ impl Managers {
         let settings = trusted_managers();
         let portal = ["binary:/usr/bin/shell", "binary:/usr/bin/tilo-session"]
             .into_iter()
-            .filter_map(AppId::parse)
+            .filter_map(CallerId::parse)
             .collect();
         Self { settings, portal }
     }
@@ -269,21 +270,21 @@ impl Core {
         })
     }
 
-    async fn caller(&self, header: &Header<'_>) -> Result<AppId> {
+    async fn caller(&self, header: &Header<'_>) -> Result<CallerId> {
         let sender = sender_of(header);
         Ok(self.resolver.identify(sender.as_deref()).await?)
     }
 
     /// The caller of a property read. A read that carries no message
     /// header (a signal's own emission) names no one and is refused.
-    async fn property_caller(&self, header: Option<&Header<'_>>) -> zbus::fdo::Result<AppId> {
+    async fn property_caller(&self, header: Option<&Header<'_>>) -> zbus::fdo::Result<CallerId> {
         let header = header.ok_or_else(|| zbus::fdo::Error::AccessDenied("no caller".into()))?;
         self.caller(header)
             .await
             .map_err(|error| zbus::fdo::Error::AccessDenied(error.to_string()))
     }
 
-    async fn manager(&self, header: &Header<'_>, allowed: &[AppId]) -> Result<AppId> {
+    async fn manager(&self, header: &Header<'_>, allowed: &[CallerId]) -> Result<CallerId> {
         let caller = self.caller(header).await?;
         allowed
             .contains(&caller)
@@ -347,7 +348,7 @@ impl Core {
         session: &ObjectPath<'_>,
         sender: &str,
         item: &ItemRef,
-        caller: &AppId,
+        caller: &CallerId,
     ) -> Result<WireSecret> {
         let (secret, content_type) = self.store.read_secret(caller, item)?;
         let (parameters, value) = self.encrypt(session.as_str(), sender, secret.expose())?;
@@ -1015,8 +1016,9 @@ fn access_name(access: Access) -> &'static str {
     }
 }
 
-fn parse_identity(text: &str) -> Result<AppId> {
-    AppId::parse(text).ok_or_else(|| SecretError::InvalidArgs("not an application identity".into()))
+fn parse_identity(text: &str) -> Result<CallerId> {
+    CallerId::parse(text)
+        .ok_or_else(|| SecretError::InvalidArgs("not an application identity".into()))
 }
 
 #[interface(name = "so.tilo.Secrets1")]

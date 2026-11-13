@@ -11,8 +11,8 @@ const CHILD_FD: RawFd = crate::services::BASELINE_SECCOMP_CHILD_FD;
 const MAX_BYTES: usize = 4096 * 8;
 const SEALS: i32 = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
 
-/// Which service holds a baseline: it names the refusals and the memfd, and
-/// checks the caller's root custody its own way.
+/// Which service holds a baseline: it names the refusals and the memfd, and checks the caller's root
+/// custody its own way.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Custody {
     pub label: &'static str,

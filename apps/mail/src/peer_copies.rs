@@ -9,21 +9,12 @@ use crate::model::Message;
 use crate::resource::read_mail;
 
 impl MailApp {
-    /// Keep the mail this window fetches for the person's other devices,
-    /// and take what they kept, through their copies record. Where the
-    /// record is kept on this device only it keeps no content, and nothing
-    /// is shared.
     pub(crate) fn share_copies(&mut self, record: PersonRecord<crate::copies::MailCopies>) {
         if let Some(content) = record.content() {
             self.copies = Some(crate::copies::Copies::new(record, content));
         }
     }
 
-    /// Take into the mailbox the mail the person's other devices kept for
-    /// this one and this device lacks: from them, without asking a server,
-    /// so it shows while its server cannot be reached and a refresh then
-    /// asks the server only for what is newer. It is registered with the
-    /// mailbox record and kept on this device like fetched mail.
     pub(super) fn take_peer_copies(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(copies) = self.copies.as_mut() else {
             return;
@@ -73,9 +64,7 @@ impl MailApp {
     }
 }
 
-/// What registering `message`, fetched or kept, tells the mailbox record:
-/// where its server holds it, and its flags where the record has none yet.
-/// `None` for mail that is only here.
+/// What registering `message`, fetched or kept, tells the mailbox record.
 pub(super) fn kept_baseline(
     mail: &crate::resource::Mail,
     message: &Message,
@@ -114,7 +103,6 @@ mod tests {
         (app, doc)
     }
 
-    /// A message as `account`'s server sends it, and what reading it gives.
     fn sent_by_server(account: &str, uid: u32, at: i64, body: &str) -> (Message, Vec<u8>) {
         let raw = format!(
             "From: Ada <ada@x.example>\r\nTo: {account}\r\nSubject: Note {uid}\r\n\
@@ -131,8 +119,6 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         (message, raw)
     }
 
-    /// One device's window with an engine the test answers for, and the
-    /// person's copies record joined to a route of its own.
     fn device(
         record: PersonRecord<crate::copies::MailCopies>,
         lane: &Arc<ui::collaboration::record_content::ContentLane>,
@@ -157,11 +143,6 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         (app, doc, requests, incoming)
     }
 
-    /// A second device of the person opens old mail its first device
-    /// fetched while its own server cannot be reached: the message comes
-    /// from the first device, by the address the person's copies record
-    /// names, on the record's route, and the server is then asked only for
-    /// what is newer than it.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -177,7 +158,6 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             ui::framework::testing::TestApp::<crate::MailShell>::for_person(&person).unwrap();
         let first_record = first_host.person::<crate::copies::MailCopies>().unwrap();
         let second_record = second_host.person::<crate::copies::MailCopies>().unwrap();
-        // Each device's content of the record, and the route it asks on.
         let first_lane = ContentLane::of("so.tilo.mail", "copies-test-first-device");
         let second_lane = ContentLane::of("so.tilo.mail", "copies-test-second-device");
         let (mut first, mut first_doc, first_requests, first_events) =
@@ -192,7 +172,6 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             "the person's accounts follow them"
         );
 
-        // The first device fetches two messages from its server.
         let (old, old_raw) = sent_by_server(&account, 41, 1_000, "From last year.");
         let (newer, newer_raw) = sent_by_server(&account, 42, 2_000, "From last week.");
         let request = first
@@ -270,7 +249,6 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             "the window holds no second copy of what its host keeps"
         );
 
-        // The record reaches the second device; its server cannot be reached.
         second_record
             .record()
             .merge_peer_document(first_record.record().document().unwrap())
@@ -349,7 +327,6 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         let mail = read_mail(&second_doc).unwrap();
         assert!(mail.knows(&old.id.to_string()));
 
-        // Once its server answers again, it is asked only for what is newer.
         second
             .state()
             .post_engine(EngineRequest::fetch(config, Folder::Inbox))

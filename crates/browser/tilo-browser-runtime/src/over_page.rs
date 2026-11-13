@@ -40,13 +40,19 @@ pub(crate) trait PageSheet: OverSheet {
 }
 
 /// The sheets' code: the session's directory and invite sheets and the
-/// workspace directory's store behind both. The browser desktop fetches it
-/// the first time the person opens one (`deferred-sheets`).
+/// workspace directory's store behind both, and the shortcut guide's sheet.
+/// The browser desktop fetches it the first time the person opens one
+/// (`deferred-sheets`).
 #[derive(Clone, Copy)]
 pub struct SheetsCode {
     directory: MakeDirectory,
     invite: MakeInvite,
+    pub(crate) guide: FollowGuide,
 }
+
+/// Build the shortcut guide's sheet as it stands ([`OverSheet::follow_sheet`]).
+pub(crate) type FollowGuide =
+    fn(&mut crate::guide::PageGuide, &mut dyn FnMut(Option<Element>), bool) -> bool;
 
 type MakeDirectory = fn(
     crate::shell::HostRequests,
@@ -71,6 +77,7 @@ pub fn builtin_sheets() -> SheetsCode {
     SheetsCode {
         directory: crate::directory::make,
         invite: crate::invite::make,
+        guide: crate::guide::follow,
     }
 }
 

@@ -1,7 +1,6 @@
-//! The live golden path from Destination through Review, driven only by the
-//! production effects a person's Next reaches. Read-only host facts come from
-//! the production planner fixture; no page, live flag or prepared identity is
-//! assigned to stand in for the route.
+//! The live golden path from Destination through Review, driven only by the production
+//! effects a person's Next reaches.
+
 use super::*;
 use crate::resource::ImagerShell;
 use crate::setup::view::FullOsCheck;
@@ -73,8 +72,6 @@ fn paint(app: &mut App, scenario: &str, ids: &[&str]) {
 fn private_environment(root: &Path) -> tilo_test_env::ScopedEnv {
     use std::os::unix::fs::PermissionsExt as _;
     let home = root.join("home");
-    // The setup keeps its own settings profile in this Home, as it does on
-    // a live medium; its runtime files must not count as data to carry over.
     let config = home.join(".config");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -83,8 +80,6 @@ fn private_environment(root: &Path) -> tilo_test_env::ScopedEnv {
     environment.set("XDG_CONFIG_HOME", &config);
     environment.set("XDG_STATE_HOME", root.join("state"));
     environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    // The development opt-in the live install gate reads; this test stops at
-    // Review and never starts a privileged helper.
     environment.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "1");
     environment
 }
@@ -141,10 +136,6 @@ fn assert_prepared_draft(app: &mut App, target_model: Option<&str>) {
     assert_eq!(target, target_model);
 }
 
-/// Another computer: compatibility, migration, a new person, Your data and
-/// review. No storage decision exists on this route, and no source moves
-/// without a selected category, so this proves identity custody without a
-/// native source provider.
 #[test]
 fn live_another_new_identity_prepares_before_your_data_and_review() {
     let root = crate::setup::test_support::qualified_tempdir();
@@ -185,8 +176,6 @@ fn live_another_new_identity_prepares_before_your_data_and_review() {
         value["page"] == "belongings" && value["belongings_checking"] == false
     });
 
-    // The prepared person is exactly what the portable source would have
-    // required on this page before the Profile Continue prepared it.
     app.with_widget::<InstallerPreview, _>(|preview| {
         assert_eq!(preview.journey.page, Page::Belongings);
         assert!(preview.personal.prepared_handle().is_some());
@@ -206,8 +195,6 @@ fn live_another_new_identity_prepares_before_your_data_and_review() {
         ],
     );
 
-    // Leave nothing selected: the live route still proceeds to Review, and
-    // another-device media has no local storage decision to invent.
     app.effect(&InstallerPreviewEffect::SetYourDataAll { included: false })
         .unwrap();
     app.effect(&InstallerPreviewEffect::ContinuePreview)
@@ -228,9 +215,6 @@ fn live_another_new_identity_prepares_before_your_data_and_review() {
     );
 }
 
-/// This computer: the read-only compatibility facts enter the normal live
-/// migration flow, then the same async Profile Continue leads through Your
-/// data and the storage decision to Review.
 #[test]
 fn live_computer_new_identity_keeps_storage_and_review_after_profile() {
     let root = crate::setup::test_support::qualified_tempdir();
@@ -239,9 +223,6 @@ fn live_computer_new_identity_keeps_storage_and_review_after_profile() {
 
     choose(&mut app, "computer");
     assert_eq!(state(&mut app)["page"], "destination");
-    // The compatibility page paints from read-only facts. Use the production
-    // planner's fixture facts, then let the real compatibility drain advance
-    // the journey; the page and live state are not assigned.
     app.with_widget::<InstallerPreview, _>(|preview| {
         let mut storage = storage::Storage::default();
         storage.stage();
@@ -287,8 +268,6 @@ fn live_computer_new_identity_keeps_storage_and_review_after_profile() {
         ],
     );
 
-    // Keep the source tree at its default all-selected state; only the
-    // optional Accounts step is skipped so the storage decision follows.
     app.effect(&InstallerPreviewEffect::SetYourDataSource {
         source: "accounts".into(),
         included: false,

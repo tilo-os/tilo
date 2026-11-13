@@ -298,11 +298,18 @@ export async function launch({args = []} = {}) {
   });
   ws.addEventListener('close', () => stop(new Error('the browser\'s connection closed')));
   ws.addEventListener('error', () => stop(new Error('the browser\'s connection failed')));
+  // What the browser said that explains a process that died: a page whose
+  // renderer was killed says so here, and a test that would otherwise wait out
+  // its own step hears it at once.
+  const died = () => said.split('\n')
+    .filter(line => /crash|kill|OOM|out of memory|SIGSEGV|SIGILL|SIGKILL|SIGABRT|FATAL/i.test(line))
+    .slice(-6).map(line => line.trim()).join(' | ');
   const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
     const n = ++id;
     const timer = setTimeout(() => {
       pending.delete(n);
-      reject(new Error(`${method}: the browser stopped answering for ${ANSWER_TIMEOUT_MS / 1000}s`));
+      const why = died();
+      reject(new Error(`${method}: the browser stopped answering for ${ANSWER_TIMEOUT_MS / 1000}s${why ? ` (what it said: ${why})` : ''}`));
     }, ANSWER_TIMEOUT_MS);
     timer.unref?.();
     pending.set(n, {resolve: message => { clearTimeout(timer); resolve(message); },
@@ -318,8 +325,17 @@ export async function launch({args = []} = {}) {
       {url: 'about:blank', ...(context ? {browserContextId: context} : {})});
     const {result: {sessionId}} = await send('Target.attachToTarget', {targetId, flatten: true});
     const log = [];
+    // A renderer that died answers nothing: every command on it would wait
+    // out the whole answer timeout, so the tab says it died once, here, where
+    // a flow's failure dump shows it, and refuses further commands at once.
+    let dead = null;
     const listener = message => {
       if (message.sessionId !== sessionId) return;
+      if (message.method === 'Inspector.targetCrashed') {
+        dead = 'the renderer process died';
+        log.push(`CRASH ${dead} (the browser: ${died() || 'said nothing'})`);
+        return;
+      }
       if (message.method === 'Runtime.exceptionThrown') {
         const details = message.params.exceptionDetails;
         // The whole stack: a Wasm trap's first frames are the panic or
@@ -337,8 +353,11 @@ export async function launch({args = []} = {}) {
     listeners.add(listener);
     await send('Runtime.enable', {}, sessionId);
     await send('Page.enable', {}, sessionId);
+    // The domain that reports a renderer's death (`Inspector.targetCrashed`).
+    await send('Inspector.enable', {}, sessionId).catch(() => {});
     if (!firstRun) await send('Page.addScriptToEvaluateOnNewDocument', {source: FIRST_RUN_SEEN}, sessionId);
     const evaluate = async (expression, {timeout = 120000} = {}) => {
+      if (dead) throw new Error(`${expression}: ${dead}`);
       const reply = await send('Runtime.evaluate', {
         expression, awaitPromise: true, returnByValue: true, timeout,
       }, sessionId);
@@ -371,6 +390,8 @@ export async function launch({args = []} = {}) {
       targetId,
       sessionId,
       log,
+      /** Why the tab's renderer is gone, or `null` while it answers. */
+      crash: () => dead,
       send: (method, params) => method === 'Page.captureScreenshot' ? capture(params) : send(method, params, sessionId),
       evaluate,
       waitFor,

@@ -39,17 +39,12 @@ use tilo_user_identity::{
 
 const TIMEOUT: Duration = Duration::from_secs(180);
 
-/// The local person who owns each workspace (as the installer would set it up).
-/// The daemons run as root; everything they materialise must belong to
-/// this account, never to root or to the author's uid.
 const LOCAL_OWNER: (u32, u32) = (4242, 4242);
 
 fn unavailable(why: std::fmt::Arguments<'_>) {
     tilo_test_env::capability_unavailable(tilo_test_env::Capability::Fanotify, why);
 }
 
-/// The two store volumes, or `None` (after saying why) when this machine
-/// cannot run Tier 1.
 fn stores(test: &str) -> Option<(PathBuf, PathBuf)> {
     let skip = |why: String| {
         unavailable(format_args!(
@@ -137,13 +132,10 @@ struct Daemon {
     lines: Receiver<String>,
     logs: Arc<Mutex<Vec<String>>>,
     mount: PathBuf,
-    /// The workspace's live subvolume, from the startup line.
     live: Option<PathBuf>,
 }
 
 impl Daemon {
-    /// Starts a daemon whose identity and cache are `profile`'s, so a
-    /// restart reuses both.
     fn spawn(
         name: &'static str,
         profile: &str,
@@ -155,8 +147,6 @@ impl Daemon {
         Self::spawn_env(name, profile, dir, store, mode, mount, &[])
     }
 
-    /// [`Self::spawn`] with extra environment; a value may name
-    /// `@profile` for a per-daemon path under `dir`.
     fn spawn_env(
         name: &'static str,
         profile: &str,
@@ -169,12 +159,8 @@ impl Daemon {
         let cache = dir.join(format!("{profile}-cache"));
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::create_dir_all(mount).unwrap();
-        // Short: socket paths are bounded (SUN_LEN) wherever the temporary
-        // directory is.
         let sockets = dir.join(format!("{profile}-s"));
         std::fs::create_dir_all(&sockets).unwrap();
-        // `TILO_FS_TEST_BINARY` runs another build of the daemon (a release
-        // build on a loaded machine) against the same assertions.
         let binary = std::env::var_os("TILO_FS_TEST_BINARY")
             .map_or_else(|| tilo_test_env::package_binary!("fs"), PathBuf::from);
         let mut command = Command::new(binary);
@@ -280,11 +266,9 @@ impl Daemon {
 
     fn signal(&self, sig: libc::c_int) {
         let pid = libc::pid_t::try_from(self.child.id()).unwrap();
-        // SAFETY: signalling our own child process.
         unsafe { libc::kill(pid, sig) };
     }
 
-    /// A clean stop, as systemd does it.
     fn terminate(&mut self) {
         self.signal(libc::SIGTERM);
         let deadline = Instant::now() + TIMEOUT;
@@ -294,7 +278,6 @@ impl Daemon {
         }
     }
 
-    /// A crash: no chance to unmount or persist anything.
     fn kill(&mut self) {
         self.signal(libc::SIGKILL);
         let _ = self.child.wait();
@@ -328,7 +311,6 @@ impl Drop for Daemon {
     }
 }
 
-/// Removes a workspace's subvolume and its capture snapshots.
 fn remove_workspace(live: &Path) {
     let Some(workspace) = live.file_name() else {
         return;
@@ -383,7 +365,6 @@ fn pattern(seed: u8, len: usize) -> Vec<u8> {
 fn residency_xattr(path: &Path) -> Option<Vec<u8>> {
     let p = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
     let mut buf = vec![0u8; 512];
-    // SAFETY: valid path and buffer.
     let r = unsafe {
         libc::getxattr(
             p.as_ptr(),
@@ -403,11 +384,7 @@ fn mtime_ms(path: &Path) -> i64 {
     m.mtime() * 1000 + m.mtime_nsec() / 1_000_000
 }
 
-/// Two devices of one person, each on its own store volume.
 struct Pair {
-    // Dropped in this order: the daemons stop (and unmount) before their
-    // workspaces are removed, and only then does the temporary directory holding
-    // the mount points go.
     host: Daemon,
     peer: Daemon,
     _workspaces: LiveWorkspaces,
@@ -420,18 +397,10 @@ fn start_pair(store_a: &Path, store_b: &Path) -> Pair {
     start_pair_with(store_a, store_b, &[], &[])
 }
 
-/// [`start_pair`] with extra arguments for the host (the always-on device)
-/// and extra environment for both.
 fn start_pair_with(store_a: &Path, store_b: &Path, extra: &[&str], env: &[(&str, &str)]) -> Pair {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().to_path_buf();
-    // Owner-only, as the daemons require of their control sockets' parent.
     std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
-    // The daemons advertise their Iroh endpoints beyond this machine and
-    // dial each other by device key, so every pair gets identities no other
-    // run shares. With fixed seeds, a concurrent copy of a scenario, or
-    // another suite's fixture built from the same bytes, answered as the
-    // restarted host's peer and handed it a foreign workspace.
     let person: [u8; 32] = rand::random();
     install_identity(&dir.join("host-identity"), person, rand::random(), true);
     install_identity(&dir.join("peer-identity"), person, rand::random(), false);
@@ -499,14 +468,12 @@ fn local_changes_publish_in_journal_order_and_arrive_as_placeholders_and_files()
         "the workspace path is a real directory"
     );
 
-    // Writer order: objects first, then the file that names them.
     std::fs::create_dir_all(m1.join("objects")).unwrap();
     std::fs::write(m1.join("objects/1"), pattern(1, 4096)).unwrap();
     let big = pattern(2, 3 * 1024 * 1024 + 17);
     std::fs::write(m1.join("objects/2"), &big).unwrap();
     std::fs::write(m1.join("ref"), b"objects/2\n").unwrap();
 
-    // The peer never shows the ref before what it names.
     let t = Instant::now();
     wait_for(
         &mut [&mut pair.host, &mut pair.peer],
@@ -530,8 +497,6 @@ fn local_changes_publish_in_journal_order_and_arrive_as_placeholders_and_files()
     let placeholder = m2.join("objects/2");
     assert_placeholder_hydrates(&placeholder, &m1.join("objects/2"), &big);
 
-    // Rename and delete. The rename is a move of the record: on the peer
-    // the file is renamed, so its inode and its resident bytes stay.
     let peer_ino = std::fs::metadata(&placeholder).unwrap().ino();
     std::fs::rename(m1.join("objects/2"), m1.join("objects/3")).unwrap();
     std::fs::remove_file(m1.join("objects/1")).unwrap();
@@ -560,7 +525,6 @@ fn local_changes_publish_in_journal_order_and_arrive_as_placeholders_and_files()
         "renamed object on the peer",
     );
 
-    // A directory rename moves the subtree in one operation, both ways.
     std::fs::create_dir_all(m1.join("tree/sub")).unwrap();
     std::fs::write(m1.join("tree/sub/leaf"), b"leaf").unwrap();
     std::fs::write(m1.join("tree/top"), b"top").unwrap();
@@ -603,7 +567,6 @@ fn local_changes_publish_in_journal_order_and_arrive_as_placeholders_and_files()
         "renames were published as moves"
     );
 
-    // The other direction.
     std::fs::create_dir_all(m2.join("back")).unwrap();
     std::fs::write(m2.join("back/from-peer.txt"), b"hello from the peer").unwrap();
     wait_for(
@@ -618,8 +581,6 @@ fn local_changes_publish_in_journal_order_and_arrive_as_placeholders_and_files()
     assert_records_follow_writer_order(&mut pair, &m1, &m2);
 }
 
-/// `left` has exactly the bytes of `right`. Reports the length or first
-/// differing offset instead of printing megabytes of content on failure.
 fn assert_same_bytes(left: &[u8], right: &[u8], what: &str) {
     assert_eq!(left.len(), right.len(), "{what}: length differs");
     if let Some(at) = left.iter().zip(right).position(|(l, r)| l != r) {
@@ -627,9 +588,6 @@ fn assert_same_bytes(left: &[u8], right: &[u8], what: &str) {
     }
 }
 
-/// A large remote file starts as a placeholder with the author's exact size
-/// and mtime, and a full read hydrates the author's bytes without touching
-/// the mtime.
 fn assert_placeholder_hydrates(placeholder: &Path, original: &Path, expected: &[u8]) {
     assert!(
         residency_xattr(placeholder).is_some(),
@@ -657,8 +615,6 @@ fn assert_placeholder_hydrates(placeholder: &Path, original: &Path, expected: &[
     assert_eq!(mtime_ms(placeholder), mtime_ms(original));
 }
 
-/// Records written in sequence on the host arrive, and are versioned, in the
-/// writer's order; after the host stops its tree is no longer reachable.
 fn assert_records_follow_writer_order(pair: &mut Pair, m1: &Path, m2: &Path) {
     std::fs::create_dir_all(m1.join("seq")).unwrap();
     for name in ["a", "b", "c"] {
@@ -682,8 +638,6 @@ fn assert_records_follow_writer_order(pair: &mut Pair, m1: &Path, m2: &Path) {
         versions.windows(2).all(|w| w[0] <= w[1]),
         "record versions follow the writer's order: {versions:?}"
     );
-    // The renamed file is the record created as objects/2: its history
-    // runs from that creation through the rename.
     let history = provenance(&pair.dir.join("host-cache"), "objects/3");
     assert!(
         history.first() == Some(&fs_protocol::FileProvenance::Create)
@@ -706,7 +660,6 @@ fn persisted_namespace(cache: &Path) -> fs::Namespace {
     fs::Namespace::from_bytes("reader", &outcome.bytes).unwrap()
 }
 
-/// The provenance of every version of the record at `path`, oldest first.
 fn provenance(cache: &Path, path: &str) -> Vec<fs_protocol::FileProvenance> {
     let ns = persisted_namespace(cache);
     let entry = ns
@@ -717,8 +670,6 @@ fn provenance(cache: &Path, path: &str) -> Vec<fs_protocol::FileProvenance> {
     versions.into_iter().map(|v| v.provenance).collect()
 }
 
-/// The time of the first content version of each path, from the host's
-/// persisted namespace and history.
 fn first_versions(cache: &Path, paths: &[&str]) -> Vec<u64> {
     let ns = persisted_namespace(cache);
     paths
@@ -743,7 +694,6 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
-        // The compatibility defaults Tilo OS ships in /etc/gitconfig.
         .args([
             "-c",
             "core.trustctime=false",
@@ -790,7 +740,6 @@ fn a_git_repository_made_on_one_device_is_clean_and_complete_on_the_other() {
     files.insert("README.md", b"# demo\n".to_vec());
     files.insert("src/lib.rs", b"pub fn f() {}\n".to_vec());
     files.insert("assets/blob.bin", pattern(7, 2 * 1024 * 1024));
-    // An executable and a symbolic link: git compares both.
     files.insert("tool.sh", b"#!/bin/sh\necho tool\n".to_vec());
     std::os::unix::fs::symlink("README.md", repo1.join("latest")).unwrap();
     for round in 0..3u8 {
@@ -803,10 +752,6 @@ fn a_git_repository_made_on_one_device_is_clean_and_complete_on_the_other() {
                 set_mode(&p, 0o755);
             }
         }
-        // Edits and the commit land in different seconds, as when a person
-        // works. An index written in the second its files changed holds
-        // "racily clean" entries that the next `git status` anywhere
-        // rewrites (git's own rule), which is not a sync artifact.
         std::thread::sleep(Duration::from_millis(1100));
         git(&repo1, &["add", "-A"]).unwrap();
         git(&repo1, &["commit", "-q", "-m", &format!("round {round}")]).unwrap();
@@ -814,9 +759,6 @@ fn a_git_repository_made_on_one_device_is_clean_and_complete_on_the_other() {
     let head = git(&repo1, &["rev-parse", "HEAD"]).unwrap();
     assert_eq!(git(&repo1, &["status", "--porcelain"]).unwrap(), "");
 
-    // A tool keeps running `git status` on the peer while it syncs, as a
-    // shell prompt does. It may write the index whenever what it sees is
-    // not a state the author's disk had; nothing it sees may make it.
     let t = Instant::now();
     let mut last_status = String::new();
     let mut polls = 0u32;
@@ -860,7 +802,6 @@ fn a_git_repository_made_on_one_device_is_clean_and_complete_on_the_other() {
         index_before,
         "status on the peer did not rewrite the index (no stat ping-pong)"
     );
-    // Give a stray capture on the peer time to show up.
     std::thread::sleep(Duration::from_secs(3));
     assert_eq!(
         pair.peer.log_count(" change(s), "),
@@ -886,9 +827,6 @@ fn mode_of(path: &Path) -> u32 {
     std::fs::symlink_metadata(path).unwrap().mode() & 0o7777
 }
 
-/// Every path below `root`, links not followed.
-/// The daemon's own staging entries come and go; they are not part of the
-/// tree.
 fn walk(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -977,8 +915,6 @@ fn modes_links_and_ownership_replicate_and_hard_links_stay_consistent() {
             path.display()
         );
     }
-    // Hard links arrive as separate files with the same bytes; a write
-    // through one link reaches both.
     assert_eq!(std::fs::read(m2.join("a")).unwrap(), b"linked");
     std::fs::write(m1.join("b"), b"written through b").unwrap();
     wait_for(
@@ -991,7 +927,6 @@ fn modes_links_and_ownership_replicate_and_hard_links_stay_consistent() {
         },
     );
 
-    // Changes of mode and target only, both ways.
     set_mode(&m1.join("bin/run.sh"), 0o644);
     std::fs::remove_file(m1.join("link-rel")).unwrap();
     std::os::unix::fs::symlink("secret", m1.join("link-rel")).unwrap();
@@ -1040,7 +975,6 @@ fn a_crashed_daemon_resumes_from_its_last_epoch_and_publishes_only_what_changed(
     );
     assert!(residency_xattr(&m2.join("big")).is_some());
 
-    // The host crashes. While nothing journals, the tree changes.
     let live = pair.host.live.clone().unwrap();
     pair.host.kill();
     std::fs::write(live.join("f0"), b"edited while the daemon was down").unwrap();
@@ -1049,8 +983,6 @@ fn a_crashed_daemon_resumes_from_its_last_epoch_and_publishes_only_what_changed(
 
     let dir = pair.dir.clone();
     let mut host = Daemon::spawn("host2", "host", &dir, &a, &["serve"], &m1);
-    // The first epoch compares the workspace against the last persisted one
-    // before the tree is exposed again.
     let comparison = host.wait_line("full comparison");
     assert!(
         comparison.contains(": 3 change(s)"),
@@ -1073,8 +1005,6 @@ fn a_crashed_daemon_resumes_from_its_last_epoch_and_publishes_only_what_changed(
         },
     );
 
-    // The peer restarts with a placeholder never read: it is re-adopted
-    // before the tree is exposed, and reads the right bytes.
     pair.peer.terminate();
     assert!(!m2.join("big").exists(), "nothing is exposed while stopped");
     let ticket = pair.ticket.clone();
@@ -1097,7 +1027,6 @@ fn a_crashed_daemon_resumes_from_its_last_epoch_and_publishes_only_what_changed(
     peer.terminate();
 }
 
-/// The index of the last log line containing `needle`.
 fn last_line(daemon: &Daemon, needle: &str) -> Option<usize> {
     daemon
         .logs
@@ -1107,7 +1036,6 @@ fn last_line(daemon: &Daemon, needle: &str) -> Option<usize> {
         .rposition(|l| l.contains(needle))
 }
 
-/// Whether a log line after index `after` contains `needle`.
 fn logged_after(daemon: &Daemon, after: usize, needle: &str) -> bool {
     daemon
         .logs
@@ -1146,8 +1074,6 @@ fn a_daemon_killed_while_publishing_a_changeset_leaves_peers_all_of_it_or_none()
         m2.join("marker").exists().then_some(())
     });
 
-    // One burst of files is one epoch; the host dies while that epoch's
-    // changeset is being written.
     std::fs::create_dir_all(m1.join("burst")).unwrap();
     for i in 0..BURST {
         std::fs::write(
@@ -1165,7 +1091,6 @@ fn a_daemon_killed_while_publishing_a_changeset_leaves_peers_all_of_it_or_none()
         !logged_after(&pair.host, cut_at, "is durable"),
         "the host was killed after its changeset was written, not during it"
     );
-    // Nothing of an unwritten changeset reaches the peer.
     let down = Instant::now();
     while down.elapsed() < Duration::from_secs(2) {
         pair.peer.alive();
@@ -1177,8 +1102,6 @@ fn a_daemon_killed_while_publishing_a_changeset_leaves_peers_all_of_it_or_none()
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    // The restarted host publishes the epoch again, as one changeset: the
-    // peer takes all of it in one projection.
     let mut host = Daemon::spawn("host2", "host", &dir, &a, &["serve"], &m1);
     host.wait_serving();
     assert_eq!(
@@ -1199,7 +1122,6 @@ fn a_daemon_killed_while_publishing_a_changeset_leaves_peers_all_of_it_or_none()
                 .then_some(())
         },
     );
-    // The files are in place before the projection reports them.
     let peer_logs = Arc::clone(&pair.peer.logs);
     let projections: Vec<String> = wait_for(
         &mut [&mut host, &mut pair.peer],
@@ -1220,8 +1142,6 @@ fn a_daemon_killed_while_publishing_a_changeset_leaves_peers_all_of_it_or_none()
         "the whole changeset arrives in one projection: {projections:?}"
     );
 
-    // A git commit: the host dies once its ref update is captured. Whatever
-    // the peer shows, now or later, is a consistent repository.
     let repo1 = m1.join("repo");
     let repo2 = m2.join("repo");
     std::fs::create_dir_all(repo1.join("src")).unwrap();
@@ -1239,7 +1159,6 @@ fn a_daemon_killed_while_publishing_a_changeset_leaves_peers_all_of_it_or_none()
     host.wait_line("upsert File repo/.git/refs/heads/main");
     host.kill();
     let consistent = |repo: &Path| {
-        // No HEAD commit yet, or one whose every object is present.
         git(repo, &["rev-parse", "--verify", "-q", "HEAD"]).map_or(true, |_| {
             git(repo, &["fsck", "--connectivity-only", "--no-dangling"]).is_ok()
         })
@@ -1283,7 +1202,6 @@ fn a_daemon_killed_while_publishing_a_changeset_leaves_peers_all_of_it_or_none()
     host.terminate();
 }
 
-/// Writes into `path` every 300 ms until stopped: a writing session.
 struct Session {
     stop: Arc<std::sync::atomic::AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -1300,7 +1218,6 @@ impl Session {
         )
     }
 
-    /// Keeps writing through a descriptor that already wrote once.
     fn continue_with(file: std::fs::File) -> Self {
         use std::os::unix::fs::FileExt as _;
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1344,8 +1261,6 @@ fn a_file_modified_in_place_takes_a_lease_and_a_second_writer_gets_ebusy() {
         || (std::fs::read(&db2).ok()? == original).then_some(()),
     );
 
-    // A write inside the file, keeping its inode and most of its extents:
-    // the file becomes lease-class. Nothing names a file type.
     {
         let f = std::fs::OpenOptions::new()
             .read(true)
@@ -1357,13 +1272,11 @@ fn a_file_modified_in_place_takes_a_lease_and_a_second_writer_gets_ebusy() {
     pair.host.wait_line("db.bin is modified in place");
     std::thread::sleep(Duration::from_millis(1500));
 
-    // The host's next writing session takes the lease before its first write.
     let session = Session::start(&db1);
     pair.host
         .wait_line("took the write lease of db.bin (epoch 1)");
     pair.peer.wait_line("db.bin is read-only here");
 
-    // On the peer, a reader reads and opening it for writing gets EBUSY.
     let mut head = vec![0u8; 16];
     std::fs::File::open(&db2)
         .unwrap()
@@ -1377,12 +1290,8 @@ fn a_file_modified_in_place_takes_a_lease_and_a_second_writer_gets_ebusy() {
         .unwrap_err();
     assert_eq!(err.raw_os_error(), Some(libc::EBUSY), "{err}");
 
-    // The host closes the file: the lease is released, and the peer's next
-    // writing session takes it over with a new epoch.
     session.end();
     let t = Instant::now();
-    // Each attempt opens the file anew: the host's last versions replace it
-    // on the peer, and a descriptor of a replaced version stays refused.
     let taken = wait_for(
         &mut [&mut pair.host, &mut pair.peer],
         "the peer's write after the handover",
@@ -1397,7 +1306,6 @@ fn a_file_modified_in_place_takes_a_lease_and_a_second_writer_gets_ebusy() {
             Some(file)
         },
     );
-    // The peer keeps its session open while the host tries to write.
     let peer_session = Session::continue_with(taken);
     eprintln!(
         "lease handed over {:?} after the holder closed the file",
@@ -1427,8 +1335,6 @@ fn sqlite(db: &Path, sql: &str) -> Result<String, String> {
     }
 }
 
-/// Rewrites the first 16 bytes of `path` with what they already hold every
-/// 300 ms: a writing session that holds the lease without changing a byte.
 struct SameBytes {
     stop: Arc<std::sync::atomic::AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -1487,9 +1393,6 @@ fn sqlite_opened_read_write_on_the_device_without_the_lease_reads_and_refuses_wr
         "CREATE TABLE t(v INTEGER); INSERT INTO t VALUES (1), (2), (3);",
     )
     .unwrap();
-    // sqlite3 creates a database it cannot find, and an empty file made on
-    // the peer would be a concurrent creation of the path: ask only once
-    // the host's file is there.
     wait_for(
         &mut [&mut pair.host, &mut pair.peer],
         "the database on the peer",
@@ -1499,7 +1402,6 @@ fn sqlite_opened_read_write_on_the_device_without_the_lease_reads_and_refuses_wr
                 .then_some(())
         },
     );
-    // An update writes pages in place: the database becomes lease-class.
     sqlite(&db1, "UPDATE t SET v = v + 10;").unwrap();
     pair.host.wait_line("app.db is modified in place");
     wait_for(
@@ -1508,16 +1410,13 @@ fn sqlite_opened_read_write_on_the_device_without_the_lease_reads_and_refuses_wr
         || (sqlite(&db2, "SELECT sum(v) FROM t").ok()? == "36").then_some(()),
     );
 
-    // The host holds the lease.
     let session = SameBytes::start(&db1);
     pair.host.wait_line("took the write lease of app.db");
     pair.peer.wait_line("app.db is read-only here");
 
-    // sqlite3 opens read-write by default. On the peer it reads...
     for _ in 0..3 {
         assert_eq!(sqlite(&db2, "SELECT sum(v) FROM t").unwrap(), "36");
     }
-    // ...and a write fails cleanly, leaving no journal behind.
     let err = sqlite(&db2, "INSERT INTO t VALUES (99);").unwrap_err();
     assert!(err.contains("readonly"), "{err}");
     assert!(
@@ -1526,7 +1425,6 @@ fn sqlite_opened_read_write_on_the_device_without_the_lease_reads_and_refuses_wr
     );
     assert_eq!(sqlite(&db2, "PRAGMA integrity_check;").unwrap(), "ok");
 
-    // Once the host lets go, the peer writes, and the host sees it.
     session.end();
     let t = Instant::now();
     wait_for(
@@ -1553,7 +1451,6 @@ fn sqlite_opened_read_write_on_the_device_without_the_lease_reads_and_refuses_wr
     );
 }
 
-/// Asks a daemon's transport partition gate to `partition` or `reconnect`.
 fn gate(socket: &Path, command: &str) {
     use std::io::Write as _;
     let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
@@ -1567,8 +1464,6 @@ fn gate(socket: &Path, command: &str) {
     );
 }
 
-/// Makes `name` lease-class on both devices of `pair`: written once,
-/// modified in place on the host, then held and released by the host.
 fn lease_class_file(pair: &mut Pair, name: &str, content: &[u8]) {
     use std::os::unix::fs::FileExt as _;
     let f1 = pair.host.mount.join(name);
@@ -1586,15 +1481,12 @@ fn lease_class_file(pair: &mut Pair, name: &str, content: &[u8]) {
         .write_all_at(&content[..8], 0)
         .unwrap();
     pair.host.wait_line(&format!("{name} is modified in place"));
-    // The write gate is placed at the next lease tick; a descriptor opened
-    // before it is not watched by the kernel.
     std::thread::sleep(Duration::from_millis(1500));
     let session = SameBytes::start(&f1);
     pair.host
         .wait_line(&format!("took the write lease of {name}"));
     pair.peer.wait_line(&format!("{name} is read-only here"));
     session.end();
-    // Released: the peer opens it for writing again.
     wait_for(
         &mut [&mut pair.host, &mut pair.peer],
         "the lease released",
@@ -1610,8 +1502,6 @@ fn lease_class_file(pair: &mut Pair, name: &str, content: &[u8]) {
     );
 }
 
-/// From a thread that opens `path` read-write and waits at `start`, writes
-/// `bytes` at offset 0 and keeps rewriting them for `hold`.
 fn contend(
     path: PathBuf,
     bytes: Vec<u8>,
@@ -1684,7 +1574,6 @@ fn the_lease_authority_gives_a_free_lease_to_one_of_two_devices_asking_at_once()
                     .then_some(())
             },
         );
-        // The winner lets go; the next round starts from a free lease.
         wait_for(
             &mut [&mut pair.host, &mut pair.peer],
             "the lease released on both",
@@ -1697,7 +1586,6 @@ fn the_lease_authority_gives_a_free_lease_to_one_of_two_devices_asking_at_once()
         );
     }
     eprintln!("winners: {:?}", String::from_utf8_lossy(&winners));
-    // Alone, the peer asks the authority and is granted the lease.
     let start = Arc::new(std::sync::Barrier::new(1));
     let t = Instant::now();
     let peer = contend(f2, b"pz".to_vec(), start, Duration::ZERO);
@@ -1736,9 +1624,6 @@ fn a_version_from_a_tenancy_its_author_did_not_hold_is_kept_as_a_conflict_and_ne
     let f1 = pair.host.mount.join("data.db");
     let f2 = pair.peer.mount.join("data.db");
 
-    // Cut off from each other, both devices write the free file: the host
-    // is the lease authority and grants itself the lease; the peer cannot
-    // reach it and takes the same epoch optimistically.
     gate(&host_gate, "partition");
     gate(&peer_gate, "partition");
     let start = Arc::new(std::sync::Barrier::new(2));
@@ -1760,14 +1645,10 @@ fn a_version_from_a_tenancy_its_author_did_not_hold_is_kept_as_a_conflict_and_ne
     assert_eq!(peer.join().unwrap(), Ok(()));
     pair.peer
         .wait_line("optimistically: the lease authority did not answer");
-    // Each publishes its version while still cut off.
     std::thread::sleep(Duration::from_secs(8));
     gate(&host_gate, "reconnect");
     gate(&peer_gate, "reconnect");
 
-    // The granted tenancy wins. The host never shows the peer's bytes; both
-    // end on the host's version, and the peer's version is kept beside it
-    // as a conflict copy on both devices.
     let (m1, m2) = (pair.host.mount.clone(), pair.peer.mount.clone());
     let t = Instant::now();
     let copy = wait_for(

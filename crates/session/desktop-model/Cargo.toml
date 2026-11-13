@@ -30,6 +30,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 tilo-automation = { version = "0.1.0", path = "../../collab/automation" }
 uuid.workspace = true
 

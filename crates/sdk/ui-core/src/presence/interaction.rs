@@ -2267,3 +2267,34 @@ mod tests {
         );
     }
 }
+
+/// The characters an invocation writes into the text `text` of block `block` (in `region`, when
+/// one is named), as byte offsets in it: the `Text` range its anchor names there, counted in
+/// characters because a place counts them that way.
+pub(crate) fn written_in(
+    interaction: &SemanticInteraction,
+    region: Option<&str>,
+    block: &str,
+    text: &str,
+) -> Option<(usize, usize)> {
+    let tilo_actions::InteractionAnchor::Text {
+        region: written,
+        ranges,
+    } = &interaction.anchor
+    else {
+        return None;
+    };
+    if region.is_some_and(|region| region != written) {
+        return None;
+    }
+    let range = ranges.iter().find(|range| range.block == block)?;
+    let chars = text.chars().count();
+    let start = usize::try_from(range.start).ok()?.min(chars);
+    let end = usize::try_from(range.end).ok()?.min(chars).max(start);
+    let byte = |index: usize| {
+        text.char_indices()
+            .nth(index)
+            .map_or(text.len(), |(byte, _)| byte)
+    };
+    Some((byte(start), byte(end)))
+}

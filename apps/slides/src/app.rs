@@ -1,11 +1,8 @@
-//! Root widget for the Slides app.
-//!
-//! `SlidesApp` is a single full-window widget that lays out and paints the
-//! whole editor itself (toolbar, thumbnail rail, slide canvas, inspector)
-//! plus a full-screen present mode. The deck is the [`crate::deck::Deck`]
-//! record; this widget shows the mirror of it the framework presents, so
-//! undo/redo and live collaboration work without extra plumbing. View state
-//! — current slide, selection, mode — is per-peer and stays local.
+//! The Slides editor: one full-window widget that lays out and paints the
+//! toolbar, the slide rail, the canvas, the inspector and present mode. It shows
+//! the framework's mirror of the [`crate::deck::Deck`] record, so undo and
+//! collaboration need no extra plumbing; the current slide, the selection and the
+//! mode are the window's own.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -59,12 +56,9 @@ use tilo_content::ContentStore;
 use ui::i18n::ArgValue;
 use ui::widget::DrawChild;
 
-/// Compressed presentation bytes are bounded before opening the ZIP.  Archive
-/// member and aggregate expansion limits live beside the ODP/PPTX readers.
+/// Bounded before opening the ZIP; the readers bound members and expansion.
 const MAX_PRESENTATION_FILE_BYTES: usize = 64 * 1024 * 1024;
-/// Maximum slide rows materialized into one accessibility frame.
 const A11Y_SLIDE_WINDOW: usize = 64;
-/// Maximum current-slide objects materialized into one accessibility frame.
 const A11Y_ELEMENT_WINDOW: usize = 128;
 
 fn image_open_request() -> PickRequest {
@@ -109,7 +103,6 @@ fn load_presentation_from_path(
     parse_presentation(&bytes, is_pptx(path), content)
 }
 
-/// The deck of a presentation file's bytes: PPTX when `pptx`, else ODP.
 fn parse_presentation(bytes: &[u8], pptx: bool, content: &ContentStore) -> Result<Deck, String> {
     if bytes.len() > MAX_PRESENTATION_FILE_BYTES {
         return Err("presentation file is larger than 64 MiB".into());
@@ -142,7 +135,6 @@ fn save_presentation_to_path(
         .map_err(|error| error.to_string())
 }
 
-/// The host's chooser for a presentation to open.
 fn open_document_request() -> PickRequest {
     PickRequest::open(&tr("slides-open-title"), &tr("slides-open-accept"))
         .thread_name("slides-portal-open-doc")
@@ -150,7 +142,6 @@ fn open_document_request() -> PickRequest {
         .all_files()
 }
 
-/// The host's chooser for where to save the deck, suggesting `name`.
 fn save_document_request(suggested_name: &str) -> PickRequest {
     PickRequest::save(
         &tr("slides-save-title"),
@@ -161,22 +152,18 @@ fn save_document_request(suggested_name: &str) -> PickRequest {
     .filter(presentation_filter())
 }
 
-/// Below this allocated width (logical px) the editor switches from the
-/// docked side-by-side layout to a narrow layout where the slide rail
-/// collapses into an overlay flap. The slide canvas plus both side panels
-/// (rail + inspector) only fit comfortably above this width.
+/// Below this width the slide rail collapses into an overlay flap: the canvas
+/// and both panels only fit above it.
 #[cfg(test)]
 const NARROW_BREAKPOINT: f64 =
     (ui::tokens::Metrics::BASE.overview_width + ui::tokens::Metrics::BASE.content_min_width) as f64;
-/// Below this allocated width the inspector also collapses to a right-edge
-/// overlay flap. It intentionally matches the rail breakpoint: a compact
-/// window must never sacrifice the canvas to two permanent sidebars.
+/// Below this width the inspector collapses too: a compact window never gives
+/// the canvas away to two sidebars.
 #[cfg(test)]
 const INSPECTOR_BREAKPOINT: f64 = NARROW_BREAKPOINT;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
     Edit,
-    /// Slide-sorter: a full-window grid of every slide thumbnail.
     Overview,
     Present,
 }
@@ -221,7 +208,6 @@ enum Drag {
         start: Point,
         orig: (f64, f64, f64, f64),
     },
-    /// Dragging the overview grid scrollbar thumb.
     ScrollOverview {
         start_y: f64,
         orig_scroll: f64,
@@ -244,11 +230,9 @@ pub(super) enum Hit {
     SelectSlide(usize),
     SetFill(String),
     SetStroke(String),
-    /// Open the embeddable colour picker popover for the selected element's fill.
     OpenFillPicker,
     ToggleBold,
     ToggleItalic,
-    /// A bulleted list, or a numbered one when `true`.
     ToggleList(bool),
     SetAlign(TextAlign),
     BringFront,
@@ -258,17 +242,11 @@ pub(super) enum Hit {
     SetLayout(Layout),
     SetBackground(Background),
     SetPalette(PaletteKind),
-    /// Make the deck light or dark.
     SetLook(DeckLook),
     EditNotes,
     OpenLayoutMenu,
 }
 
-/// Framework event state shared by the small embedded-widget routers.
-///
-/// Keeping this boundary explicit prevents every router from mirroring the
-/// full [`Widget::handle_event`] signature and makes it clear which values are
-/// forwarded unchanged to child widgets.
 struct RoutedEvent<'a, 'doc> {
     event: &'a WindowEvent,
     scale_factor: f64,
@@ -280,22 +258,17 @@ struct RoutedEvent<'a, 'doc> {
     taffy: &'a TaffyTree<()>,
 }
 
-/// How the editor's slide is scaled.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) enum SlideZoom {
-    /// As large as the pane allows: what the editor opens at.
     #[default]
     Fit,
-    /// A zoom the person chose, in screen px per slide unit (1.0 is the
-    /// slide at its design size).
+    /// Screen px per slide unit; 1.0 is the design size.
     Pinned(f64),
 }
 
 impl SlideZoom {
-    /// The steps a zoom in or out lands on, from the fit scale upward.
     pub(crate) const STEPS: [f64; 8] = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0];
 
-    /// The zoom's own name: "Fit to window", or the percentage.
     pub(crate) fn label(self) -> String {
         match self {
             Self::Fit => tr("slides-zoom-fit"),
@@ -303,7 +276,6 @@ impl SlideZoom {
         }
     }
 
-    /// One step larger, or smaller, than `current`, within the steps.
     pub(crate) fn step(current: f64, forward: bool) -> Self {
         let steps = Self::STEPS;
         let found = if forward {
@@ -325,14 +297,12 @@ impl SlideZoom {
         Self::Pinned(found)
     }
 
-    /// Whether the zoom is the fitted one: nothing was chosen.
     pub(crate) fn is_fit(self) -> bool {
         matches!(self, Self::Fit)
     }
 }
 
 impl RoutedEvent<'_, '_> {
-    /// The event context a routed child widget sees, reporting into `handled`.
     fn event_ctx<'b>(&'b mut self, handled: &'b mut bool) -> ui::widget::EventCtx<'b> {
         ui::widget::EventCtx {
             scale_factor: self.scale_factor,
@@ -347,8 +317,6 @@ impl RoutedEvent<'_, '_> {
     }
 }
 
-/// The editor of slide `slide`'s speaker notes, each edit a field edit of
-/// them through `deck`.
 fn notes_control(deck: &Dispatcher<DeckRecord>, slide: &str) -> TextControl<TextInput, DeckRecord> {
     TextControl::at(
         TextInput::local()
@@ -360,8 +328,6 @@ fn notes_control(deck: &Dispatcher<DeckRecord>, slide: &str) -> TextControl<Text
     )
 }
 
-/// The slides an opener may show, and the ones asked for since the last
-/// sync.
 #[derive(Default)]
 struct Opened {
     known: std::collections::HashSet<String>,
@@ -373,24 +339,13 @@ struct Opened {
     reason = "the bools split across several unrelated concerns (document lifecycle, editor mode/selection state, the presentation flow, and --shots-only demo staging); grouping them would need a real design pass (e.g. per-concern sub-structs), left for a follow-up rather than forced here"
 )]
 pub struct SlidesApp {
-    /// The deck as last presented, with any gesture in flight previewed on
-    /// it (a drag moves its element here until the drop dispatches).
+    /// The deck as last presented, with a gesture in flight previewed on it.
     deck: Deck,
-    /// The slide to show once the deck holds it: one this editor just added
-    /// or moved.
     focus_slide: Option<Id>,
-    /// A deck presented while a gesture was in flight, shown once it ends.
     deferred: Option<std::rc::Rc<DeckRecord>>,
-    /// Slides a search hit or an agent's `open` asked to show, taken up in
-    /// the next sync.
     opened: Rc<RefCell<Opened>>,
-    /// What the editor shares with the view's effect handler: what effects
-    /// ask of it and the element it has selected.
     store: store::Shared,
-    /// The deck as the document holds it, shown as it changes; `None` for
-    /// an editor outside the framework.
     live: Option<Live<DeckRecord>>,
-    /// The `(revision, loads)` of the deck last shown.
     presented: Option<(u64, u64)>,
     rect: Rect,
     node: Option<NodeId>,
@@ -401,180 +356,80 @@ pub struct SlidesApp {
     sel: Option<Id>,
     editing_text: bool,
     editing_notes: bool,
-    /// Transient state and input policy for a running talk.
     presentation: Presentation,
-    /// Local routing policy selected from the presentation resource actions.
-    /// Never sync this through the deck: collaborators do not share hardware.
+    /// Local routing policy; never sync it: collaborators do not share
+    /// hardware.
     presentation_target: ui::fullscreen::FullscreenTarget,
 
-    /// Modal keyboard-shortcuts overlay. Owns its visibility, drawing, and
-    /// pointer/keyboard capture policy in every editor and presentation mode.
     help_overlay: HelpOverlay,
-    /// Snap-to-guides toggle (G in edit mode would clash with overview, so
-    /// snapping is always on, but the active guide lines computed during the
-    /// current drag live here so `draw` can paint them).
     active_guides: Vec<Guide>,
     last_mouse: Point,
     drag: Drag,
-    /// The slide-thumbnail rail — the shared [`PageSidebar`] widget. It owns the
-    /// list geometry, the scroll offset, drag-to-reorder (live reflow gap +
-    /// floating ghost), the index numbers, its scrollbar and its own right-click
-    /// menu. Slides keeps drawing the panel background, the "SLIDES" header and
-    /// the pinned Add/Dup/Del action row around it (`with_panel(false)`). Pointer
-    /// input is fed to it from the rail branches of the event handlers and the
-    /// events it emits are applied to the deck in [`SlidesApp::apply_rail_event`].
     page_sidebar: PageSidebar,
-    /// Last left-press on a canvas element: `(id, when, where)`. A second press
-    /// on the same element within the double-click window enters text edit; a
-    /// single press just selects and arms a move, so a selected element drags on
-    /// the very first grab.
+    /// `(id, when, where)` of the last left press: a second press on the same
+    /// element within the double-click window enters text edit. A single press
+    /// selects and arms a move, so a selected element drags on the first grab.
     last_click: Option<(Id, ui::time::Instant, Point)>,
-    /// A press inside the text box being edited is held: its drag selects
-    /// text in the box, not the element.
     text_drag: bool,
-    /// The words of the text box being edited, in the SDK editor; opened when
-    /// editing starts and closed when it ends.
     text_editor: Option<TextBoxEditor>,
-    /// Select every word once the editor opens (a search result revealed).
     text_edit_select_all: bool,
-    /// Where the text box being edited is drawn, in window coordinates.
     text_edit_box: Rect,
-    /// The press that opened the selected text box for editing, at a point
-    /// in the window, pressed this many times (two for a double-click): the
-    /// box's editor takes it once the event is through, so the caret lands
-    /// where the person pressed.
+    /// The press that opened the text box, and how many times: the box's editor
+    /// takes it once the event is through, so the caret lands where the person
+    /// pressed.
     opening_press: Option<(Point, u8)>,
-    /// How many fingers are on the window: while any is, the presses
-    /// arriving are a finger's taps and drags.
     fingers_down: u8,
 
-    /// Every edit of the deck goes through the resource's dispatcher as a
-    /// deck's action.
     dispatch: Dispatcher<DeckRecord>,
-    /// The window bar's entries.
     bar: window_bar::Bar,
 
-    /// Responsive slide-rail flap. On a wide window the rail is docked beside
-    /// the canvas; on a narrow window it collapses to an overlay flap behind a
-    /// scrim, closed by default and summoned by the toolbar hamburger. This is
-    /// the shared toolkit easing kernel ([`FlapState`]).
     rail_drawer: SidebarDrawer,
-    /// Responsive inspector flap. The inspector docks on the right on a wide
-    /// window; below a (narrower) breakpoint it collapses to a right-edge
-    /// overlay flap so the canvas reclaims the full width. Same easing kernel
-    /// as the rail.
     inspector_drawer: SidebarDrawer,
-    /// Width below which the inspector collapses to an overlay flap. Lower than
-    /// the rail's breakpoint so a mid-width window keeps the inspector docked
-    /// (rail flap + docked inspector) and only the narrowest widths collapse
-    /// both panels.
-    /// Last instant the flap animation advanced, for frame-rate-independent
-    /// easing across `draw` calls.
     last_flap_tick: ui::time::Instant,
-    /// Cleared after the first layout is resolved; until then the flap's eased
-    /// reveal is snapped to the resolved default so the very first frame at a
-    /// narrow width shows the (closed) flap without a one-frame flash.
     flap_uninitialised: bool,
-    /// Last applied theme text scale. Chrome construction is also used for
-    /// pointer hit testing and accessibility bounds, so large-text mode is a
-    /// layout state rather than a draw-only override.
     text_scale: f32,
-    /// How the slide is scaled in the editor: fitted to the pane, as it opens,
-    /// or a zoom the person chose — a slide is 13 cm of design at 1.0, and
-    /// reading 9 pt body copy off a fitted 16:9 page in a 13-inch window is
-    /// not possible.
+    /// Fitted to the pane, as it opens, or a zoom the person chose: 9 pt body
+    /// copy on a fitted page cannot be read.
     slide_zoom: SlideZoom,
-    /// How far the zoomed slide is moved from the pane's centre, in screen px
-    /// along each axis, clamped so the slide can always be reached whole.
     slide_pan: (f64, f64),
-    /// The pane the slide is drawn in, as the last frame measured it: what a
-    /// zoom and the wheel clamp the pan against.
     slide_pane: std::cell::Cell<(f64, f64)>,
-    /// Width breakpoint between the docked and overlay rail layouts. A field
-    /// (not a constant) so `--shots` can force a narrow layout deterministically.
 
-    /// Monotonic revision of the loaded deck, bumped whenever the CRDT mirror
-    /// is reloaded. The presentation cache includes it in its key, so a remote
-    /// edit (or undo) to the current slide invalidates the cached render.
     deck_rev: u64,
 
-    /// Path-keyed decode cache for image elements. Decodes off the UI thread;
-    /// the slide shows a light loading state until the pixels land.
     images: ImageStore,
-    /// Vertical scroll offset (px) of the edit-mode thumbnail rail. Clamped to
-    /// the overflow at every use, so all thumbnails stay reachable however many
-    /// slides the deck has.
     rail_scroll: f64,
-    /// Vertical scroll offset (px) of the slide-sorter overview grid.
     overview: OverviewGrid,
     layout_picker: Dropdown,
     demo_open_rail: bool,
     demo_open_inspector: bool,
-    /// Measured chrome text metrics `compute_chrome` lays out from (see
-    /// [`ChromeMetrics`]); refreshed at the top of every draw.
     chrome_metrics: ChromeMetrics,
-    /// Scroll model + overlay bar for the inspector column. The panel's
-    /// sections are laid out imperatively (buttons + labels), so the shared
-    /// [`Scrollable`] is driven by hand: `compute_chrome` shifts every
-    /// inspector item by its offset, `draw` syncs its viewport / content size
-    /// and paints its bar, and the wheel over the panel scrolls it. Without
-    /// this a 2× inspector in a short window simply ran past the viewport.
+    /// The panel's sections are laid out imperatively, so the shared
+    /// [`Scrollable`] is driven by hand: `compute_chrome` shifts every item by
+    /// its offset, and `draw` syncs its bar.
     inspector_scroll: Scrollable,
-    /// Visible result of a fallible open/save/image operation. Previously those
-    /// paths failed silently, leaving users unsure whether a click worked.
     io_toast: Notice,
 
-    /// Right-click context menu (element / slide actions) — the shared
-    /// [`ui::widget::ContextMenu`] primitive, driven standalone. `ctx_hits`
-    /// maps each menu row index (separators included, as `None`) to the action
-    /// it performs when chosen.
     ctx_menu: ContextMenu,
     ctx_hits: Vec<Option<Hit>>,
-    /// Font-size field for the selected text element — the shared
-    /// [`ui::widget::NumberInput`] (click-to-type + steppers), positioned into
-    /// the inspector's TYPE row and driven directly.
     font_input: NumberInput,
-    /// Embeddable fill colour picker ([`ui::widget::ColorPicker`]), shown as a
-    /// popover over the inspector when the user picks a custom fill.
     fill_picker: ColorPicker,
     fill_picker_open: bool,
-    /// The current slide's speaker notes, each edit a field edit of the
-    /// slide's notes. The shared editor owns multiline layout, selection,
-    /// clipboard, scrolling and IME; `editing_notes` only owns the
-    /// inspector's open state.
+    /// Each edit is a field edit of the slide's notes; `editing_notes` only owns
+    /// the inspector's open state.
     notes: TextControl<TextInput, DeckRecord>,
     notes_preview: TextInput,
-    /// The slide whose notes [`Self::notes`] edits.
     notes_slide: Rc<RefCell<String>>,
-    /// Put the notes caret at their end when the editor next shows them.
     notes_caret_to_end: bool,
-    /// Set when the popover opens so the next `draw` (which has the theme, hence
-    /// can resolve a colour *role* to a concrete colour) seeds the picker with
-    /// the selected element's current fill.
     fill_picker_needs_init: bool,
-    /// `--shots`-only: open a context menu on the first drawn frame (once the
-    /// layout rect is known) so a headless capture can show it. Never set on a
-    /// live launch.
     demo_menu: Option<DemoMenu>,
-    /// `--shots`-only: stage a live thumbnail reorder drag on the first drawn
-    /// frame (once the rail geometry is known) so a headless capture shows the
-    /// floating ghost + reflow gap. Never set on a live launch.
     demo_reorder: bool,
-    /// `--shots`-only: open the words' menu on the text box being edited
-    /// once its words are laid out, on its first word, or at the end of its
-    /// first line (`Some(true)`). Never set on a live launch.
     demo_words_menu: Option<bool>,
-    /// `--shots`-only: stage a thumbnail drag dropped over the red dashed
-    /// delete zone on the first drawn frame, so a headless capture shows the
-    /// armed "Drop to delete" target. Never set on a live launch.
     demo_delete_zone: bool,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
+    /// It repaints once, then rests after the frame draws it.
     dirty: bool,
 }
 
-/// Which context menu a `--shots` scenario should pop open for its capture.
 #[derive(Clone, Copy)]
 enum DemoMenu {
     Element,
@@ -582,8 +437,8 @@ enum DemoMenu {
 }
 
 impl SlidesApp {
-    /// The editor of the deck the view `cx` shows: its edits go through the
-    /// view's dispatcher, and its pictures are in the view's content store.
+    /// Its edits go through the view's dispatcher; its pictures are in the
+    /// view's content store.
     pub fn new(cx: &ViewCx<DeckRecord>) -> Self {
         let content = cx.content().unwrap_or_else(crate::assets::app_content);
         let state = cx.live().get();
@@ -673,10 +528,8 @@ impl SlidesApp {
         }
     }
 
-    /// Stage the view state of a screenshot scenario over the deck its
-    /// actions opened ([`crate::resource::SlidesShell::scenario`]): a mode, a
-    /// selection, an open menu, an edit or a drag in flight. Flaps take
-    /// their staged state at once rather than sliding into it.
+    /// Stages a mode, a selection, an open menu, an edit or a drag in flight over
+    /// the deck its actions opened. Flaps take their staged state at once.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         let Some(shot) = scenario else {
             return;
@@ -686,7 +539,6 @@ impl SlidesApp {
         self.stage_content(shot);
     }
 
-    /// The scenarios that pick a mode or a panel.
     fn stage_layout(&mut self, shot: &str) {
         match shot {
             "overview" => self.mode = Mode::Overview,
@@ -699,31 +551,22 @@ impl SlidesApp {
                 self.presentation.start();
                 self.presentation.set_show_notes(true);
             }
-            // Full presenter dashboard (current + next + notes + timer +
-            // position) as it appears on the presenter's own monitor.
             "presenter" => {
                 self.mode = Mode::Present;
                 self.presentation.start();
                 self.presentation.set_presenter_view(true);
             }
-            // Present-mode white-out (`W`) — the projector becomes a
-            // bright "whiteboard"/attention surface.
             "present_white" => {
                 self.mode = Mode::Present;
                 self.presentation.start();
                 self.presentation.set_blank(Blank::White);
             }
             "help" => self.help_overlay.show(),
-            // The long deck rests on its last slide with the rail scrolled to
-            // its end: the rail scrolls, and the pinned Add/Dup/Del row is
-            // never overlapped by thumbnails.
             "many" => self.rest_on_last_slide(),
-            // The same, with the rail summoned open at a narrow width.
             "many_rail" => {
                 self.rest_on_last_slide();
                 self.rail_drawer.open();
             }
-            // Overview scrolled to its end, proving the last slide is reachable.
             "overview_end" => {
                 self.mode = Mode::Overview;
                 self.overview.set_scroll(1.0e6);
@@ -740,45 +583,35 @@ impl SlidesApp {
         }
     }
 
-    /// The scenarios that select something or show an edit, a menu or a
-    /// drag in progress.
     fn stage_content(&mut self, shot: &str) {
         match shot {
-            // The speaker-notes editor focused, its caret shown.
             "notes_edit" => {
                 self.cur_slide = 1;
                 self.sel = None;
                 self.editing_notes = true;
                 self.bootstrapped = true;
             }
-            // The nothing-selected inspector: layout, background and every
-            // deck theme pill readable at the default width.
             "slide_props" => {
                 self.cur_slide = 1;
                 self.sel = None;
                 self.bootstrapped = true;
             }
-            // The picture on the last slide, decoded.
             "image" => {
                 self.rest_on_picture();
                 for src in self.picture_sources() {
                     self.images.load_blocking(&src);
                 }
             }
-            // The first frames after a picture is placed, while its bytes
-            // are still on their way.
             "image_loading" => {
                 self.rest_on_picture();
                 for src in self.picture_sources() {
                     self.images.hold_loading(&src);
                 }
             }
-            // The failure toast a presentation the decoder rejects shows.
             "open_error" => {
                 self.io_toast
                     .show(tr("slides-toast-open-failed"), ToastKind::Error);
             }
-            // Context menus open once the layout is known (see `draw`).
             "element_menu" => {
                 self.cur_slide = 1;
                 self.sel = self
@@ -795,38 +628,29 @@ impl SlidesApp {
                 self.demo_menu = Some(DemoMenu::Slide);
                 self.bootstrapped = true;
             }
-            // A thumbnail reorder drag mid-flight: the grabbed slide lifted
-            // out as a floating ghost, the list reflowed to open the gap.
             "reorder" => {
                 self.cur_slide = 0;
                 self.sel = None;
                 self.demo_reorder = true;
                 self.bootstrapped = true;
             }
-            // An on-canvas text box in edit mode with its first word
-            // selected.
             "edit_text" => {
                 self.select_first_text_on_second_slide();
                 self.begin_text_edit(true);
                 self.bootstrapped = true;
             }
-            // The words' menu open on a word of the text box being edited.
-            // At the end of a line in a narrow window: kept inside it.
             "words_menu" | "words_menu_edge" => {
                 self.select_first_text_on_second_slide();
                 self.begin_text_edit(false);
                 self.demo_words_menu = Some(shot == "words_menu_edge");
                 self.bootstrapped = true;
             }
-            // A thumbnail dragged onto the armed delete zone.
             "delete_zone" => {
                 self.cur_slide = 0;
                 self.sel = None;
                 self.demo_delete_zone = true;
                 self.bootstrapped = true;
             }
-            // The font-size field (text selected) and the fill colour
-            // picker popover open.
             "inspector_widgets" => {
                 self.select_first_text_on_second_slide();
                 self.inspector_drawer.open();
@@ -848,8 +672,6 @@ impl SlidesApp {
         });
     }
 
-    /// Show the last slide with the rail scrolled to its end (clamped to
-    /// the overflow at layout).
     fn rest_on_last_slide(&mut self) {
         self.cur_slide = self.deck.slides.len().saturating_sub(1);
         self.rail_scroll = 1.0e6;
@@ -863,7 +685,6 @@ impl SlidesApp {
         self.bootstrapped = true;
     }
 
-    /// The pictures on the current slide.
     fn picture_sources(&self) -> Vec<String> {
         self.slide()
             .map(|slide| {
@@ -877,40 +698,26 @@ impl SlidesApp {
             .unwrap_or_default()
     }
 
-    /// The rail layout resolved from the current allocated width. Overview and
-    /// present modes are full-window and never show the rail, but the editor
-    /// (`Mode::Edit`) consults this every frame.
     fn rail_layout(&self) -> SplitLayout {
         self.rail_drawer.layout_for(self.rect.width())
     }
 
-    /// Whether the rail is currently revealed (resolving the user's toggle
-    /// against the layout default: docked ⇒ open, overlay ⇒ closed).
     fn rail_open(&self) -> bool {
         self.rail_drawer.is_open()
     }
 
-    /// The inspector layout resolved from the current allocated width.
     fn inspector_layout(&self) -> SplitLayout {
         self.inspector_drawer.layout_for(self.rect.width())
     }
 
-    /// Whether the inspector is currently revealed.
     fn inspector_open(&self) -> bool {
         self.inspector_drawer.is_open()
     }
 
-    /// Reconcile both the rail and inspector flaps with the current width and
-    /// advance their eased reveals. On the very first resolved layout each flap
-    /// is snapped to its resolved default so a narrow first frame shows the
-    /// (closed) flaps with no one-frame flash. Returns the rail layout. Called
-    /// once per frame before `compute_chrome`.
     fn sync_flaps(&mut self, theme: Option<&Theme>) -> SplitLayout {
         self.dirty = true;
         self.resolve_drawers();
         if self.flap_uninitialised {
-            // A `--shots` scenario's drawer is opened for the size class the
-            // window actually resolved to.
             if std::mem::take(&mut self.demo_open_rail) {
                 self.rail_drawer.open();
             }
@@ -929,9 +736,6 @@ impl SlidesApp {
         self.rail_drawer.layout()
     }
 
-    /// Show the deck the resource holds now: an edit of this participant's,
-    /// a collaborator's, an undo or a restore. While a gesture is in flight
-    /// its preview stays on screen, and the deck is shown once it ends.
     pub(crate) fn adopt_resource_state(&mut self, state: &Rc<DeckRecord>) {
         if self.gesture_in_flight() {
             self.deferred = Some(Rc::clone(state));
@@ -945,8 +749,6 @@ impl SlidesApp {
                     .show(tr("slides-toast-shared-limit"), ToastKind::Error);
                 return;
             }
-            // The slide shown stays shown wherever the change moved it; a
-            // slide this editor just added or moved is shown once it lands.
             let shown = self
                 .focus_slide
                 .clone()
@@ -972,16 +774,12 @@ impl SlidesApp {
         if self.cur_slide >= self.deck.slides.len() {
             self.cur_slide = self.deck.slides.len() - 1;
         }
-        // Notes whose slide went away are no longer being edited: the next
-        // keystroke must not land in another slide's notes.
         if self.editing_notes {
             let slide = self.notes_slide.borrow().clone();
             if !slide.is_empty() && self.deck.index_of(&slide).is_none() {
                 self.end_notes_edit();
             }
         }
-        // Drop the selection when its element went away (a collaborator
-        // deleted it, an undo).
         if let Some(id) = self.sel.clone() {
             let alive = self
                 .deck
@@ -995,12 +793,10 @@ impl SlidesApp {
         }
     }
 
-    /// Whether a drag the deck previews is under way.
     fn gesture_in_flight(&self) -> bool {
         self.drag.active() || self.page_sidebar.is_dragging()
     }
 
-    /// Show a deck presented during a gesture, once the gesture is over.
     fn adopt_deferred(&mut self) {
         if !self.gesture_in_flight()
             && let Some(state) = self.deferred.take()
@@ -1018,21 +814,14 @@ impl SlidesApp {
         self.slide()?.element(id)
     }
 
-    /// The deck's own colours: its palette in its stored look, never the
-    /// UI theme, so the deck looks the same on every screen.
     fn palette(&self) -> Palette {
         Palette::resolve(self.deck.palette, self.deck.look)
     }
 
-    /// Submit one edit of the deck through the resource's dispatcher, as
-    /// every control, the palette and an agent do: it is checked against
-    /// the participant's permission, applied, recorded as one undo step and
-    /// shared. The deck shows it when it is presented back.
     fn submit(&self, action: &crate::actions::Action) {
         self.dispatch.apply(action);
     }
 
-    /// [`Self::submit`] for the edits of one gesture: one undo step.
     fn submit_all(&self, actions: &[crate::actions::Action]) {
         self.dispatch.group(|| {
             for action in actions {
@@ -1041,8 +830,6 @@ impl SlidesApp {
         });
     }
 
-    /// The element selected in the editor, as the edits bound to it name
-    /// it; none outside the editor or with nothing selected.
     fn selected(&self) -> Option<store::Selected> {
         if self.mode != Mode::Edit {
             return None;
@@ -1055,13 +842,10 @@ impl SlidesApp {
         })
     }
 
-    /// Hand the view the element selected now, for the edits it binds.
     fn note_selection(&self) {
         self.store.borrow_mut().selected = self.selected();
     }
 
-    /// Show the deck the document holds when it changed since it was last
-    /// shown.
     fn follow_document(&mut self) {
         let Some(state) = self
             .live
@@ -1073,14 +857,10 @@ impl SlidesApp {
         self.adopt_resource_state(&state);
     }
 
-    /// The inspector column's painted rect this frame (the same geometry
-    /// `compute_chrome` uses), for pointer tests that need only the panel.
     fn inspector_rect(&self) -> Rect {
         self.inspector_drawer.sidebar_rect()
     }
 
-    /// Whether the pointer is over the slide's canvas in the editor: not the
-    /// slide list, not the properties, and not the chrome around them.
     fn in_editor_canvas(&self) -> bool {
         if self.mode != Mode::Edit {
             return false;
@@ -1095,9 +875,8 @@ impl SlidesApp {
             && !(self.inspector_open() && self.inspector_rect().contains(self.last_mouse))
     }
 
-    /// Zoom the slide one step in (`direction` above zero) or out, from the
-    /// size it shows at now. The fitted size is the floor, so Ctrl+0 and two
-    /// steps back always bring the whole slide into view.
+    /// One step in or out. The fitted size is the floor, so two steps back
+    /// always show the whole slide.
     pub(crate) fn zoom_slide(&mut self, direction: f64) {
         if direction == 0.0 {
             return;
@@ -1107,13 +886,11 @@ impl SlidesApp {
         self.clamp_slide_pan();
     }
 
-    /// Show the whole slide in the pane again.
     pub(crate) fn zoom_slide_to_fit(&mut self) {
         self.slide_zoom = SlideZoom::Fit;
         self.slide_pan = (0.0, 0.0);
     }
 
-    /// Zoom to `scale`, where `None` fits the slide to the pane.
     pub(crate) fn zoom_slide_to(&mut self, scale: Option<f64>) {
         match scale {
             Some(scale) => self.slide_zoom = SlideZoom::Pinned(scale),
@@ -1122,10 +899,8 @@ impl SlidesApp {
         self.clamp_slide_pan();
     }
 
-    /// Move a zoomed slide by `(dx, dy)` screen px, as the wheel does,
-    /// stopping where its edge reaches the pane's. Returns whether it moved: a
-    /// fitted slide, or one already at its edge, has nowhere to go and leaves
-    /// the wheel to whoever is below.
+    /// Stops where the slide's edge reaches the pane's. `false` when it cannot
+    /// move, so the wheel goes to whoever is below.
     pub(crate) fn pan_slide(&mut self, dx: f64, dy: f64) -> bool {
         if self.slide_zoom.is_fit() {
             return false;
@@ -1136,8 +911,6 @@ impl SlidesApp {
         self.slide_pan != before
     }
 
-    /// Keep the slide's pan inside what the pane does not show: a zoomed slide
-    /// can be moved as far as its own overflow, and no further.
     fn clamp_slide_pan(&mut self) {
         let (avail_w, avail_h) = self.slide_pane.get();
         let SlideZoom::Pinned(scale) = self.slide_zoom else {
@@ -1152,23 +925,14 @@ impl SlidesApp {
         );
     }
 
-    /// The rail's painted rect, resolved from the current width + flap reveal.
-    /// Mirrors the computation in [`Self::compute_chrome`] so the scroll
-    /// helpers and the chrome agree.
     fn rail_rect(&self) -> Rect {
         self.rail_drawer.sidebar_rect()
     }
 
-    /// The scrolling viewport for the thumbnail list — the region between the
-    /// fixed "SLIDES" header and the pinned Add/Dup/Del action row. This is the
-    /// rect handed to the shared [`PageSidebar`]'s `begin_frame`; the widget
-    /// owns the thumbnail geometry + scrollbar inside it.
     fn rail_viewport(&self, rail: Rect) -> Rect {
         self.rail_viewport_of(rail)
     }
 
-    /// Whether a slide drag is currently hovering the delete zone (for the
-    /// zone's armed highlight).
     fn over_delete_zone(&self) -> bool {
         self.page_sidebar.is_dragging()
             && self
@@ -1176,11 +940,6 @@ impl SlidesApp {
                 .contains(self.last_mouse)
     }
 
-    /// Sync the shared page rail to this frame's geometry + scroll before it is
-    /// drawn or hit-tested. Feeds it the live viewport, the slide count and the
-    /// current slide (which clamps the scroll and re-pins any held drag gap),
-    /// then mirrors the clamped scroll back into `rail_scroll` so the widget
-    /// stays the single source of truth for the list geometry.
     fn sync_page_rail(&mut self) {
         self.dirty = true;
         let viewport = self.rail_viewport(self.rail_rect());
@@ -1191,25 +950,17 @@ impl SlidesApp {
         self.rail_scroll = self.page_sidebar.scroll();
     }
 
-    /// Adjust the rail scroll so the current slide's thumbnail is fully in view
-    /// (called after keyboard navigation / selection changes). Delegates to the
-    /// shared rail's `scroll_to`, then mirrors the offset back.
     fn scroll_rail_to_current(&mut self) {
         self.sync_page_rail();
         self.page_sidebar.scroll_to(self.cur_slide);
         self.rail_scroll = self.page_sidebar.scroll();
     }
 
-    /// Run the shared rail's frame sync and return its thumbnail slot rects —
-    /// the entry point tests + the `--shots` demo use to source click
-    /// coordinates, mirroring how `compute_chrome` reads them back.
     fn rail_thumb_rects(&mut self) -> Vec<(usize, Rect)> {
         self.sync_page_rail();
         self.page_sidebar.thumb_rects()
     }
 
-    /// Apply one event emitted by the shared page rail to the deck (and CRDT).
-    /// The single mapping used by both the live event path and the tests.
     fn apply_rail_event(&mut self, ev: PageSidebarEvent) {
         match ev {
             PageSidebarEvent::Select(i) => self.apply_hit(Hit::SelectSlide(i)),
@@ -1217,10 +968,6 @@ impl SlidesApp {
                 let Some(id) = self.deck.slides.get(from).map(|slide| slide.id.clone()) else {
                     return;
                 };
-                // A reorder is authored as one absolute rank, not as a
-                // receiver-relative destination index. This keeps the same
-                // encoded action deterministic if remote inserts land before
-                // it is replayed elsewhere.
                 self.submit(&actions::move_slide_action(&id, to));
                 self.focus_slide = Some(id);
                 self.cur_slide = to;
@@ -1238,14 +985,12 @@ impl SlidesApp {
         }
     }
 
-    /// Drain and apply every event the shared page rail produced this gesture.
     fn apply_rail_events(&mut self) {
         for ev in self.page_sidebar.take_events() {
             self.apply_rail_event(ev);
         }
     }
 
-    // --- mouse → slide coords ----------------------------------------------
     #[allow(
         clippy::unused_self,
         reason = "keeps the ergonomic self.to_slide(...) call site consistent with the other \
@@ -1258,11 +1003,6 @@ impl SlidesApp {
 
     fn handles_of(&self, dest: Rect, s: f64, el: &Element) -> Vec<(Handle, Rect)> {
         let er = self.element_frame(dest, s, el);
-        // Anchor the handles on a rect outset from the content by
-        // the theme's related spacing, so each handle sits *outside* the element and
-        // can never overlap the content (e.g. the first glyph of a left-anchored
-        // title). Resize math keys off the pointer position, not these centres,
-        // so pushing them outward doesn't change resize behaviour.
         let outset = self.chrome_metrics.s2;
         let grab_radius = self.chrome_metrics.target * 0.25;
         let hr = er.inflate(outset, outset);
@@ -1309,8 +1049,6 @@ impl SlidesApp {
                 self.sel = None;
                 self.mode = Mode::Edit;
             }
-            // Images can't be conjured from nothing — the tool opens the host
-            // portal file chooser; the chosen file is inserted when it resolves.
             Hit::Insert(ElementKind::Image) => {
                 self.dispatch.effect(&SlidesEffect::InsertPicture);
             }
@@ -1324,9 +1062,6 @@ impl SlidesApp {
             }
             Hit::SetFill(role) => self.set_sel_str("fill", &role),
             Hit::OpenFillPicker => {
-                // Only meaningful with an element selected. The next `draw`
-                // seeds the picker with the element's current fill (it has the
-                // theme to resolve a colour role).
                 if self.sel.is_some() {
                     self.fill_picker_open = true;
                     self.fill_picker_needs_init = true;
@@ -1334,7 +1069,6 @@ impl SlidesApp {
             }
             Hit::SetStroke(role) => {
                 self.set_sel_str("stroke", &role);
-                // Give a freshly-stroked shape a sensible default width.
                 if let Some(el) = self.selected_element()
                     && role != "none"
                     && el.stroke_width < 1.0
@@ -1370,9 +1104,6 @@ impl SlidesApp {
         }
     }
 
-    /// Compact editing exposes one drawer at a time. Opening the slide rail
-    /// immediately dismisses an overlay inspector, keeping the slide usable
-    /// behind the drawer instead of sandwiching it between two panels.
     fn toggle_rail_flap(&mut self) {
         if self.rail_drawer.is_overlay() && self.inspector_drawer.is_overlay() && !self.rail_open()
         {
@@ -1381,9 +1112,6 @@ impl SlidesApp {
         self.rail_drawer.toggle();
     }
 
-    /// Mirror [`Self::toggle_rail_flap`] for the Properties drawer. Docked
-    /// panels remain independent on roomy windows; mutual exclusion applies
-    /// only where both are overlays.
     fn toggle_inspector_flap(&mut self) {
         if self.inspector_drawer.is_overlay()
             && self.rail_drawer.is_overlay()
@@ -1394,7 +1122,6 @@ impl SlidesApp {
         self.inspector_drawer.toggle();
     }
 
-    /// Set one style of the selected element.
     fn restyle(&self, style: &actions::Style) {
         let (Some(slide), Some(element)) = (self.slide(), self.selected_element()) else {
             return;
@@ -1417,12 +1144,8 @@ impl SlidesApp {
         };
         self.restyle(&style);
     }
-    /// Toggle `mark` as the toolbar's button does: over the selected words
-    /// while a text box is being edited, through the shared editor exactly
-    /// as its shortcut does; over every word of a selected box otherwise.
     fn toggle_mark(&mut self, mark: ui::widget::marks::Mark) {
         if let Some(editor) = self.editing_words() {
-            // The editor's change is written in this frame's settle pass.
             editor.host.widget_mut().editor_mut().toggle_mark(mark);
             return;
         }
@@ -1440,9 +1163,6 @@ impl SlidesApp {
         );
     }
 
-    /// Toggle a bulleted list, or a numbered one when `ordered`: over the
-    /// selected paragraphs while a text box is being edited, through the
-    /// shared editor; over every paragraph of a selected box otherwise.
     fn toggle_list(&mut self, ordered: bool) {
         if let Some(editor) = self.editing_words() {
             editor.host.widget_mut().editor_mut().toggle_list(ordered);
@@ -1465,9 +1185,6 @@ impl SlidesApp {
         self.text_editor.as_mut().filter(|editor| editor.focused)
     }
 
-    /// Whether the toolbar shows `mark` as on: over the selected words (or
-    /// for the text typed next) while a box is being edited, over all of a
-    /// selected box's words otherwise.
     fn mark_on(&self, mark: &ui::widget::marks::Mark) -> bool {
         if self.editing_text
             && let Some(editor) = self.text_editor.as_ref().filter(|editor| editor.focused)
@@ -1484,9 +1201,6 @@ impl SlidesApp {
             .is_some_and(|el| el.kind == ElementKind::Text && mark_covers(&el.rich_blocks(), mark))
     }
 
-    /// Whether the toolbar shows the list (numbered when `ordered`) as on:
-    /// for the paragraph with the caret while a box is being edited, for
-    /// all of a selected box's paragraphs otherwise.
     fn list_on(&self, ordered: bool) -> bool {
         if self.editing_text
             && let Some(editor) = self.text_editor.as_ref().filter(|editor| editor.focused)
@@ -1575,8 +1289,6 @@ impl SlidesApp {
         };
         self.submit(&actions::add_element_action(&slide_id, &el));
         self.sel = Some(id);
-        // A new text box opens with its stock words selected, so what is
-        // typed next replaces them.
         if kind == ElementKind::Text {
             self.begin_text_edit(true);
         } else {
@@ -1584,8 +1296,6 @@ impl SlidesApp {
         }
     }
 
-    /// Show a deck just opened from a file from its first slide, nothing
-    /// selected or being edited.
     fn show_opened_deck(&mut self) {
         self.cur_slide = 0;
         self.sel = None;
@@ -1594,10 +1304,6 @@ impl SlidesApp {
         self.presentation.invalidate_cache();
     }
 
-    /// Advance the render-cache generation without letting a wrapping integer
-    /// accidentally make a newly loaded deck look like an old cached frame.
-    /// The practically unreachable boundary still has an explicit, safe
-    /// outcome: drop caches before beginning a fresh generation.
     fn bump_deck_revision(&mut self) {
         if let Some(next) = self.deck_rev.checked_add(1) {
             self.deck_rev = next;
@@ -1607,14 +1313,9 @@ impl SlidesApp {
         }
     }
 
-    /// Place the picture stored as `src` on the current slide and kick off
-    /// its background decode so it is ready by the time it paints.
     fn insert_picture(&mut self, src: &str) {
         let src = src.to_owned();
-        // Start decoding now (off the UI thread) so the first paint already has
-        // pixels, or a graceful loading/failed state if it can't be read.
         let _ = self.images.get(&src);
-        // A comfortable default frame, centred on the slide; the user resizes.
         let el = Element::image(&src, 340.0, 168.0, 600.0, 384.0);
         let id = el.id.clone();
         let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
@@ -1641,8 +1342,6 @@ impl SlidesApp {
         self.sel = Some(id);
     }
 
-    /// Put the chosen element on the clipboard; `cut` also takes it off the
-    /// slide, so a shape moves rather than being copied twice.
     pub(crate) fn copy_selected(&mut self, cut: bool) {
         let Some(element) = self.selected_element().cloned() else {
             return;
@@ -1662,9 +1361,6 @@ impl SlidesApp {
         );
     }
 
-    /// Place what the clipboard holds on the slide shown, as copies with ids
-    /// of their own. Clipboard text that is not a slide element is left to
-    /// whoever asked for it: pasting words into a text box is the box's job.
     pub(crate) fn paste_elements(&mut self) {
         let Some(text) = ui::text_selection::clipboard_paste() else {
             return;
@@ -1712,7 +1408,6 @@ impl SlidesApp {
         let from = self.cur_slide;
         if i as usize != from {
             self.end_notes_edit();
-            // Cross-fade only in present mode; edit/overview jumps are instant.
             if self.mode == Mode::Present {
                 self.presentation.start_transition(from);
             }
@@ -1722,8 +1417,6 @@ impl SlidesApp {
         self.editing_text = false;
     }
 
-    /// Jump straight to a slide by index (clamped). In present mode this is
-    /// the Home/End and overview-click path; it still cross-fades.
     fn goto_slide(&mut self, idx: usize) {
         let n = self.deck.slides.len();
         if n == 0 {
@@ -1742,7 +1435,6 @@ impl SlidesApp {
         self.editing_text = false;
     }
 
-    /// Enter full-screen present mode, (re)starting the speaker timer.
     fn enter_present(&mut self) {
         self.mode = Mode::Present;
         self.editing_text = false;
@@ -1750,39 +1442,18 @@ impl SlidesApp {
         self.presentation.start();
     }
 
-    /// Leave present mode back to the editor, clearing transient present
-    /// state (blank, presenter dashboard) but keeping the elapsed timer so a
-    /// re-entry via `P` resumes the same talk unless explicitly reset.
     fn exit_present(&mut self) {
         self.mode = Mode::Edit;
         self.presentation.leave();
     }
 
-    // --- fullscreen + multi-monitor seam -----------------------------------
-
-    /// Whether the app currently wants the window promoted to a true
-    /// *borderless OS fullscreen* surface — i.e. present mode.
-    ///
-    /// This drives the shared [`ui::fullscreen`] mechanism: `ui::App` polls the
-    /// root's [`FullscreenProvider::fullscreen_intent`] each frame and, via
-    /// [`FullscreenProvider::fullscreen_params`] (here: the largest output, a distinct
-    /// presentation view), enumerates the live monitors and `set_fullscreen`s
-    /// onto the chosen one — the same path the video player uses for immersive
-    /// fullscreen. On the Tilo compositor (which spans one combined scene) that
-    /// becomes a full-output `xdg_toplevel.set_fullscreen`; the present view
-    /// itself is the mode-`Present` draw (no toolbar/rail/inspector, black
-    /// backdrop, letterboxed slide).
-    ///
-    /// Exposed publicly so either consumer can read it without reaching into
-    /// the widget's private state.
+    /// Present mode asks the framework for a borderless fullscreen surface,
+    /// which it promotes onto the chosen output through the shared
+    /// [`ui::fullscreen`] path.
     pub fn wants_fullscreen(&self) -> bool {
         self.mode == Mode::Present
     }
 
-    /// Show the current slide's speaker notes in the notes editor, edited
-    /// through the deck's dispatcher as that slide's notes. Moving to
-    /// another slide rebinds it; otherwise a collaborator's edit folds in
-    /// under the live caret.
     fn sync_notes(&mut self, doc: &AutoCommit) {
         self.dirty = true;
         let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
@@ -1829,10 +1500,6 @@ impl SlidesApp {
         Widget::set_focus(self.notes.control_mut(), false);
     }
 
-    /// Route the inspector notes box through its notes editor, whose every
-    /// edit is a splice of the slide's notes through the deck's dispatcher.
-    /// Escape or a press outside ends editing; all editor events otherwise
-    /// stay in the shared caret/selection/IME path.
     fn route_notes_edit(&mut self, routed: &mut RoutedEvent<'_, '_>) -> bool {
         if !self.editing_notes {
             return false;
@@ -1877,14 +1544,9 @@ impl SlidesApp {
         input_handled
     }
 
-    /// The canvas slide itself: drop shadow, the rendered slide, its
-    /// border, the selection ring/handles or live text caret+selection, the
-    /// snap guides, and the caption underneath. No-op while the deck has no
-    /// current slide.
     fn draw_editor_canvas(&self, ctx: &mut PaintCtx<'_>, chrome: &Chrome, assets: DeckAssets<'_>) {
         let Some(slide) = self.slide() else { return };
         let radius = f64::from(ctx.theme.tokens.radii.control);
-        // The text box being edited draws its words through its editor.
         let editing = self
             .text_editor
             .as_ref()
@@ -1895,9 +1557,6 @@ impl SlidesApp {
         self.draw_editor_guides(ctx.scene, ctx.transform, ctx.theme, chrome);
     }
 
-    /// The selection ring + resize handles around the selected element, or
-    /// (while editing) the live text selection + caret. No-op with nothing
-    /// selected.
     fn draw_editor_selection_chrome(
         &self,
         scene: &mut Scene,
@@ -1928,7 +1587,6 @@ impl SlidesApp {
         }
     }
 
-    /// Live alignment guides (only while a drag is snapping).
     fn draw_editor_guides(&self, scene: &mut Scene, t: Affine, theme: &Theme, chrome: &Chrome) {
         let you = theme.tokens.colors.intent.you;
         let dest = chrome.slide_dest;
@@ -1946,21 +1604,14 @@ impl SlidesApp {
         }
     }
 
-    /// Position the inspector's embedded `ui` widgets (font-size field, fill
-    /// picker) from `chrome` so both `draw` and `handle_event` hit-test them.
     fn position_inspector_widgets(&mut self, chrome: &Chrome) {
         if let Some(rect) = chrome.font_input_rect {
-            // Reflect the element's size unless the user is mid-edit (so typing
-            // isn't clobbered by the CRDT mirror).
             if !self.font_input.is_editing() {
                 let fs = self.selected_element().map_or(40.0, |e| e.font_size);
                 self.font_input.set_value(fs);
             }
             self.font_input.apply_layout_external(rect);
         } else {
-            // No slot this frame (nothing selected, or the TYPE row scrolled
-            // out of the panel): park the field so its last rect cannot keep
-            // catching presses meant for whatever is painted there now.
             self.font_input.apply_layout_external(Rect::ZERO);
         }
         if let Some(rect) = chrome.fill_picker_rect {
@@ -1985,9 +1636,6 @@ impl SlidesApp {
         }
     }
 
-    /// Draw the inspector's embedded widgets on top of the editor chrome: the
-    /// font-size [`NumberInput`] and, when open, the fill [`ColorPicker`]
-    /// popover (with its own panel + shadow).
     fn draw_inspector_widgets(
         &mut self,
         scene: &mut Scene,
@@ -1999,8 +1647,6 @@ impl SlidesApp {
     ) {
         self.position_inspector_widgets(chrome);
         if chrome.font_input_rect.is_some() {
-            // Clipped like the rest of the inspector body: the field scrolls
-            // with its section rather than floating over the header.
             let local = self.inspector_theme(theme);
             scene.push_layer(
                 Fill::NonZero,
@@ -2026,8 +1672,6 @@ impl SlidesApp {
             scene.pop_layer();
         }
         if let Some(rect) = chrome.fill_picker_rect {
-            // Seed the picker with the element's current fill on the first frame
-            // it's open (now that we hold the theme to resolve a colour role).
             if self.fill_picker_needs_init {
                 let mut pal = self.palette();
                 if let Some(slide) = self.slide() {
@@ -2099,8 +1743,6 @@ impl SlidesApp {
 
     fn draw_overview(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let palette = self.palette();
-        // A slide's type is sized in slide units, whatever the reader's text
-        // scale; the cards' own text is set in its roles.
         self.overview.draw(
             &mut PaintCtx::new(scene, t, tr, theme),
             self.rect,
@@ -2116,8 +1758,6 @@ impl SlidesApp {
     }
 }
 
-/// Make `title` safe as a filename stem: keep alphanumerics, dash and
-/// underscore, fold everything else to `_`, and never return empty.
 fn sanitize_filename(title: &str) -> String {
     let s: String = title
         .chars()
@@ -2137,7 +1777,6 @@ fn sanitize_filename(title: &str) -> String {
     }
 }
 
-/// Ensure `path` ends in `.odp` (the host Save dialog may drop the extension).
 fn ensure_odp_ext(path: &std::path::Path) -> PathBuf {
     match path.extension() {
         Some(ext) if ext.eq_ignore_ascii_case("odp") => path.to_path_buf(),
@@ -2367,8 +2006,6 @@ impl FullscreenProvider for SlidesApp {
     }
 
     fn on_fullscreen_changed(&mut self, active: bool) {
-        // Installing a real audience surface intentionally unfullscreens the
-        // presenter; only an ordinary compositor exit ends the talk.
         if !active && self.mode == Mode::Present && !self.presentation.has_external_audience() {
             self.exit_present();
         }
@@ -2463,8 +2100,6 @@ impl Widget for SlidesApp {
         for ask in asks {
             self.take_ask(ask);
         }
-        // An open's or a save's result says so in the window's bar while it
-        // lasts.
         self.io_toast.expire();
         self.io_toast.publish();
         self.adopt_deferred();
@@ -2477,9 +2112,6 @@ impl Widget for SlidesApp {
                 self.scroll_rail_to_current();
             }
         }
-        // One-time view bootstrap: open on the second slide with its title
-        // selected so the editor demonstrates selection + the element
-        // inspector immediately (also what `--shots` captures).
         if !self.bootstrapped && self.deck.slides.len() > 1 {
             self.cur_slide = 1;
             if let Some(slide) = self.deck.slides.get(1) {
@@ -2519,9 +2151,6 @@ impl Widget for SlidesApp {
 
     ui::rect_geometry!();
 
-    /// The editor fills its node and lays its canvas out itself: there is
-    /// never a size for the layout solver to measure, so a frame that only
-    /// moves the window (a strip pan) solves none.
     fn layout_needs_measure(&self) -> bool {
         false
     }
@@ -2538,20 +2167,11 @@ impl Widget for SlidesApp {
             return;
         }
         self.text_scale = theme.text_scale;
-        // Fold in any images that finished decoding on their worker thread. A
-        // freshly-decoded image must re-shape the cached present-mode slide.
         if self.images.pump() {
             self.presentation.invalidate_cache();
         }
-        // Expire a settled cross-fade so `needs_animation_frame` can rest.
         self.presentation.expire_transition(theme.reduce_motion);
-        // Measure first, so everything this frame lays out — the flap and rail
-        // sync below, `compute_chrome`, and the hit-rects later events derive
-        // from it — comes from the renderer that is about to paint it.
         self.refresh_chrome_metrics(text_renderer, theme);
-        // Reconcile the rail flap with the current width (so resizing across
-        // the breakpoint returns to the layout default) and advance its eased
-        // reveal using real elapsed time, frame-rate independent.
         let now = ui::time::now();
         let dt = (now - self.last_flap_tick).as_secs_f64().min(0.1);
         self.last_flap_tick = now;
@@ -2561,9 +2181,6 @@ impl Widget for SlidesApp {
         match self.mode {
             Mode::Edit => {
                 let chrome = self.compute_chrome();
-                // Hand the inspector's scroll model this frame's viewport and
-                // content extent; it clamps the stored offset and paints its
-                // bar from the same numbers `compute_chrome` shifted by.
                 self.inspector_scroll
                     .set_viewport_rect(chrome.inspector_body);
                 self.inspector_scroll.set_content_size(
@@ -2587,13 +2204,8 @@ impl Widget for SlidesApp {
             Mode::Overview => self.draw_overview(scene, transform, text_renderer, theme),
             Mode::Present => self.draw_present(scene, transform, text_renderer, theme),
         }
-        // The help overlay draws over every mode — including Present, where it
-        // must appear (and be dismissable), otherwise a `?` press would set the
-        // flag, suppress the overlay, and swallow all later navigation keys.
         self.help_overlay
             .draw(scene, transform, text_renderer, theme, self.rect);
-        // The words' menu and the right-click context menu float above
-        // everything else.
         self.draw_words_overlay(scene, transform, text_renderer, theme, presence);
         self.ctx_menu
             .draw_child(scene, transform, text_renderer, theme, presence);
@@ -2601,22 +2213,14 @@ impl Widget for SlidesApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Only ask for another frame when something is actually moving:
-        //   * a slide cross-fade is mid-flight (bounded ~240ms),
-        //   * a rail/inspector flap is sliding open/closed (bounded), or
-        //   * an image is still decoding on its worker thread.
-        // Present mode is deliberately NOT an unconditional "true": the settled
-        // slide is static and the speaker clock reads wall-time on each paint,
-        // so it re-renders on navigation/input rather than spinning at vsync
-        // for a once-a-second clock. See the note on the redraw cadence below.
+        // A frame is asked for only while something moves: a cross-fade, a flap
+        // or a decoding image. A settled presentation is static, and the speaker
+        // clock reads wall time on each paint.
         self.presentation.needs_animation_frame()
             || self.rail_drawer.is_animating()
             || self.inspector_drawer.is_animating()
             || self.images.any_loading()
-            // A live thumbnail reorder pumps frames so the ghost tracks the
-            // cursor and the rail auto-scrolls at its edges.
             || self.page_sidebar.is_dragging()
-            // The words being edited animate as any text field's do.
             || self
                 .text_editor
                 .as_ref()
@@ -2633,10 +2237,7 @@ impl Widget for SlidesApp {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.dirty = true;
-        // The press that opens a box is taken up within its own event.
         self.opening_press = None;
-        // The toolkit delivers a finger's taps and drags as pointer events
-        // before its contact update; the contact only says a finger is down.
         if let WindowEvent::Touch(touch) = event {
             use winit::event::TouchPhase;
             match touch.phase {
@@ -2647,8 +2248,6 @@ impl Widget for SlidesApp {
                 TouchPhase::Moved => {}
             }
         }
-        // A restore replaces the notes' text object; the first event may
-        // precede the sync that follows it.
         if self.editing_notes {
             self.sync_notes(ctx.state.doc());
         }
@@ -2681,15 +2280,11 @@ impl Widget for SlidesApp {
             *ctx.handled = true;
             return;
         }
-        // The words being edited take a secondary press on them (their own
-        // menu) and every pointer event while that menu is open.
         if self.words_take_menu_event(routed.event) {
             self.route_text_edit(&mut routed, ctx.handled);
             *ctx.handled = true;
             return;
         }
-        // A right-press (re)opens a context menu — handled before the modal
-        // routing so it works even while another menu is already up.
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Right,
@@ -2699,21 +2294,15 @@ impl Widget for SlidesApp {
             self.on_right_press(self.last_mouse, ctx.handled);
             return;
         }
-        // While a context menu is open it is modal: every other event goes to it.
         if self.route_layout_picker(&mut routed) || self.route_context_menu(&mut routed) {
             *ctx.handled = true;
             return;
         }
-        // The inspector's embedded widgets (font-size field, fill picker) get
-        // first refusal on events over them.
         if self.route_inspector_widgets(&mut routed) {
             *ctx.handled = true;
             return;
         }
-        // Typing on a selected text box writes into it, as in other
-        // presentation editors: the letters are words, never shortcuts.
         self.begin_typing_into_selection(routed.event, routed.modifiers);
-        // The text box being edited owns the keyboard and its own pointer.
         if self.route_text_edit(&mut routed, ctx.handled) {
             return;
         }
@@ -2742,11 +2331,9 @@ impl Widget for SlidesApp {
         Some("slides-editor")
     }
 
-    /// Slides paints a single retained canvas, so every visible control and
-    /// durable object is represented as a synthetic semantic child. Controls
-    /// use the same `Hit` values as pointer input and stable document ids are
-    /// used for slides/elements, keeping AT activation from drifting after a
-    /// reorder or remote edit.
+    /// Slides paints one retained canvas, so each visible control and durable
+    /// object is a synthetic semantic child on the same `Hit` values and stable
+    /// ids, which keeps assistive activation from drifting after a reorder.
     #[allow(
         clippy::too_many_lines,
         reason = "the custom-painted editor has editor, presentation, and modal semantic projections in one Widget hook"
@@ -2842,10 +2429,6 @@ impl Widget for SlidesApp {
             );
         }
 
-        // The semantic rail is windowed around the current slide. Global
-        // search and `resource(id)` resolve the entire durable deck lazily; an
-        // accessibility frame remains bounded even for an imported 1,000-slide
-        // presentation.
         let start = self
             .cur_slide
             .saturating_sub(A11Y_SLIDE_WINDOW / 2)
@@ -2907,7 +2490,6 @@ impl Widget for SlidesApp {
                     .with_action_target(target)
                     .with_bounds(button.rect)
                     .with_state(state);
-                // The notes box reads out what it holds, as a field would.
                 Some(match (&button.hit, self.slide()) {
                     (Hit::EditNotes, Some(slide)) if !slide.notes.is_empty() => {
                         node.with_value(slide.notes.clone())
@@ -2982,8 +2564,6 @@ impl Widget for SlidesApp {
         )
     }
 
-    /// An assistive technology operates the words being edited, through
-    /// the node `Self::words_access_node` gave them.
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
@@ -3009,7 +2589,6 @@ impl Widget for SlidesApp {
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        // The words being edited name their own parts.
         if !target.starts_with("slides.")
             && let Some(editor) = self.editing_words()
             && editor
@@ -3087,7 +2666,6 @@ impl Widget for SlidesApp {
         if self.editing_notes {
             return self.notes.control().cursor_shape(point);
         }
-        // The words being edited show the text beam, as in any text field.
         if self.editing_text
             && self.text_edit_box.contains(point)
             && let Some(editor) = &self.text_editor
@@ -3100,10 +2678,9 @@ impl Widget for SlidesApp {
         None
     }
 
-    /// A finger's drag on something on the canvas moves, resizes or
-    /// selects it as the mouse's does; a finger held on a slide in the list
-    /// picks it up to move it. A tap clicks and a hold reaches the menu, as
-    /// everywhere. Elsewhere a drag scrolls.
+    /// A finger's drag on the canvas moves, resizes or selects as the mouse's
+    /// does; one held on a slide in the list picks it up. Elsewhere a drag
+    /// scrolls.
     fn touch_claim(&self, point: Point) -> ui::TouchClaim {
         if self.canvas_takes_finger(point) {
             ui::TouchClaim::Drag
@@ -3114,11 +2691,6 @@ impl Widget for SlidesApp {
         }
     }
 
-    /// What the person did in the window's bar runs, and the bar's slots
-    /// follow the editor. Then the edit that typing or a toolbar left for
-    /// after the event: the formatting a keystroke closed, a mark the
-    /// toolbar set on the selection. The words' editor writes it now, in
-    /// this frame.
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
         self.run_window_toolbar();
         if self.editing_text
@@ -3128,9 +2700,6 @@ impl Widget for SlidesApp {
         }
     }
 
-    /// The words being edited wake the editor when a spelling mark settles
-    /// or the word under the caret has a suggestion; a file notice wakes it
-    /// to leave.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         self.text_editor
             .as_ref()
@@ -3153,8 +2722,6 @@ impl Widget for SlidesApp {
     }
 
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
-        // A text box being edited takes the input method too, so composed
-        // text (and, on the web, the page's text field) reaches it.
         if self.editing_text
             && let Some(editor) = &self.text_editor
         {
@@ -3168,8 +2735,6 @@ impl Widget for SlidesApp {
             .flatten()
     }
 
-    /// A text box and the speaker notes take line feeds as text: the input
-    /// method may commit several lines into them.
     fn ime_multiline(&self) -> bool {
         if self.editing_text
             && let Some(editor) = &self.text_editor
@@ -3179,16 +2744,12 @@ impl Widget for SlidesApp {
         self.editing_notes && self.notes.control().ime_multiline()
     }
 
-    /// Keep receiving pointer events for the whole of a canvas move/resize or a
-    /// thumbnail reorder, even if the cursor briefly leaves the source rect.
     fn wants_pointer_capture(&self) -> bool {
         self.drag.active() || self.page_sidebar.is_pending_drag()
     }
 }
 
 impl SlidesApp {
-    /// Do what an effect asked of the editor: show a mode, a panel, a
-    /// slide, an element or its notes, place a picture, say something.
     fn take_ask(&mut self, ask: store::Ask) {
         match ask {
             store::Ask::Show(effect) => {
@@ -3203,7 +2764,6 @@ impl SlidesApp {
         }
     }
 
-    /// Show what a view effect names.
     fn show(&mut self, effect: SlidesEffect) -> Result<(), String> {
         match effect {
             SlidesEffect::Editor => self.mode = Mode::Edit,
@@ -3254,7 +2814,6 @@ impl SlidesApp {
                 self.begin_notes_edit();
                 self.scroll_rail_to_current();
             }
-            // The store answers the rest without the editor.
             SlidesEffect::InsertPicture
             | SlidesEffect::OpenPresentation { .. }
             | SlidesEffect::SaveAs { .. }
@@ -3265,8 +2824,6 @@ impl SlidesApp {
         Ok(())
     }
 
-    /// What shows slide `id` when a search hit or an agent's `open` names
-    /// it; a slide the deck no longer holds is refused.
     pub(crate) fn opener(
         &self,
     ) -> impl FnMut(&ui::tilo_resource::Id) -> Result<(), ui::tilo_resource::Refusal> + 'static
@@ -3288,8 +2845,6 @@ impl SlidesApp {
             .ok_or_else(|| "slide no longer exists".to_string())
     }
 
-    /// Show element `element` of slide `slide` selected; its words selected
-    /// for editing when `edit_text`.
     fn reveal_element(
         &mut self,
         slide: &str,
@@ -3314,8 +2869,6 @@ impl SlidesApp {
         self.sel = Some(element);
         self.editing_text = edit_text;
         if edit_text {
-            // A text search result restores an immediately useful edit
-            // state: the exact text resource is selected in full.
             self.begin_text_edit(true);
         }
         self.scroll_rail_to_current();
@@ -3324,10 +2877,6 @@ impl SlidesApp {
 }
 
 impl SlidesApp {
-    /// The non-modal event dispatch: cursor motion (rail drag / text-selection
-    /// drag / element drag), the left mouse button, the wheel, and key presses.
-    /// Reached only once none of the modal routers (context menu, title edit,
-    /// inspector widgets) claimed the event.
     fn dispatch_unmodal_event(
         &mut self,
         event: &WindowEvent,
@@ -3340,9 +2889,6 @@ impl SlidesApp {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
                 if self.page_sidebar.is_pending_drag() || self.page_sidebar.menu_open() {
-                    // Feed the shared rail's reorder controller / menu hover; the
-                    // gap + hover track the cursor. (The rail's list geometry is
-                    // refreshed each frame in `draw` and on press.)
                     self.page_sidebar.on_motion(p);
                     *handled = true;
                 } else if self.drag.active() {
@@ -3382,16 +2928,10 @@ impl SlidesApp {
         }
     }
 
-    /// Re-clamp the persisted scroll offsets to the current size/content, so
-    /// a window resize (or a fresh over-large offset) self-corrects rather
-    /// than sticking past the end of the list. Called once per `draw`.
     fn sync_scroll_offsets(&mut self, dt: f64) {
         self.dirty = true;
         match self.mode {
             Mode::Edit => {
-                // Auto-scroll the rail while a thumbnail reorder drag hovers near
-                // the viewport edges, so a slide can be dropped at a position
-                // currently scrolled off-screen.
                 if self.page_sidebar.is_dragging() {
                     let vp = self.rail_viewport(self.rail_rect());
                     let edge = 40.0;
@@ -3407,9 +2947,6 @@ impl SlidesApp {
                         self.rail_scroll += v * 900.0 * dt;
                     }
                 }
-                // Sync the shared rail to this frame's geometry + scroll, which
-                // clamps the offset and re-pins the insertion gap to the held
-                // ghost against the freshest (possibly just-scrolled) geometry.
                 self.sync_page_rail();
             }
             Mode::Overview => {
@@ -3419,12 +2956,7 @@ impl SlidesApp {
         }
     }
 
-    /// Stage the three `--shots`-only demo interactions (a popped context
-    /// menu, a live reorder drag, a thumbnail dropped on the delete zone)
-    /// now that the layout rect is known. No-op on a live launch — the
-    /// staging flags are never set outside [`SlidesApp::stage_scenario`].
     fn stage_shots_demo(&mut self) {
-        // `--shots`-only: pop a context menu now that the layout rect is known.
         if let Some(kind) = self.demo_menu.take() {
             let chrome = self.compute_chrome();
             match kind {
@@ -3436,8 +2968,6 @@ impl SlidesApp {
                     self.open_element_menu(p);
                 }
                 DemoMenu::Slide => {
-                    // Open the shared rail's own duplicate / move / delete menu on
-                    // the current slide's thumbnail.
                     let p = chrome
                         .thumbs
                         .iter()
@@ -3448,8 +2978,6 @@ impl SlidesApp {
                 }
             }
         }
-        // `--shots`-only: the words' menu, on the first word of the box
-        // being edited, once its words are laid out.
         if let Some(at_end) = self.demo_words_menu
             && let Some(editor) = self.text_editor.as_mut()
             && editor.words_h.is_some()
@@ -3472,14 +3000,10 @@ impl SlidesApp {
             }
             self.demo_words_menu = None;
         }
-        // `--shots`-only: stage a live reorder drag so the capture shows the
-        // floating ghost + the reflowed drop gap.
         if std::mem::take(&mut self.demo_reorder) {
             let thumbs = self.rail_thumb_rects();
             if let (Some(first), Some(third)) = (thumbs.first(), thumbs.get(2)) {
                 let start = first.1.center();
-                // Drop it two slots down: the ghost floats at the cursor and the
-                // list reflows to open the gap at that slot.
                 let target = third.1.center();
                 self.last_mouse = target;
                 self.page_sidebar.on_press(start);
@@ -3487,8 +3011,6 @@ impl SlidesApp {
                 let _ = self.page_sidebar.take_events();
             }
         }
-        // `--shots`-only: stage a thumbnail dragged onto the delete zone so the
-        // capture shows the armed red dashed "Drop to delete" target.
         if std::mem::take(&mut self.demo_delete_zone) {
             let thumbs = self.rail_thumb_rects();
             if let Some(second) = thumbs.get(1) {
@@ -3502,21 +3024,15 @@ impl SlidesApp {
         }
     }
 
-    /// Whether the picture `src` is decoded and ready to paint.
     #[cfg(test)]
     pub(crate) fn picture_ready(&self, src: &str) -> bool {
         matches!(self.images.get(src), crate::assets::ImageState::Ready(_))
     }
 
-    /// The index of the slide currently shown. Lets a test observe where a
-    /// Ctrl+K activation navigated.
     pub fn current_slide(&self) -> usize {
         self.cur_slide
     }
 
-    /// Snap a moving element to the slide's edges, centre and margins and to
-    /// the edges and centres of its siblings. Returns the adjusted top-left
-    /// plus the guide lines it lines up with.
     fn snapped_move(
         &self,
         id: &str,
@@ -3526,8 +3042,6 @@ impl SlidesApp {
         h: f64,
         thr: f64,
     ) -> (f64, f64, Vec<Guide>) {
-        // The slide itself, plus its side, title and footer margins as
-        // zero-width lines, so they are targets like a sibling's edges.
         let mut targets = vec![
             Rect::new(0.0, 0.0, SLIDE_W, SLIDE_H),
             Rect::new(96.0, 0.0, 96.0, SLIDE_H),
@@ -3549,8 +3063,6 @@ impl SlidesApp {
     }
 
     fn drag_move(&mut self, p: Point) {
-        // Scrollbar-thumb drags don't need slide-space mapping — resolve them
-        // first (they can be live in overview mode, where there is no canvas).
         if let Drag::ScrollOverview {
             start_y,
             orig_scroll,
@@ -3580,8 +3092,6 @@ impl SlidesApp {
                 let dx = sp.x - start.x;
                 let dy = sp.y - start.y;
                 let (w, h) = self.selected_element().map_or((0.0, 0.0), |e| (e.w, e.h));
-                // Keep magnetic alignment within one themed related-spacing step
-                // on screen, independent of the slide canvas zoom.
                 let thr = self.chrome_metrics.s2 / s.max(0.0001);
                 let (nx, ny, guides) = self.snapped_move(&id, orig_x + dx, orig_y + dy, w, h, thr);
                 self.active_guides = guides;
@@ -3641,13 +3151,11 @@ impl SlidesApp {
                     el.h = rh;
                 }
             }
-            // `ScrollOverview` is resolved above; everything else is a no-op here.
             _ => {}
         }
     }
 
     fn on_press(&mut self, p: Point, handled: &mut bool) {
-        // The help overlay swallows the next click (to dismiss).
         if self.help_overlay.on_pointer_press(p, self.rect) {
             *handled = true;
             return;
@@ -3661,7 +3169,6 @@ impl SlidesApp {
         }
         if self.mode == Mode::Overview {
             let (area, _, max_scroll) = self.compute_overview();
-            // Scrollbar thumb → start a scroll drag.
             if let Some((_, thumb)) = self.overview.scrollbar_rects(
                 area,
                 self.overview.scroll().clamp(0.0, max_scroll),
@@ -3686,10 +3193,6 @@ impl SlidesApp {
         self.on_press_editor(p, handled);
     }
 
-    /// `on_press` in `Mode::Edit`: the shared rail's own context menu is
-    /// modal while open (handled first, ahead of all other chrome);
-    /// otherwise buttons, the overlay scrim, the thumbnail rail and the
-    /// canvas are tried in pointer-priority order.
     fn on_press_editor(&mut self, p: Point, handled: &mut bool) {
         let chrome = self.compute_chrome();
 
@@ -3697,7 +3200,6 @@ impl SlidesApp {
             return;
         }
 
-        // Buttons first, ahead of the scrim dismissal below.
         for b in &chrome.buttons {
             if b.rect.contains(p) {
                 let hit = b.hit.clone();
@@ -3706,9 +3208,6 @@ impl SlidesApp {
                 return;
             }
         }
-        // Scrim dismissal: with an overlay flap open, a click in the dimmed body
-        // (outside both panels) closes whichever flap is open — like tapping the
-        // scrim in Adwaita's flap.
         if chrome.scrim.contains(p) && !chrome.rail.contains(p) && !chrome.inspector.contains(p) {
             let rail = chrome.layout == SplitLayout::Overlay && self.rail_open();
             let inspector =
@@ -3724,13 +3223,8 @@ impl SlidesApp {
                 return;
             }
         }
-        // The slide-thumbnail rail. The shared PageSidebar owns selection and
-        // the drag-to-reorder gesture: a press selects the slide and arms a
-        // drag; if the pointer clears the threshold it becomes a live reorder
-        // (ghost + reflow, committed on release), while a plain click that never
-        // moves stays a select and — on a narrow window — reveals the chosen
-        // slide by closing the overlay flap (deferred to `on_release` so a drag
-        // doesn't close it). Sync the rail's geometry to this frame first.
+        // The rail owns selection and reordering; a narrow window reveals the
+        // chosen slide on release, so a drag does not close the flap.
         if chrome.rail_viewport.contains(p) {
             self.sync_page_rail();
             self.page_sidebar.on_press(p);
@@ -3739,12 +3233,10 @@ impl SlidesApp {
             *handled = true;
             return;
         }
-        // Canvas: handle selection / drag.
         if chrome.slide_dest.inflate(12.0, 12.0).contains(p) {
             self.press_canvas(p, &chrome, handled);
             return;
         }
-        // Clicked empty chrome → drop selection / exit text edit.
         if self.sel.is_some() || self.editing_text || self.editing_notes {
             self.sel = None;
             self.editing_text = false;
@@ -3753,12 +3245,7 @@ impl SlidesApp {
         }
     }
 
-    /// The modal-while-open menu a press can land on: the shared rail's own
-    /// context menu. Returns `true` (and sets `*handled`) when the press was
-    /// consumed by it, so [`Self::on_press_editor`] should stop.
     fn on_press_editor_menus(&mut self, _chrome: &Chrome, p: Point, handled: &mut bool) -> bool {
-        // The shared rail's own context menu is modal while open: the press
-        // picks one of its rows or dismisses it, ahead of all other chrome.
         if self.page_sidebar.menu_open() {
             self.sync_page_rail();
             self.page_sidebar.on_press(p);
@@ -3774,14 +3261,11 @@ impl SlidesApp {
     fn press_canvas(&mut self, p: Point, chrome: &Chrome, handled: &mut bool) {
         let dest = chrome.slide_dest;
         let s = chrome.scale;
-        // Resize handle of the current selection?
         if let Some(el) = self.selected_element().cloned()
             && !self.editing_text
         {
             for (h, hr) in self.handles_of(dest, s, &el) {
                 if hr.contains(p) {
-                    // A text box resizes from the size it shows, grown to
-                    // its words.
                     let shown_h = self.element_frame(dest, s, &el).height() / s.max(0.0001);
                     self.drag = Drag::Resize {
                         id: el.id.clone(),
@@ -3794,7 +3278,6 @@ impl SlidesApp {
                 }
             }
         }
-        // Hit-test elements front-to-back.
         let mut picked: Option<Id> = None;
         if let Some(slide) = self.slide() {
             let mut z: Vec<&Element> = slide.elements.iter().collect();
@@ -3812,9 +3295,6 @@ impl SlidesApp {
                 .slide()
                 .and_then(|sl| sl.element(&id))
                 .is_some_and(|e| e.kind == ElementKind::Text);
-            // Double-click = same element, pressed again quickly and near
-            // the first press.
-            // A finger's second tap lands within a tap's slop of its first.
             let slop = if self.fingers_down > 0 {
                 ui::gesture::TouchGestureArena::TAP_SLOP
             } else {
@@ -3828,9 +3308,6 @@ impl SlidesApp {
             self.last_click = Some((id.clone(), ui::time::now(), p));
             self.editing_notes = false;
 
-            // Already editing this exact text box → a click inside it places
-            // the caret (and arms a selection drag), never starts a box move,
-            // so click-to-position and drag-select work like any text field.
             if self.editing_text && self.sel.as_deref() == Some(id.as_str()) {
                 *handled = true;
                 return;
@@ -3842,22 +3319,14 @@ impl SlidesApp {
                 .is_some_and(Element::is_blank_text);
             self.sel = Some(id.clone());
             if is_text && (double || blank) {
-                // A deliberate double-click opens the text for editing and
-                // selects the word under the point; an empty box (one showing
-                // its prompt) opens on the first click, ready for its words.
-                // The box's editor takes the press once this event is
-                // through ([`Self::open_at_press`]).
+                // A double-click edits the text and selects the word under the
+                // point; an empty box opens on the first click.
                 self.begin_text_edit(false);
                 self.opening_press = Some((p, if double { 2 } else { 1 }));
             } else {
-                // Single press: select AND arm a move so a selected element
-                // can be dragged on the very first grab (the reported bug was
-                // that a second click on a selected box entered edit instead
-                // of letting you move it).
+                // Select and arm a move, so a selected element drags on the
+                // first grab.
                 self.editing_text = false;
-                // The element was just selected above, so this should always
-                // resolve; if a concurrent edit removed it in between, simply
-                // skip arming the drag (the selection itself already stuck).
                 if let Some(el) = self.selected_element().cloned() {
                     self.drag = Drag::Move {
                         id,
@@ -3875,7 +3344,6 @@ impl SlidesApp {
         *handled = true;
     }
 
-    /// Hit-test the canvas elements front-to-back at screen point `p`.
     fn element_at(&self, chrome: &Chrome, p: Point) -> Option<Id> {
         let dest = chrome.slide_dest;
         let s = chrome.scale;
@@ -3894,10 +3362,6 @@ impl SlidesApp {
         None
     }
 
-    /// Right-click opens a context menu — on a canvas element (front / back /
-    /// duplicate / delete) or a slide thumbnail (new / duplicate / move /
-    /// delete). The target is selected first so the menu's actions (which act
-    /// on the current selection / slide) hit the intended object.
     fn on_right_press(&mut self, p: Point, handled: &mut bool) {
         *handled = true;
         self.ctx_menu.close();
@@ -3906,10 +3370,6 @@ impl SlidesApp {
             return;
         }
         let chrome = self.compute_chrome();
-        // A slide thumbnail → the shared rail's own duplicate / move / delete
-        // menu (only when it's actually in the visible viewport). The widget
-        // selects the slide under the cursor and opens its menu; we apply the
-        // emitted selection so the rest of the editor follows.
         if chrome.rail_viewport.contains(p) {
             self.sync_page_rail();
             if self.page_sidebar.on_right_press(p) {
@@ -3918,9 +3378,7 @@ impl SlidesApp {
                 return;
             }
         }
-        // A canvas element.
         if chrome.slide_dest.contains(p) {
-            // Close any open rail menu first so the two never stack.
             self.page_sidebar.on_escape();
             if let Some(id) = self.element_at(&chrome, p) {
                 self.sel = Some(id);
@@ -3931,9 +3389,6 @@ impl SlidesApp {
         }
     }
 
-    /// Build + open the context menu at `p`, mapping each row to the action it
-    /// performs. `None` rows are separators. Clamps the 220px-wide menu so it
-    /// stays fully on-screen.
     fn open_menu_at(&mut self, p: Point, rows: &[Option<(String, Hit)>]) {
         let mut menu = ContextMenu::new();
         let mut hits: Vec<Option<Hit>> = Vec::new();
@@ -3968,8 +3423,6 @@ impl SlidesApp {
         );
     }
 
-    /// Forward an event to the open context menu and apply any chosen action.
-    /// Returns `true` if a menu was open (and thus consumed the event).
     fn route_context_menu(&mut self, routed: &mut RoutedEvent<'_, '_>) -> bool {
         if !self.ctx_menu.is_open() {
             return false;
@@ -3991,11 +3444,9 @@ impl SlidesApp {
         true
     }
 
-    /// Forward events to the inspector's embedded `ui` widgets (font-size
-    /// field and fill picker) and fold any change into the CRDT. Returns
-    /// `true` when the event was consumed (so `handle_event` should stop).
-    /// The picker popover is modal while open; the font field only claims
-    /// presses on its own rect and keystrokes while focused.
+    /// Forwards events to the inspector's widgets and folds any change into the
+    /// deck; `true` when consumed. The picker is modal while open; the font
+    /// field claims only its own presses and keystrokes.
     fn route_inspector_widgets(&mut self, routed: &mut RoutedEvent<'_, '_>) -> bool {
         if self.mode != Mode::Edit || self.drag.active() {
             return false;
@@ -4019,9 +3470,6 @@ impl SlidesApp {
         self.route_font_input(routed)
     }
 
-    /// The fill [`ColorPicker`] popover: modal while open, so a routed event
-    /// is always consumed. A press outside its panel closes it instead of
-    /// reaching the field.
     fn route_fill_picker(&mut self, routed: &mut RoutedEvent<'_, '_>) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = routed.event {
             self.last_mouse = Point::new(
@@ -4060,10 +3508,6 @@ impl SlidesApp {
         true
     }
 
-    /// The font-size [`NumberInput`]: cursor motion is forwarded but never
-    /// consumed (canvas hover still wants it), a press on the field focuses
-    /// and forwards it, a press elsewhere commits + blurs, and keystrokes
-    /// while focused edit it (Esc commits + blurs).
     fn route_font_input(&mut self, routed: &mut RoutedEvent<'_, '_>) -> bool {
         match routed.event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -4077,7 +3521,6 @@ impl SlidesApp {
                 if let Some(v) = self.font_input.take_changed() {
                     self.set_sel_f64("font_size", v);
                 }
-                // Don't consume — canvas hover still wants the move.
                 false
             }
             WindowEvent::MouseInput {
@@ -4095,8 +3538,6 @@ impl SlidesApp {
                     }
                     true
                 } else if self.font_input.is_focused() {
-                    // Press elsewhere commits + blurs, then falls through so the
-                    // press can still hit whatever it landed on.
                     Widget::set_focus(&mut self.font_input, false);
                     if let Some(v) = self.font_input.take_changed() {
                         self.set_sel_f64("font_size", v);
@@ -4113,8 +3554,6 @@ impl SlidesApp {
         }
     }
 
-    /// A keystroke while the font-size field is focused: Esc blurs it
-    /// (committing any change); everything else edits it.
     fn route_font_input_key(&mut self, routed: &mut RoutedEvent<'_, '_>) -> bool {
         if let WindowEvent::KeyboardInput {
             event:
@@ -4142,14 +3581,9 @@ impl SlidesApp {
     }
 
     fn on_release(&mut self, handled: &mut bool) {
-        // A thumbnail drag-to-reorder: the shared rail commits the move (emitting
-        // a Reorder we apply to the CRDT) or — if the press never crossed the
-        // threshold into a real drag — nothing, in which case it stays a plain
-        // select and, on a narrow window, reveals the chosen slide by closing
-        // the overlay flap.
+        // The rail commits the move, or — when the press never crossed the drag
+        // threshold — nothing, and a narrow window reveals the chosen slide.
         if self.page_sidebar.is_pending_drag() {
-            // Drop onto the red delete zone removes the dragged slide instead of
-            // reordering it (guarded so the deck never drops to zero slides).
             if self.page_sidebar.is_dragging()
                 && self
                     .slide_delete_zone(self.rail_rect())
@@ -4173,7 +3607,6 @@ impl SlidesApp {
             *handled = true;
             return;
         }
-        // A scrollbar-thumb drag ends with no document write, in any mode.
         if matches!(self.drag, Drag::ScrollOverview { .. }) {
             self.drag = Drag::None;
             *handled = true;
@@ -4186,7 +3619,6 @@ impl SlidesApp {
         let drag = std::mem::replace(&mut self.drag, Drag::None);
         let id = match drag {
             Drag::Move { id, .. } | Drag::Resize { id, .. } => Some(id),
-            // Scroll drags were already resolved above; `None` writes nothing.
             _ => None,
         };
         if let Some(id) = id
@@ -4197,8 +3629,6 @@ impl SlidesApp {
                 .and_then(|s| s.element(&id))
                 .cloned()
         {
-            // The drag preview lived only in the in-memory deck; submit the
-            // element's final rect once, on drop — never an edit per frame.
             if let Some(slide) = self.slide() {
                 self.submit_all(&actions::resize_element_actions(
                     &slide.id,
@@ -4210,9 +3640,6 @@ impl SlidesApp {
         }
     }
 
-    /// Vertical mouse-wheel scrolling for the two scrollable surfaces: the
-    /// edit-mode thumbnail rail (only while the pointer is over it) and the
-    /// slide-sorter overview grid.
     fn on_wheel(
         &mut self,
         delta: MouseScrollDelta,
@@ -4220,8 +3647,6 @@ impl SlidesApp {
         modifiers: ui::winit::keyboard::ModifiersState,
         handled: &mut bool,
     ) {
-        // Positive wheel deltas scroll the content up (toward the start), so we
-        // subtract from the offset.
         let dy = match delta {
             MouseScrollDelta::LineDelta(_, y) => f64::from(y) * self.chrome_metrics.wheel_line,
             MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
@@ -4232,18 +3657,14 @@ impl SlidesApp {
         match self.mode {
             Mode::Edit => {
                 if self.rail_rect().contains(self.last_mouse) {
-                    // The shared rail owns the scroll: sync its geometry, feed it
-                    // the wheel (its `on_wheel` takes +down), and mirror back.
                     self.sync_page_rail();
                     if self.page_sidebar.on_wheel(-dy) {
                         self.rail_scroll = self.page_sidebar.scroll();
                         *handled = true;
                     }
                 } else if self.in_editor_canvas() {
-                    // Over the slide itself: the wheel moves a zoomed slide,
-                    // and with the command modifier it zooms toward the step
-                    // above or below where it is — a slide a person zoomed in
-                    // to read is one they can also move.
+                    // The wheel moves a zoomed slide; with the command modifier
+                    // it zooms one step.
                     if modifiers.control_key() || modifiers.super_key() {
                         self.zoom_slide(if dy > 0.0 { 1.0 } else { -1.0 });
                         *handled = true;
@@ -4251,9 +3672,6 @@ impl SlidesApp {
                         *handled = true;
                     }
                 } else if self.inspector_open() && self.inspector_rect().contains(self.last_mouse) {
-                    // The inspector's scroll model clamps to the content
-                    // extent the last frame handed it; a wheel at either end
-                    // changes nothing and is left for whoever is below.
                     let before = self.inspector_scroll.offset_y();
                     self.inspector_scroll.scroll_by(0.0, -dy as f32);
                     if self.inspector_scroll.offset_y().to_bits() != before.to_bits() {
@@ -4274,9 +3692,8 @@ impl SlidesApp {
         let mods = modifiers.state();
         let ctrl = mods.control_key() || mods.super_key();
 
-        // Escape aborts an in-flight thumbnail reorder drag (restoring the
-        // original order — the model is only mutated on a committed drop) or
-        // closes the shared rail's open context menu.
+        // Escape aborts a reorder drag (the deck changes only on a committed
+        // drop) or closes the rail's menu.
         if matches!(key, Key::Named(NamedKey::Escape))
             && (self.page_sidebar.is_pending_drag() || self.page_sidebar.menu_open())
         {
@@ -4286,15 +3703,12 @@ impl SlidesApp {
             return;
         }
 
-        // The help overlay owns every key while visible. It can be opened from
-        // any non-text context; active editors reserve `?` for typing.
         let allow_help = !self.editing_text && !self.editing_notes;
         if self.help_overlay.on_key(key, allow_help) {
             *handled = true;
             return;
         }
 
-        // Esc dismisses an open overlay flap first (when not editing text).
         if self.mode == Mode::Edit
             && !self.editing_text
             && !self.editing_notes
@@ -4315,35 +3729,25 @@ impl SlidesApp {
             }
         }
 
-        // Overview (slide-sorter) navigation.
         if self.mode == Mode::Overview {
             self.on_key_overview(key, handled);
             return;
         }
 
-        // Present-mode keys.
         if self.mode == Mode::Present {
             self.on_key_present(key, handled);
             return;
         }
 
-        // Text editing intercepts most keys. Speaker notes are consumed
-        // earlier by their shared `TextInput`; they reach here only for
-        // shortcuts the field intentionally leaves to the toolkit (notably
-        // global undo/redo).
         if self.editing_text || self.editing_notes {
             self.on_key_editing_text(key, handled);
             return;
         }
 
-        // Editor command keys.
         self.on_key_editor_commands(key, mods, ctrl, handled);
     }
 
-    /// Overview (slide-sorter) key navigation.
     fn on_key_overview(&mut self, key: &Key, handled: &mut bool) {
-        // Escape / Enter / "g" all return to the editor — one condition
-        // instead of two identical match arms.
         let exits_overview = matches!(key, Key::Named(NamedKey::Escape | NamedKey::Enter))
             || matches!(key, Key::Character(c) if c.eq_ignore_ascii_case("g"));
         if exits_overview {
@@ -4370,7 +3774,6 @@ impl SlidesApp {
                 self.cur_slide = self.deck.slides.len().saturating_sub(1);
                 *handled = true;
             }
-            // Present straight from the highlighted slide.
             Key::Character(c) if c.eq_ignore_ascii_case("p") => {
                 self.enter_present();
                 *handled = true;
@@ -4379,8 +3782,6 @@ impl SlidesApp {
         }
     }
 
-    /// Present-mode keys, via the shared [`Presentation`] command mapping
-    /// plus the digit-jump shortcut it doesn't own.
     fn on_key_present(&mut self, key: &Key, handled: &mut bool) {
         if let Some(command) = self.presentation.handle_key(key) {
             match command {
@@ -4403,8 +3804,6 @@ impl SlidesApp {
         }
     }
 
-    /// Keys the focused text (a text box, the speaker notes) left alone: Escape ends editing; everything else (global
-    /// undo and redo) falls through to the toolkit.
     fn on_key_editing_text(&mut self, key: &Key, handled: &mut bool) {
         if matches!(key, Key::Named(NamedKey::Escape)) {
             self.end_text_edit();
@@ -4413,8 +3812,6 @@ impl SlidesApp {
         }
     }
 
-    /// Editor command keys (nothing focused for text edit): selection nav,
-    /// nudge, and letter shortcuts.
     fn on_key_editor_commands(
         &mut self,
         key: &Key,
@@ -4430,9 +3827,6 @@ impl SlidesApp {
         }
     }
 
-    /// Escape/Delete/Enter/Tab plus the nudge arrows. Returns `true` when
-    /// `key` matched one of these (so [`Self::on_key_editor_commands`]
-    /// should stop rather than also trying the letter shortcuts).
     fn on_key_editor_nav(
         &mut self,
         key: &Key,
@@ -4486,9 +3880,7 @@ impl SlidesApp {
         true
     }
 
-    /// Single-letter (and Ctrl+letter) editor shortcuts: new slide, present,
-    /// overview, insert tools, duplicate, restack, and Ctrl+S/O document
-    /// open/save.
+    /// Single-letter and Ctrl+letter editor shortcuts.
     fn on_key_editor_shortcut(
         &mut self,
         c: &winit::keyboard::SmolStr,
@@ -4496,8 +3888,6 @@ impl SlidesApp {
         handled: &mut bool,
     ) {
         let lc = c.to_lowercase();
-        // Ctrl+S / Ctrl+O — save / open a LibreOffice `.odp` via the
-        // host file chooser.
         if ctrl && lc == "s" {
             self.dispatch.effect(&SlidesEffect::SaveAs { path: None });
             *handled = true;
@@ -4514,7 +3904,6 @@ impl SlidesApp {
             *handled = true;
             return;
         }
-        // The zoom chords every app shares: the slide has a size of its own.
         if ctrl && matches!(lc.as_str(), "=" | "+" | "-" | "0") {
             match lc.as_str() {
                 "=" | "+" => self.zoom_slide(1.0),
@@ -4524,8 +3913,6 @@ impl SlidesApp {
             *handled = true;
             return;
         }
-        // Copy, cut and paste an element: a shape moves between slides, and
-        // what is pasted is the element itself, not a picture of it.
         if ctrl && matches!(lc.as_str(), "c" | "x" | "v") {
             match lc.as_str() {
                 "c" => self.copy_selected(false),
@@ -4535,8 +3922,6 @@ impl SlidesApp {
             *handled = true;
             return;
         }
-        // A chord the app does not use is the window's, not a plain letter:
-        // Ctrl+P is not "start presenting".
         if ctrl {
             return;
         }
@@ -4609,7 +3994,6 @@ impl SlidesApp {
     }
 }
 
-/// The inspector's "Custom · #rrggbb" fill button face.
 fn custom_colour_hex(hex: &str) -> String {
     tr_args("slides-custom-colour-hex", &[("hex", ArgValue::from(hex))])
 }
@@ -4695,7 +4079,6 @@ impl SlidesApp {
     fn selection_frame(&self, dest: Rect, scale: f64, el: &Element) -> Rect {
         let m = &self.chrome_metrics;
         let er = self.element_frame(dest, scale, el);
-        // Room a handle needs beyond the frame line, plus a clear gap.
         let reach = m.target * 0.25 / 2.0 + m.s1;
         let (mut left, mut top, mut right, mut bottom) = (m.s2, m.s2, m.s2, m.s2);
         if let Some(slide) = self.slide() {
@@ -4738,8 +4121,6 @@ impl SlidesApp {
         if chrome.rail.width() <= 1.0 {
             return;
         }
-        // Over the drop-to-delete zone the zone shows the drop; the lifted
-        // slide would only peek out from behind it.
         let over_zone = self.over_delete_zone();
         let mut sb = std::mem::replace(&mut self.page_sidebar, PageSidebar::new(SLIDE_H / SLIDE_W));
         sb.set_ghost_hidden(over_zone);
@@ -4784,7 +4165,6 @@ impl SlidesApp {
         let mut handled = false;
         self.layout_picker
             .handle_event(routed.event, &mut routed.event_ctx(&mut handled));
-        // The picker is driven here, not through the window's focus chain.
         *routed.focus_target = focus;
         if !open {
             return false;

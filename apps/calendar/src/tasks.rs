@@ -1,13 +1,4 @@
 //! Tasks list component.
-//!
-//! The Tasks screen lists the sidebar's selected list (a smart list or a
-//! project) in full: the field that adds a task to it, and one row per task
-//! with its subtasks indented beneath it. The list's name is the window's
-//! location.
-//! The component owns the scroll state, the entry field, geometry, drawing
-//! and the row actions; `CalendarApp` supplies the model and turns those
-//! actions into the calendar's edits and navigation, through the same paths
-//! the agenda and the sidebar rail use.
 
 use chrono::{Duration, NaiveDate};
 use ui::Widget;
@@ -25,11 +16,8 @@ use ui::tokens::TextRole;
 use ui::widget::DrawChild;
 use ui::widget::{ControlSize, Interaction, ListRowFace, RowLeading, Tone};
 
-/// Nesting deeper than this is drawn at this depth, so a malformed parent
-/// chain can neither recurse forever nor push a row off the screen.
 const MAX_DEPTH: usize = 4;
 
-/// What a press on the Tasks screen asks the app to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TasksAction {
     OpenTask(Id),
@@ -37,21 +25,18 @@ pub(crate) enum TasksAction {
     FocusEntry,
 }
 
-/// The list the Tasks screen shows.
 pub(crate) struct TasksSource<'a> {
     pub(crate) model: &'a Calendar,
     pub(crate) list: &'a ListSel,
     pub(crate) today: NaiveDate,
 }
 
-/// One painted row: a task and how deep it sits under its parents.
 pub(crate) struct TaskRow<'a> {
     pub(crate) task: &'a Task,
     pub(crate) depth: usize,
 }
 
 impl<'a> TasksSource<'a> {
-    /// The list's tasks in display order, each followed by its subtasks.
     pub(crate) fn rows(&self) -> Vec<TaskRow<'a>> {
         let mut rows = Vec::new();
         for task in self.model.tasks_for(self.list, self.today) {
@@ -87,8 +72,6 @@ impl<'a> TasksSource<'a> {
         !matches!(self.list, ListSel::Completed)
     }
 
-    /// Where a task added to this list is filed so it shows up in it: under
-    /// the project, due today for Today, due tomorrow for Upcoming.
     pub(crate) fn placement(&self) -> (Option<Id>, Option<NaiveDate>) {
         match self.list {
             ListSel::Project(id) => (Some(*id), None),
@@ -98,7 +81,6 @@ impl<'a> TasksSource<'a> {
         }
     }
 
-    /// The empty state's title and explanation.
     pub(crate) fn empty_copy(&self) -> (String, String) {
         let key = match self.list {
             ListSel::Inbox => "calendar-tasks-empty-inbox",
@@ -118,8 +100,6 @@ impl<'a> TasksSource<'a> {
     }
 }
 
-/// The screen's regions, solved once per layout from the same metrics the
-/// painter and the hit rects read.
 #[derive(Clone, Copy, Debug, Default)]
 struct Regions {
     entry: Option<Rect>,
@@ -204,15 +184,12 @@ impl TasksView {
         }
     }
 
-    /// Move the entry field off-screen and release it, while another screen
-    /// or a list that takes no new task is shown.
     pub(crate) fn park_entry(&mut self) {
         self.regions.entry = None;
         self.entry.set_focus(false);
         self.entry.apply_layout_external(Rect::ZERO);
     }
 
-    /// The scrolling rows' viewport.
     pub(crate) fn list_rect(&self) -> Rect {
         self.regions.list
     }
@@ -225,14 +202,10 @@ impl TasksView {
         self.entry.is_focused()
     }
 
-    /// Focus or release the entry field. A list that takes no new task
-    /// releases it again at its next layout.
     pub(crate) fn set_entry_focus(&mut self, focused: bool) {
         self.entry.set_focus(focused);
     }
 
-    /// Route one event to the focused entry field; answers the title typed
-    /// when the event submitted it, and clears the field for the next one.
     pub(crate) fn handle_entry_event(&mut self, input: &mut InputContext<'_>) -> Option<String> {
         self.entry.handle_event(
             input.event,
@@ -255,7 +228,6 @@ impl TasksView {
         (!title.is_empty()).then_some(title)
     }
 
-    /// Route wheel and scrollbar input to the rows' scroller.
     pub(crate) fn handle_scroll_event(&mut self, input: &mut InputContext<'_>) -> bool {
         self.scroll.handle_event(
             input.event,

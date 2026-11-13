@@ -74,8 +74,8 @@ pub struct TaskPackage {
 
 /// Every installed tilolang app a task's programs name, each verified as a launch verifies it.
 /// The task's host runs in the session, so no host of the app's runtimes is started. A program names an app by what its package declares (its actions,
-/// its roots), which only the package itself holds: the surface it publishes names its actions
-/// by their stored ids.
+/// its roots), which only the package itself holds: a program is compiled against its
+/// declarations, not against the surface it publishes.
 #[must_use]
 pub fn task_packages() -> Vec<TaskPackage> {
     let apps = match app_catalogue::apps::read_from_env() {

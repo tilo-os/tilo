@@ -47,7 +47,7 @@ class TimestampAnnotation(TypedDict):
 
 class Library(Resource):
     """Video Player — `video-player.library`."""
-    __surface__ = "so.tilo.video-player@d54f6ac2a19fef73"
+    __surface__ = "so.tilo.video-player@4f05d77ea6c7a710"
     playlists: list[Playlist]
     items: list[PlaylistItem]
     annotations: list[TimestampAnnotation]
@@ -127,7 +127,7 @@ class Library(Resource):
 
 class Recent(Resource):
     """Recent videos — `video-player.recent`."""
-    __surface__ = "so.tilo.video-player@d54f6ac2a19fef73"
+    __surface__ = "so.tilo.video-player@4f05d77ea6c7a710"
     devices: dict[str, Any]
 
     def keep(self,

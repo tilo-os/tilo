@@ -1,36 +1,17 @@
 //! UEFI firmware for a QEMU guest, and the variable store it boots with.
 //!
-//! Fedora ships two x86 OVMF builds and only one of them can measure:
-//!
-//! * `OVMF_CODE_4M.secboot.qcow2`, 4 MB, TPM support compiled in. Its TCG2
-//!   protocol reports an active SHA-256 PCR bank, so the firmware starts the
-//!   TPM, extends PCRs 0-7 itself, writes an event log, and hands systemd-stub
-//!   a TCG2 it can extend PCR 11 through.
-//! * `OVMF_CODE.secboot.fd`, 2 MB, no TPM support. TCG2 reports zero active
-//!   PCR banks, so nothing is ever extended: every PCR reads zero, no event log
-//!   appears, the TPM is never started (Linux logs "A TPM error (256) occurred
-//!   attempting the self test") and `ConditionSecurity=measured-uki` is unmet.
-//!
-//! That second list is exactly what a UKI which failed to measure looks like,
-//! so the 4 MB build is a requirement rather than a preference: under the 2 MB
-//! one os/tests/rollback-boot-check.sh reports "nothing measured into PCR 11"
-//! for a kernel that measured perfectly. When a TPM is attached and the 4 MB
-//! build is absent the boot is refused, with how to get it, instead of
-//! producing a result that cannot mean anything.
-//!
-//! The secboot flavour is chosen for its measurement support, not to enforce
-//! anything: Secure Boot enforcement is a property of the variable store
-//! ([`Keys`]), not a QEMU flag. SMM and a write-protected pflash go with the
-//! secboot build unconditionally, because that firmware expects them and a
-//! variable store the guest can rewrite makes enforcement theatre.
+//! The 4 MB secboot build is required, not preferred: the 2 MB one reports no
+//! active PCR bank, so a measured boot under it looks exactly like a failed
+//! one. With a TPM attached and the 4 MB build missing, the boot is refused
+//! rather than producing a result that cannot mean anything. The secboot
+//! flavour is for its measurement support, not to enforce anything: Secure Boot
+//! enforcement is a property of the variable store ([`Keys`]), not a QEMU flag.
 
 use std::path::{Path, PathBuf};
 
 use super::{Arch, QemuError};
 
-/// The directories searched for x86 OVMF when none are given.
 pub const OVMF_DIRS: &[&str] = &["/usr/share/edk2/ovmf", "/usr/share/OVMF"];
-/// The directories searched for ARM AAVMF when none are given.
 pub const AAVMF_DIRS: &[&str] = &[
     "/usr/share/edk2/aarch64",
     "/usr/share/AAVMF",
@@ -39,9 +20,6 @@ pub const AAVMF_DIRS: &[&str] = &[
 
 const DNF_REMEDY: &str = "install edk2-ovmf (Fedora: sudo dnf install edk2-ovmf; in a distrobox: distrobox enter <box> -- sudo dnf install edk2-ovmf), or apt install ovmf (Debian/Ubuntu)";
 
-/// Which keys the variable store starts with. This decides whether an
-/// owner-signed image is bootable at all, so it is a deliberate choice rather
-/// than whichever template happens to sit next to the firmware.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Keys {
     /// `OVMF_VARS_4M.qcow2`: no keys, Secure Boot in setup mode. Measures into
@@ -56,7 +34,6 @@ pub enum Keys {
     /// firmware says nothing about why. Selecting it is an explicit request to
     /// test vendor-key enforcement.
     Microsoft,
-    /// A prepared store, used as-is and kept across boots.
     Store(PathBuf),
 }
 
@@ -81,50 +58,35 @@ impl Keys {
         }
     }
 
-    /// Kept across boots rather than re-seeded from the template.
     fn persistent(&self) -> bool {
         !matches!(self, Self::None)
     }
 }
 
-/// What the firmware is asked to support.
 #[derive(Debug, Clone)]
 pub struct Request {
     pub arch: Arch,
     pub tpm: bool,
-    /// Keep the pristine store across boots so an enrolment sticks
-    /// (`Keys::None` becomes `Keys::Persist`).
     pub secboot: bool,
     pub keys: Keys,
-    /// Offer the guest suspend-to-RAM, which needs a build without SMM.
     pub s3: bool,
     pub ovmf_dirs: Vec<PathBuf>,
     pub aavmf_dirs: Vec<PathBuf>,
 }
 
-/// The firmware a request resolved to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Firmware {
     pub code: PathBuf,
-    /// The variable-store template (or the prepared store).
     pub vars: PathBuf,
     /// `qcow2` or `raw`: the pflash format, part of the answer, because the
     /// wrong `format=` makes QEMU read firmware as garbage.
     pub format: &'static str,
     pub keys: Keys,
-    /// A build verified to measure into an attached TPM.
     pub measures: bool,
-    /// Built with SMM: the machine needs `smm=on` and a secure pflash.
     pub smm: bool,
-    /// What the selection means, for the person reading the log.
     pub notes: Vec<String>,
 }
 
-/// Resolve the firmware for `request`; `exists` says whether a file is there.
-///
-/// # Errors
-/// No firmware, a missing variable store, or a combination that could not
-/// mean anything (a TPM on a firmware that cannot measure).
 #[expect(
     clippy::too_many_lines,
     reason = "one decision table, kept in one place"
@@ -350,11 +312,6 @@ pub fn resolve(request: &Request, exists: &dyn Fn(&Path) -> bool) -> Result<Firm
 }
 
 impl Firmware {
-    /// The working variable store under `run`. Without `keep`, the default
-    /// keys (`none`) are re-seeded from the template on every boot so every
-    /// boot starts from the same firmware state; every other selection is
-    /// kept, because an enrolment a restart silently threw away is
-    /// indistinguishable from one that never happened.
     #[must_use]
     pub fn varstore_path(&self, run: &Path) -> PathBuf {
         let tag: String = self
@@ -366,7 +323,6 @@ impl Firmware {
         run.join(format!("vars-{}-{tag}.img", self.format))
     }
 
-    /// Seed the working variable store (see [`Self::varstore_path`]).
     pub fn seed_varstore(&self, run: &Path, keep: bool) -> Result<PathBuf, QemuError> {
         let out = self.varstore_path(run);
         std::fs::create_dir_all(run).map_err(QemuError::io(run))?;
@@ -386,7 +342,6 @@ impl Firmware {
         Ok(out)
     }
 
-    /// The two pflash drives: read-only code, then the writable store.
     #[must_use]
     pub fn pflash_args(&self, varstore: &Path) -> Vec<String> {
         vec![
@@ -405,7 +360,6 @@ impl Firmware {
         ]
     }
 
-    /// The table `tilo-vm qemu firmware` prints.
     #[must_use]
     pub fn table(&self, tpm: bool) -> String {
         format!(
@@ -474,7 +428,6 @@ mod tests {
                 true
             )
         );
-        // A TPM is refused on the unverified Debian-family build.
         assert!(
             pick(
                 &Request {
@@ -485,7 +438,6 @@ mod tests {
             )
             .is_err()
         );
-        // Suspend-to-RAM takes the build without SMM.
         assert_eq!(
             pick(&Request { s3: true, ..r }, &present).unwrap(),
             (
@@ -537,7 +489,6 @@ mod tests {
                 false
             )
         );
-        // The TPM is accepted on the measuring build.
         assert!(
             pick(
                 &Request {
@@ -548,7 +499,6 @@ mod tests {
             )
             .is_ok()
         );
-        // Microsoft keys select the vendor store, which must exist.
         assert!(
             pick(
                 &Request {

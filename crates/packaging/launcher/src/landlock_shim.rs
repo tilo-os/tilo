@@ -1,25 +1,7 @@
-//! In-sandbox Landlock enforcement — the hidden `__sandbox-exec`
-//! subcommand.
+//! In-sandbox Landlock enforcement: the hidden `__sandbox-exec` subcommand.
 //!
-//! ## Why a shim
-//!
-//! `bwrap` needs broad filesystem access to *build* the sandbox (mount,
-//! bind, `pivot_root`), so it can't be Landlocked. But Landlock is
-//! path-based and irrevocable for the calling process and all its
-//! descendants, so it must be applied *inside* the namespace, after
-//! mount setup finishes and before the app binary takes over.
-//!
-//! Achieved by having bwrap `exec` this launcher again (via a bind of
-//! its own binary), with a hidden `__sandbox-exec` first argument. The
-//! re-entered launcher parses the argv following the token, builds a
-//! Landlock ruleset against the *sandbox-side* paths, calls
-//! `restrict_self()`, then `execvp`s the target app.
-//!
-//! tapp applications require this layer.  An unsupported kernel, a partial
-//! ABI, or ruleset construction failure refuses the launch instead of quietly
-//! running an untrusted package with a weaker boundary than the UI promises.
-//! Bubblewrap, seccomp and the network namespace remain independent layers;
-//! they are not a reason to make this one optional by accident.
+//! The shim runs inside bwrap's namespaces, installs the rules the launcher passed it,
+//! and execs the app; it refuses the launch when the kernel cannot enforce them.
 
 use std::ffi::CString;
 use std::path::PathBuf;
@@ -32,7 +14,7 @@ use crate::landlock::{
     outcome_from_status,
 };
 
-/// Hidden subcommand token. Dispatched by `main.rs` before clap.
+/// Hidden subcommand token.
 pub const SANDBOX_EXEC_SUBCOMMAND: &str = "__sandbox-exec";
 
 /// Parsed form of the shim argv.
@@ -48,21 +30,17 @@ pub struct ShimArgs {
     pub rw_noexec: Vec<PathBuf>,
     /// Deny all TCP bind/connect (ABI ≥ 4).
     pub net_restricted: bool,
-    /// Egress gate socket, sandbox-side — when set, the shim starts the
-    /// loopback relay before restricting itself.
+    /// Egress gate socket, sandbox-side — when set, the shim starts the loopback relay before
+    /// restricting itself.
     pub net_gate: Option<PathBuf>,
-    /// Loopback port the relay listens on, and the only TCP port the
-    /// app is permitted to connect to.
+    /// Loopback port the relay listens on, and the only TCP port the app is permitted to connect to.
     pub net_gate_port: Option<u16>,
-    /// Skip Landlock entirely. Used when the shim is in the argv only to
-    /// host the relay — an empty ruleset denies everything, so "no FS
-    /// policy" must be said explicitly.
+    /// Skip Landlock entirely.
     pub no_landlock: bool,
-    /// Accept Landlock not, or only partially, enforced: a system-store app
-    /// on a provider-sandboxed machine ([`crate::provider_sandbox`]).
+    /// Accept Landlock not, or only partially, enforced: a system-store app on a provider-sandboxed
+    /// machine ([`crate::provider_sandbox`]).
     pub landlock_best_effort: bool,
-    /// Connected broker descriptors intentionally handed to the app. Every
-    /// other descriptor above stderr is closed before the entrypoint executes.
+    /// Connected broker descriptors intentionally handed to the app.
     pub keep_fds: Vec<i32>,
     /// Fixed inherited root-broker token, consumed before source credential drop.
     pub original_source_fd: Option<i32>,
@@ -117,20 +95,6 @@ impl ShimArgs {
         Ok(())
     }
     /// Parse the slice AFTER the `__sandbox-exec` token.
-    ///
-    /// Grammar:
-    /// `[--ro <p>]* [--ro-noexec <p>]* [--rw <p>]* [--rw-noexec <p>]* [--keep-fd <n>]* [--net-restricted] [--no-landlock]
-    ///  [--net-gate <sock> --net-gate-port <n>] -- <cmd> [args]`.
-    /// Unknown flags before `--` are rejected. The shim is a security-policy
-    /// parser, so version skew must fail closed rather than silently omitting a
-    /// restriction the parent believed it requested.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ShimParseError::DanglingValue`] when a flag that takes a
-    /// path/port argument is the last token (or its port value fails to
-    /// parse), [`ShimParseError::MissingSeparator`] when there is no `--`,
-    /// and [`ShimParseError::EmptyCommand`] when `--` is the last token.
     pub fn parse(args: &[String]) -> Result<ShimArgs, ShimParseError> {
         let mut parsed = ShimArgs::default();
         let mut i: usize = 0;
@@ -177,9 +141,8 @@ impl ShimArgs {
                             }
                             parsed.keep_fds.push(fd);
                         }
-                        // A port we can't parse must not silently become "no port", which
-                        // would leave the app pinned by Landlock to nothing, unable to reach
-                        // the relay at all.
+                        // A port we can't parse must not silently become "no port", which would leave
+                        // the app pinned by Landlock to nothing, unable to reach the relay at all.
                         _ => {
                             parsed.net_gate_port = Some(
                                 value
@@ -205,15 +168,8 @@ impl ShimArgs {
     }
 }
 
-/// The Landlock ruleset a parsed shim invocation installs — pure, so the
-/// exact policy is unit-testable without restricting the test process.
-///
-/// Two mutually exclusive shapes of network restriction:
-/// `net_restricted` denies every TCP bind/connect (belt and braces over
-/// an already-empty namespace); `net_gate_port` denies every TCP
-/// bind/connect except that one port, so even a future change that
-/// accidentally gave this namespace a route still can't open a socket
-/// to anywhere but the gate.
+/// The Landlock ruleset a parsed shim invocation installs — pure, so the exact policy is unit-testable
+/// without restricting the test process.
 pub fn ruleset_spec(args: &ShimArgs) -> RulesetSpec {
     use landlock::{Access, AccessFs};
     let gate_port = args.net_gate_port.filter(|_| args.net_gate.is_some());
@@ -234,15 +190,14 @@ pub fn ruleset_spec(args: &ShimArgs) -> RulesetSpec {
             access: AccessFs::from_all(crate::landlock::FS_ABI) & !AccessFs::Execute,
         }));
     if args.landlock_best_effort {
-        // A kernel without Landlock, or with an older ABI, then reports not
-        // or partially enforced instead of failing to build the ruleset.
+        // A kernel without Landlock, or with an older ABI, then reports not or partially enforced
+        // instead of failing to build the ruleset.
         spec.compat = landlock::CompatLevel::BestEffort;
     }
     spec
 }
 
-/// Build + `restrict_self()`. The one function that permanently locks
-/// the calling process — never call it from unit tests.
+/// Build + `restrict_self()`.
 fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, LandlockBuildError> {
     sandbox_core::landlock::restrict_self(&ruleset_spec(args), |path, e| {
         if let Some(line) = skipped_rule_notice(path, e) {
@@ -251,13 +206,7 @@ fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, LandlockBuil
     })
 }
 
-/// What to print when a rule's path cannot be opened. A path that does not
-/// exist is the ordinary case: the plan lists optional device nodes
-/// (`/dev/nvidia*`, `/usr/share/nvidia`) that most machines lack, and such a
-/// path is unreachable and cannot be granted, so there is nothing to report.
-/// Printing it on every launch buried the one line that explained a failed
-/// launch in the session log. Any other open failure (permissions, I/O) is
-/// still reported.
+/// What to print when a rule's path cannot be opened.
 fn skipped_rule_notice(path: &std::path::Path, error: &landlock::PathFdError) -> Option<String> {
     let missing = std::error::Error::source(error)
         .and_then(|source| source.downcast_ref::<std::io::Error>())
@@ -270,8 +219,7 @@ fn skipped_rule_notice(path: &std::path::Path, error: &landlock::PathFdError) ->
     })
 }
 
-/// Whether the launch may proceed with `outcome`. A ruleset that failed to
-/// build refuses even on a provider-sandboxed machine.
+/// Whether the launch may proceed with `outcome`.
 fn landlock_accepted(outcome: LandlockOutcome, best_effort: bool) -> bool {
     match outcome {
         LandlockOutcome::FullyEnforced => true,
@@ -283,7 +231,6 @@ fn landlock_accepted(outcome: LandlockOutcome, best_effort: bool) -> bool {
 pub fn apply(args: &ShimArgs) -> LandlockOutcome {
     if args.no_landlock {
         // Not "apply an empty policy" — an empty ruleset denies everything.
-        // The shim is in this argv only to host the egress relay.
         return LandlockOutcome::NotEnforced;
     }
     let spec = ruleset_spec(args);
@@ -304,9 +251,8 @@ pub fn apply(args: &ShimArgs) -> LandlockOutcome {
     }
 }
 
-/// Close every inherited descriptor except stdin/out/err and the explicitly
-/// connected service descriptors. `close_range` is part of the Tilo kernel
-/// contract; inability to close ambient descriptors refuses the launch.
+/// Close every inherited descriptor except stdin/out/err and the explicitly connected service
+/// descriptors.
 pub(crate) fn close_ambient_fds(keep: &[i32]) -> std::io::Result<()> {
     for (first, last) in ambient_fd_close_ranges(keep)? {
         close_fd_range(first, last)?;
@@ -343,8 +289,7 @@ fn close_fd_range(first: u32, last: u32) -> std::io::Result<()> {
     if first > last {
         return Ok(());
     }
-    // SAFETY: close_range consumes no pointers. It only closes descriptors in
-    // the inclusive numeric interval and returns an errno on failure.
+    // SAFETY: close_range consumes no pointers.
     let rc = unsafe { libc::syscall(libc::SYS_close_range, first, last, 0_u32) };
     if rc == 0 {
         Ok(())
@@ -354,20 +299,6 @@ fn close_fd_range(first: u32, last: u32) -> std::io::Result<()> {
 }
 
 /// Start the in-sandbox half of the egress gate, in a child process.
-///
-/// Forked *before* `restrict_self`, so the relay isn't subject to the
-/// app's Landlock policy — it needs to open the gate socket and bind a
-/// loopback port, both denied to the app.
-///
-/// Costs nothing that the relay is unrestricted: it lives in the same
-/// namespaces as the app, so anything it can do the app could do by
-/// talking to the gate socket directly — a convenience for unmodified
-/// HTTP clients, not a privilege boundary (that's the far end of the
-/// unix socket, in the launcher).
-///
-/// The child dies with the sandbox: `--unshare-all` includes a PID
-/// namespace, so when the app (PID 1) exits the kernel tears the
-/// namespace down and takes the relay with it.
 #[allow(
     clippy::exit,
     reason = "the forked child (pid == 0 branch) must terminate itself \
@@ -376,9 +307,7 @@ fn close_fd_range(first: u32, last: u32) -> std::io::Result<()> {
               control flow"
 )]
 fn spawn_relay(gate: &std::path::Path, port: u16) {
-    // SAFETY: `fork` in a single-threaded process. The shim has not
-    // started any threads at this point — it is straight-line argv
-    // parsing — so the child inherits a consistent address space.
+    // SAFETY: `fork` in a single-threaded process.
     let pid = unsafe { libc::fork() };
     match pid {
         -1 => {
@@ -465,17 +394,11 @@ fn prepare_original_source(parsed: &mut ShimArgs) -> std::io::Result<()> {
             "Original-source confinement was changed",
         ));
     }
-    // This signed shim alone has transient SETUID/SETGID. Namespace/source
-    // checks and ambient fd closure happen before credentials or content reads.
+    // This signed shim alone has transient SETUID/SETGID.
     crate::owned_service::capture::original::enter(&mut parsed.keep_fds)
 }
 
-/// Entry point for `tilo-launcher __sandbox-exec ...`. Diverges:
-/// either `execvp`s the real command or exits non-zero.
-///
-/// `args` is the slice AFTER the subcommand token. Never returns: diverges
-/// by `exec`ing the real command or calling [`std::process::exit`] on a
-/// parse failure or `execvp` failure.
+/// Entry point for `tilo-launcher __sandbox-exec ...`.
 #[allow(
     clippy::exit,
     reason = "this function's contract is to diverge: either exec the real \
@@ -530,8 +453,8 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
         None
     };
 
-    // Before Landlock: the relay needs accesses the app is about to be
-    // denied, and it must exist before the app's first connect.
+    // Before Landlock: the relay needs accesses the app is about to be denied, and it must exist
+    // before the app's first connect.
     if let (Some(gate), Some(port)) = (parsed.net_gate.as_deref(), parsed.net_gate_port) {
         spawn_relay(gate, port);
     }
@@ -628,9 +551,7 @@ fn exec_real_command(command: &[String], entered: Option<&str>) -> ! {
             .chain(std::iter::once(std::ptr::null()))
             .collect()
     });
-    // SAFETY: program, argv and optional environment are live null-terminated
-    // CString arrays. Both exec calls preserve the existing signal dispositions
-    // and replace this process, or return -1. Cache setup adds no ambient fd.
+    // SAFETY: program, argv and optional environment are live null-terminated CString arrays.
     unsafe {
         if let Some(envp) = &env_ptrs {
             libc::execvpe(cprogram.as_ptr(), argv_ptrs.as_ptr(), envp.as_ptr());
@@ -645,8 +566,8 @@ fn exec_real_command(command: &[String], entered: Option<&str>) -> ! {
 
 type Environment = std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>;
 
-/// The app's environment when the shim changes it (the Mesa seed, the startup
-/// marks); `None` passes this process's own on unchanged.
+/// The app's environment when the shim changes it (the Mesa seed, the startup marks); `None` passes
+/// this process's own on unchanged.
 fn exec_environment(entered: Option<&str>) -> Option<Vec<CString>> {
     use std::os::unix::ffi::OsStrExt as _;
     let mesa = mesa_environment();
@@ -656,9 +577,8 @@ fn exec_environment(entered: Option<&str>) -> Option<Vec<CString>> {
     }
     let mut env = mesa.unwrap_or_else(|| std::env::vars_os().collect());
     if let Some(marks) = marks {
-        // The launcher asked for startup timing: say when the sandbox began
-        // and when it hands over, so the app can tell bubblewrap, this shim
-        // and its own loader apart.
+        // The launcher asked for startup timing: say when the sandbox began and when it hands over, so
+        // the app can tell bubblewrap, this shim and its own loader apart.
         env.insert(
             tilo_startup_metrics::LAUNCHER_MARKS_ENV.into(),
             with_shim_marks(marks, entered).into(),
@@ -853,11 +773,6 @@ mod tests {
             assert_eq!(plan[1].path, PathBuf::from("/tmp/data"));
             assert_ne!(plan[0].access, plan[1].access); // rw has strictly more rights
         }
-        // Phase `pinned_shim_rule_list`.
-        // The shim's rule list as raw access bits (see
-        // `landlock::tests::pinned_ruleset_access_sets` for the bit names):
-        // read-only paths get Execute|ReadFile|ReadDir, read-write paths get
-        // every ABI-5 right, in argv order with read-only first.
         {
             let plan = access_plan(
                 &[PathBuf::from("/usr"), PathBuf::from("/lib")],
@@ -897,8 +812,8 @@ mod tests {
             assert!(open.connect_ports.is_empty());
             assert!(open.trim_file_rights);
             assert_eq!(open.rules, rules);
-            // Every app asks for both ABI 6 scopes; sandbox-core enforces
-            // them where the kernel offers them and keeps ABI 5 elsewhere.
+            // Every app asks for both ABI 6 scopes; sandbox-core enforces them where the kernel offers
+            // them and keeps ABI 5 elsewhere.
             assert_eq!(
                 open.scoped,
                 landlock::Scope::AbstractUnixSocket | landlock::Scope::Signal

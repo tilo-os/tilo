@@ -641,7 +641,10 @@ pub(crate) fn tell_desk_not_taken(
         .workspaces
         .iter()
         .find(|workspace| workspace.id() == room)
-        .map_or_else(String::new, |workspace| workspace.name.clone());
+        .map_or_else(
+            || tilo_desktop_surface::names::workspace(""),
+            |workspace| tilo_desktop_surface::names::workspace(&workspace.name),
+        );
     let reason = neighbour_wire::RefusalReason::of(&why);
     notifications
         .borrow()

@@ -1,37 +1,25 @@
 //! The user's devices, read for the package store each time it asks.
 //!
-//! The images an environment stacks may come from any of the user's
-//! devices: a tool built on their laptop opens on their desktop and their
-//! relay without being built again. Which devices those are is the user
-//! identity's fleet as this device keeps it:
-//!
-//! - this device's own certificate from the identity;
-//! - the fleet record the identity host keeps (`fleets/<user>.json` in the
-//!   identity directory): every device enrolled and every device removed;
-//! - the home peers enrolled for the user (`peers/home-peers.json` beside the
-//!   identity keys), each with the certificate it was enrolled under — a
-//!   relay is one of the user's devices exactly when it holds one.
-//!
-//! Nothing is remembered between reads, so a device removed on any of the
-//! user's devices is refused here as soon as the removal has synced.
+//! The images an environment stacks may come from any of the user's devices, so which
+//! those are is read afresh: this device's certificate from the identity, the fleet
+//! record the identity host keeps (`fleets/<user>.json`: every device enrolled and
+//! removed), and the home peers enrolled for the user (`peers/home-peers.json`), each
+//! with the certificate it was enrolled under. Nothing is remembered between reads, so a
+//! removed device is refused as soon as the removal has synced.
 
 use std::path::{Path, PathBuf};
 
 use package_store::{CertifiedFleet, FleetSource};
 use tilo_user_identity::{DeviceCert, IdentityPaths, RevocationEntry};
 
-/// Largest fleet record or home-peer registry read.
 const MAX_FLEET_BYTES: u64 = 1024 * 1024;
 
-/// The fleet of the user this device belongs to.
 #[derive(Debug, Clone)]
 pub struct UserFleet {
     identity: IdentityPaths,
-    /// The identity host's directory, holding `fleets/`.
     identity_dir: Option<PathBuf>,
 }
 
-/// The parts of a fleet record that say which devices are the user's.
 #[derive(serde::Deserialize)]
 struct FleetRecord {
     identity_id: String,
@@ -39,7 +27,6 @@ struct FleetRecord {
     revocations: Vec<RevocationEntry>,
 }
 
-/// The part of a home-peer registration that says whose device it is.
 #[derive(serde::Deserialize)]
 struct HomePeer {
     #[serde(default)]
@@ -47,8 +34,6 @@ struct HomePeer {
 }
 
 impl UserFleet {
-    /// The fleet whose identity keys are under `identity` and whose fleet
-    /// records are in `identity_dir`.
     pub fn at(identity: IdentityPaths, identity_dir: Option<PathBuf>) -> Self {
         Self {
             identity,
@@ -56,7 +41,6 @@ impl UserFleet {
         }
     }
 
-    /// The fleet of the user this session runs for.
     pub fn from_env() -> Self {
         let identity = std::env::var_os("TILO_IDENTITY_ROOT")
             .filter(|root| !root.is_empty())
@@ -155,8 +139,6 @@ mod tests {
         cert
     }
 
-    /// The fleet is this device, the enrolled devices and the certified
-    /// home peers, minus what was removed — re-read on every ask.
     #[test]
     fn the_fleet_is_read_from_the_identity_files_each_time() {
         let dir = tempfile::tempdir().unwrap();
@@ -166,7 +148,6 @@ mod tests {
         let (other_root, _) = UserIdentity::generate("Bob", 1);
         let source = UserFleet::at(identity.clone(), Some(identity_dir.clone()));
 
-        // No identity: nothing to vouch with.
         assert!(source.fleet().is_err());
 
         identity.ensure_directories().unwrap();

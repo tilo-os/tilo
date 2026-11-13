@@ -69,8 +69,6 @@ fn a_passage_found_opens_its_book_at_the_passage() {
         Some(TIDEGLASS)
     );
     assert_eq!(books.chapter, chapter, "at the passage's chapter");
-    // The paragraph is on the page shown, wherever on it; before the
-    // chapter is laid out, the page waits to be turned to it.
     match books
         .layout
         .as_ref()
@@ -216,7 +214,6 @@ fn the_store_answers_below_the_library_and_its_books_can_be_got() {
         !results.local.is_empty(),
         "the library's results come first, in their own groups"
     );
-    // Its row offers to get it, under the store's name.
     let label = books(&mut app)
         .query
         .label_of("gutenberg:12")
@@ -246,15 +243,11 @@ fn a_book_with_no_local_content_is_found_by_a_phrase_from_its_middle_and_opens_t
     use crate::resource::{index_book, shelve};
 
     let mut app = TestApp::<EbookShell>::new().unwrap();
-    // Nothing reaches outside the process, and the work done off the UI
-    // thread runs when a frame pumps it.
     books(&mut app).query = super::query_view::BookQuery::hermetic();
     let content = app.content();
     let bytes = crate::test_epub::long_classic(24, 6);
     let book = crate::epub::parse_epub(&bytes, 0, "").unwrap();
     let (chapter, block) = place_of(&book, "Book 12, paragraph 4:");
-    // Another device indexed the book; its segment reached this one, its
-    // text has not.
     let segment = crate::library_index::Segment::build(&book).encode();
     let index = content.put(&segment).unwrap();
     let mut entry =
@@ -294,12 +287,9 @@ fn a_book_with_no_local_content_is_found_by_a_phrase_from_its_middle_and_opens_t
         .cloned()
         .unwrap_or_else(|| panic!("the passage is found: {:?}", found(&mut app, PASSAGE)));
     assert_eq!(item.kind, PASSAGE);
-    // Its row names the chapter and the book; the words around the match
-    // are not kept in the index.
     assert_eq!(item.value("title"), Some("Book 12"));
     assert_eq!(item.value("place"), Some(book.title.as_str()));
 
-    // Opening it fetches the text, which arrives, and lands on the passage.
     content.put(&bytes).unwrap();
     books(&mut app).open_hit(&anchor);
     for _ in 0..3 {
@@ -384,7 +374,6 @@ fn a_book_whose_text_arrives_later_is_indexed_on_that_device() {
     };
     assert_eq!(index_of(&app), None, "nobody has indexed it yet");
 
-    // Its text arrives as it is opened here: from the search's card.
     content.put(&bytes).unwrap();
     books(&mut app).query_opened();
     books(&mut app).open_hit(&crate::resource::book_place_resource(&book.id));
@@ -423,8 +412,6 @@ fn a_guest_who_may_only_view_builds_no_index_and_sends_no_write() {
     app.invoke(shelve(&entry)).unwrap();
     app.settle();
 
-    // A guest who may only view opens the shelf; the text reaches their
-    // device as they open the book.
     app.set_role(ui::permissions::Role::Viewer);
     content.put(&bytes).unwrap();
     books(&mut app).query_opened();
@@ -465,7 +452,6 @@ fn an_index_and_a_text_on_their_way_are_waited_for_and_the_passage_opens() {
 
     let mut app = TestApp::<EbookShell>::new().unwrap();
     books(&mut app).query = super::query_view::BookQuery::hermetic();
-    // This device's store reaches the record's other devices over its route.
     let lane = ContentLane::of("so.tilo.books-query-test", "arriving");
     books(&mut app).content = Some(RecordContent::store(
         tilo_content::ContentStore::memory(),

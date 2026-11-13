@@ -30,7 +30,7 @@ class RetentionPolicy(TypedDict):
 
 class Workspace(Resource):
     """Backups — `backups.workspace`."""
-    __surface__ = "so.tilo.backups@2365a05054a2a5f9"
+    __surface__ = "so.tilo.backups@6f8503c299024f50"
     policy: RetentionPolicy
 
     def verify(self, *, snapshot_id: str) -> None:

@@ -1,9 +1,5 @@
-//! Read-only, host-projected human identity names for Files.
-//!
-//! A row is keyed by the human root key. Its label is presentation metadata
-//! only: share authority always receives the key, never the label. Packaged
-//! Files reads the projection the host places in `/run/tilo/app`; it does not
-//! read identity secrets or treat Contacts data as an authority source.
+//! The people and devices a host certifies for Files: names for display, and
+//! the keys that sign.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -25,11 +21,7 @@ pub const MAX_IDENTITY_LABEL_BYTES: usize = MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BY
 pub struct TrustedHuman {
     pub person: Ed25519PublicKey,
     pub display_name: String,
-    /// The human's own devices: what sharing with them encrypts to.
     pub devices: Vec<TrustedDevice>,
-    /// Delegated agents of the human, by their own device. Kept apart
-    /// from [`Self::devices`]: an agent acts only within its delegation, so
-    /// sharing with its person never reaches it. Used to name who wrote.
     pub agents: Vec<TrustedAgent>,
 }
 
@@ -37,15 +29,11 @@ pub struct TrustedHuman {
 pub struct TrustedDevice {
     pub device: Ed25519PublicKey,
     pub label: String,
-    /// Root-certified policy attributes retained for device-detail UI. They
-    /// are descriptive here; Files never derives authorization from labels.
     pub capabilities: tilo_user_identity::DeviceCapabilities,
     pub issued_at_ns: u64,
     pub expires_at_ns: Option<u64>,
 }
 
-/// A device governance knows as a delegated agent of its human: what it
-/// signs is the agent's, on behalf of that human. Presentation only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrustedAgent {
     pub device: Ed25519PublicKey,
@@ -60,9 +48,6 @@ pub struct TrustedHumanDirectory {
 }
 
 impl TrustedHumanDirectory {
-    /// Decode a bounded system projection. Missing projections are an empty
-    /// directory; malformed ones are refused wholesale so a partial parse
-    /// cannot silently associate a name with the wrong root key.
     pub fn load(path: &Path) -> Result<Self, String> {
         let bytes = match tilo_files::native::bounded::read(path, MAX_TRUSTED_IDENTITIES_BYTES) {
             Ok(Some(bytes)) => bytes,
@@ -98,16 +83,10 @@ impl TrustedHumanDirectory {
         }
     }
 
-    /// Load the configured host projection, or the packaged default path.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same read or validation errors as [`Self::load`].
     pub fn load_default() -> Result<Self, String> {
         Self::load(&Self::default_path())
     }
 
-    /// The configured host projection's path, or the packaged default.
     #[must_use]
     pub fn default_path() -> PathBuf {
         std::env::var_os(TRUSTED_IDENTITIES_ENV)
@@ -118,7 +97,6 @@ impl TrustedHumanDirectory {
             )
     }
 
-    /// Convert and validate a legacy human-only projection.
     pub fn from_projection(projection: TrustedIdentityProjectionV1) -> Result<Self, String> {
         projection
             .validate()
@@ -154,7 +132,6 @@ impl TrustedHumanDirectory {
         Ok(Self { humans })
     }
 
-    /// Convert and validate a governed human/device projection.
     pub fn from_projection_v2(projection: TrustedIdentityProjectionV2) -> Result<Self, String> {
         Self::from_projection_v2_at(projection, try_unix_now_ns().unwrap_or(u64::MAX))
     }
@@ -235,9 +212,6 @@ impl TrustedHumanDirectory {
             .map_or_else(|| fingerprint(person.as_bytes()), str::to_string)
     }
 
-    /// Who signs file versions, as the shared history names them: each human
-    /// by their governed name, and each of their delegated agent devices as
-    /// that agent, on behalf of them.
     #[must_use]
     pub fn history_authors(&self) -> ui::history_source::AuthorDirectory {
         let mut authors = ui::history_source::AuthorDirectory::new();
@@ -286,14 +260,12 @@ mod tests {
         }
     }
 
-    /// Names are display-only with fingerprint fallback, duplicates stay distinct, bounded JSON loads, malformed or unknown schemas are refused and v2 adds device details.
     #[allow(
         clippy::too_many_lines,
         reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
     )]
     #[test]
     fn identity_projection_is_display_only_and_refuses_malformed_input() {
-        // --- phase: names_are_display_only_and_unknown_roots_fall_back_to_fingerprint ---
         {
             let known = ed25519_dalek::SigningKey::from_bytes(&[7; 32])
                 .verifying_key()
@@ -317,7 +289,6 @@ mod tests {
             assert_eq!(directory.humans()[0].person, known);
         }
 
-        // --- phase: malformed_or_ambiguous_projections_are_refused_wholesale ---
         {
             let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32])
                 .verifying_key()
@@ -330,7 +301,6 @@ mod tests {
             );
         }
 
-        // --- phase: duplicate_display_names_remain_distinct_root_key_presentations ---
         {
             let first = ed25519_dalek::SigningKey::from_bytes(&[11; 32])
                 .verifying_key()
@@ -361,7 +331,6 @@ mod tests {
             );
         }
 
-        // --- phase: bounded_json_projection_loads_and_missing_is_empty ---
         {
             let dir = tempfile::tempdir().unwrap();
             assert!(
@@ -383,14 +352,12 @@ mod tests {
             assert_eq!(loaded.humans()[0].display_name, "Grace Hopper");
         }
 
-        // --- phase: unknown_schema_is_refused_wholesale ---
         {
             let mut projection = TrustedIdentityProjectionV1::empty();
             projection.schema_version += 1;
             assert!(TrustedHumanDirectory::from_projection(projection).is_err());
         }
 
-        // --- phase: v2_exposes_root_signed_device_details_without_changing_share_authority ---
         {
             let root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
             let device = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
@@ -434,9 +401,6 @@ mod tests {
         }
     }
 
-    /// A delegated agent device of a human names the versions it signs as
-    /// the agent's, on behalf of that human, and is never one of the devices
-    /// sharing with the human encrypts to.
     #[test]
     fn agent_devices_name_history_and_never_receive_shares() {
         let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);

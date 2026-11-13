@@ -4,12 +4,9 @@ use super::{
 };
 use ui::widget::toast::ToastKind;
 
-/// What follows a write once it landed.
 pub(crate) enum AfterSave {
     Nothing,
-    /// Close the tab, opening `then_open` in its place.
     Close(Option<TreeId>),
-    /// Answer the file effect that asked for the save.
     Effect,
 }
 
@@ -22,8 +19,6 @@ impl AfterSave {
         }
     }
 
-    /// A write that did not land: a tab to close stays open (a conflict
-    /// prompt, now showing, is answered first).
     fn failed(self, app: &mut CodeApp) {
         if matches!(self, Self::Effect) {
             app.finish_file_effect(Err("file could not be saved".into()));
@@ -32,14 +27,12 @@ impl AfterSave {
 }
 
 impl CodeApp {
-    /// Read a disk-backed file into its buffer the first time this session
-    /// opens it. The document may already hold text for it — a collaborator's
-    /// or a previous session's unsaved edits, which are not ours to discard —
-    /// so the seed only creates text that is missing; the file's bytes and
-    /// stamp become the comparison a save is checked against either way.
+    /// Read a disk-backed file into its buffer the first time this session opens it. Text the document
+    /// already holds (a collaborator's, a previous session's unsaved edits) is kept, and the file's bytes
+    /// and stamp become the comparison a save is checked against.
     ///
-    /// A read failure closes the tab again: a file that opened as a silently
-    /// empty buffer would be written back empty by the next Ctrl+S.
+    /// A read failure closes the tab again: a buffer that opened empty would be written back empty by the
+    /// next Ctrl+S.
     pub(super) fn seed_buffer(&mut self, node: TreeId) {
         let Some(buffer) = self.session.buffer_of(node) else {
             return;
@@ -61,7 +54,6 @@ impl CodeApp {
         );
     }
 
-    /// Fold in reading folder `id`, expanded in the tree.
     pub(super) fn read_folder(
         &mut self,
         id: TreeId,
@@ -83,7 +75,6 @@ impl CodeApp {
         self.explorer.show(&self.session.project);
     }
 
-    /// Fold in reading `node`'s file for its tab.
     fn seeded(
         &mut self,
         node: TreeId,
@@ -94,8 +85,6 @@ impl CodeApp {
         self.disk_work.seeding.remove(&node);
         match loaded {
             Ok(loaded) => {
-                // The text itself is recorded by the next settlement
-                // ([`Self::record_missing_text`]), as the person's own edit.
                 if let Some(buffer) = self.session.buffer_of_mut(node) {
                     buffer.path = Some(path);
                     buffer.mark_saved(loaded.text, Some(loaded.stamp));
@@ -113,18 +102,15 @@ impl CodeApp {
         }
     }
 
-    /// Write one buffer to its file. Whether it landed by the time this
-    /// returns: on the frame loop the write runs on a background thread and
-    /// its outcome is folded in later (`Self::save_buffer_then`).
+    /// Write one buffer to its file, and say whether it landed: on the frame loop the write runs on a
+    /// background thread and its outcome is folded in later (`Self::save_buffer_then`).
     ///
-    /// `force` is the user having answered "overwrite anyway" to a conflict; it
-    /// is the only way to skip the freshness check, and it is never set by the
-    /// app on its own.
+    /// `force` is the person having answered "overwrite anyway"; it is the only way past the freshness
+    /// check, and the app never sets it itself.
     pub fn save_buffer(&mut self, doc: &AutoCommit, node: TreeId, force: bool) -> bool {
         self.save_buffer_then(doc, node, force, AfterSave::Nothing)
     }
 
-    /// [`Self::save_buffer`], doing `then` once the write landed.
     pub(super) fn save_buffer_then(
         &mut self,
         doc: &AutoCommit,
@@ -161,7 +147,6 @@ impl CodeApp {
         landed.get()
     }
 
-    /// Fold in the outcome of writing `node`: whether it landed.
     fn saved(
         &mut self,
         node: TreeId,
@@ -171,8 +156,6 @@ impl CodeApp {
     ) -> bool {
         match saved {
             Ok(stamp) => {
-                // The tab's unsaved mark clears; saving where the file
-                // lives says nothing more.
                 if let Some(buf) = self.session.buffer_of_mut(node) {
                     buf.mark_saved(text, Some(stamp));
                 }
@@ -188,8 +171,6 @@ impl CodeApp {
                 if let Some(buf) = self.session.buffer_of_mut(node) {
                     buf.stale = true;
                 }
-                // One question at a time: a conflict already asked about is
-                // answered first, and this file stays marked as changed.
                 if self.conflict.is_none() {
                     self.conflict = Some(Conflict {
                         node,
@@ -214,8 +195,6 @@ impl CodeApp {
         }
     }
 
-    /// Save every buffer with unsaved edits. Reports how many were written, and
-    /// stops at the first conflict so the user answers one question at a time.
     pub(super) fn save_all(&mut self, doc: &AutoCommit) -> usize {
         let dirty: Vec<TreeId> = self
             .session
@@ -233,11 +212,9 @@ impl CodeApp {
                 written += 1;
             }
         }
-        // The tabs' unsaved marks clear; saving says nothing more.
         written
     }
 
-    /// Throw away this buffer's edits and take what is on disk.
     pub(super) fn reload_buffer(&mut self, doc: &mut ui::widget::Edits<'_>, node: TreeId) {
         if self.session.buffer_of(node).is_none() {
             return;
@@ -255,7 +232,6 @@ impl CodeApp {
         }
     }
 
-    /// Take `seed`, what `node`'s file holds, over the buffer's edits.
     fn reloaded(
         &mut self,
         doc: &mut ui::widget::Edits<'_>,
@@ -271,8 +247,6 @@ impl CodeApp {
                     .session
                     .buffer_of(node)
                     .map_or_else(String::new, |b| b.name.clone());
-                // Disk reload is still a visible buffer edit, so it uses the
-                // same action-owned splice path as a keystroke or replace.
                 let file_id = self.buffer_key(node);
                 let base = EditorDoc::read_buffer_key(doc, &file_id).unwrap_or_default();
                 if let Err(error) = self.dispatch_text_action(doc, file_id, &base, &text) {
@@ -296,12 +270,8 @@ impl CodeApp {
         }
     }
 
-    /// Notice files that changed on disk since we read them, so a tab can warn
-    /// before the user tries to save over someone else's work.
-    ///
-    /// One look at a time. On the frame loop the look runs on a background
-    /// thread and wakes the window only when the file did change, so an idle
-    /// window is not kept awake looking.
+    /// Notice files that changed on disk since their last read, so a tab warns before a save over
+    /// someone else's work. One look at a time, off the frame loop, waking the window only on a change.
     pub(super) fn check_disk_staleness(&mut self) {
         if self.staleness_looking {
             return;
@@ -324,8 +294,6 @@ impl CodeApp {
             move || disk::changed_on_disk(&path, &stamp),
             move |app, changed| {
                 app.staleness_looking = false;
-                // A save that landed meanwhile moved the stamp: the look was
-                // against what the file held before it.
                 if changed
                     && let Some(buf) = app.session.buffer_of_mut(node)
                     && buf.stamp.as_ref() == Some(&looked)
@@ -336,7 +304,6 @@ impl CodeApp {
         );
     }
 
-    /// Answer an open conflict.
     pub(super) fn resolve_conflict(
         &mut self,
         doc: &mut ui::widget::Edits<'_>,
@@ -357,16 +324,9 @@ impl CodeApp {
         }
     }
 
-    /// Ask the host desktop for a folder to open as the project.
-    ///
-    /// This goes through the XDG `FileChooser` portal rather than any in-app
-    /// browser: under app-state confinement the editor has exactly one writable
-    /// directory of its own and no manifest field can add more, so a path the
-    /// user picked in the portal — which is where the sandbox's file-access
-    /// grant is made — is the only way it reaches the rest of the filesystem.
-    ///
-    /// It asks for a folder, to change: the editor saves into the project
-    /// it opens, and the picker gives exactly what it was asked for.
+    /// Ask the host desktop for a folder to open as the project, through the XDG `FileChooser` portal:
+    /// under app-state confinement it is the only way out of the editor's one writable directory, and it
+    /// is where the sandbox's file-access grant is made.
     pub(super) fn request_open_folder(&mut self) {
         self.portal_intent = Some(PortalIntent::OpenFolder);
         self.portal = Some(
@@ -376,7 +336,6 @@ impl CodeApp {
         );
     }
 
-    /// Ask the host desktop for a file to open into a tab.
     pub(super) fn request_open_file(&mut self) {
         self.portal_intent = Some(PortalIntent::OpenFile);
         self.portal = Some(
@@ -388,7 +347,6 @@ impl CodeApp {
         );
     }
 
-    /// Ask the host desktop where to write a buffer that has no file yet.
     pub(super) fn request_save_as(&mut self, node: TreeId) {
         let suggested = self
             .session
@@ -404,8 +362,6 @@ impl CodeApp {
         );
     }
 
-    /// Drain a pending picker, once per frame. Never blocks: the portal's
-    /// D-Bus round-trip and its host dialog live entirely on a worker thread.
     pub(super) fn poll_portal(&mut self, doc: &AutoCommit) {
         let Some(rx) = self.portal.as_ref() else {
             return;
@@ -425,8 +381,6 @@ impl CodeApp {
         self.apply_portal_outcome(doc, intent, outcome);
     }
 
-    /// Fold a picker result into the app. Separate from the channel plumbing so
-    /// a test can drive the exact path a real pick takes.
     pub(crate) fn apply_portal_outcome(
         &mut self,
         doc: &AutoCommit,
@@ -441,8 +395,6 @@ impl CodeApp {
                 return;
             }
             PortalOutcome::Failed(reason) => {
-                // The host's reason is a sentence for the person: what
-                // happened and what to do. The editor says what it was doing.
                 let doing = match intent {
                     Some(PortalIntent::OpenFolder) => "Couldn't open a folder",
                     Some(PortalIntent::OpenFile) => "Couldn't open a file",
@@ -457,7 +409,6 @@ impl CodeApp {
         let result = match intent {
             Some(PortalIntent::OpenFolder) => match self.open_project_dir(&path) {
                 Some(answer) => answer,
-                // Answered once the folder is read.
                 None => return,
             },
             Some(PortalIntent::OpenFile) => match self.open_disk_file(&path) {
@@ -486,7 +437,6 @@ impl CodeApp {
                 );
                 match answer {
                     Some(answer) => answer,
-                    // Answered once the file is written.
                     None => return,
                 }
             }
@@ -495,7 +445,6 @@ impl CodeApp {
         self.finish_file_effect(result);
     }
 
-    /// Fold in writing `node` to the new destination `path`.
     fn saved_as(
         &mut self,
         node: TreeId,
@@ -530,17 +479,12 @@ impl CodeApp {
         }
     }
 
-    /// Answer the effect that opened a picker or asked for a save, if one is
-    /// waiting.
     pub(super) fn finish_file_effect(&mut self, result: Result<(), String>) {
         if let Some(reply) = self.file_reply.take() {
             reply.finish(result.map(|()| tilo_actions::ActionOutput::default()));
         }
     }
 
-    /// Replace the project with the directory at `path`. Its answer, or
-    /// `None` while the folder is read on a background thread (the file
-    /// effect waiting is answered then).
     pub(super) fn open_project_dir(
         &mut self,
         path: &std::path::Path,
@@ -584,10 +528,6 @@ impl CodeApp {
         }
     }
 
-    /// Show a real file, revealing it in the tree when it lives
-    /// under the open project and adopting it as a one-file project when not.
-    /// Its answer, or `None` while the disk is read on a background thread
-    /// (the file effect waiting is answered then).
     pub(super) fn open_disk_file(&mut self, path: &std::path::Path) -> Option<Result<(), String>> {
         let path = path.to_path_buf();
         let root = self.session.project.root_path();
@@ -598,7 +538,6 @@ impl CodeApp {
                 let along = root
                     .filter(|root| path.starts_with(root))
                     .map(|root| crate::model::read_folders_along(&root, &path));
-                // A file the tree does not reach opens on its own.
                 let single = Project::open_single_file(&path);
                 (path, along, single)
             },
@@ -640,10 +579,6 @@ impl CodeApp {
         }
     }
 
-    /// Reveal the file at `path` in the tree, reading the folders on the way
-    /// where it may wait on the disk and on a background thread on the frame
-    /// loop, then `then` with its node (`None` where the tree has no file
-    /// there).
     pub(super) fn reveal_on_disk(
         &mut self,
         path: std::path::PathBuf,
@@ -673,10 +608,8 @@ impl CodeApp {
     }
 }
 
-/// Why `path` did not open. A path Code cannot see is most often one it was
-/// never handed: its sandbox reaches the files the desktop gave it (opened
-/// from Files, dropped on it, picked in the file chooser), not every path on
-/// the machine, so the answer names the way that hands one over.
+/// Why `path` did not open: the editor's sandbox reaches the files the desktop gave it (from Files,
+/// dropped on it, picked in the file chooser), not every path on the machine.
 pub(super) fn could_not_open(path: &std::path::Path, error: &std::io::Error) -> String {
     let unreachable = matches!(
         error.kind(),

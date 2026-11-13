@@ -1,15 +1,6 @@
-//! The two content-panel widgets the [`ui::widget::NavShell`] hosts.
-//!
-//! Both are deliberately thin: they own only their allocated rect and a
-//! shared handle to the [`Core`] (the model + view state). Drawing and input
-//! delegate straight into `Core`, so the overview and the detail render from
-//! one source of truth — selecting a city in the overview is immediately
-//! reflected in the detail because both read the same `Core`.
-//!
-//! The shell owns the responsive geometry, the
-//! push/side-by-side transition and the Back button; these panes just paint
-//! their content into whatever rect the shell hands them, which is how the
-//! same code works side-by-side (wide) and full-screen-push (narrow).
+//! The two pane widgets the shell hosts: thin holders of a rect and a handle to
+//! the shared [`Core`], delegating drawing and input to it. The shell owns the
+//! geometry, the push transition and the Back button.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -30,7 +21,7 @@ use ui::widget::Widget;
 
 use crate::core::{Core, OverviewEventCtx};
 
-/// The contentful city-list (master / overview) panel.
+/// The city-list panel.
 pub struct OverviewPane {
     core: Rc<RefCell<Core>>,
     rect: Rect,
@@ -45,7 +36,7 @@ impl OverviewPane {
     }
 }
 
-/// The forecast (detail) panel.
+/// The forecast panel.
 pub struct DetailPane {
     core: Rc<RefCell<Core>>,
     rect: Rect,
@@ -89,16 +80,15 @@ impl Widget for OverviewPane {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // What it paints is the weather core's, which other parts of the
-        // app move: a drawing of it is only current until the next input.
+        // The core's paint, which other parts of the app move: current only until
+        // the next input.
         ui::outside_paint::note();
         self.core
             .borrow_mut()
             .draw_overview(self.rect, scene, transform, text_renderer, theme);
     }
 
-    /// The add-place suggestions and the per-place menu float in the
-    /// window's top layer, over the forecast too.
+    /// The add-place suggestions and the menu, in the window's top layer.
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -213,8 +203,6 @@ impl Widget for DetailPane {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // The weather core's paint, moved by parts of the app outside this
-        // widget: only current until the next input.
         ui::outside_paint::note();
         self.core
             .borrow_mut()
@@ -250,8 +238,7 @@ impl Widget for DetailPane {
         Some(self.core.borrow().detail_accessibility(self.rect))
     }
 
-    /// The forecast's one accessible control: the out-of-date notice's
-    /// Retry button.
+    /// The forecast's one control: the notice's Retry button.
     fn perform_action(
         &mut self,
         action: &Action,

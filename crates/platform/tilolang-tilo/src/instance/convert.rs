@@ -397,15 +397,16 @@ pub(crate) fn toggles(
     }
 }
 
-/// The resource and the action the event `event` of the node `key` of `view` runs, when it
-/// runs an action on a resource as it is: the action its control is bound to. An action that
-/// still asks for something (`Pick date…`) opens its form from the view's own event instead.
+/// What the event `event` of the node `key` of `view` runs, when it runs an action on a
+/// resource as it is: the action its control is bound to, published under its name, and the id
+/// the app declares it under. An action that still asks for something (`Pick date…`) opens its
+/// form from the view's own event instead.
 pub(crate) fn invokes(
     host: &Host,
     view: &ViewInstance,
     key: &str,
     event: &str,
-) -> Option<(ResourceRef, String)> {
+) -> Option<wire::Invoked> {
     // What the control does, where a `then` runs more than one action to do it.
     let aref = view.event_action(key, event)?.acting().clone();
     let given = aref
@@ -413,19 +414,24 @@ pub(crate) fn invokes(
         .iter()
         .position(|arg| *arg == Value::Missing)
         .unwrap_or(aref.args.len());
-    let asks = host.find_in_packages(|package| {
+    // As the app publishes it: by its name.
+    let (asks, published) = host.find_in_packages(|package| {
         package
             .meta
             .actions
             .iter()
             .find(|action| action.id == aref.action)
-            .map(|action| action.unbound(given).next().is_some())
+            .map(|action| (action.unbound(given).next().is_some(), action.name.clone()))
     })?;
     if asks {
         return None;
     }
     match aref.args.first() {
-        Some(Value::Ref(subject)) => Some((ResourceRef::clone(&subject.target), aref.action)),
+        Some(Value::Ref(subject)) => Some(wire::Invoked {
+            resource: ResourceRef::clone(&subject.target),
+            action: published,
+            declared: aref.action,
+        }),
         _ => None,
     }
 }

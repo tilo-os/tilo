@@ -187,25 +187,6 @@ pub struct PendingEntry {
     pub bytes: Vec<u8>,
 }
 
-/// Older relays appended one JSON line per admitted delta to this file and
-/// never read it back, so it only grew (~170 B per keystroke). Nothing writes
-/// it any more; [`WorkspaceStore::open`] reclaims what an older relay left.
-const LEGACY_DELTA_LOG: &str = "log.jsonl";
-
-fn remove_legacy_delta_log(root: &Path) {
-    match fs::remove_file(root.join(LEGACY_DELTA_LOG)) {
-        Ok(()) => {
-            tracing::info!(root = %root.display(), "removed the legacy per-delta log");
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        // Best effort: the file is inert, and opening the store must not
-        // depend on reclaiming it.
-        Err(error) => {
-            tracing::warn!(root = %root.display(), %error, "legacy per-delta log not removed");
-        }
-    }
-}
-
 impl WorkspaceStore {
     /// Open (creating if necessary) the on-disk state for
     /// `workspace_id` under `state_root/workspaces/<id>/`.
@@ -245,7 +226,6 @@ impl WorkspaceStore {
         fs::create_dir_all(&root)?;
         fs::create_dir_all(root.join("pending"))?;
         fs::create_dir_all(root.join(RETAINED_DIR))?;
-        remove_legacy_delta_log(&root);
         // The store's directory and its own entries are durable from here on.
         for directory in root.ancestors().take(3) {
             retained::sync_dir_once(directory)?;
@@ -631,14 +611,6 @@ mod tests {
             let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
             store.save_snapshot(b"HELLO").unwrap();
             assert!(store.load_snapshot().unwrap().is_none());
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let root = tmp.path().join("workspaces").join("7");
-            fs::create_dir_all(&root).unwrap();
-            fs::write(root.join(LEGACY_DELTA_LOG), b"{\"workspace_id\":7}\n").unwrap();
-            let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
-            assert!(!store.root().join(LEGACY_DELTA_LOG).exists());
         }
         {
             let tmp = tempfile::tempdir().unwrap();

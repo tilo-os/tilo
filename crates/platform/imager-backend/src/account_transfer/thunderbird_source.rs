@@ -1,20 +1,8 @@
-//! Selected Thunderbird mail and personal data as a sealed transport bundle,
-//! and its import into the destination user's canonical Mail account store
-//! and Mail cache. Selection is part of the authenticated artifact: a caller
-//! cannot widen an export after review.
+//! Selected Thunderbird mail and personal data, sealed into a transport bundle and imported into
+//! the destination's Mail account store and cache. Selection is part of the authenticated
+//! artifact, so a caller cannot widen an export after review.
 //!
-//! A transfer that stays on this computer does not build that bundle: the
-//! source Home is already granted, so [`stream::import_reviewed`] reads the
-//! reviewed folders chunk by chunk and publishes message by message. The
-//! sealed artifact is for a transfer that has to pass through installation
-//! media, where it is bounded as a whole.
-//!
-//! The canonical Mail cache is `$XDG_CACHE_HOME/so.tilo.mail/mail/<account>.json`
-//! plus `<account>.files/<message>.<index>` for attachment bytes, matching
-//! `apps/mail/src/store.rs`. Thunderbird folders with no Mail system-folder
-//! equivalent are placed in Archive with a `Thunderbird/<path>` label, while
-//! their exact original mbox/maildir bytes are retained below
-//! `.local/share/tilo/mail-import/thunderbird/` so nothing is flattened away.
+//! A transfer that stays on this computer streams the granted Home instead of building the bundle.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
@@ -49,11 +37,11 @@ const MAX_FOLDERS: usize = 4096;
 const MAX_ACCOUNTS: usize = 128;
 const MAX_FILES: usize = 8192;
 const CACHE_VERSION: u32 = 1;
-/// Upper bound of one account's kept-mail file. The Mail app holds this file
+/// The Mail app holds an account's kept-mail file in memory, so a larger corpus is refused rather
+/// than read whole or overwritten.
 /// in memory when it opens an account, so a larger corpus is refused rather
 /// than read whole or overwritten.
 const MAX_CACHE: u64 = 256 * 1024 * 1024;
-/// How often a merge is retried after the kept file changed under it.
 const CACHE_ATTEMPTS: usize = 3;
 const MAIL_APP: &str = "so.tilo.mail";
 const MAIL_ARTIFACT: Frame = Frame::new(
@@ -63,11 +51,10 @@ const MAIL_ARTIFACT: Frame = Frame::new(
     MAX_SEALED,
 );
 
-/// Upper bound of one password-wrapped selected-mail artifact.
 pub const MAX_THUNDERBIRD_ARTIFACT: usize = MAIL_ARTIFACT.max_len();
 
-/// The exact reviewed children to export. An empty account list is an empty
-/// selection, not "everything". IDs are the opaque IDs from discovery.
+/// An empty account list is an empty selection, not "everything"; the ids are the opaque ones from
+/// discovery.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThunderbirdSelection {
@@ -84,8 +71,6 @@ pub struct ThunderbirdAccountSelection {
 }
 
 impl ThunderbirdSelection {
-    /// Select every discovered child. The UI still shows each child so the
-    /// person can remove one before approving the transfer.
     pub fn all(reviewed: &ReviewedThunderbird) -> Self {
         Self {
             accounts: reviewed
@@ -113,8 +98,6 @@ impl ThunderbirdSelection {
         }
     }
 
-    /// Whether this selection names exactly the reviewed account and no
-    /// child outside it.
     pub fn validate(&self, reviewed: &ReviewedThunderbird) -> Result<(), ConnectionError> {
         if self.accounts.is_empty() || self.accounts.len() > MAX_ACCOUNTS {
             return Err(ConnectionError::InvalidConfiguration);
@@ -163,8 +146,8 @@ impl ThunderbirdSelection {
         Ok(())
     }
 
-    /// Structural checks that need no live source. The manifest uses this
-    /// before the exact reviewed selection is available again.
+    /// Structural checks that need no live source; the manifest uses this before the exact
+    /// selection is available again.
     pub fn validate_shape(&self) -> Result<(), ConnectionError> {
         if self.accounts.is_empty() || self.accounts.len() > MAX_ACCOUNTS {
             return Err(ConnectionError::InvalidConfiguration);
@@ -199,8 +182,7 @@ fn unique(values: &[String], limit: usize) -> Result<(), ConnectionError> {
         .ok_or(ConnectionError::InvalidConfiguration)
 }
 
-/// Ciphertext only. No key, source path, email address or message body is
-/// visible to the caller until it authenticates the artifact.
+/// Ciphertext only; no key, path, address or body is visible until it authenticates.
 pub struct SealedThunderbird(Vec<u8>);
 
 impl std::fmt::Debug for SealedThunderbird {
@@ -217,7 +199,7 @@ impl SealedThunderbird {
         &self.0
     }
 
-    /// Parse only the envelope framing. Authentication happens on import.
+    /// Parses the envelope framing only; authentication happens on import.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ConnectionError> {
         if bytes.len() > MAX_SEALED {
             return Err(ConnectionError::InvalidConfiguration);
@@ -227,9 +209,8 @@ impl SealedThunderbird {
     }
 }
 
-/// A selected-mail artifact whose content key is wrapped under the person's
-/// preparation password. The outer package never holds a password or an
-/// unwrapped key; the destination helper authenticates this exact ciphertext.
+/// The content key is wrapped under the person's preparation password; the package never holds a
+/// password or an unwrapped key.
 pub struct PasswordSealedThunderbird(Vec<u8>);
 
 impl std::fmt::Debug for PasswordSealedThunderbird {
@@ -246,23 +227,17 @@ impl PasswordSealedThunderbird {
         &self.0
     }
 
-    /// Parse the framing and canonical password-KDF policy without deriving a
-    /// key. Authentication happens only in [`Self::open`].
-    ///
-    /// # Errors
-    /// Refuses an oversized, malformed or non-canonical artifact.
+    /// Parses the framing and the canonical KDF policy without deriving a key; authentication
+    /// happens only in [`Self::open`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ConnectionError> {
         MAIL_ARTIFACT.parse(bytes).map_err(frame_error)?;
         Ok(Self(bytes.to_vec()))
     }
 
-    /// Read one already-granted private artifact with bounded/no-follow access.
     pub fn read(path: &Path) -> Result<Self, ConnectionError> {
         read_artifact(path).map_err(|_| ConnectionError::StorageUnavailable)
     }
 
-    /// Seal exactly the reviewed selection under a fresh content key, wrapped
-    /// with the person's preparation password and the same setup binding.
     pub fn seal(
         reviewed: &ReviewedThunderbird,
         selection: &ThunderbirdSelection,
@@ -280,13 +255,8 @@ impl PasswordSealedThunderbird {
         Self::from_bytes(&bytes)
     }
 
-    /// Authenticate the password wrap and the inner selection, then hand the
-    /// retained key to the actual import. A wrong password, binding or changed
-    /// bytes is refused before any target custody is touched.
-    ///
-    /// # Errors
-    /// Refuses a non-canonical artifact, wrong password/binding or changed
-    /// inner ciphertext.
+    /// Authenticates the wrap and the inner selection, then hands the retained key to the import; a
+    /// wrong password, binding or changed bytes is refused before any target custody is touched.
     pub fn open(
         &self,
         password: &[u8],
@@ -320,8 +290,7 @@ fn read_artifact(path: &Path) -> std::io::Result<PasswordSealedThunderbird> {
         .map_err(|_| std::io::Error::other("Malformed mail artifact"))
 }
 
-/// What the destination actually received, in opaque source IDs and counts.
-/// It never carries a source path, email address or message content.
+/// What the destination received, in opaque ids and counts; never a path, address or content.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThunderbirdImportReceipt {
     pub accounts: Vec<ThunderbirdAccountReceipt>,
@@ -401,9 +370,8 @@ fn binding(binding: &[u8]) -> Result<Vec<u8>, ConnectionError> {
     Ok(context)
 }
 
-/// Export exactly the reviewed selection under a fresh caller-owned transport
-/// key. The source files are re-read through their pinned profile handles and
-/// the profile is revalidated before the artifact is produced.
+/// Re-reads the source through its pinned profile handles and revalidates the profile before the
+/// artifact is produced.
 pub fn seal_selected(
     reviewed: &ReviewedThunderbird,
     selection: &ThunderbirdSelection,
@@ -556,15 +524,14 @@ impl std::io::Write for Bounded<'_> {
     }
 }
 
-/// Authenticate the artifact against the same setup binding and the exact
-/// reviewed selection, then publish canonical Mail accounts and local mail
-/// under `target_home`. An existing account with the same email is reused;
-/// its configuration is never overwritten with Thunderbird's.
+/// Publishes canonical Mail accounts and local mail under `target_home`. An existing account with
+/// the same email is reused; its configuration is never overwritten with Thunderbird's.
 ///
 /// # Errors
-/// Refuses a wrong key/binding/selection, changed target, conflicting account
-/// or unavailable destination storage. No account is reported created unless
-/// its metadata and selected local mail were written.
+///
+/// Refuses a wrong key, binding or selection, a changed target, a conflicting account or
+/// unavailable storage. No account is reported created unless its metadata and selected mail were
+/// written.
 pub fn import_selected(
     target_home: &Path,
     sealed: &SealedThunderbird,
@@ -611,9 +578,8 @@ pub fn import_selected(
                 .find(|selected| selected.source_id == account.inventory.source_id)
                 .ok_or(ConnectionError::AccountMissing)?;
             let (id, created) = publish_account(&mut store, &account.inventory, &account.metadata)?;
-            // Read the account's kept mail once, so every selected folder is
-            // merged into one file and messages already kept by the Mail app
-            // keep their read/starred state, folder and labels.
+            // Read the kept mail once so every selected folder merges into one file and messages
+            // the app already keeps their state.
             let stem = file_stem(id.as_str());
             let files = cache.join(format!("{stem}.files"));
             let mut seen = read_cache_ids(&cache, &id)?;
@@ -864,10 +830,8 @@ fn config(
         .map_err(|_| ConnectionError::InvalidConfiguration)
 }
 
-/// The kept-mail file the Mail app reads: the same wire shape as
-/// `crate::model::Message` in `apps/mail`, so the app can open what import
-/// writes. Mutable flags and labels belong to the person, so an existing
-/// message always wins over the imported copy.
+/// The wire shape `apps/mail` reads, so the app can open what import writes. Mutable flags and
+/// labels belong to the person, so an existing message wins over the imported copy.
 #[derive(Serialize, Deserialize)]
 struct Kept {
     version: u32,
@@ -925,7 +889,7 @@ struct CachedAttachment {
     kept: bool,
 }
 
-/// The canonical system folders, spelled exactly as the Mail app stores them.
+/// Spelled exactly as the Mail app stores them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum CachedFolder {
@@ -938,8 +902,7 @@ enum CachedFolder {
     Junk,
 }
 
-/// Where a server holds a message. Imported mail is local-only, so this stays
-/// absent, but the shape must match the Mail app's `ServerPlace`.
+/// Imported mail is local-only, so this stays absent; the shape must match the app's `ServerPlace`.
 #[derive(Clone, Copy, Serialize, Deserialize)]
 struct CachedServerPlace {
     folder: CachedFolder,
@@ -947,9 +910,7 @@ struct CachedServerPlace {
     uid_validity: u32,
 }
 
-/// The message IDs an account's kept file already holds. An existing but
-/// unreadable file is refused rather than replaced: it may be the person's
-/// mail, and the app cannot read it either.
+/// An existing but unreadable file is refused rather than replaced: it may be the person's mail.
 fn read_cache_ids(
     cache: &Path,
     account: &AccountId,
@@ -970,10 +931,8 @@ fn cache_path(cache: &Path, account: &AccountId) -> PathBuf {
     cache.join(format!("{}.json", file_stem(account.as_str())))
 }
 
-/// Parse a kept-mail snapshot. A version this importer does not know is
-/// treated as empty, exactly as the Mail app treats it; malformed content is
-/// an error, because replacing it would destroy mail the person may still
-/// recover.
+/// A version this importer does not know is treated as empty, as the Mail app treats it; malformed
+/// content is an error, because replacing it would destroy mail the person may still recover.
 fn parse_kept(bytes: Option<&[u8]>) -> Result<Kept, ConnectionError> {
     let Some(bytes) = bytes else {
         return Ok(Kept::empty());
@@ -988,9 +947,8 @@ fn parse_kept(bytes: Option<&[u8]>) -> Result<Kept, ConnectionError> {
     Ok(kept)
 }
 
-/// Merge new messages into the account's kept mail, publish it atomically and
-/// only over the exact bytes that were read: a file another writer changed in
-/// between is merged again instead of being overwritten.
+/// Merges into the kept mail and publishes over the exact bytes that were read; a file another
+/// writer changed meanwhile is merged again instead of overwritten.
 fn publish_cache(
     cache: &Path,
     account: &AccountId,
@@ -1055,8 +1013,8 @@ fn messages(
     Ok(output)
 }
 
-/// Insert a parsed message once, writing its attachment bytes only when it is
-/// actually new so an existing kept copy keeps its state untouched.
+/// Writes attachment bytes only when the message is actually new, so an existing kept copy keeps
+/// its state.
 fn keep_message(
     parsed: Option<(CachedMessage, Vec<(usize, Vec<u8>)>)>,
     files: &Path,
@@ -1076,8 +1034,7 @@ fn keep_message(
     Ok(())
 }
 
-/// One parsed message and the attachment bytes that belong beside the kept
-/// file, written only once the message is actually inserted.
+/// The attachment bytes, written once the message is inserted.
 fn message(
     raw: &[u8],
     folder: &ThunderbirdFolder,
@@ -1415,9 +1372,8 @@ fn ensure_private_dir(path: &Path) -> Result<(), ConnectionError> {
     Ok(())
 }
 
-/// Read one bounded, non-redirected file. A missing directory or file is
-/// `None`; anything else that cannot be read safely is an error, never an
-/// empty file that would authorize replacing it.
+/// A missing directory or file is `None`; anything else unreadable is an error, never an empty file
+/// that would authorize replacing it.
 fn read_private(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, ConnectionError> {
     use crate::migration_directory::PinnedDirectory;
     use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
@@ -1458,8 +1414,7 @@ fn read_private(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, ConnectionEr
     Ok(Some(bytes))
 }
 
-/// Write `bytes` beside `path` and move them over it, so a reader never sees
-/// half a file and a crash leaves the previous one intact.
+/// A reader never sees half a file, and a crash leaves the previous one intact.
 fn atomic_private_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path
         .parent()

@@ -1,14 +1,12 @@
-//! A workspace's environments, branched into another workspace: what the person's
-//! `workspace.branch` asks of the runtime (`docs/architecture/workspace.md`, "Branching a
-//! workspace").
+//! A workspace's environments, branched into another workspace, as the person's
+//! `workspace.branch` asks.
 //!
-//! Each environment of the source becomes one of the branch under the same key: its record forked
-//! with its history and named as the branch's ([`Records::branch_into`]), its home and grants of
-//! the source's own files moved to the same places in the branch's, and everything it keeps
-//! outside its record — its legacy home and the `/var` its guest keeps — copied into the branch's
-//! own directory, sharing extents where the file system can. Its id (`TILO_ENVIRONMENT`) is the
-//! branch's (`<branch>/<key>`), so its sessions and its agent door are the branch's. The source is
-//! read and never changed. Images are the device's and shared already.
+//! Each environment of the source becomes one of the branch under the same key: its
+//! record forked with its history ([`Records::branch_into`]), its home and grants moved
+//! to the same places in the branch's tree, and what it keeps outside its record (its
+//! legacy home, its guest's `/var`) copied there. Its id is the branch's
+//! (`<branch>/<key>`), so its sessions and agent door are the branch's. The source is
+//! read and never changed, and images are shared already.
 
 use std::path::{Path, PathBuf};
 
@@ -17,14 +15,10 @@ use tilo_files::native::tree::{Strategy, clone_tree};
 use crate::records::Records;
 use crate::store::Store;
 
-/// What a branch of a workspace's environments made.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Branched {
-    /// The environments the branch has.
     pub environments: u64,
-    /// The files copied of what the environments keep outside their records.
     pub files: u64,
-    /// The bytes those files hold.
     pub bytes: u64,
 }
 
@@ -71,8 +65,6 @@ pub fn branch_environments(from: &Store, to: &Store) -> Result<Branched, String>
     Ok(branched)
 }
 
-/// The place `path` of the source's files takes in the branch's: the same path under the branch's
-/// tree, or `None` for a path outside the source's tree.
 fn moved(path: &str, (from, to): &(Option<PathBuf>, Option<PathBuf>)) -> Option<String> {
     let (from, to) = (from.as_deref()?, to.as_deref()?);
     let rest = Path::new(path).strip_prefix(from).ok()?;
@@ -93,10 +85,8 @@ mod tests {
     const FROM: &str = "6f1c2d3e-0000-4000-8000-000000000001";
     const TO: &str = "6f1c2d3e-0000-4000-8000-000000000002";
 
-    /// A device's ush store and its files.
     fn device(root: &Path) -> Store {
         std::fs::create_dir_all(root.join("files")).unwrap();
-        // Each workspace's records in a room of its own.
         Store::at(root.join("ush")).with_workspace(root.join("files"))
     }
 
@@ -167,7 +157,6 @@ mod tests {
             b"installed"
         );
 
-        // The source is as it was, and the two go on apart.
         let source = records.load("env-1").unwrap().unwrap();
         assert_eq!(source.workspace, FROM);
         assert_eq!(Path::new(&source.home_dir), tree);
@@ -181,7 +170,6 @@ mod tests {
             b"installed"
         );
 
-        // A second branch into the same workspace makes nothing over what is there.
         assert!(branch_environments(&from, &to).is_err());
         assert!(branch_environments(&from, &from).is_err());
     }

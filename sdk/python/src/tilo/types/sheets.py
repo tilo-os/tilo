@@ -123,7 +123,7 @@ TimeStyle = Literal["Language", "H24", "H12"]
 
 class Workbook(Resource):
     """Workbook — `sheets.workbook`."""
-    __surface__ = "so.tilo.sheets@9ade0694b6a2e150"
+    __surface__ = "so.tilo.sheets@be9693405e43cb95"
     sheets: list[Sheet]
     comments: list[Comment]
     settings: DocSettings

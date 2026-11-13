@@ -1,32 +1,16 @@
-//! `MailApp` — the window — and the [`Mailroom`] it shares with the view's
-//! effect handler: the engine and its requests, the server search, the mail
-//! kept on this device and what effects ask of the window until its next
-//! sync. The view ([`window`]) answers effects and publishes rows and search
-//! entries from the mailroom.
+//! `MailApp`, the window, and the [`Mailroom`] it shares with the view's effect handler: the
+//! engine and its requests, the server search, the mail kept on this device, and what effects
+//! ask of the window until its next sync.
 //!
-//! It is the toolkit's window shell, [`ui::widget::NavShell`], with three
-//! columns —
+//! It is the toolkit's window shell, [`ui::widget::NavShell`], with three columns: a sidebar
+//! of accounts and folders, the message list, and the open message. The shell owns the header
+//! row, the sidebar toggle, the widths, the drawer and the push stack; the three columns share
+//! one [`MailState`] and raise [`Intent`]s and [`Command`]s for effects that reach past their
+//! own column.
 //!
-//! ```text
-//! [ sidebar (accounts + folders) | list (overview) | message (detail) ]
-//! ```
-//!
-//! The shell owns the header row, the sidebar toggle, the widths, the drawer
-//! and the push stack. The sidebar is a followed [`NavList`](ui::widget::NavList), the list a
-//! [`MessageList`] and the message a [`MessageReader`]; they share one
-//! [`MailState`] and raise [`Intent`]s and [`Command`]s for effects that
-//! reach past their own column.
-//!
-//! On top of the shell the app layers what it owns directly: the
-//! [`ComposeWindow`], which writes in the message column (or fills a window
-//! too narrow for one), and the row context menu. Status messages show as
-//! the shell's toast. Accounts are not edited here: they are kept in
-//! Settings' External Accounts, which Mail links to and reads.
-//!
-//! A live window loads the [`AccountStore`] of its host's profile and drives
-//! the account [`crate::engine`] worker (IMAP fetch / SMTP submit). It does
-//! **not** fabricate a sample mailbox — an unconfigured account shows an empty
-//! state. The bundled sample corpus is a screenshot's fixture.
+//! The [`ComposeWindow`] writes in the message column, or fills a window too narrow for one,
+//! and status shows as the shell's toast. Accounts are edited in Settings' External Accounts,
+//! which Mail links to and reads.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -76,29 +60,21 @@ use crate::list::MessageList;
 use crate::model::{
     AccountConfig, Addr, Attachment, ComposeFormat, Draft, Folder, Message, MessageId,
 };
+use crate::notice::{AttachmentUnavailable, engine_error_text, staged_notice};
 use crate::reader::MessageReader;
 use crate::resource::{Mail, mailbox, read_mail};
 use crate::shortcuts_overlay::MailShortcutsOverlay;
 use crate::sidebar;
-use crate::state::{BulkAction, Command, CtxAction, Intent, MailState, QueuedMessage, Shared};
+use crate::state::{
+    BulkAction, Command, CtxAction, Intent, MailState, Notice, QueuedMessage, Shared,
+};
 use crate::util::format_absolute;
 
-/// How often the app auto-refreshes the current folder from the server while in
-/// use. Checked each active frame; a manual refresh (the `r` shortcut) forces
-/// one immediately regardless.
 const AUTO_REFRESH_MIN: i64 = 5;
-/// How long a search's text has to stay the same before the servers are
-/// asked for it.
 const SERVER_SEARCH_DEBOUNCE_MS: u64 = 500;
-/// The shortest text the servers are searched for.
 const SERVER_SEARCH_MIN_CHARS: usize = 3;
-/// How long a message sent from this window waits before it goes to the
-/// server, so "Undo" on the sending notice takes it back unsent.
 const SEND_UNDO_SECS: u64 = 10;
 
-/// A loaded mail body can be huge, but Mail refuses to turn a resource action
-/// into an unbounded filesystem write. Larger attachments can be downloaded
-/// through Files after Mail exposes a proper streamed handoff.
 const MAX_ATTACHMENT_SAVE_BYTES: usize = crate::attachment_store::MAX_ATTACHMENT_BYTES;
 
 struct EventContext<'a> {
@@ -112,101 +88,66 @@ struct EventContext<'a> {
     taffy: &'a TaffyTree<()>,
 }
 
-/// What the open row menu acts on: the message and its actions, in the
-/// menu's order.
 struct MenuTarget {
     message: MessageId,
     items: Vec<CtxAction>,
     /// The reader's menu instead: what each of its rows chooses (`None`
-    /// for a caption).
     reader: Vec<Option<crate::state::ReaderChoice>>,
 }
 
-/// The confirmation before trashed messages are deleted for good.
 struct PurgeConfirmation {
     dialog: ModalDialog<Text>,
-    /// `Some(true)` once confirmed, `Some(false)` once dismissed.
     answer: Rc<Cell<Option<bool>>>,
 }
 
-/// The engine worker channel pair (live app only).
 struct EngineHandle {
     tx: std::sync::mpsc::Sender<EngineRequest>,
     rx: std::sync::mpsc::Receiver<EngineEvent>,
 }
 
-/// A message from the outbox the engine is delivering. It joins Sent only
-/// once the server accepts it: treating MIME serialization as delivery makes
-/// an offline fallback (and a rejected SMTP send) look like mail was sent.
 struct PendingSend {
     outgoing: Outgoing,
-    /// The copy Sent shows once it is delivered.
     message: Message,
     done: DeliveryDone,
 }
 
-/// How the drain that asked for a server update hears how it went.
 type ServerUpdateDone = Box<dyn FnOnce(Result<(), String>)>;
 
-/// How the outbox drain hears how a delivery went: delivered, or refused
-/// for good with the server's reason; an error leaves it to try again.
 type DeliveryDone = Box<dyn FnOnce(Result<ui::tilo_resource::Settled, String>)>;
 
 /// A message sent from this window, held back from the server until `due`
-/// so it can be taken back unsent.
 struct HeldSend {
     outgoing: Outgoing,
     done: DeliveryDone,
     due: ui::time::Instant,
 }
 
-/// The server updates the document's projection asked for: queued until the
-/// next sync hands them to the engine, then carried out by it. Whichever
-/// device's drain asked, the engine's acknowledgement records the update as
-/// applied in the document ([`Mail::SERVER_APPLIED`](crate::resource::Mail::SERVER_APPLIED)).
 #[derive(Default)]
 pub(crate) struct ServerOutbox {
     queued: Vec<(ServerUpdate, ServerUpdateDone)>,
     sent: HashMap<EngineRequestId, (ServerUpdate, ServerUpdateDone)>,
-    /// Messages from the document's outbox, waiting for the engine.
     deliveries: Vec<(Outgoing, DeliveryDone)>,
 }
 
 impl ServerOutbox {
-    /// Carry out `update`, then tell `done` how it went.
     pub(crate) fn push(&mut self, update: ServerUpdate, done: ServerUpdateDone) {
         self.queued.push((update, done));
     }
 
-    /// Deliver `outgoing`, then tell `done` how it went.
     pub(crate) fn deliver(&mut self, outgoing: Outgoing, done: DeliveryDone) {
         self.deliveries.push((outgoing, done));
     }
 }
 
-/// An attachment whose bytes were already hydrated and are now waiting for a
-/// user-selected destination from the desktop portal. The path itself is never
-/// invented or retained before the portal grants it.
-/// Where account add / edit / remove is persisted.
-///
-/// Only a live window writes an account store, and only the one of the
-/// profile its host gave it: the person's own (`$XDG_CONFIG_HOME/tilo/accounts/`)
-/// in a session, a test or `--data-dir` profile's own otherwise. A screenshot
-/// or a past version writes nothing.
 #[derive(Clone)]
 enum AccountsPersist {
-    /// The configuration directory of the host's profile.
     Profile(std::path::PathBuf),
-    /// A throwaway directory, removed when the app is dropped.
     #[cfg(test)]
     Sandbox(Arc<tempfile::TempDir>),
-    /// Nothing is written: a capture, a past version, or a profile without a
-    /// configuration directory.
     Disabled,
 }
 
 impl AccountsPersist {
-    /// A fresh throwaway sandbox for tests.
     #[cfg(test)]
     fn sandbox() -> Self {
         match tempfile::Builder::new()
@@ -218,7 +159,6 @@ impl AccountsPersist {
         }
     }
 
-    /// The configuration directory this persists into.
     fn root(&self) -> Option<std::path::PathBuf> {
         match self {
             AccountsPersist::Profile(root) => Some(root.clone()),
@@ -228,7 +168,6 @@ impl AccountsPersist {
         }
     }
 
-    /// Persist `accounts` to the target this variant names.
     fn persist(&self, accounts: &AccountStore) -> std::io::Result<()> {
         match self.root() {
             Some(root) => accounts.persist_in(&root),
@@ -237,8 +176,6 @@ impl AccountsPersist {
     }
 }
 
-/// A wake for a worker thread: it wakes the window once the view has
-/// handed over its waker, and does nothing before.
 fn wake_through(slot: &Arc<std::sync::Mutex<Option<ui::WakeHandle>>>) -> crate::engine::Wake {
     let slot = Arc::clone(slot);
     Arc::new(move || {
@@ -252,48 +189,17 @@ fn wake_through(slot: &Arc<std::sync::Mutex<Option<ui::WakeHandle>>>) -> crate::
     })
 }
 
-/// What a failed engine request says to the person: what did not happen,
-/// and why in their terms, never the protocol step that failed.
-fn engine_error_text(context: &str, message: &str, account: &str) -> String {
-    let lower = message.to_ascii_lowercase();
-    let signed_out = lower.contains("authentication")
-        || lower.contains("password")
-        || lower.contains("credential")
-        || lower.contains("oauth")
-        || lower.contains("sign in");
-    let offline = lower.contains("network unreachable");
-    let account = if account.is_empty() {
-        "your account"
-    } else {
-        account
-    };
-    match context {
-        "connect" | "fetch" if signed_out => {
-            format!(
-                "Can’t sign in to {account}. Check its password in Settings, External accounts."
-            )
-        }
-        "connect" | "fetch" if offline => "You’re offline. Mail will check again.".to_owned(),
-        "connect" | "fetch" => format!("Can’t check mail for {account}: {message}"),
-        "send" | "smtp" | crate::engine::SMTP_UNREACHED => {
-            format!("Couldn’t send the message: {message}")
-        }
-        "oauth" => format!("Sign-in didn’t finish: {message}"),
-        _ => format!("Couldn’t update the mail server: {message}"),
-    }
-}
-
-/// Where email accounts are added, changed and removed: Settings' External
-/// Accounts, the one account editor.
 const ACCOUNT_SETTINGS_LINK: &str = "settings://external_accounts";
 
-/// The scheme of the activation URIs Mail's notifications carry.
+const ACCOUNT_ROUTE: &str = "mail.add-account";
+
+/// Checking the open account's mail again, the way a failed check's pill does
+/// when assistive technology activates it.
+const CHECK_ROUTE: &str = "mail.check";
+
 const NOTIFICATION_SCHEME: &str = "tilo-mail";
-/// The one tag new-mail notifications share: a newer one replaces the last.
 const NOTIFICATION_TAG: &str = "mail-new";
 
-/// A request posted to the engine and not yet acknowledged: what it does
-/// and the account it acts for, so a late answer stays with that account.
 struct PendingEngineRequest {
     kind: EngineRequestKind,
     account: String,
@@ -305,220 +211,103 @@ struct PendingEngineRequest {
 )]
 pub struct MailApp {
     pub(crate) shared: Shared,
-    /// What the window shares with the view's effect handler and what it
-    /// publishes.
     room: Rc<RefCell<Mailroom>>,
     /// The mailbox as the document holds it, shown as it changes; `None`
-    /// for a window outside the framework.
     live: Option<ui::framework::Live<Mail>>,
-    /// The `(revision, loads)` of the document last shown.
     presented: Option<(u64, u64)>,
     /// Where draft attachment bytes live; drafts carry only their content id.
-    /// The engine worker holds a clone to build outgoing MIME.
     content: ContentStore,
     nav: NavShell,
     nav_node: Option<NodeId>,
-    /// The window bar's actions as last declared, and the command each
-    /// queues.
     bar: ui::framework::BarCommands<Command>,
-    /// Retained first-run surface so the primary action uses the shared
-    /// pointer, focus, keyboard and accessibility contract.
     first_run: EmptyState,
     first_run_node: Option<NodeId>,
-    /// Boxed: the composer's editors and fields are most of the app's size,
-    /// and an inline one puts that on every frame the app is built in.
     compose: Box<ComposeWindow>,
-    /// A modal, read-only key map. It is local presentation state; every
-    /// shortcut it documents still routes to the normal visible/canonical path.
     shortcuts: MailShortcutsOverlay,
-    /// The Drafts-folder message the open composer is editing, if any. On save
-    /// the same message is updated (not duplicated); on send it is removed.
     editing_draft: Option<MessageId>,
-    /// Retained projection of the canonical CRDT draft; preserves its metadata
-    /// when the Drafts-folder row reopens and reuses that row across frames.
     projected_draft: RefCell<Option<(MessageId, Draft)>>,
-    /// The drafts of their own shown in Drafts, by id.
     projected_drafts: RefCell<HashSet<MessageId>>,
-    /// The row menu, and the message it acts on while open.
     menu: ContextMenu,
     menu_target: Option<MenuTarget>,
-    /// A row menu to open once the list has been laid out (a capture).
     pending_menu: Option<MessageId>,
-    /// An explicit destructive confirmation for the selection toolbar. This
-    /// is local presentation state; the actual purge remains one canonical
-    /// verb of the mailbox, only after the person confirms.
     bulk_purge_confirmation: Option<PurgeConfirmation>,
-    /// What the document still has to tell mail servers, on its way to the
-    /// engine.
     server_outbox: Rc<RefCell<ServerOutbox>>,
-    /// The drain that fills the outbox, told when a server may now accept
-    /// what it refused (a fetch arrived, the engine reconnected).
     projection: Option<ui::framework::Projection>,
-    /// The drain that hands the document's outbox to the engine.
     delivery: Option<ui::framework::Projection>,
-    /// The outbox message the composer was reopened from after its server
-    /// refused it; sending again replaces it.
     resending: Option<String>,
-    /// Messages sent from this window, waiting out the undo time.
     held_sends: Vec<HeldSend>,
     /// Sends pressed whose outbox messages have yet to reach the drain:
-    /// each is held when it does.
     sends_to_hold: usize,
     /// The notice showing (or about to) is the sending one: its "Undo"
-    /// takes the held messages back.
     send_notice: bool,
     sending_notice_next: bool,
-    /// "Undo" was pressed on the sending notice.
     unsend: bool,
-    /// The device-local account id last flushed to [`AccountsPersist`]. Pane,
-    /// accessibility, and resource operations all select through `MailState`,
-    /// so observing the id here gives every selection path one persistence
-    /// boundary without leaking that preference into Automerge.
     persisted_active_account: Option<String>,
-    /// The person's accounts, which Settings keeps and every device of theirs
-    /// shares, followed in a live window; and the revision last shown.
     person_accounts: Option<(PersonRecord<PersonAccounts>, Option<u64>)>,
-    /// The session's account custody, which releases this window the
-    /// secret of each email account it shows; `None` outside a session,
-    /// where the profile's own vault holds them.
     custody: Option<crate::custody::SecretRelease>,
-    /// The contact directory revision and own addresses the sender pictures
-    /// were last taken from.
     sender_pictures_seen: Option<(u64, Vec<String>)>,
-    /// The person's Mail preferences, followed in a live window: the compose
-    /// format and the folded account sidebars.
     preferences: Option<ui::framework::Setting<crate::resource::MailPreferences>>,
-    /// The preferences as this window last read or stored them.
     followed_preferences: crate::resource::MailPreferences,
-    /// The trusted senders record, followed in a live window.
     pub(crate) trusted_senders: Option<crate::trusted_senders::Followed>,
     connect_requested: bool,
     background_poll_deadline: Cell<Option<ui::time::Instant>>,
-    /// Wakes the window from the engine's and the account sheet's worker
-    /// threads, so a result is drawn the moment it arrives and nothing
-    /// polls while the network is slow. `None` until the view
-    /// hands it over; the workers then fall back to the frame poll.
     waker: Arc<std::sync::Mutex<Option<ui::WakeHandle>>>,
-    /// What the document and the mailbox were when their flags were last
-    /// brought together, so an unchanged frame does not read the record.
     hydrated_at: RefCell<Option<(Vec<ui::automerge::ChangeHash>, usize, u64)>>,
-    /// One portal-open attachment staging request. The returned descriptor is
-    /// copied straight into the content store; its original path is never retained.
     compose_attachment_rx: Option<OpenFileChannel>,
-    /// The file to attach, as its contents, where files have no paths to
-    /// open (a browser page).
     compose_attachment_contents: Option<ui::portal::ContentsChannel>,
-    /// What search hits and agents asked to open, taken up on the next
-    /// settle.
     opens: std::rc::Rc<std::cell::RefCell<Vec<crate::actions::MailTarget>>>,
-    /// Accounts whose watched inbox changed: fetched once the engine's
-    /// events are drained.
     pending_watch_fetches: Vec<AccountConfig>,
-    /// Whether each account's folder has older mail on its server than the
-    /// oldest message held, as the last sync of it found.
     has_older: HashMap<(String, Folder), bool>,
-    /// The folders whose older page is being fetched, by request.
     older_pending: HashMap<(String, Folder), EngineRequestId>,
-    /// Whether the kept mail the window opened on is registered with the
-    /// mailbox record.
     kept_registered: bool,
-    /// The accounts whose kept mail is in the mailbox.
     kept_loaded: std::collections::HashSet<String>,
-    /// The mail the person's devices hold for one another, where they have
-    /// a record of their own ([`crate::copies`]).
     copies: Option<crate::copies::Copies>,
-    /// The messages whose notification the person clicked, from whatever
-    /// thread the host reported it on; opened on the next settle.
     activations: Arc<std::sync::Mutex<Vec<String>>>,
-    /// The host's notifications, once a live window follows them.
     notifier: Option<Arc<dyn ui::notify::Notifier>>,
 
     rect: Rect,
-    /// The host theme captured during layout, for the overlays laid out
-    /// outside the taffy tree.
     layout_theme: Theme,
-    /// The shell starts docked; the first real layout snaps it to its
-    /// resting state for the window's width so a narrow launch does not
-    /// animate the drawer closed.
     first_layout: bool,
     dirty: bool,
-    /// The layout tree a test laid the app out in, for routing events.
     #[cfg(test)]
     test_layout: Option<(TaffyTree<()>, NodeId)>,
-    /// The links the app opened, in order, where a test reads them.
     #[cfg(test)]
     opened_links: Vec<&'static str>,
 }
 
-/// What the window and the view's effect handler share: the engine and the
-/// requests posted to it, the server search, the attachments kept on this
-/// device and what effects ask of the window, waiting for its next sync.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent flags: the engine's outstanding request, the document's draft, the open composer and the redraw"
 )]
 pub(crate) struct Mailroom {
     pub(crate) shared: Shared,
-    /// Opens the platform search from the app's own input handling.
     search: SearchOpener,
 
-    /// The engine worker, in a live window.
     engine: Option<EngineHandle>,
-    /// Where account changes persist. The live app targets the real user config
-    /// root; the sample / shots / test constructors target a throwaway sandbox
-    /// so they can never write into the real account store.
     accounts_persist: AccountsPersist,
-    /// The person's contact directory, followed in a live window: the
-    /// recipients a contact draft can be prepared for.
     pub(crate) contact_directory: Option<PersonRecord<tilo_contact_directory::ContactDirectory>>,
-    /// The document holds a draft already, so a contact draft would
-    /// replace it.
     pub(crate) has_contact_draft_conflict: bool,
-    /// True between posting a connect/fetch and receiving its result, so the
-    /// app only keeps polling the worker while a reply is outstanding (it fully
-    /// idles otherwise instead of busy-looping). `pending_engine_requests`
-    /// rather than an event-derived boolean is the source of truth: a connect
-    /// can emit several events, while successful IMAP writes emit none besides
-    /// their terminal worker acknowledgement.
     awaiting_engine: bool,
     pending_engine_requests: HashMap<EngineRequestId, PendingEngineRequest>,
-    /// The one refresh invocation currently owned by the resource-operation
-    /// host.  It remains occupied until the host has polled its terminal
-    /// update, so a subsequent refresh cannot overwrite an unobserved result.
     resource_refresh_invocation: Option<(EngineRequestId, tilo_actions::InvocationId)>,
     resource_refresh_result: Option<tilo_actions::InvocationUpdate>,
-    /// What effects asked to show that needs the document, for the next sync.
     reveals: Vec<Reveal>,
-    /// Callers waiting for a refresh to settle.
     effect_replies: Vec<(tilo_actions::InvocationId, ui::framework::EffectReply)>,
-    /// Where fetched mail is kept on this device.
     store: crate::store::Store,
-    /// Text to search the servers for once the person stops typing it, and
-    /// when; and the text last searched for.
     server_search: Option<(String, ui::time::Instant)>,
     server_searched: String,
-    /// Wall-clock minute of the last automatic inbox refresh, so periodic sync
-    /// fires at most once per [`AUTO_REFRESH_MIN`] while the app is in use.
     last_auto_refresh_min: i64,
-    /// The screenshot scenario the framework asked to stage, until the next
-    /// sync stages it with the document.
     pending_stage: Option<String>,
-    /// Outbox messages the engine is delivering, by request.
     pending_send: HashMap<EngineRequestId, PendingSend>,
-    /// Whether the composer is open, as the window last showed it.
     composing: bool,
-    /// Something changed that the window has yet to draw.
     dirty: bool,
 }
 
 impl MailApp {
-    /// What the window shares with the view's effect handler.
     pub(crate) fn state(&self) -> std::cell::RefMut<'_, Mailroom> {
         self.room.borrow_mut()
     }
 
-    /// Take up what changed in the document since the window last showed
-    /// it: whether it holds a draft a contact draft would replace.
     fn follow_document(&mut self) {
         let Some(mail) = self
             .live
@@ -530,9 +319,6 @@ impl MailApp {
         self.state().has_contact_draft_conflict = mail.has_draft();
     }
 
-    /// Start the effect a published operation's `payload` names, as the
-    /// view does when it is invoked, and take up what it asked of the
-    /// window, as its next sync does.
     #[cfg(test)]
     pub(crate) fn start_effect(
         &mut self,
@@ -544,13 +330,10 @@ impl MailApp {
         started
     }
 
-    /// The store itself, for the view that shares it.
     pub(crate) fn room(&self) -> Rc<RefCell<Mailroom>> {
         Rc::clone(&self.room)
     }
 
-    /// Attach the framework dispatcher, which the window and its composer
-    /// edit the document through.
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Mail>,
@@ -559,7 +342,6 @@ impl MailApp {
         self.compose.attach_framework(dispatcher);
     }
 
-    /// Let the engine and the account sheet's workers wake the window.
     pub(crate) fn wake_from_workers(&mut self, waker: ui::WakeHandle) {
         *self
             .waker
@@ -583,8 +365,6 @@ impl MailApp {
         });
     }
 
-    /// Say that new mail arrived: who sent it and what it is about, or how
-    /// many messages came. Clicking it opens the newest.
     fn notify_new_mail(&self, account: &str, arrived: &[&Message], several_accounts: bool) {
         let Some(notifier) = &self.notifier else {
             return;
@@ -602,7 +382,13 @@ impl MailApp {
                         senders.push(name);
                     }
                 }
-                (format!("{} new messages", many.len()), senders.join(", "))
+                (
+                    crate::i18n::t_args(
+                        "mail-notify-arrived",
+                        &[("count", ArgValue::from(many.len()))],
+                    ),
+                    senders.join(", "),
+                )
             }
         };
         let body = if several_accounts {
@@ -617,7 +403,6 @@ impl MailApp {
         }
     }
 
-    /// Open the messages whose notifications the person clicked.
     fn open_activated(&self) {
         let activated = std::mem::take(
             &mut *self
@@ -635,7 +420,6 @@ impl MailApp {
         }
     }
 
-    /// Whether workers can wake the window, so nothing has to poll them.
     fn workers_wake(&self) -> bool {
         self.waker
             .lock()
@@ -643,8 +427,6 @@ impl MailApp {
             .is_some()
     }
 
-    /// A window someone uses: the accounts of the host's profile, and the
-    /// engine worker that keeps them current. No fabricated messages.
     pub(crate) fn for_window(
         storage: &ui::storage::AppStorage,
         content: Option<ContentStore>,
@@ -653,8 +435,6 @@ impl MailApp {
             .config_root()
             .map_or(AccountsPersist::Disabled, AccountsPersist::Profile);
         // In a session the accounts' secrets are the session's to release;
-        // this sandbox holds no vault of the person's to open. A profile of
-        // its own (a test, `--data-dir`) has one, and opens it.
         let custody = crate::custody::SecretRelease::capture();
         let accounts = match (&custody, persist.root()) {
             (_, None) => AccountStore::new(),
@@ -683,8 +463,6 @@ impl MailApp {
         app
     }
 
-    /// A past version in History: what the document holds, and nothing that
-    /// reaches a mail server or the account store.
     pub(crate) fn for_past_version() -> Self {
         let shared = MailState::shared(MailState::new_live(
             AccountStore::new(),
@@ -698,8 +476,6 @@ impl MailApp {
         )
     }
 
-    /// A screenshot: the scenario's fixture mailbox and accounts, no engine,
-    /// a pinned clock and nothing written outside the document.
     #[cfg(feature = "samples")]
     pub(crate) fn for_capture(fixture: &crate::sample::MailFixture) -> Self {
         let shared = MailState::shared(MailState::from_fixture(
@@ -714,8 +490,6 @@ impl MailApp {
         )
     }
 
-    /// The sample mailbox, editing the document it is synced with and
-    /// persisting account changes into a sandbox.
     #[cfg(test)]
     pub fn new_sample() -> Self {
         let shared = MailState::shared(MailState::new_sample(crate::avatars::Avatars::new()));
@@ -729,7 +503,6 @@ impl MailApp {
         app
     }
 
-    /// No account configured yet, persisting into a sandbox.
     #[cfg(test)]
     pub fn new_first_run() -> Self {
         let shared = MailState::shared(MailState::new_live(
@@ -788,7 +561,7 @@ impl MailApp {
                 .with_icon(Icon::Mail)
                 .with_message(CATALOG.t("mail-first-run-hint"))
                 .with_action(CATALOG.t("mail-first-run-action"))
-                .with_action_id("mail.add-account"),
+                .with_action_id(ACCOUNT_ROUTE),
             first_run_node: None,
             compose: Box::new(ComposeWindow::new(ComposeFormat::default())),
             shortcuts: MailShortcutsOverlay::new(),
@@ -841,9 +614,6 @@ impl MailApp {
         }
     }
 
-    /// Two messages waiting to leave, one of them refused by a server, in
-    /// the outbox: what the page shows, and the one place the verb that
-    /// takes a message back is.
     fn stage_outbox(&mut self, doc: &mut ui::widget::Edits<'_>) {
         for (to, subject, body) in [
             (
@@ -899,10 +669,6 @@ impl MailApp {
         self.shared.borrow_mut().open_outbox(account);
     }
 
-    /// Stage the view state screenshot `scenario` shows over the fixture
-    /// mailbox. Runs in the sync after the framework asked for it, with the
-    /// document, so a scenario that changes mail (moving messages to Trash
-    /// before confirming a purge) does it through the resource's actions.
     fn stage_scenario(&mut self, doc: &mut ui::widget::Edits<'_>, scenario: &str) {
         match scenario {
             "compose" | "compose_narrow" => self.compose.open_demo(),
@@ -943,9 +709,7 @@ impl MailApp {
                 }
             }
             "loading" => {
-                // A first fetch for an account with nothing kept yet.
                 let mut st = self.shared.borrow_mut();
-                // Staged a second in, so the shot shows the rows' skeleton.
                 let fetch = first_fetch(&st.accounts.active_config());
                 let since = fetch.since();
                 let fetch = ui::arriving::ArrivalClock::new(
@@ -962,14 +726,14 @@ impl MailApp {
                 st.selected = None;
             }
             "offline" => {
-                self.shared.borrow_mut().status =
-                    Some("You’re offline. Showing downloaded mail.".into());
+                let mut st = self.shared.borrow_mut();
+                let account = st.accounts.active_config().label().to_owned();
+                st.note_sync_failure(account, crate::state::SyncCause::Offline);
             }
             _ => {}
         }
     }
 
-    /// The newest message from `sender` open in the reader.
     fn stage_open_from(&mut self, doc: &mut ui::widget::Edits<'_>, sender: &str) {
         let id = self
             .shared
@@ -986,8 +750,6 @@ impl MailApp {
         }
     }
 
-    /// The bundled HTML newsletter open in the reader (it is starred, so the
-    /// filled-star action shows too).
     fn stage_html_mail(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let id = {
             let st = self.shared.borrow();
@@ -1003,8 +765,6 @@ impl MailApp {
         }
     }
 
-    /// An unread message inspected through the read-neutral preview, so the
-    /// persistent preview indicator shows.
     fn stage_preview(&mut self) {
         let id = self
             .shared
@@ -1019,8 +779,6 @@ impl MailApp {
         }
     }
 
-    /// Two messages selected for bulk triage: the extra header row, the
-    /// selected-row treatment and the bulk controls.
     fn stage_bulk(&self) {
         let ids: Vec<MessageId> = self
             .shared
@@ -1037,8 +795,6 @@ impl MailApp {
         }
     }
 
-    /// Two messages moved to Trash and selected, with the confirmation that
-    /// names how many will be deleted for good.
     fn stage_bulk_purge_confirmation(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let ids: Vec<MessageId> = self
             .shared
@@ -1063,7 +819,6 @@ impl MailApp {
         self.process_intents();
     }
 
-    /// A reply to the newest inbox message, rather than a blank composition.
     fn stage_reply(&mut self) {
         let id = self
             .shared
@@ -1080,7 +835,6 @@ impl MailApp {
 }
 
 impl Mailroom {
-    /// What the engine reported since it was last asked.
     fn engine_events(&self) -> Vec<EngineEvent> {
         let Some(handle) = &self.engine else {
             return Vec::new();
@@ -1092,11 +846,7 @@ impl Mailroom {
         events
     }
 
-    /// Queue one worker request and account for it exactly once.  Every engine
-    /// backend emits a matching `EngineEvent::Completed` after handling the
-    /// request, including successful flag/move/purge writes.
     fn post_engine(&mut self, mut request: EngineRequest) -> Option<EngineRequestId> {
-        // A folder sync asks only for what is new to what this device holds.
         if let EngineRequest::Fetch {
             account,
             folder,
@@ -1123,7 +873,15 @@ impl Mailroom {
             account: request.account().to_owned(),
         };
         if engine.tx.send(request).is_err() {
-            self.shared.borrow_mut().status = Some("Mail couldn’t reach the mail server".into());
+            // The worker is gone: nothing this window asks will reach a
+            // server, so the list says so until a check works again.
+            let mut st = self.shared.borrow_mut();
+            let account = st
+                .accounts
+                .label_for(&pending.account)
+                .unwrap_or_else(|| pending.account.clone());
+            st.note_sync_failure(account, crate::state::SyncCause::Unreachable);
+            drop(st);
             self.dirty = true;
             return None;
         }
@@ -1134,9 +892,6 @@ impl Mailroom {
 }
 
 impl MailApp {
-    /// Select all reads the whole folder: the rows held now, and, while the
-    /// folder has pages on its server this device has not read, one after
-    /// another, each joining the selection until the folder is whole.
     fn select_all_in_folder(&mut self) {
         let (account, folder, all_inboxes) = self.open_listing();
         if self.shared.borrow().outbox_open {
@@ -1148,36 +903,20 @@ impl MailApp {
         st.more_older = more;
         st.selecting_all = more;
         if more {
-            st.status = Some("Reading the rest of this folder…".into());
-            st.status_undo = false;
             drop(st);
             self.load_older();
         } else {
-            let noun = Self::folder_noun(folder, all_inboxes);
-            st.finish_selection(&noun);
+            let named = (!all_inboxes).then(|| crate::i18n::t(folder.message()));
+            st.finish_selection(named.as_deref());
         }
         self.dirty = true;
     }
 
-    /// The account, folder and both-inboxes state the list shows.
     fn open_listing(&self) -> (AccountConfig, Folder, bool) {
         let st = self.shared.borrow();
         (st.accounts.active_config(), st.folder, st.all_inboxes)
     }
 
-    /// What "all of it" is called: the folder's own name, or both inboxes'.
-    fn folder_noun(folder: Folder, all_inboxes: bool) -> String {
-        if all_inboxes {
-            "these folders".to_owned()
-        } else {
-            crate::i18n::t(folder.message())
-        }
-    }
-
-    /// Select all reads the whole folder, not the page of it this device
-    /// happens to hold: while pages are still on their way it asks for the
-    /// next one and lets the rows that arrive join the selection, and when
-    /// there are none left it says how many it took.
     fn follow_select_all(&mut self) {
         if !self.shared.borrow().selecting_all {
             return;
@@ -1192,15 +931,12 @@ impl MailApp {
         if more {
             self.load_older();
         } else {
-            let noun = Self::folder_noun(folder, all_inboxes);
-            self.shared.borrow_mut().finish_selection(&noun);
+            let named = (!all_inboxes).then(|| crate::i18n::t(folder.message()));
+            self.shared.borrow_mut().finish_selection(named.as_deref());
         }
         self.dirty = true;
     }
 
-    /// Whether the open folder has pages on its server this device has not
-    /// read. Without a server, or before the folder's numbering is known,
-    /// what the device holds is the whole of it.
     fn folder_has_more(&self, account: &AccountConfig, folder: Folder, all_inboxes: bool) -> bool {
         if self.state().engine.is_none() {
             return false;
@@ -1224,9 +960,6 @@ impl MailApp {
         })
     }
 
-    /// What the document's outbox holds now: the messages every account
-    /// still has to send, with a server's refusal where one refused them.
-    /// The outbox page and the sidebar's count both read this.
     fn read_outbox(&self, doc: &ui::tilo_resource::Doc) {
         let waiting = crate::resource::read_mail(doc)
             .map(|mail| mail.outgoing())
@@ -1266,9 +999,6 @@ impl MailApp {
         }
     }
 
-    /// Accept only events that match a request still pending in this app. A
-    /// worker event is untrusted transport input: a malformed, delayed, or
-    /// out-of-order result must not update a different operation's UI state.
     fn expects_engine_event(&self, request_id: EngineRequestId, kind: EngineRequestKind) -> bool {
         self.state()
             .pending_engine_requests
@@ -1276,10 +1006,6 @@ impl MailApp {
             .is_some_and(|pending| pending.kind == kind)
     }
 
-    /// The window shell: the sidebar of accounts and folders, the message
-    /// list and the open message. Its toolbar is the window bar's slots
-    /// ([`crate::window_bar`]). The section headers' settings button is the
-    /// mailbox's published action.
     fn build_shell(shared: &Shared) -> NavShell {
         NavShell::new()
             .content_kind(ui::widget::ContentKind::Reading)
@@ -1293,8 +1019,6 @@ impl MailApp {
             .with_window_toolbar()
     }
 
-    /// Tell the columns what the shell laid out: whether the list and the
-    /// message are separate screens, and which one is in front.
     fn publish_shell_flags(&self) {
         let geometry = self.nav.geometry();
         let narrow = !geometry.stack.is_empty();
@@ -1304,8 +1028,6 @@ impl MailApp {
         st.detail_pushed = detail;
     }
 
-    /// Declare the window bar's slots: the shell's own, the folder and
-    /// what can be done there ([`crate::window_bar`]).
     fn declare_window_toolbar(&self) {
         let first_run = self.is_first_run();
         let toolbar = {
@@ -1324,8 +1046,6 @@ impl MailApp {
         ui::window_toolbar::declare(Some(toolbar));
     }
 
-    /// Queue what the person did in the window's bar and apply it with the
-    /// document in hand, as the chrome's commands are applied.
     fn apply_window_toolbar(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let mut queued = false;
         for event in ui::window_toolbar::take_events() {
@@ -1343,7 +1063,6 @@ impl MailApp {
         }
     }
 
-    /// The platform search, narrowed to the open folder.
     fn folder_search(&self) -> SearchRequest {
         let folder = self.shared.borrow().folder;
         SearchRequest::within(ScopeDecl::new(
@@ -1352,17 +1071,10 @@ impl MailApp {
         ))
     }
 
-    /// The message currently selected, if any. Lets a test observe where a
-    /// Ctrl+K activation navigated.
     pub fn selected_message(&self) -> Option<crate::model::MessageId> {
         self.shared.borrow().selected
     }
 
-    /// Strip a server-supplied attachment name down to the harmless suggested
-    /// filename shown by the host Save dialog. The actual destination still
-    /// comes exclusively from that dialog; this merely avoids presenting an
-    /// absolute path, a traversal component, or a control-character-heavy
-    /// name as its default.
     fn attachment_save_name(filename: &str) -> String {
         let leaf = filename.rsplit(['/', '\\']).next().unwrap_or_default();
         let mut name = String::new();
@@ -1381,10 +1093,15 @@ impl MailApp {
 
     fn request_compose_attachment(&mut self) {
         if self.compose_attachment_rx.is_some() || self.compose_attachment_contents.is_some() {
-            self.shared.borrow_mut().status = Some("Attachment picker is already open".into());
+            self.shared.borrow_mut().status =
+                Some(Notice::warning(CATALOG.t("mail-status-picker-open")));
             return;
         }
-        let request = PickRequest::open("Attach file", "Attach")
+        let (title, accept) = (
+            CATALOG.t("mail-attach-dialog-title"),
+            CATALOG.t("mail-attach-dialog-accept"),
+        );
+        let request = PickRequest::open(&title, &accept)
             .thread_name("mail-portal-stage-attachment")
             .filter(FileFilter::all_files());
         // Where files have paths the host hands over an open descriptor, so
@@ -1398,13 +1115,10 @@ impl MailApp {
                     .send_contents(),
             );
         }
-        self.shared.borrow_mut().status = Some(CATALOG.t("mail-status-choose-file"));
+        self.shared.borrow_mut().status = Some(Notice::info(CATALOG.t("mail-status-choose-file")));
         self.dirty = true;
     }
 
-    /// Drain descriptor-only portal selection. A cancel/failure/disconnect is
-    /// terminal and leaves the draft unchanged; staged content is verified by
-    /// the content store before metadata becomes visible in the composer.
     fn drain_compose_attachment(&mut self) {
         self.drain_compose_attachment_contents();
         let outcome = self
@@ -1412,55 +1126,46 @@ impl MailApp {
             .as_ref()
             .map(std::sync::mpsc::Receiver::try_recv);
         let Some(outcome) = outcome else { return };
-        match outcome {
+        let notice = match outcome {
             Ok(OpenFileOutcome::Opened(source)) => {
                 self.compose_attachment_rx = None;
                 if !self.compose.open {
-                    self.shared.borrow_mut().status =
-                        Some(CATALOG.t("mail-status-selection-composer-closed"));
+                    self.shared.borrow_mut().status = Some(Notice::info(
+                        CATALOG.t("mail-status-selection-composer-closed"),
+                    ));
                     return;
                 }
                 let name = source.display_name().to_string();
                 let result =
                     crate::attachment_store::stage_file(&self.content, source.into_file(), &name)
                         .and_then(|attachment| self.compose.add_attachment(attachment));
-                self.shared.borrow_mut().status = Some(match result {
-                    Ok(()) => {
-                        CATALOG.t_args("mail-status-attached", &[("name", ArgValue::Text(name))])
-                    }
-                    Err(error) => CATALOG.t_args(
-                        "mail-status-attach-failed",
-                        &[
-                            ("name", ArgValue::Text(name)),
-                            ("error", ArgValue::Text(error)),
-                        ],
-                    ),
-                });
+                Some(staged_notice(name, result))
             }
             Ok(OpenFileOutcome::Cancelled) => {
                 self.compose_attachment_rx = None;
-                self.shared.borrow_mut().status =
-                    Some(CATALOG.t("mail-status-selection-cancelled"));
+                Some(Notice::info(CATALOG.t("mail-status-selection-cancelled")))
             }
             Ok(OpenFileOutcome::Failed(error)) => {
                 self.compose_attachment_rx = None;
-                self.shared.borrow_mut().status = Some(CATALOG.t_args(
+                Some(Notice::error(CATALOG.t_args(
                     "mail-status-picker-failed",
                     &[("error", ArgValue::Text(error))],
-                ));
+                )))
             }
-            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => {
                 self.compose_attachment_rx = None;
-                self.shared.borrow_mut().status =
-                    Some(CATALOG.t("mail-status-picker-disconnected"));
+                Some(Notice::warning(
+                    CATALOG.t("mail-status-picker-disconnected"),
+                ))
             }
+        };
+        if let Some(notice) = notice {
+            self.shared.borrow_mut().status = Some(notice);
         }
         self.dirty = true;
     }
 
-    /// Drain a contents selection the way [`Self::drain_compose_attachment`]
-    /// drains a descriptor one.
     fn drain_compose_attachment_contents(&mut self) {
         use ui::portal::ContentsOutcome;
         let outcome = self
@@ -1471,41 +1176,34 @@ impl MailApp {
         let status = match outcome {
             Err(TryRecvError::Empty) => return,
             Ok(ContentsOutcome::Picked(files)) => match files.into_iter().next() {
-                Some(_) if !self.compose.open => CATALOG.t("mail-status-selection-composer-closed"),
+                Some(_) if !self.compose.open => {
+                    Notice::info(CATALOG.t("mail-status-selection-composer-closed"))
+                }
                 Some(file) => {
                     let name = file.name;
-                    match crate::attachment_store::stage_bytes(&self.content, &file.bytes, &name)
-                        .and_then(|attachment| self.compose.add_attachment(attachment))
-                    {
-                        Ok(()) => CATALOG
-                            .t_args("mail-status-attached", &[("name", ArgValue::Text(name))]),
-                        Err(error) => CATALOG.t_args(
-                            "mail-status-attach-failed",
-                            &[
-                                ("name", ArgValue::Text(name)),
-                                ("error", ArgValue::Text(error)),
-                            ],
-                        ),
-                    }
+                    let result =
+                        crate::attachment_store::stage_bytes(&self.content, &file.bytes, &name)
+                            .and_then(|attachment| self.compose.add_attachment(attachment));
+                    staged_notice(name, result)
                 }
-                None => CATALOG.t("mail-status-selection-cancelled"),
+                None => Notice::info(CATALOG.t("mail-status-selection-cancelled")),
             },
-            Ok(ContentsOutcome::Cancelled) => CATALOG.t("mail-status-selection-cancelled"),
-            Ok(ContentsOutcome::Failed(error)) => CATALOG.t_args(
+            Ok(ContentsOutcome::Cancelled) => {
+                Notice::info(CATALOG.t("mail-status-selection-cancelled"))
+            }
+            Ok(ContentsOutcome::Failed(error)) => Notice::error(CATALOG.t_args(
                 "mail-status-picker-failed",
                 &[("error", ArgValue::Text(error))],
-            ),
-            Err(TryRecvError::Disconnected) => CATALOG.t("mail-status-picker-disconnected"),
+            )),
+            Err(TryRecvError::Disconnected) => {
+                Notice::warning(CATALOG.t("mail-status-picker-disconnected"))
+            }
         };
         self.compose_attachment_contents = None;
         self.shared.borrow_mut().status = Some(status);
         self.dirty = true;
     }
 
-    /// Begin a host-native Save flow for a hydrated attachment. This is the
-    /// sole Mail path that writes attachment bytes: it asks the portal for a
-    /// destination first and is deliberately asynchronous so a slow desktop
-    /// chooser never freezes Mail.
     fn process_intents(&mut self) {
         let intents = self.shared.borrow_mut().take_intents();
         for intent in intents {
@@ -1541,8 +1239,9 @@ impl MailApp {
                 Intent::ConfirmBulkPurge => {
                     let count = self.shared.borrow().selected_bulk_ids().len();
                     if count == 0 {
-                        self.shared.borrow_mut().status =
-                            Some("Select messages before deleting them permanently".into());
+                        self.shared.borrow_mut().status = Some(Notice::warning(
+                            CATALOG.t("mail-status-select-before-purge"),
+                        ));
                     } else if self.shared.borrow().selected_bulk_ids().iter().all(|id| {
                         self.shared
                             .borrow()
@@ -1553,15 +1252,18 @@ impl MailApp {
                         self.open_purge_confirmation(count);
                     } else {
                         self.shared.borrow_mut().status =
-                            Some("Permanent deletion requires an all-Trash selection".into());
+                            Some(Notice::warning(CATALOG.t("mail-status-purge-needs-trash")));
                     }
+                }
+                Intent::AccountSettings => self.open_account_settings(),
+                Intent::CheckMail => {
+                    let _ = self.state().refresh_active_folder();
                 }
             }
         }
         self.dirty = true;
     }
 
-    /// Apply the commands the window's chrome queued while routing an event.
     fn apply_commands(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let commands = self.shared.borrow_mut().take_commands();
         for command in commands {
@@ -1614,7 +1316,7 @@ impl MailApp {
 irrelevant"
                         )]
                         let count = affected as f64;
-                        self.shared.borrow_mut().status = Some(CATALOG.t_args(
+                        self.shared.borrow_mut().status = Some(Notice::success(CATALOG.t_args(
                             match action {
                                 BulkAction::Archive => "mail-status-archived",
                                 BulkAction::Delete => "mail-status-trashed",
@@ -1623,7 +1325,7 @@ irrelevant"
                                 BulkAction::Purge => "mail-status-deleted",
                             },
                             &[("count", ArgValue::Number(count))],
-                        ));
+                        )));
                     }
                 }
                 Command::Message(action) => {
@@ -1639,7 +1341,6 @@ irrelevant"
         self.process_intents();
     }
 
-    /// Open the row menu for `id` at `at`, beside `row` when known.
     fn open_menu(&mut self, id: MessageId, at: Point, row: Option<Rect>) {
         let (items, read, starred) = {
             let state = self.shared.borrow();
@@ -1685,7 +1386,6 @@ irrelevant"
         self.dirty = true;
     }
 
-    /// Apply the row menu's chosen action, if one was chosen.
     fn take_menu_choice(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(index) = self.menu.take_selection() else {
             if !self.menu.is_open() {
@@ -1709,9 +1409,6 @@ irrelevant"
         self.apply_menu_action(target.message, action, doc);
     }
 
-    /// The reader's menu on message `id` at `at`: the link under the
-    /// pointer, captioned with the address it really opens, then copying
-    /// and the message's format.
     fn open_reader_menu(
         &mut self,
         id: MessageId,
@@ -1779,7 +1476,8 @@ irrelevant"
         doc: &mut ui::widget::Edits<'_>,
     ) {
         if self.shared.borrow().mailbox.get(message).is_none() {
-            self.shared.borrow_mut().status = Some("That message is no longer available.".into());
+            self.shared.borrow_mut().status =
+                Some(Notice::warning(CATALOG.t("mail-status-message-gone")));
             self.dirty = true;
             return;
         }
@@ -1789,7 +1487,6 @@ irrelevant"
         self.process_intents();
     }
 
-    /// Open the row menu on `id`'s row in the list as last laid out.
     fn open_menu_on_row(&mut self, id: MessageId, text: &mut TextRenderer, theme: &Theme) {
         let index = self
             .shared
@@ -1834,24 +1531,21 @@ irrelevant"
         let cancel = Rc::clone(&answer);
         let dismiss = Rc::clone(&answer);
         let dialog = ModalDialog::new(
-            if count == 1 {
-                "Delete message permanently?".to_owned()
-            } else {
-                format!("Delete {count} messages permanently?")
-            },
+            CATALOG.t_args("mail-purge-title", &[("count", ArgValue::Number(number))]),
             body,
         )
         .with_test_id("mail-purge-confirmation")
         .with_destructive(true)
-        .primary_action("Delete permanently", move || confirm.set(Some(true)))
-        .secondary_action("Cancel", move || cancel.set(Some(false)))
+        .primary_action(CATALOG.t("mail-delete-permanently"), move || {
+            confirm.set(Some(true));
+        })
+        .secondary_action(CATALOG.t("mail-cancel"), move || cancel.set(Some(false)))
         .on_dismiss(move || dismiss.set(Some(false)))
         .open(true);
         self.bulk_purge_confirmation = Some(PurgeConfirmation { dialog, answer });
         self.dirty = true;
     }
 
-    /// Act on the confirmation's answer, once.
     fn settle_purge_confirmation(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(answer) = self
             .bulk_purge_confirmation
@@ -1876,8 +1570,6 @@ irrelevant"
         }
     }
 
-    /// The quoted original under a reply: who wrote it when, and all of
-    /// it, every line marked as quoted.
     fn reply_quote(msg: &Message) -> String {
         let quoted: Vec<String> = msg
             .body
@@ -1899,8 +1591,6 @@ irrelevant"
         )
     }
 
-    /// A reply goes from the account the answered mail came to, whichever
-    /// account is open (every inbox shows together).
     fn answer_from_its_account(&mut self, id: MessageId) {
         let owner = self.shared.borrow().account_of(id);
         if let Some(account) = owner {
@@ -1908,8 +1598,6 @@ irrelevant"
         }
     }
 
-    /// The account the composer's message goes from: the one it was set to
-    /// go from, otherwise the open one.
     fn sending_account(&self) -> AccountConfig {
         let st = self.shared.borrow();
         self.compose
@@ -1924,9 +1612,6 @@ irrelevant"
             .unwrap_or_else(|| st.accounts.active_config())
     }
 
-    /// Keep what was typed into the recipients and subject in the draft, a
-    /// moment after the typing stops, as the body is kept while it is
-    /// written: a draft survives the window closing or the app quitting.
     fn keep_compose_headers(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(headers) = self.compose.take_due_headers() else {
             return;
@@ -1934,8 +1619,6 @@ irrelevant"
         self.store_compose_headers(doc, headers);
     }
 
-    /// Keep `to`, `cc`, `bcc` and `subject` in the draft where they differ
-    /// from what it holds.
     fn store_compose_headers(
         &self,
         doc: &mut ui::widget::Edits<'_>,
@@ -1965,8 +1648,6 @@ irrelevant"
         }
     }
 
-    /// The composer closed: what the person wrote stays a draft; a message
-    /// they never touched leaves nothing behind.
     fn close_compose(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if self.compose.touched() {
             self.save_compose_draft(doc);
@@ -1974,7 +1655,6 @@ irrelevant"
         self.dirty = true;
     }
 
-    /// Throw the message away: the draft and its row in Drafts go.
     fn discard_compose(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let draft = self.compose.draft_id().map(str::to_owned);
         self.shared.borrow().submit(
@@ -2004,8 +1684,6 @@ irrelevant"
         self.dirty = true;
     }
 
-    /// Reply to everyone: the original sender in `To`, and every other original
-    /// recipient (To + Cc, minus ourselves and the sender) in `Cc`.
     fn open_reply_all(&mut self, id: MessageId) {
         let (msg, my_email) = {
             let st = self.shared.borrow();
@@ -2045,7 +1723,6 @@ irrelevant"
         self.dirty = true;
     }
 
-    /// Reopen a Drafts-folder message in the composer for further editing.
     fn open_draft(&mut self, id: MessageId) {
         let named = id.to_string();
         let own = self.live.as_ref().and_then(|live| {
@@ -2113,14 +1790,12 @@ irrelevant"
         })
         .collect::<Vec<_>>();
         if !left_behind.is_empty() {
-            self.shared.borrow_mut().status = Some(left_behind.join("\n"));
+            self.shared.borrow_mut().status = Some(Notice::warning(left_behind.join("\n")));
         }
         self.close_menu();
         self.dirty = true;
     }
 
-    /// The files a forward of `msg` carries, kept for the draft, and the
-    /// names of those it cannot.
     fn forwarded_files(&self, msg: &Message) -> ForwardedFiles {
         let mut files = Vec::new();
         let mut not_downloaded = Vec::new();
@@ -2135,20 +1810,21 @@ irrelevant"
             let staged = self
                 .state()
                 .attachment_to_save(&msg.id.to_string(), index)
+                .map_err(|_| ())
                 .and_then(|(_, bytes)| {
                     crate::attachment_store::stage_bytes(
                         &self.content,
                         &bytes,
                         &attachment.filename,
                     )
+                    .map_err(|_| ())
                 });
             match staged {
                 Ok(file) => files.push(file),
-                Err(_) => not_downloaded.push(attachment.filename.clone()),
+                Err(()) => not_downloaded.push(attachment.filename.clone()),
             }
         }
         let carried = crate::attachment_store::bounded(&files);
-        // A file whose bytes another one carries already goes with it.
         too_large.extend(
             files
                 .iter()
@@ -2166,34 +1842,35 @@ irrelevant"
         }
     }
 
-    /// Send the message the composer holds: it goes into the mailbox's
-    /// outbox as an action — undone like any edit until it is delivered —
-    /// and a device that holds its account delivers it.
     fn send_compose(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.store_preferences_if_changed();
         let draft = self.compose.to_draft(doc);
         let acct = self.sending_account();
         if !self.contact_sender_matches(&draft) {
-            self.shared.borrow_mut().status = Some(crate::i18n::t("mail-contact-sender-changed"));
+            self.shared.borrow_mut().status = Some(Notice::warning(crate::i18n::t(
+                "mail-contact-sender-changed",
+            )));
             self.dirty = true;
             return;
         }
         if acct.email.trim().is_empty() {
             self.shared.borrow_mut().status =
-                Some("Add a sending account before sending this message".into());
+                Some(Notice::warning(CATALOG.t("mail-status-no-sending-account")));
             self.dirty = true;
             return;
         }
         if self.shared.borrow().dispatcher.is_none() {
-            self.shared.borrow_mut().status =
-                Some("Sending is unavailable in this offline preview; save a draft instead".into());
+            self.shared.borrow_mut().status = Some(Notice::warning(
+                CATALOG.t("mail-status-sending-unavailable"),
+            ));
             self.dirty = true;
             return;
         }
         let from = Addr::new(acct.display_name.clone(), acct.email.clone());
         if let Err(e) = crate::transport::build_mime(&self.content, &from, &draft) {
-            self.shared.borrow_mut().status =
-                Some(CATALOG.t_args("mail-status-send-failed", &[("error", ArgValue::Text(e))]));
+            self.shared.borrow_mut().status = Some(Notice::error(
+                CATALOG.t_args("mail-status-send-failed", &[("error", ArgValue::Text(e))]),
+            ));
             self.dirty = true;
             return;
         }
@@ -2201,7 +1878,8 @@ irrelevant"
             .into_iter()
             .all(|field| crate::transport::parse_addr_list(field).is_empty())
         {
-            self.shared.borrow_mut().status = Some("Add a recipient before sending".into());
+            self.shared.borrow_mut().status =
+                Some(Notice::warning(CATALOG.t("mail-status-no-recipient")));
             self.dirty = true;
             return;
         }
@@ -2247,12 +1925,12 @@ irrelevant"
         // takes it back.
         self.sends_to_hold += 1;
         self.sending_notice_next = true;
-        self.shared.borrow_mut().say_undoable("Sending…");
+        self.shared
+            .borrow_mut()
+            .say_undoable(ToastKind::Info, CATALOG.t("mail-status-sending"));
         self.dirty = true;
     }
 
-    /// Hand the held messages whose undo time is up to the engine. One that
-    /// left the outbox meanwhile (undone) comes back to the composer.
     fn release_held_sends(&mut self, doc: &ui::widget::Edits<'_>) {
         if self.held_sends.is_empty() {
             return;
@@ -2277,8 +1955,6 @@ irrelevant"
         }
     }
 
-    /// "Undo" on the sending notice: the held messages leave the outbox
-    /// unsent, and the composer opens on them again.
     fn take_back_sends(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if !std::mem::take(&mut self.unsend) {
             return;
@@ -2296,7 +1972,6 @@ irrelevant"
         self.dirty = true;
     }
 
-    /// Open the composer on `outgoing`, taken back unsent.
     fn reopen_unsent(&mut self, outgoing: &Outgoing) {
         if !self.compose.open {
             self.compose.open_with_draft(&outgoing.to_draft());
@@ -2307,11 +1982,9 @@ irrelevant"
     fn save_compose_draft(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let draft = self.compose.to_draft(doc);
         if let Some(id) = self.compose.draft_id().map(str::to_owned) {
-            // A draft of its own shows as itself in Drafts already.
             self.shared
                 .borrow_mut()
                 .save_draft_as(doc, Some(&id), &draft);
-            self.shared.borrow_mut().status = Some("Saved to Drafts".into());
             self.compose.close();
             self.store_preferences_if_changed();
             self.dirty = true;
@@ -2324,17 +1997,11 @@ irrelevant"
         // so it can be found and reopened — not a write-only slot.
         let id = self.upsert_draft_message(doc, &draft, self.editing_draft);
         self.editing_draft = Some(id);
-        // The composer closes: say where the draft went.
-        self.shared.borrow_mut().status = Some("Saved to Drafts".into());
         self.compose.close();
         self.store_preferences_if_changed();
         self.dirty = true;
     }
 
-    /// Insert (or, when editing the Drafts message `edited`, update it in
-    /// place) a Drafts folder message reflecting `draft`, and return its id.
-    /// The id is kept with the draft, so every device and every restart
-    /// shows it as the same message.
     fn upsert_draft_message(
         &self,
         doc: &mut ui::widget::Edits<'_>,
@@ -2367,7 +2034,6 @@ irrelevant"
         id
     }
 
-    /// `draft` as the Drafts message `id` that shows it.
     fn draft_shown(&self, id: MessageId, draft: &Draft) -> Message {
         let (from, now) = {
             let st = self.shared.borrow();
@@ -2416,8 +2082,6 @@ irrelevant"
         }
     }
 
-    /// Show every draft of its own as the Drafts message with its id, and
-    /// drop the ones that left the drafts. Only what differs is changed.
     fn project_drafts(&self, mail: &Mail) {
         let mut projected = self.projected_drafts.borrow_mut();
         let mut kept = HashSet::new();
@@ -2443,26 +2107,16 @@ irrelevant"
         *projected = kept;
     }
 
-    /// Whether the app is at first run (no account configured and no mail
-    /// held) and should show the onboarding screen rather than an empty
-    /// mailbox. Mail the record holds is shown whether or not an account is
-    /// configured: a past version reads no accounts, and held mail stays
-    /// readable after its account is gone.
     fn is_first_run(&self) -> bool {
         let state = self.shared.borrow();
         state.accounts.is_empty() && state.mailbox.messages.is_empty()
     }
 
-    /// Tell the composer whether there is an account to send from: Send
-    /// stays disabled until there is one (and a recipient).
     fn tell_compose_the_accounts(&mut self) {
         let has_account = !self.shared.borrow().accounts.is_empty();
         self.compose.set_has_account(has_account);
     }
 
-    /// Take the person to where their accounts are kept: Settings' External
-    /// Accounts, the one place an account is added, changed or removed.
-    /// Mail reads the accounts from there and edits none itself.
     fn open_account_settings(&mut self) {
         #[cfg(test)]
         self.opened_links.push(ACCOUNT_SETTINGS_LINK);
@@ -2474,9 +2128,6 @@ irrelevant"
 }
 
 impl Mailroom {
-    /// Post a fetch of the currently-viewed folder for the active account, and
-    /// show a syncing indicator. Used by the manual-refresh shortcut and the
-    /// periodic auto-refresh. A no-op with no account or no engine.
     fn refresh_active_folder(&mut self) -> Option<EngineRequestId> {
         let (account, folder) = {
             let st = self.shared.borrow();
@@ -2492,8 +2143,6 @@ impl Mailroom {
                 self.accounts_persist.root().as_deref(),
                 &account_id,
                 accounts::AccountSyncHealth::Syncing,
-                false,
-                Some("Checking mail"),
             );
             // Checking for mail is routine: new mail appearing in the list
             // is all it shows.
@@ -2504,10 +2153,6 @@ impl Mailroom {
         None
     }
 
-    /// Fire a periodic refresh if enough wall-clock time has elapsed since the
-    /// last one and no request is already outstanding. Checked in `sync`,
-    /// which [`Self::next_refresh_at`] wakes when the refresh is due, so an
-    /// idle window gets its mail too.
     fn maybe_auto_refresh(&mut self) {
         if self.awaiting_engine || self.engine.is_none() {
             return;
@@ -2534,8 +2179,6 @@ impl Mailroom {
         }
     }
 
-    /// Have the engine watch every account's inbox, so new mail shows as it
-    /// arrives rather than at the next periodic refresh.
     fn watch_inboxes(&mut self) {
         let accounts: Vec<AccountConfig> = self
             .shared
@@ -2551,8 +2194,6 @@ impl Mailroom {
         }
     }
 
-    /// Bring the inbox of every account but the active one up to date, so
-    /// the sidebar's counts are right for all of them.
     fn fetch_other_inboxes(&mut self) {
         let others: Vec<AccountConfig> = {
             let st = self.shared.borrow();
@@ -2571,9 +2212,6 @@ impl Mailroom {
         }
     }
 
-    /// When the next periodic refresh is due, so a window left open
-    /// wakes for it instead of waiting for input. `None` while nothing
-    /// refreshes (no engine, no account, or a request still in flight).
     fn next_refresh_at(&self) -> Option<ui::time::Instant> {
         if self.engine.is_none() || self.awaiting_engine || self.last_auto_refresh_min == 0 {
             return None;
@@ -2589,8 +2227,6 @@ impl Mailroom {
 }
 
 impl MailApp {
-    /// Hand a newly-set status to the shell, which shows it as a toast and
-    /// lets it fade on its own.
     fn show_status(&mut self) {
         // A message held for undo keeps its notice up: the notice used to die
         // after four seconds while the message could still be taken back for
@@ -2601,50 +2237,29 @@ impl MailApp {
             && (!self.held_sends.is_empty() || self.sends_to_hold > 0)
             && self.nav.toast_text().is_none()
         {
-            self.nav
-                .toast_with_action("Sending…", ToastKind::Info, "undo-2", "Undo");
+            self.nav.toast_with_action(
+                CATALOG.t("mail-status-sending"),
+                ToastKind::Info,
+                "undo-2",
+                CATALOG.t("mail-undo"),
+            );
         }
         let (status, undoable) = {
             let mut st = self.shared.borrow_mut();
             (st.status.take(), std::mem::take(&mut st.status_undo))
         };
-        let Some(msg) = status else {
+        let Some(notice) = status else {
             return;
         };
-        let kind = Self::status_kind(&msg);
         self.send_notice = std::mem::take(&mut self.sending_notice_next);
         if undoable {
-            self.nav.toast_with_action(msg, kind, "undo-2", "Undo");
+            self.nav
+                .toast_with_action(notice.text, notice.kind, "undo-2", CATALOG.t("mail-undo"));
         } else {
-            self.nav.toast(msg, kind);
+            self.nav.toast(notice.text, notice.kind);
         }
     }
 
-    fn status_kind(msg: &str) -> ToastKind {
-        let lower = msg.to_ascii_lowercase();
-        if lower.contains("failed")
-            || lower.contains("couldn’t")
-            || lower.contains("couldn't")
-            || lower.contains("can’t")
-            || lower.contains("can't")
-            || lower.contains("didn’t")
-            || lower.contains("error")
-        {
-            ToastKind::Error
-        } else if lower.contains("offline") || lower.contains("isn't available") {
-            ToastKind::Warning
-        } else if lower.contains("sync")
-            || lower.contains("connecting")
-            || lower.contains("opening")
-        {
-            ToastKind::Info
-        } else {
-            ToastKind::Success
-        }
-    }
-
-    /// A watched inbox of `account_id` changed: fetch it, if the account is
-    /// still on this device.
     fn fetch_arrived(&mut self, st: &MailState, account_id: &str) {
         if let Some(account) = st
             .accounts
@@ -2656,8 +2271,6 @@ impl MailApp {
         }
     }
 
-    /// Keep `account_id`'s mail on this device, so the next window opens on
-    /// it at once; the attachments whose bytes are kept say so.
     fn keep_on_device(&self, st: &mut MailState, account_id: &str) {
         let kept = self.state().store.save(
             account_id,
@@ -2709,7 +2322,6 @@ impl MailApp {
         }
         st.ingest_fetched(doc, account_id, &reflagged);
         st.ingest_fetched(doc, account_id, &synced.messages);
-        // The server answered: what it refused before may go through now.
         for projection in [&self.projection, &self.delivery].into_iter().flatten() {
             projection.outside_changed();
         }
@@ -2740,13 +2352,11 @@ impl MailApp {
         }
         self.keep_on_device(st, account_id);
         // The account works again: a failure it showed is over.
-        st.sync_error = None;
+        st.clear_sync_failure();
         report_account_sync(
             self.state().accounts_persist.root().as_deref(),
             account_id,
             accounts::AccountSyncHealth::Healthy,
-            true,
-            Some("Mail is up to date"),
         );
         let mut room = self.state();
         if let Some((pending, invocation)) = room.resource_refresh_invocation
@@ -2759,8 +2369,6 @@ impl MailApp {
         }
     }
 
-    /// Put the mail kept on this device for every account not opened yet
-    /// into the mailbox, so the window shows it before any server answers.
     fn open_kept_mail(&mut self) {
         let accounts: Vec<String> = self
             .shared
@@ -2797,9 +2405,6 @@ impl MailApp {
         }
     }
 
-    /// Register kept mail with the mailbox record: where each message is on
-    /// its server, and, for one the record does not know yet, its flags as
-    /// kept. What the record already says of a message is left as it is.
     fn register_kept_mail(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if std::mem::replace(&mut self.kept_registered, true) {
             return;
@@ -2818,15 +2423,10 @@ impl MailApp {
         }
     }
 
-    /// The older pages this window would ask its servers for now: each
-    /// account of the open listing whose folder this device has a window of,
-    /// which its server has not said is whole ([`Self::has_older`]), and
-    /// whose page is not already on its way.
     fn older_pages_wanted(&self) -> Vec<(AccountConfig, Folder, crate::sync::Window)> {
         if self.state().engine.is_none() {
             return Vec::new();
         }
-        // Every inbox together asks each account for its older page.
         let wanted: Vec<(AccountConfig, Folder, Option<crate::sync::Window>)> = {
             let st = self.shared.borrow();
             let accounts: Vec<AccountConfig> = if st.all_inboxes {
@@ -2858,7 +2458,6 @@ impl MailApp {
     }
 
     /// Ask for the page before the oldest message of the open folder, once:
-    /// the list has scrolled to its end and the server has more.
     pub(crate) fn load_older(&mut self) {
         for (account, folder, known) in self.older_pages_wanted() {
             let key = (account.email.clone(), folder);
@@ -2882,11 +2481,10 @@ impl MailApp {
         let Some(pending) = self.state().pending_send.remove(&request_id) else {
             return;
         };
-        // A message joins Sent only after SMTP has accepted its bytes.
         st.ingest_messages(doc, std::slice::from_ref(&pending.message));
         st.mailbox.insert(pending.message);
         (pending.done)(Ok(ui::tilo_resource::Settled::Done(())));
-        st.status = Some("Message sent".into());
+        st.status = Some(Notice::success(CATALOG.t("mail-status-sent")));
         self.editing_draft = None;
         self.compose.close();
     }
@@ -2895,11 +2493,11 @@ impl MailApp {
         &mut self,
         st: &mut MailState,
         request_id: EngineRequestId,
+        kind: EngineRequestKind,
         context: &str,
         message: &str,
     ) {
         if context == "search" {
-            // The search shows what this device holds either way.
             tracing::debug!(%message, "mail: a server search failed");
             return;
         }
@@ -2908,23 +2506,23 @@ impl MailApp {
         if let Some((_, done)) = refused {
             done(Err(detail.clone()));
         }
-        // The account that asked, not the one selected since.
         let account_id = self
             .state()
             .pending_engine_requests
             .get(&request_id)
             .map_or_else(String::new, |pending| pending.account.clone());
         st.first_fetch = None;
-        let shown = engine_error_text(context, message, &account_id);
-        if matches!(context, "connect" | "fetch") {
-            // A failing account is said once, not on every refresh that
-            // fails the same way; it is said again when the failure changes.
-            if st.sync_error.as_deref() != Some(shown.as_str()) {
-                st.status = Some(shown.clone());
-                st.sync_error = Some(shown);
-            }
+        if matches!(kind, EngineRequestKind::Connect | EngineRequestKind::Fetch) {
+            // A check that fails is not a notice that fades: the list says it
+            // for as long as the account cannot be reached, in the window's
+            // language.
+            let account = st
+                .accounts
+                .label_for(&account_id)
+                .unwrap_or_else(|| account_id.clone());
+            st.note_sync_failure(account, crate::notice::sync_cause(message));
         } else {
-            st.status = Some(shown);
+            st.status = Some(engine_error_text(context, message));
         }
         let lower = detail.to_ascii_lowercase();
         let health = if ["auth", "login", "password", "oauth", "credential"]
@@ -2939,8 +2537,6 @@ impl MailApp {
             self.state().accounts_persist.root().as_deref(),
             &account_id,
             health,
-            false,
-            Some(&detail),
         );
         let refused = self.state().pending_send.remove(&request_id);
         if let Some(pending) = refused {
@@ -2983,8 +2579,6 @@ impl MailApp {
                     self.state().accounts_persist.root().as_deref(),
                     &account_id,
                     accounts::AccountSyncHealth::Syncing,
-                    false,
-                    Some("Connected; fetching mail"),
                 );
             }
             EngineEvent::Folders {
@@ -3023,13 +2617,12 @@ impl MailApp {
                 context,
                 message,
             } if self.expects_engine_event(request_id, kind) => {
-                self.apply_engine_error(st, request_id, &context, &message);
+                self.apply_engine_error(st, request_id, kind, &context, &message);
             }
             EngineEvent::Completed { request_id, kind }
                 if self.expects_engine_event(request_id, kind) =>
             {
                 // Only the worker acknowledgement settles a queued request:
-                // connect has two payloads and successful writes have none.
                 self.state().pending_engine_requests.remove(&request_id);
                 self.older_pending
                     .retain(|_, pending| *pending != request_id);
@@ -3048,10 +2641,6 @@ impl MailApp {
         }
     }
 
-    /// Hand the server updates the projection asked for to the engine, each
-    /// on the account it belongs to. One this device cannot carry out (no
-    /// such account here, no engine) is refused; another device with the
-    /// account carries it out.
     fn flush_server_outbox(&mut self) {
         let deliveries = std::mem::take(&mut self.server_outbox.borrow_mut().deliveries);
         let due = ui::time::now() + std::time::Duration::from_secs(SEND_UNDO_SECS);
@@ -3110,9 +2699,6 @@ impl MailApp {
         }
     }
 
-    /// Hand an outbox message to the engine on the account it is sent from.
-    /// One whose account this device does not hold is left for a device
-    /// that does.
     fn deliver(&self, outgoing: Outgoing, done: DeliveryDone) {
         let account = self
             .shared
@@ -3176,10 +2762,6 @@ impl MailApp {
         }
     }
 
-    /// The header identities of outbox message `outgoing` sent from
-    /// `sender`: its own `Message-ID` (the same every time it is sent, so a
-    /// resend is the same message), and, for a reply, the message it
-    /// answers and the conversation's root.
     fn wire_ids(
         &self,
         outgoing: &str,
@@ -3206,17 +2788,14 @@ impl MailApp {
         wire
     }
 
-    /// The outbox the projection drain fills.
     pub(crate) fn server_outbox(&self) -> Rc<RefCell<ServerOutbox>> {
         Rc::clone(&self.server_outbox)
     }
 
-    /// Keep the drain that fills the outbox.
     pub(crate) fn follow_projection(&mut self, projection: ui::framework::Projection) {
         self.projection = Some(projection);
     }
 
-    /// Keep the drain that hands the document's outbox to the engine.
     pub(crate) fn follow_delivery(&mut self, delivery: ui::framework::Projection) {
         self.delivery = Some(delivery);
     }
@@ -3245,9 +2824,6 @@ impl MailApp {
         room.awaiting_engine = !room.pending_engine_requests.is_empty();
     }
 
-    /// Register the locally hydrated corpus before actions target it. This is
-    /// external ingestion, not a user mutation: it never writes flags from a
-    /// presentation cache into the collaborative document.
     fn register_hydrated_messages(&self, doc: &mut ui::widget::Edits<'_>) {
         let messages: Vec<_> = self
             .shared
@@ -3261,9 +2837,6 @@ impl MailApp {
     }
 
     /// Keep an active-account change in the person's accounts.
-    /// This runs after every input path (pane pointer/keyboard, accessibility,
-    /// or canonical resource operation) has selected an account. It never
-    /// touches the Automerge document.
     fn persist_active_account_if_changed(&mut self) {
         let (active, accounts) = {
             let state = self.shared.borrow();
@@ -3283,16 +2856,13 @@ impl MailApp {
         let saved = self.persist_accounts(&accounts);
         self.persisted_active_account = active;
         if let Err(error) = saved {
-            self.shared.borrow_mut().status = Some(CATALOG.t_args(
+            self.shared.borrow_mut().status = Some(Notice::error(CATALOG.t_args(
                 "mail-status-account-not-saved",
                 &[("error", ArgValue::Text(error.to_string()))],
-            ));
+            )));
         }
     }
 
-    /// Follow the person's accounts in this window. What this device's file
-    /// held before it followed the record is taken in first, and the file
-    /// then follows the record.
     pub(crate) fn follow_person_accounts(&mut self, accounts: PersonRecord<PersonAccounts>) {
         let root = self.state().accounts_persist.root();
         if let Some(root) = root {
@@ -3310,10 +2880,6 @@ impl MailApp {
         self.adopt_person_accounts();
     }
 
-    /// Keep `updated` as the person's mail accounts: through their accounts
-    /// record, which follows them to every device, with each password in
-    /// this device's vault and the device's account file following the
-    /// record. Outside a live window, in the store this window keeps.
     fn persist_accounts(&self, updated: &AccountStore) -> std::io::Result<()> {
         let Some((record, _)) = &self.person_accounts else {
             return self.state().accounts_persist.persist(updated);
@@ -3336,9 +2902,6 @@ impl MailApp {
         Ok(())
     }
 
-    /// Take the sender pictures from Contacts' directory and the person's
-    /// own identity when either changed. A live window only: a capture or a
-    /// test shows initials.
     fn adopt_sender_pictures(&mut self) {
         let Some(directory) = self.state().contact_directory.clone() else {
             return;
@@ -3368,7 +2931,6 @@ impl MailApp {
         self.sender_pictures_seen = Some((revision, own));
     }
 
-    /// Follow the person's Mail preferences in this window.
     pub(crate) fn follow_preferences(
         &mut self,
         preferences: ui::framework::Setting<crate::resource::MailPreferences>,
@@ -3378,8 +2940,6 @@ impl MailApp {
         self.adopt_preferences(current);
     }
 
-    /// Show `preferences`: the format a new composition starts in (an open
-    /// composer keeps its own) and which account sidebars are folded.
     fn adopt_preferences(&mut self, preferences: crate::resource::MailPreferences) {
         if !self.compose.open {
             self.compose.set_format(preferences.compose_format);
@@ -3391,7 +2951,6 @@ impl MailApp {
         self.dirty = true;
     }
 
-    /// The preferences as this window shows them now.
     fn shown_preferences(&self) -> crate::resource::MailPreferences {
         crate::resource::MailPreferences {
             compose_format: self.compose.format(),
@@ -3407,8 +2966,6 @@ impl MailApp {
         }
     }
 
-    /// Adopt what another window or device stored, then store what changed
-    /// here: a format switched, an account folded.
     fn sync_preferences(&mut self) {
         let Some(preferences) = &self.preferences else {
             return;
@@ -3421,8 +2978,6 @@ impl MailApp {
         self.store_preferences_if_changed();
     }
 
-    /// Store the preferences this window shows when they changed. Called at
-    /// every format-changing or composer lifecycle boundary and every sync.
     fn store_preferences_if_changed(&mut self) {
         let Some(preferences) = &self.preferences else {
             return;
@@ -3431,19 +2986,16 @@ impl MailApp {
         if shown == self.followed_preferences {
             return;
         }
-        // As with the active account: a refusal is said once per change.
         let saved = preferences.set(shown.clone());
         self.followed_preferences = shown;
         if let Err(error) = saved {
-            self.shared.borrow_mut().status = Some(CATALOG.t_args(
+            self.shared.borrow_mut().status = Some(Notice::error(CATALOG.t_args(
                 "mail-status-preferences-not-saved",
                 &[("error", ArgValue::Text(error.to_string()))],
-            ));
+            )));
         }
     }
 
-    /// Apply collaborative domain state to the local hydrated corpus. Folder,
-    /// selection, search, and composer format remain local to this window.
     fn hydrate_domain_state(&self, doc: &mut ui::widget::Edits<'_>) {
         use ui::automerge::transaction::Transactable as _;
         let at = (
@@ -3485,13 +3037,10 @@ impl MailApp {
 }
 
 impl MailApp {
-    /// The column in front of a narrow window (for tests / probes).
     pub fn nav_pane(&self) -> NavPane {
         self.nav.front_pane()
     }
 
-    /// Lay the app out at `w`×`h` as the host does (twice, so the shell
-    /// settles for the size), keeping the tree for [`Self::test_layout`].
     #[cfg(test)]
     fn layout_for_test(&mut self, w: f64, h: f64) {
         for _ in 0..2 {
@@ -3529,10 +3078,8 @@ impl MailApp {
             assert!(laid.is_ok(), "layout: {laid:?}");
             self.apply_layout(&taffy, child, Point::ZERO);
             self.test_layout = Some((taffy, child));
-            // A test reads the settled shell, not a frame of its motion.
             self.nav.snap();
         }
-        // A frame paints what was laid out, so the columns know their rows.
         let theme = self.layout_theme.clone();
         let mut text = TextRenderer::new();
         text.set_text_scale(theme.text_scale);
@@ -3545,23 +3092,15 @@ impl MailApp {
         );
     }
 
-    /// The directory account changes persist into: the real per-user config
-    /// root for the live app, or a throwaway sandbox for the sample / shots /
-    /// test constructors. `None` when persistence is disabled. Tests use this to
-    /// prove sample mode never resolves the real store path.
     #[cfg(test)]
     fn accounts_persist_root(&self) -> Option<std::path::PathBuf> {
         self.state().accounts_persist.root()
     }
 }
 
-/// What a forward does with the forwarded message's files.
 struct ForwardedFiles {
-    /// Kept for the draft: they go with the forward.
     carried: Vec<crate::model::DraftAttachment>,
-    /// Not on this device yet, by name.
     not_downloaded: Vec<String>,
-    /// Past what one message carries, by name.
     too_large: Vec<String>,
 }
 
@@ -3576,10 +3115,6 @@ fn attachment_meta(attachment: &crate::model::DraftAttachment) -> Attachment {
 }
 
 /// Reconstruct an editable [`Draft`] from a Drafts-folder message.
-/// What `message` says, for a caller with no screen: its people, subject,
-/// time, text and attachments' names.
-/// The HTML gallery's screenshot scenarios ([`crate::sample::MailFixture::html_gallery`]),
-/// each with the sender whose mail it opens.
 pub(crate) const GALLERY_SCENARIOS: &[(&str, &str)] = &[
     ("html_newsletter", "news@harvest-weekly.example"),
     ("html_github", "notifications@github.example"),
@@ -3589,8 +3124,6 @@ pub(crate) const GALLERY_SCENARIOS: &[(&str, &str)] = &[
     ("plain_text", "lena@fischer.example"),
 ];
 
-/// Open a link of a message in the Browser, through the host's opener. Only
-/// web and mail addresses open.
 fn open_link(url: &str) {
     if crate::reader::is_openable(url) {
         ui::widget::open_external_url(url);
@@ -3668,15 +3201,10 @@ fn draft_from_message(m: &Message) -> Draft {
     }
 }
 
-/// Record `account_id`'s sync health in the profile at `config_root`; a
-/// window without a profile directory (a capture, a past version) records
-/// nothing.
 fn report_account_sync(
     config_root: Option<&std::path::Path>,
     account_id: &str,
     health: accounts::AccountSyncHealth,
-    _success: bool,
-    _message: Option<&str>,
 ) {
     let Some(config_root) = config_root else {
         return;
@@ -3700,8 +3228,6 @@ fn report_account_sync(
 }
 
 impl MailApp {
-    /// Route events to the open compose modal and report whether it consumed
-    /// them.
     fn handle_compose_modal(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) -> bool {
         self.tell_compose_the_accounts();
         let format_before = self.compose.format();
@@ -3734,15 +3260,13 @@ impl MailApp {
     fn confirm_bulk_purge(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.bulk_purge_confirmation = None;
         if self.apply_bulk(state, BulkAction::Purge) == 0 {
-            self.shared.borrow_mut().status = Some(CATALOG.t("mail-status-purge-nothing"));
+            self.shared.borrow_mut().status =
+                Some(Notice::warning(CATALOG.t("mail-status-purge-nothing")));
         }
         self.process_intents();
         self.dirty = true;
     }
 
-    /// The row menu owns input while open: its accelerators act on the
-    /// message, everything else is the menu's (arrows, Enter, Escape, a click
-    /// outside closes it).
     fn handle_menu_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) -> bool {
         if !self.menu.is_open() {
             return false;
@@ -3797,7 +3321,6 @@ impl MailApp {
             self.menu_target = None;
         }
         self.dirty = true;
-        // While open the menu is modal; a press outside it only closes it.
         let consumed = handled
             || matches!(
                 event,
@@ -3809,7 +3332,6 @@ impl MailApp {
         consumed
     }
 
-    /// The permanent-deletion confirmation owns all input while open.
     fn handle_purge_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) -> bool {
         let Some(confirmation) = self.bulk_purge_confirmation.as_mut() else {
             return false;
@@ -3827,8 +3349,6 @@ impl MailApp {
         true
     }
 
-    /// Route app-owned modal surfaces in front-to-back order. Returning true
-    /// stops propagation to the navigation shell and global shortcuts.
     fn handle_app_modal_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) -> bool {
         if self.handle_purge_event(event, ctx) {
             return true;
@@ -3868,7 +3388,6 @@ impl MailApp {
         false
     }
 
-    /// How many messages a conversation holds, for a screen reader.
     fn thread_messages(count: usize) -> String {
         crate::i18n::t_args(
             "mail-a11y-thread-messages",
@@ -3930,39 +3449,23 @@ impl MailApp {
                 .with_state(AccessState::new().focusable(true)),
         ];
         if state.bulk_selecting {
-            let selected = state.selected_bulk_ids().len();
-            let enabled = selected > 0;
-            let all_trash = enabled
-                && state.selected_bulk_ids().iter().all(|id| {
-                    state
-                        .mailbox
-                        .get(*id)
-                        .is_some_and(|message| message.folder == Folder::Trash)
-                });
-            children.push(
-                AccessNode::new(Role::Toolbar)
-                    .with_name(CATALOG.t_args(
-                        "mail-selected-count",
-                        &[("count", ArgValue::Text(selected.to_string()))],
-                    ))
-                    .with_children(
-                        Self::bulk_controls(all_trash)
-                            .into_iter()
-                            .map(|(name, action)| {
-                                AccessNode::new(Role::Button)
-                                    .with_name(name)
-                                    .with_action_target(format!("mail.bulk:{action}"))
-                                    .with_state(
-                                        AccessState::new()
-                                            .focusable(true)
-                                            .disabled(!enabled && action != "select-all"),
-                                    )
-                            })
-                            .collect(),
-                    ),
-            );
+            children.push(Self::bulk_bar_node(state));
         }
         children.extend(messages);
+        // An account that cannot be checked is said above the rows, and it
+        // stays said until a check works.
+        if let Some(failure) = &state.sync_error {
+            children.push(Self::sync_failure_node(&crate::notice::sync_failure(
+                failure,
+            )));
+        }
+        // An empty mailbox no mail has arrived in offers the one thing a
+        // person can do there: its account's settings, where the account is
+        // added, checked and fixed. A mailbox whose check fails offers that
+        // failure's own control instead.
+        if total == 0 && state.mailbox.messages.is_empty() && state.sync_error.is_none() {
+            children.push(Self::account_route_node());
+        }
         let mut list = AccessNode::new(Role::List)
             .with_name(name)
             .with_children(children);
@@ -3978,8 +3481,64 @@ impl MailApp {
         list
     }
 
-    /// The name a message's row reads out: a draft says so, a sent or
-    /// received one names who it is from and what it is about.
+    /// The selection's toolbar: what can be done to the messages chosen, and
+    /// how many are.
+    fn bulk_bar_node(state: &MailState) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let selected = state.selected_bulk_ids().len();
+        let enabled = selected > 0;
+        let all_trash = enabled
+            && state.selected_bulk_ids().iter().all(|id| {
+                state
+                    .mailbox
+                    .get(*id)
+                    .is_some_and(|message| message.folder == Folder::Trash)
+            });
+        AccessNode::new(Role::Toolbar)
+            .with_name(CATALOG.t_args(
+                "mail-selected-count",
+                &[("count", ArgValue::Text(selected.to_string()))],
+            ))
+            .with_children(
+                Self::bulk_controls(all_trash)
+                    .into_iter()
+                    .map(|(name, action)| {
+                        AccessNode::new(Role::Button)
+                            .with_name(name)
+                            .with_action_target(format!("mail.bulk:{action}"))
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .disabled(!enabled && action != "select-all"),
+                            )
+                    })
+                    .collect(),
+            )
+    }
+
+    /// A failed check as the window's semantics say it: the words the list
+    /// paints, and the control that helps, as its accessible control.
+    fn sync_failure_node(text: &crate::notice::SyncFailureText) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut node = AccessNode::new(Role::Group).with_name(text.title.clone());
+        if let Some(message) = &text.message {
+            node = node.with_description(message.clone());
+        }
+        if let Some(offer) = &text.action {
+            let route = match offer.intent {
+                Intent::CheckMail => CHECK_ROUTE,
+                _ => ACCOUNT_ROUTE,
+            };
+            node = node.with_children(vec![
+                AccessNode::new(Role::Button)
+                    .with_name(offer.label.clone())
+                    .with_action_target(route)
+                    .with_state(AccessState::new().focusable(true)),
+            ]);
+        }
+        node
+    }
+
     fn row_title(message: &crate::model::Message) -> String {
         if message.folder == Folder::Drafts {
             return CATALOG.t_args(
@@ -3996,7 +3555,6 @@ impl MailApp {
         )
     }
 
-    /// What the bulk bar's buttons are called, and the action each takes.
     fn bulk_controls(all_trash: bool) -> Vec<(String, &'static str)> {
         let names = [
             ("mail-bulk-select-all", "select-all"),
@@ -4016,8 +3574,6 @@ impl MailApp {
             .collect()
     }
 
-    /// The outbox page: a row per message still to leave, each saying why it
-    /// has not, and the verb that takes it back unsent.
     fn outbox_accessibility_node(state: &MailState) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -4175,7 +3731,6 @@ impl Widget for MailApp {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
         self.follow_document();
-        // What effects asked of the window since it last synced.
         self.process_intents();
         self.background_poll_deadline.set(None);
         self.adopt_person_accounts();
@@ -4223,7 +3778,6 @@ impl Widget for MailApp {
 
         let mem_seeded = self.shared.borrow().seeded;
         if !mem_seeded {
-            // Live: kick off a connect + inbox fetch for the active account.
             let has_accounts = !self.shared.borrow().accounts.is_empty();
             if self.state().engine.is_some()
                 && has_accounts
@@ -4232,7 +3786,6 @@ impl Widget for MailApp {
             {
                 let cfg = self.shared.borrow().accounts.active_config();
                 {
-                    // Nothing kept for the account: its rows are on the way.
                     let mut st = self.shared.borrow_mut();
                     let nothing_kept = st.mailbox.of_account(&cfg.email).next().is_none();
                     st.first_fetch = nothing_kept.then(|| first_fetch(&cfg));
@@ -4339,7 +3892,6 @@ impl Widget for MailApp {
         if let Some(nav_node) = self.nav_node {
             self.nav.apply_layout(taffy, nav_node, inner);
             if self.first_layout {
-                // Rest the shell for this width before the first frame.
                 self.nav.snap();
                 self.first_layout = false;
                 self.nav.apply_layout(taffy, nav_node, inner);
@@ -4377,7 +3929,6 @@ impl Widget for MailApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // No ground of our own: the window paints it, the shell its regions.
         if self.is_first_run() {
             self.first_run.draw_child(scene, t, tr, theme, presence);
         } else {
@@ -4388,9 +3939,6 @@ impl Widget for MailApp {
         }
     }
 
-    /// The window's top layer: the shell's own floating parts and the
-    /// confirmation dialog, then the composer, the account sheet, the row
-    /// menu and the shortcut list, over the window's chrome.
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -4502,7 +4050,6 @@ impl Widget for MailApp {
         children
     }
 
-    /// Whatever the children report.
     fn take_structure_dirty(&mut self) -> bool {
         let mut dirty = false;
         for child in self.children_mut() {
@@ -4540,13 +4087,6 @@ impl Widget for MailApp {
         }
     }
 
-    /// The mailbox is painted by three custom panes, so expose their actual
-    /// visible composition here rather than leaving assistive technology with
-    /// one opaque canvas.  This deliberately follows the shell's compact
-    /// state: a narrow drawer hides the list, and a pushed reader hides both
-    /// the list and drawer.  It also builds only from the loaded mailbox -- a
-    /// live account with no fetched mail is described as empty, never filled
-    /// with sample content.
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
@@ -4556,7 +4096,6 @@ impl Widget for MailApp {
         if let Some(confirmation) = &self.bulk_purge_confirmation {
             return confirmation.dialog.accessibility();
         }
-        // Before there is a mailbox the composer is the window's page.
         if self.compose.is_modal() || (self.compose.open && self.is_first_run()) {
             return Some(self.compose.accessibility_node());
         }
@@ -4564,9 +4103,7 @@ impl Widget for MailApp {
             return self.menu.accessibility();
         }
         if self.is_first_run() {
-            // `first_run` remains a real child widget, which supplies the
-            // onboarding action and its existing activation path.
-            return Some(AccessNode::new(Role::Window).with_name(crate::i18n::t("mail-title")));
+            return Some(self.empty_window_accessibility());
         }
 
         let st = self.shared.borrow();
@@ -4601,14 +4138,12 @@ impl Widget for MailApp {
         }
 
         if reader_visible {
-            // The message being written stands where the open one is read.
             children.push(if self.compose.open {
                 self.compose.accessibility_node()
             } else {
                 Self::reader_accessibility_node(&st)
             });
         } else if self.compose.open {
-            // A narrow window's composer is the page itself.
             children.push(self.compose.accessibility_node());
         }
 
@@ -4668,6 +4203,14 @@ impl Widget for MailApp {
         if let Some(raw) = target.strip_prefix("mail.outbox:") {
             self.shared.borrow_mut().select_queued(raw);
             self.dirty = true;
+            return true;
+        }
+        if target == ACCOUNT_ROUTE {
+            self.open_account_settings();
+            return true;
+        }
+        if target == CHECK_ROUTE {
+            let _ = self.state().refresh_active_folder();
             return true;
         }
 
@@ -4768,7 +4311,6 @@ impl Widget for MailApp {
     }
 }
 
-/// Who a queued message goes to, as one line: every recipient list it has.
 fn recipient_line(draft: &crate::actions::DraftData) -> String {
     let mut to = Vec::new();
     for field in [&draft.to, &draft.cc, &draft.bcc] {
@@ -4783,12 +4325,10 @@ fn recipient_line(draft: &crate::actions::DraftData) -> String {
     }
 }
 
-/// A notice's Undo goes through the host's undo, the same as Ctrl+Z.
 impl ui::undo::UndoControl for MailApp {
     fn take_undo_request(&mut self) -> Option<ui::undo::UndoRequest> {
         self.nav.take_toast_action()?;
         if self.send_notice && (!self.held_sends.is_empty() || self.sends_to_hold > 0) {
-            // The messages still waiting come back; nothing else is undone.
             self.unsend = true;
             self.dirty = true;
             return None;
@@ -4808,10 +4348,6 @@ impl ui::widget::controls::ActionControls for MailApp {
     }
 }
 
-/// What an effect asked the window to show that needs the document to show
-/// it: opening a message records it read through the same `SetRead` action
-/// as every control, the draft is read from the document, and an invitation
-/// is saved as the draft. Taken up on the next sync.
 #[derive(Debug)]
 enum Reveal {
     Message(MessageId),
@@ -4822,10 +4358,6 @@ enum Reveal {
 }
 
 impl Mailroom {
-    /// Start `effect`, invoked as `invocation`. Showing something answers at
-    /// once; a refresh answers once the server replied, through
-    /// [`Self::take_effect_result`]. Saving an attachment is the view's,
-    /// which asks the host where to put it.
     #[allow(
         clippy::too_many_lines,
         reason = "one ordered match over every effect a mail window publishes, kept together so a new effect cannot be left unhandled"
@@ -4910,7 +4442,6 @@ impl Mailroom {
                 if !self.shared.borrow_mut().preview_message(id) {
                     return Err("message is no longer loaded".into());
                 }
-                self.shared.borrow_mut().status = Some("Preview".into());
                 Ok(done)
             }
             MailEffect::Reply { message } => {
@@ -4923,7 +4454,8 @@ impl Mailroom {
                 self.compose_from(&message, Intent::Forward).map(|()| done)
             }
             MailEffect::Save { message, index } => {
-                self.attachment_to_save(&message, index)?;
+                self.attachment_to_save(&message, index)
+                    .map_err(|cause| cause.message())?;
                 Err("saving an attachment asks the host where to put it".into())
             }
             MailEffect::SearchMessages { .. }
@@ -4940,8 +4472,6 @@ impl Mailroom {
         }
     }
 
-    /// What the reader does to a message: load its remote images, for it
-    /// or its sender, or open one of its links in the Browser.
     fn reader_effect(&mut self, effect: crate::actions::MailEffect) -> Result<(), String> {
         use crate::actions::MailEffect;
         match effect {
@@ -4976,7 +4506,6 @@ impl Mailroom {
         Ok(())
     }
 
-    /// The loaded HTML message `message` names.
     fn html_message(&self, message: &str) -> Result<MessageId, String> {
         let id = message
             .parse::<MessageId>()
@@ -4988,8 +4517,6 @@ impl Mailroom {
         }
     }
 
-    /// Start the effect a published operation's `payload` names, as the
-    /// host does when it is invoked.
     #[cfg(test)]
     pub(crate) fn start_effect(
         &mut self,
@@ -5002,7 +4529,6 @@ impl Mailroom {
         self.begin_effect(invocation, effect)
     }
 
-    /// Show `target`, once it is still there.
     fn open_target(&mut self, target: crate::actions::MailTarget) -> Result<(), String> {
         use crate::actions::MailTarget;
         match target {
@@ -5038,8 +4564,6 @@ impl Mailroom {
         Ok(())
     }
 
-    /// Open the composer replying to, replying to all of, or forwarding the
-    /// loaded `message`.
     fn compose_from(&self, message: &str, intent: fn(MessageId) -> Intent) -> Result<(), String> {
         let id = message
             .parse::<MessageId>()
@@ -5051,8 +4575,6 @@ impl Mailroom {
         Ok(())
     }
 
-    /// The outcome of the refresh invoked as `invocation`, once the server
-    /// replied; taken once.
     pub(crate) fn take_effect_result(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -5068,7 +4590,6 @@ impl Mailroom {
         self.resource_refresh_result.take()
     }
 
-    /// Answer `invocation`'s caller through `reply` once the server replied.
     pub(crate) fn await_effect(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -5077,7 +4598,6 @@ impl Mailroom {
         self.effect_replies.push((invocation, reply));
     }
 
-    /// Answer every waiting caller whose refresh has settled.
     fn deliver_effect_replies(&mut self) {
         for (invocation, reply) in std::mem::take(&mut self.effect_replies) {
             match self.take_effect_result(invocation) {
@@ -5093,7 +4613,6 @@ impl Mailroom {
         }
     }
 
-    /// Whether a connected account can fetch and prepare mail now.
     pub(crate) fn can_sync(&self) -> bool {
         self.engine.is_some()
             && !self
@@ -5105,16 +4624,14 @@ impl Mailroom {
                 .is_empty()
     }
 
-    /// The attachment `index` of the loaded `message`, as the name to suggest
-    /// and the bytes to save.
     pub(crate) fn attachment_to_save(
         &self,
         message: &str,
         index: usize,
-    ) -> Result<(String, Vec<u8>), String> {
+    ) -> Result<(String, Vec<u8>), AttachmentUnavailable> {
         let message_id = message
             .parse::<MessageId>()
-            .map_err(|_| "invalid message id")?;
+            .map_err(|_| AttachmentUnavailable::UnknownMessage)?;
         let attachment = self
             .shared
             .borrow()
@@ -5122,13 +4639,12 @@ impl Mailroom {
             .get(message_id)
             .and_then(|message| message.attachments.get(index))
             .cloned()
-            .ok_or_else(|| "attachment is no longer loaded".to_string())?;
+            .ok_or(AttachmentUnavailable::NotLoaded)?;
         if !attachment.is_downloadable() {
-            return Err("attachment content is not downloaded yet".into());
+            return Err(AttachmentUnavailable::NotDownloaded);
         }
         let mut attachment = attachment;
         if attachment.content.is_empty() && attachment.kept {
-            // Kept on this device rather than in memory.
             let account = self
                 .shared
                 .borrow()
@@ -5139,20 +4655,15 @@ impl Mailroom {
             attachment.content = self
                 .store
                 .attachment(&account, message_id, index)
-                .ok_or_else(|| {
-                    format!("{} is no longer kept on this device", attachment.filename)
-                })?;
+                .ok_or_else(|| AttachmentUnavailable::NotKept(attachment.filename.clone()))?;
         }
         if attachment.content.len() > MAX_ATTACHMENT_SAVE_BYTES {
-            return Err(format!(
-                "{} is too large to save here; open it in Files instead",
-                attachment.filename
-            ));
+            return Err(AttachmentUnavailable::TooLarge(attachment.filename));
         }
         let content_len = u64::try_from(attachment.content.len())
-            .map_err(|_| "attachment is too large to save".to_string())?;
+            .map_err(|_| AttachmentUnavailable::TooLarge(attachment.filename.clone()))?;
         if attachment.size != content_len {
-            return Err("attachment metadata no longer matches its downloaded content".into());
+            return Err(AttachmentUnavailable::Changed);
         }
         Ok((
             MailApp::attachment_save_name(&attachment.filename),
@@ -5160,8 +4671,6 @@ impl Mailroom {
         ))
     }
 
-    /// Say whether the attachment `name` was saved, and answer its caller
-    /// with the attachment it saved.
     pub(crate) fn finish_attachment_save(
         &mut self,
         saved: bool,
@@ -5169,12 +4678,12 @@ impl Mailroom {
         resource: String,
     ) -> ui::framework::Effected {
         self.shared.borrow_mut().status = Some(if saved {
-            CATALOG.t_args(
+            Notice::success(CATALOG.t_args(
                 "mail-status-copy-saved",
                 &[("file", ArgValue::Text(name.to_owned()))],
-            )
+            ))
         } else {
-            CATALOG.t("mail-status-copy-cancelled")
+            Notice::info(CATALOG.t("mail-status-copy-cancelled"))
         });
         self.dirty = true;
         ui::framework::Effected::Done(tilo_actions::ActionOutput {
@@ -5183,11 +4692,6 @@ impl Mailroom {
         })
     }
 
-    /// Ask to save the attachment `index` of `message` through the effect
-    /// every caller uses, so the window's own button, the palette and an
-    /// agent save it the same way.
-    /// Search the servers for `text` a moment after it stops changing: a
-    /// word of three letters or more, once.
     pub(crate) fn search_servers(&mut self, text: &str) {
         let text = text.trim();
         if self.engine.is_none()
@@ -5204,7 +4708,6 @@ impl Mailroom {
         self.dirty = true;
     }
 
-    /// Whether a server search is still to be asked or answered.
     pub(crate) fn searching_servers(&self) -> bool {
         self.server_search.is_some()
             || self
@@ -5213,7 +4716,6 @@ impl Mailroom {
                 .any(|pending| pending.kind == EngineRequestKind::Search)
     }
 
-    /// Ask every account's server for the search text that is due.
     fn post_server_search(&mut self) {
         let due = self
             .server_search
@@ -5242,9 +4744,6 @@ impl Mailroom {
 }
 
 impl MailApp {
-    /// What opens the place a search hit or an agent's `open` names: a
-    /// folder, a message the mailbox publishes or one the window loaded, or
-    /// a draft (`mail.draft:<id>`), in a composer bound to it.
     pub(crate) fn opener(
         &self,
     ) -> impl FnMut(&str) -> Result<(), ui::tilo_resource::Refusal> + 'static {
@@ -5298,7 +4797,6 @@ impl MailApp {
         }
     }
 
-    /// Take up what effects asked to show that needs the document.
     fn reveal_requested(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let reveals = std::mem::take(&mut self.state().reveals);
         for reveal in reveals {
@@ -5321,33 +4819,33 @@ impl MailApp {
                         self.compose.open_draft(named, &draft.draft());
                         self.editing_draft = None;
                     } else {
-                        self.shared.borrow_mut().status = Some("That draft is gone".into());
+                        self.shared.borrow_mut().status =
+                            Some(Notice::warning(CATALOG.t("mail-status-draft-gone")));
                     }
                 }
                 Reveal::Contact(draft) => {
                     self.shared.borrow_mut().save_draft(doc, &draft);
                     self.compose.open_with_draft(&draft);
                     self.editing_draft = None;
-                    self.shared.borrow_mut().status =
-                        Some(crate::i18n::t("mail-contact-draft-prepared"));
+                    self.shared.borrow_mut().status = Some(Notice::success(crate::i18n::t(
+                        "mail-contact-draft-prepared",
+                    )));
                 }
                 Reveal::Invitation(draft) => {
                     self.shared.borrow_mut().save_draft(doc, &draft);
                     self.compose.open_with_draft(&draft);
                     self.editing_draft = None;
-                    self.shared.borrow_mut().status = Some("Invitation drafted".into());
+                    self.shared.borrow_mut().status =
+                        Some(Notice::success(CATALOG.t("mail-status-invitation-drafted")));
                 }
             }
             self.dirty = true;
         }
     }
 
-    /// Open attachment `index` of `message` in the app registered for its
-    /// type, through its published `open-attachment`: the desktop opens it,
-    /// as it does for an agent.
     fn open_attachment(&self, message: MessageId, index: usize) {
-        if let Err(error) = self.state().attachment_to_save(&message.to_string(), index) {
-            self.shared.borrow_mut().status = Some(error);
+        if let Err(cause) = self.state().attachment_to_save(&message.to_string(), index) {
+            self.shared.borrow_mut().status = Some(Notice::warning(cause.message()));
             return;
         }
         let dispatcher = self.shared.borrow().dispatcher.clone();
@@ -5364,8 +4862,8 @@ impl MailApp {
     }
 
     fn request_attachment_save(&self, message: MessageId, index: usize) {
-        if let Err(error) = self.state().attachment_to_save(&message.to_string(), index) {
-            self.shared.borrow_mut().status = Some(error);
+        if let Err(cause) = self.state().attachment_to_save(&message.to_string(), index) {
+            self.shared.borrow_mut().status = Some(Notice::warning(cause.message()));
             return;
         }
         let dispatcher = self.shared.borrow().dispatcher.clone();
@@ -5382,8 +4880,6 @@ impl MailApp {
 }
 
 impl Mailroom {
-    /// The rows this window shows beside the mailbox: the accounts, an
-    /// in-flight send and a search-index fault.
     pub(crate) fn live_rows(&self) -> Vec<ui::framework::LiveRow> {
         let mut rows = crate::resource::live_extras(self);
         rows.push(crate::actions::accounts_collection(&self.accounts_rows()));
@@ -5392,8 +4888,6 @@ impl Mailroom {
     }
 
     /// The row `id` this window has loaded that the mailbox does not hold:
-    /// a message the document has no flags for yet, a thread, an attachment,
-    /// an account.
     pub(crate) fn live_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
         if id.starts_with("mail.contact") {
             return self.contact_recipient_row(id);
@@ -5444,7 +4938,6 @@ impl Mailroom {
             .find(|extra| extra.id() == id)
     }
 
-    /// This device's accounts, `(id, label, active)`.
     fn accounts_rows(&self) -> Vec<(String, String, bool)> {
         let state = self.shared.borrow();
         state
@@ -5680,9 +5173,6 @@ impl MailApp {
         true
     }
 
-    /// Apply `action` to the bulk selection and say what it did, once: every
-    /// path that acts on a bulk selection (the header, a shortcut, assistive
-    /// technology) reports through here, so the sentence lives in one place.
     fn apply_bulk(&self, state: &mut ui::widget::Edits<'_>, action: BulkAction) -> usize {
         let affected = self.shared.borrow_mut().apply_bulk_action(state, action);
         if affected > 0 {
@@ -5691,7 +5181,7 @@ impl MailApp {
                 reason = "a count only selects a plural form; exactness past 2^52 is irrelevant"
             )]
             let count = affected as f64;
-            self.shared.borrow_mut().status = Some(CATALOG.t_args(
+            self.shared.borrow_mut().status = Some(Notice::success(CATALOG.t_args(
                 match action {
                     BulkAction::Archive => "mail-status-archived",
                     BulkAction::Delete => "mail-status-trashed",
@@ -5700,13 +5190,11 @@ impl MailApp {
                     BulkAction::Purge => "mail-status-purged",
                 },
                 &[("count", ArgValue::Number(count))],
-            ));
+            )));
         }
         affected
     }
 
-    /// Assistive technology reaches the exact same local selection and
-    /// canonical bulk-action boundary as the header controls and shortcuts.
     fn perform_bulk_semantic_action(
         &mut self,
         raw: &str,
@@ -5812,7 +5300,6 @@ impl MailApp {
                 if let Some(id) = selected
                     && self.shared.borrow_mut().preview_message(id)
                 {
-                    self.shared.borrow_mut().status = Some("Preview".into());
                     self.process_intents();
                     *handled = true;
                 }
@@ -5944,7 +5431,6 @@ impl MailApp {
         }
     }
 
-    /// Delete, #: the selection's messages, or the open one, to the Trash.
     fn delete_shortcut(&mut self, state: &mut ui::widget::Edits<'_>) {
         let selected = self.shared.borrow().selected;
         if self.shared.borrow().bulk_selecting {
@@ -5958,9 +5444,6 @@ impl MailApp {
     }
 }
 
-/// What the server's answer for `folder` of `account_id` changes in what
-/// `mailbox` holds: the messages it no longer has, and those another client
-/// read or starred, as reported.
 mod person_accounts;
 #[path = "server_deltas.rs"]
 mod server_deltas;
@@ -5969,6 +5452,9 @@ use ui::i18n::ArgValue;
 
 #[path = "mailroom_rows.rs"]
 mod mailroom_rows;
+
+#[path = "app/empty.rs"]
+mod empty;
 
 #[cfg(test)]
 mod tests;

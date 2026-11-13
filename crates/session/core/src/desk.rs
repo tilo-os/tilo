@@ -24,28 +24,18 @@ use ui::state::UndoLog;
 /// shape leaves the desk alone rather than guess.
 const SCHEMA_KEY: &str = "schema";
 
-/// The key an older build kept the arrangement's view choices and pins under, beside a desk whose
-/// windows carried neither. The view each of those places shows is now the window's own and the pin
-/// too, so the key is read once, into the windows it names, and deleted.
-const MARKS_KEY: &str = "arrangement_marks_v1";
-
-/// The root keys a workspace's desktop kept when every window was its own entry there, before the
-/// desk was one document.
-const RECORD_KEYS: [&str; 3] = ["strips", "groups", "windows"];
-
 /// How long a drag or a burst of switches waits for its last frame before how the desk looks is
 /// written.
 const DRAG_QUIET: Duration = Duration::from_secs(2);
 
-/// The marks [`MARKS_KEY`] held.
-#[derive(Default, serde::Deserialize)]
-struct Marks {
-    /// The view a place shows, by the place's id.
-    #[serde(default)]
-    views: BTreeMap<u64, String>,
-    /// The places the person pinned.
-    #[serde(default)]
-    pins: BTreeSet<u64>,
+/// What a host's own document keeps of how the desk looks.
+#[derive(Clone, Copy)]
+enum Shows {
+    /// Everything: the desk of a host no workspace holds, whose document is the only store of it.
+    All,
+    /// What this device's displays show alone: the layout and the person's view of it are records
+    /// of the workspace ([`tilo_desktop_model::person_view`]).
+    Displays,
 }
 
 /// Where a host keeps the desk's document: its bytes, written off the frame that changed them.
@@ -161,7 +151,6 @@ impl Desk {
     pub fn new(document: AutoCommit, person: &str, store: Option<Rc<dyn Store>>) -> Self {
         let mut document = document;
         document.set_actor(actor_of_person(person));
-        adopt_marks(&mut document);
         let undo = UndoLog::new(&mut document);
         Self {
             doc: Rc::new(RefCell::new(document)),
@@ -186,6 +175,7 @@ impl Desk {
         let mut tree = DesktopTree::default();
         desktop_doc::rebuild(&doc, &mut tree);
         desktop_doc::rebuild_view(&doc, &mut tree);
+        desktop_doc::rebuild_displays(&doc, &mut tree);
         (!tree.workspaces.is_empty()).then_some(tree)
     }
 
@@ -202,7 +192,19 @@ impl Desk {
         records: &[(TabId, String)],
         authors: Option<&Authors>,
     ) -> bool {
-        self.write(desktop, time, true, None, records, authors)
+        self.write(desktop, time, true, None, records, authors, Shows::All)
+    }
+
+    /// [`Self::record`] for a host whose workspace records hold the layout and the person's view of
+    /// it: the document keeps the desk and what this device's displays show.
+    pub fn record_displays(
+        &self,
+        desktop: &DesktopTree,
+        time: i64,
+        records: &[(TabId, String)],
+        authors: Option<&Authors>,
+    ) -> bool {
+        self.write(desktop, time, true, None, records, authors, Shows::Displays)
     }
 
     /// [`Self::record`] the tree `desktop` reads, at `revision` of it, unless the desk was last
@@ -215,12 +217,35 @@ impl Desk {
         time: i64,
         records: &[(TabId, String)],
     ) -> bool {
+        self.record_at_showing(revision, desktop, time, records, Shows::All)
+    }
+
+    /// [`Self::record_at`] for a host whose workspace records hold the person's view of the layout:
+    /// what this device's displays show is written here, and where the person is looking is not.
+    pub fn record_displays_at(
+        &self,
+        revision: u64,
+        desktop: impl FnOnce() -> DesktopTree,
+        time: i64,
+        records: &[(TabId, String)],
+    ) -> bool {
+        self.record_at_showing(revision, desktop, time, records, Shows::Displays)
+    }
+
+    fn record_at_showing(
+        &self,
+        revision: u64,
+        desktop: impl FnOnce() -> DesktopTree,
+        time: i64,
+        records: &[(TabId, String)],
+        shows: Shows,
+    ) -> bool {
         let heads = self.doc.borrow_mut().get_heads();
         let kept = (revision, records.to_vec(), heads);
         if self.kept.borrow().as_ref() == Some(&kept) {
             return false;
         }
-        let wrote = self.write(&desktop(), time, true, None, records, None);
+        let wrote = self.write(&desktop(), time, true, None, records, None, shows);
         // How the desk looks within a drag is written once the drag rests: until then, the same
         // desk is written again.
         let (revision, records, _) = kept;
@@ -238,7 +263,27 @@ impl Desk {
         records: &[(TabId, String)],
         authors: Option<&Authors>,
     ) -> bool {
-        self.write(desktop, time, false, None, records, authors)
+        self.write(desktop, time, false, None, records, authors, Shows::All)
+    }
+
+    /// [`Self::record_now`] for a host whose workspace records hold the layout and the person's
+    /// view: the document keeps the desk and what this device's displays show of it.
+    pub fn record_displays_now(
+        &self,
+        desktop: &DesktopTree,
+        time: i64,
+        records: &[(TabId, String)],
+        authors: Option<&Authors>,
+    ) -> bool {
+        self.write(
+            desktop,
+            time,
+            false,
+            None,
+            records,
+            authors,
+            Shows::Displays,
+        )
     }
 
     /// Record `desktop` as it stands as `asked`'s arranging action: one change of the desk whose own
@@ -252,7 +297,15 @@ impl Desk {
         asked: &ActionContext,
         records: &[(TabId, String)],
     ) -> bool {
-        self.write(desktop, time, false, Some(asked), records, None)
+        self.write(
+            desktop,
+            time,
+            false,
+            Some(asked),
+            records,
+            None,
+            Shows::Displays,
+        )
     }
 
     /// Record how this device shows `desktop` alone: a host whose workspace holds the desk itself
@@ -278,6 +331,7 @@ impl Desk {
         asked: Option<&ActionContext>,
         records: &[(TabId, String)],
         authors: Option<&Authors>,
+        shows: Shows,
     ) -> bool {
         let mut doc = self.doc.borrow_mut();
         // Where this change starts: taken before the schema is stamped, so the stamp is part of the
@@ -287,7 +341,10 @@ impl Desk {
         // A document with no desk holds one after this change: the desk is being opened, here or as
         // it arrived from the workspace, and that is no change of the person's to take back.
         let opened = !desktop_doc::holds(&*doc);
-        let looks_only = desktop_doc::seed_of_the_view(&mut doc, &relaunchable(desktop));
+        let looks_only = match shows {
+            Shows::All => desktop_doc::seed_of_the_view(&mut doc, &relaunchable(desktop)),
+            Shows::Displays => desktop_doc::seed_of_displays(&mut doc, &relaunchable(desktop)),
+        };
         // What each window shows is the desk's, not how this device shows it, and it is written like
         // the view is: what a window opened is no step of the person's on its own, and an action
         // that places a resource is a step because it was asked for. A window's record arrives with
@@ -297,11 +354,6 @@ impl Desk {
         }
         if let Some(authors) = authors {
             desktop_doc::set_window_authors(&mut doc, &authors_on(desktop, authors));
-        }
-        for key in RECORD_KEYS {
-            if doc.get(ROOT, key).ok().flatten().is_some() {
-                let _ = doc.delete(ROOT, key);
-            }
         }
         if doc.pending_ops() == 0 {
             return false;
@@ -468,129 +520,9 @@ fn user(person: &str) -> UserId {
     UserId(person.to_owned())
 }
 
-/// Read the arrangement's marks (`MARKS_KEY`) into the desk's own windows — the view each place
-/// shows, whether the person pinned it — and delete them. A document a build before this one wrote
-/// keeps them there: the desk itself has no other way to know them, and its windows carry them from
-/// now on.
-fn adopt_marks(doc: &mut AutoCommit) {
-    let Some(marks) = marks_key(doc) else {
-        return;
-    };
-    let mut tree = DesktopTree::default();
-    desktop_doc::rebuild(doc, &mut tree);
-    for workspace in &mut tree.workspaces {
-        for strip in &mut workspace.strips {
-            for group in &mut strip.window_groups {
-                for tab in &mut group.tabs {
-                    if let Some(view) = marks.views.get(&tab.id) {
-                        tab.view.clone_from(view);
-                    }
-                    tab.pinned = marks.pins.contains(&tab.id);
-                }
-            }
-        }
-    }
-    desktop_doc::seed(doc, &tree);
-    let _ = doc.delete(ROOT, MARKS_KEY);
-    doc.commit();
-}
-
-/// The marks the document holds, if it holds any this build reads.
-fn marks_key(doc: &AutoCommit) -> Option<Marks> {
-    let (Value::Scalar(scalar), _) = doc.get(ROOT, MARKS_KEY).ok().flatten()? else {
-        return None;
-    };
-    let ScalarValue::Str(text) = scalar.as_ref() else {
-        return None;
-    };
-    // ignored-failure: marks that do not read are a desk another build wrote, and its windows are what this one goes by
-    serde_json::from_str(text).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
-    use tilo_desktop_model::{
-        StripId, WindowWidth, Workspace, WorkspaceId, WorkspaceSlot, desktop_doc,
-    };
-
-    /// A desk of one workspace, one strip and one window.
-    fn desk() -> (DesktopTree, u64) {
-        let mut workspace = Workspace::in_workspace(
-            WorkspaceSlot(1),
-            WorkspaceId::parse("00000000-0000-4000-8000-000000000042").expect("an id"),
-            "Desk",
-        );
-        let mut strip = Strip::new(StripId(1), "A");
-        let tab = Tab {
-            id: 9,
-            title: "Notes".into(),
-            tile: TileContent::LocalApp {
-                app_id: "org.example.Notes".into(),
-                label: "Notes".into(),
-                note: String::new(),
-            },
-            app_title: None,
-            view: String::new(),
-            pinned: false,
-        };
-        strip.window_groups = vec![WindowGroup {
-            id: 1,
-            tabs: vec![tab],
-            active_tab: 9,
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        }];
-        workspace.strips = vec![strip];
-        (
-            DesktopTree {
-                workspaces: vec![workspace],
-                active: WorkspaceSlot(1),
-                ..DesktopTree::default()
-            },
-            9,
-        )
-    }
-
-    /// The view and the pins a build before this one kept beside the desk are read into the desk's
-    /// own windows once, and then gone.
-    #[test]
-    fn the_marks_a_build_before_this_one_kept_move_into_the_desks_windows() {
-        let (tree, tab) = desk();
-        let mut doc = AutoCommit::new();
-        desktop_doc::seed(&mut doc, &tree);
-        doc.put(
-            ROOT,
-            MARKS_KEY,
-            format!(r#"{{"views":{{"{tab}":"editor"}},"pins":[{tab}]}}"#).as_str(),
-        )
-        .expect("a document that takes the marks");
-        doc.commit();
-
-        let desk = Desk::new(doc, "ada", None);
-        let tree = desk.tree().expect("the desk");
-        let shown = &tree.workspaces[0].strips[0].window_groups[0].tabs[0];
-        assert_eq!(shown.view, "editor", "the window shows the view it did");
-        assert!(shown.pinned, "and stays where the person pinned it");
-        assert!(
-            desk.document()
-                .get(ROOT, MARKS_KEY)
-                .ok()
-                .flatten()
-                .is_none(),
-            "the marks they were read from are gone"
-        );
-
-        // What is kept now is the desk's own: read again, it says the same.
-        let saved = AutoCommit::load(&desk.document().save()).expect("the desk's document");
-        let mut again = DesktopTree::default();
-        desktop_doc::rebuild(&saved, &mut again);
-        let shown = &again.workspaces[0].strips[0].window_groups[0].tabs[0];
-        assert_eq!(shown.view, "editor", "the view survives the document");
-        assert!(shown.pinned, "and the pin");
-    }
 
     /// A desk of a newer shape is not opened: its bytes are the person's, and this build says so
     /// rather than write over them.

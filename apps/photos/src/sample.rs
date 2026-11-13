@@ -1,7 +1,5 @@
-//! The photographs a screenshot shows: generated test patterns, put in the
-//! capture's content store by [`put_content`] and imported into the library
-//! by the scenario's actions ([`scenario`]). Nothing here reaches a live
-//! launch; the live app starts empty.
+//! The photographs a screenshot shows: generated test patterns, put in the capture's content store
+//! by [`put_content`] and imported into the library by the scenario's actions ([`scenario`]).
 
 use std::sync::OnceLock;
 
@@ -12,15 +10,6 @@ use crate::model::{
 };
 use crate::pixels;
 
-/// A generated test pattern.
-///
-/// Generated in memory for deterministic screenshots. Wide (3:2) and
-/// asymmetric to exercise letterboxing, orientation and crop.
-///
-/// # Panics
-///
-/// Panics if `w` or `h` is `0`; every call site passes a fixed, non-zero
-/// scenario size, so this never fires in practice.
 #[allow(
     clippy::many_single_char_names,
     reason = "x/y/r/g/b/t/dx/dy are the idiomatic names for pixel coordinates, \
@@ -37,8 +26,6 @@ pub fn shots_pattern(w: u32, h: u32) -> pixels::Rgba {
         for x in 0..w {
             let fx = x as f32 / w as f32;
             let fy = y as f32 / h as f32;
-            // A sky-to-water gradient with a horizon and a sun, so the image
-            // has an unambiguous up, left and right.
             let horizon = 0.55;
             let (r, g, b) = if fy < horizon {
                 let t = fy / horizon;
@@ -55,7 +42,6 @@ pub fn shots_pattern(w: u32, h: u32) -> pixels::Rgba {
                     (110.0 - 40.0 * t) as u8,
                 )
             };
-            // The sun sits left of centre and above the horizon.
             let dx = fx - 0.28;
             let dy = fy - 0.3;
             let sun = (dx * dx + (dy * dy) * 2.25).sqrt();
@@ -70,10 +56,6 @@ pub fn shots_pattern(w: u32, h: u32) -> pixels::Rgba {
     pixels::Rgba::new(w, h, bytes).expect("generated pattern is well formed")
 }
 
-/// Deterministic, hermetic gallery fixtures. They are deliberately derived
-/// from the same small procedural scene rather than bundled stock imagery,
-/// but each has a distinct light and colour story so a library reads as a
-/// collection instead of four copies of one placeholder.
 #[allow(
     clippy::many_single_char_names,
     clippy::indexing_slicing,
@@ -84,7 +66,6 @@ pub fn shots_pattern_variant(w: u32, h: u32, variant: u8) -> pixels::Rgba {
     for pixel in image.bytes.chunks_exact_mut(4) {
         let (r, g, b) = (pixel[0], pixel[1], pixel[2]);
         match variant % 5 {
-            // Warm trail, cool gallery lights, and rain respectively.
             0 => {}
             1 => {
                 pixel[0] = r.saturating_add(32);
@@ -134,7 +115,6 @@ pub const SCENARIOS: &[&str] = &[
     "edited",
 ];
 
-/// The scenarios that show the library rather than one photograph.
 pub(crate) fn shows_library(scenario: &str) -> bool {
     matches!(
         scenario,
@@ -154,14 +134,11 @@ pub(crate) fn shows_library(scenario: &str) -> bool {
     )
 }
 
-/// One fixture photograph: its encoded bytes and how it is filed.
 struct Sample {
     bytes: Vec<u8>,
     photo: LibraryPhoto,
 }
 
-/// What a scenario cannot stage with actions: the bytes of every photograph
-/// it shows, put in the capture's content store.
 pub fn put_content(store: &tilo_content::ContentStore) {
     for sample in harbour().into_iter().chain(gallery()) {
         if let Err(error) = store.put(&sample.bytes) {
@@ -182,8 +159,6 @@ fn harbour() -> Option<&'static Sample> {
     HARBOUR
         .get_or_init(|| {
             let mut sample = sample("harbour.png", &shots_pattern_variant(1200, 800, 4))?;
-            // An honest capture day joins the newest timeline group instead of
-            // an orphaned "Undated" tile ahead of the collection.
             sample.photo.captured_at = Some("2026-07-12T18:16".into());
             sample.photo.folder = Some("Travel 2026".into());
             sample.photo.people = ["Élodie".to_owned(), "Sam".to_owned()]
@@ -195,9 +170,9 @@ fn harbour() -> Option<&'static Sample> {
         .as_ref()
 }
 
-/// A library worth browsing: the landscape, portrait, square and panoramic
-/// shapes a photo library actually contains, each with a distinct light, so
-/// the justified chronology, selection and metadata hierarchy are legible.
+/// A library worth browsing: the landscape, portrait, square and panoramic shapes a photo library
+/// actually contains, each with a distinct light, so the justified chronology, selection and
+/// metadata hierarchy are legible.
 fn gallery() -> &'static [Sample] {
     static GALLERY: OnceLock<Vec<Sample>> = OnceLock::new();
     GALLERY.get_or_init(|| {
@@ -226,8 +201,6 @@ fn gallery() -> &'static [Sample] {
                 _ => (720, 960),
             };
             let mut pattern = shots_pattern_variant(width, height, variant as u8);
-            // Two fixtures of one shape and light would be the same bytes,
-            // and so one photograph: the first pixel tells them apart.
             if let Some(first) = pattern.bytes.first_mut() {
                 *first = variant as u8;
             }
@@ -288,7 +261,6 @@ fn unreadable() -> LibraryPhoto {
     )
 }
 
-/// The photograph `scenario` shows open in its window.
 pub(crate) fn opened(scenario: &str) -> Option<String> {
     match scenario {
         "empty" => None,
@@ -298,9 +270,6 @@ pub(crate) fn opened(scenario: &str) -> Option<String> {
     }
 }
 
-/// A photograph whose bytes have not arrived here (`loading`) or are not an
-/// image (`error`): what a collaborator's import looks like before or
-/// without its content.
 fn placeholder(name: &str, hash: &str) -> LibraryPhoto {
     LibraryPhoto::from_image(OpenImage::new(
         name,
@@ -314,8 +283,6 @@ fn placeholder(name: &str, hash: &str) -> LibraryPhoto {
     ))
 }
 
-/// The 32 bytes a 64-digit hex hash names: a picture whose bytes are not
-/// here.
 fn content_hash(hex: &str) -> [u8; 32] {
     let mut hash = [0_u8; 32];
     for (byte, pair) in hash.iter_mut().zip(hex.as_bytes().chunks(2)) {
@@ -324,8 +291,6 @@ fn content_hash(hex: &str) -> [u8; 32] {
     hash
 }
 
-/// The library edits that stage `scenario` (`None` for a plain `--shots`,
-/// which shows the opened photograph).
 pub fn scenario(scenario: Option<&str>) -> Vec<Invoke<PhotoLibrary>> {
     let scenario = scenario.unwrap_or("opened");
     match scenario {
@@ -344,9 +309,6 @@ pub fn scenario(scenario: Option<&str>) -> Vec<Invoke<PhotoLibrary>> {
     actions.extend(Invoke::edit(&crate::resource::insert(&harbour.photo)));
     let harbour_id = Id::from_raw(harbour.photo.id.clone());
     match scenario {
-        // A completed crop, rendered fit-to-canvas. A screenshot must show a
-        // truthful edit, not a deliberately zoomed inspection state that can
-        // be mistaken for a broken initial fit on a narrow viewport.
         "cropping" => actions.push(PhotoLibrary::CROP.with((
             harbour_id,
             Rect01 {
@@ -356,9 +318,6 @@ pub fn scenario(scenario: Option<&str>) -> Vec<Invoke<PhotoLibrary>> {
                 h: 0.84,
             },
         ))),
-        // A crop and a turn together, which is the pair worth showing: the
-        // crop is stored against the *original*, so it keeps naming the same
-        // region of the photograph however the view is later turned.
         "edited" => {
             let edits = Edits::default()
                 .cropped_from_view(Rect01 {
@@ -383,7 +342,6 @@ pub fn scenario(scenario: Option<&str>) -> Vec<Invoke<PhotoLibrary>> {
     actions
 }
 
-/// The gallery imported, with the albums `scenario` browses.
 fn library(scenario: &str) -> Vec<Invoke<PhotoLibrary>> {
     let mut actions = Vec::new();
     let mut travel = Vec::new();
@@ -460,9 +418,6 @@ fn library(scenario: &str) -> Vec<Invoke<PhotoLibrary>> {
     actions
 }
 
-/// The first four gallery photographs: a manual, explicitly labelled People
-/// suggestion exercises the review layout without pretending that a face
-/// model recognized anyone.
 pub(crate) fn people_suggestion() -> Vec<String> {
     gallery()
         .iter()

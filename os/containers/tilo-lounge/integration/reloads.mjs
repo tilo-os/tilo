@@ -119,7 +119,6 @@ const ARRIVED = `['done', 'stopped'].includes(document.documentElement.dataset.a
 const FRAMES = 'globalThis.tiloMount?.state?.()?.frames ?? 0';
 
 const browser = await launch({args: [
-  '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),

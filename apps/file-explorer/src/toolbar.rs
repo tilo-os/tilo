@@ -1,35 +1,5 @@
-//! `FileToolbar` and `ToolbarActions` — the file manager's content header.
-//!
-//! The window shell draws one header row across the top. The nav cluster and
-//! the path bar are the header's leading fill (`FileToolbar`); the view,
-//! sort and overflow controls are its actions (`ToolbarActions`):
-//!
-//! ```text
-//! [ ← → ↑ ]   [ Home > Projects > tilo ················· ]   [ List | Grid ]  [ Sort by ]  [ ⋯ ]
-//! [ ← ↑ ]     [ Home > Projects > tilo ················· ]                                [ ⋯ ]
-//! ```
-//!
-//! * a nav cluster (back / forward / up), the only icon-only controls besides
-//!   the overflow, and universally understood arrows;
-//! * the [`PathBar`] (breadcrumb that becomes an editable path field), which
-//!   grows to fill the middle;
-//! * a labelled `List | Grid` view switch;
-//! * a labelled **Sort by** menu button, shown only in grid mode (list mode
-//!   sorts by clicking a column header);
-//! * a **⋯** overflow that opens the labelled "View options" menu (new folder /
-//!   file, show-hidden toggle, terminal).
-//!
-//! There is **no search field** (search belongs to the platform) and no
-//! unlabelled state-toggle icons: show-hidden lives, clearly labelled with a
-//! check, inside the View menu.
-//!
-//! The shell owns the widget once it is handed over, so the live context (what
-//! the app knows: history, view mode, path) goes in through a
-//! [`ToolbarHandle`], and what the app needs back (the controls' rects, whether
-//! the path is being edited) comes out of it. The [`PathBar`] holds live edit
-//! state (the in-progress path text and its completion popover) and lives
-//! inside the widget for as long as the window does; its stateless button
-//! children are rebuilt each layout.
+//! The content header: the back and forward controls, the path bar, and the
+//! view, sort and overflow menus, in the window's bar or in the window.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -57,7 +27,6 @@ use crate::model::ViewMode;
 use crate::path_bar::PathBar;
 use ui::widget::DrawChild;
 
-/// Which history and hierarchy moves the current location allows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NavAvailability {
     pub back: bool,
@@ -65,7 +34,6 @@ pub struct NavAvailability {
     pub up: bool,
 }
 
-/// What the app tells the toolbar before each layout.
 #[derive(Clone, Debug)]
 struct Context {
     nav: NavAvailability,
@@ -74,25 +42,19 @@ struct Context {
     current: std::path::PathBuf,
     home: Option<std::path::PathBuf>,
     workspace_roots: Vec<std::path::PathBuf>,
-    /// Set by [`ToolbarHandle::begin_path_edit`]; the toolbar acts on it at
-    /// its next sync.
     edit_requested: bool,
 }
 
-/// What the toolbar publishes for the app: its controls' rects after layout.
 #[derive(Default)]
 struct Published {
     up: Cell<Option<Rect>>,
-    /// The path bar's segments and the folders they lead to, as painted.
     crumbs: RefCell<Vec<(Rect, std::path::PathBuf)>>,
     view_menu: Cell<Option<Rect>>,
     sort_menu: Cell<Option<Rect>>,
     area: Cell<Rect>,
     editing: Cell<bool>,
     compact: Cell<bool>,
-    /// The content width below which the direct controls move into the overflow.
     compact_below: Cell<f64>,
-    /// The compact state changed: the controls are rebuilt at the next frame.
     structure_dirty: Cell<bool>,
 }
 
@@ -101,12 +63,10 @@ struct Shared {
     published: Published,
 }
 
-/// The app's side of the toolbar the shell owns.
 #[derive(Clone)]
 pub struct ToolbarHandle(Rc<Shared>);
 
 impl ToolbarHandle {
-    /// Refresh the live context (called before each rebuild).
     pub fn set_context(&self, nav: NavAvailability, view_mode: ViewMode, archive_read_only: bool) {
         let mut context = self.0.context.borrow_mut();
         context.nav = nav;
@@ -114,8 +74,6 @@ impl ToolbarHandle {
         context.archive_read_only = archive_read_only;
     }
 
-    /// Show `current` in the path bar, abbreviating under `home` and naming
-    /// any of `workspace_roots` it lies in (called before each rebuild).
     pub fn set_path(
         &self,
         current: std::path::PathBuf,
@@ -128,9 +86,6 @@ impl ToolbarHandle {
         context.workspace_roots = workspace_roots;
     }
 
-    /// The window's bar shows the toolbar's controls instead
-    /// (`ui::window_toolbar`): the menus they open hang from the trailing
-    /// end of `area`, the top of the app's content.
     pub fn set_bar_anchor(&self, area: Rect) {
         self.0.published.area.set(area);
         self.0.published.view_menu.set(None);
@@ -140,20 +95,15 @@ impl ToolbarHandle {
         self.0.published.editing.set(false);
     }
 
-    /// Put the path bar into editable mode (the Ctrl+L "edit location" path).
     pub fn begin_path_edit(&self) {
         self.0.context.borrow_mut().edit_requested = true;
         self.0.published.editing.set(true);
     }
 
-    /// Whether the path bar is currently being edited (so the app leaves the
-    /// keyboard to it).
     pub fn is_path_editing(&self) -> bool {
         self.0.published.editing.get()
     }
 
-    /// Bottom-right anchor of the "View options" (⋯) button, so the app can
-    /// open its menu right-aligned under the button (never off the right edge).
     pub fn view_menu_anchor(&self) -> Point {
         self.view_menu_rect().map_or_else(
             || {
@@ -164,15 +114,10 @@ impl ToolbarHandle {
         )
     }
 
-    /// Exact rectangle of the overflow trigger. The app uses its top edge to
-    /// flip a tall menu above the trigger when a constrained viewport cannot
-    /// fit the normal below-trigger placement.
     pub fn view_menu_rect(&self) -> Option<Rect> {
         self.0.published.view_menu.get()
     }
 
-    /// Bottom-right anchor of the "Sort by" button (present only in grid mode,
-    /// where it sits before the ⋯).
     pub fn sort_menu_anchor(&self) -> Point {
         self.sort_menu_rect()
             .or_else(|| self.view_menu_rect())
@@ -185,14 +130,10 @@ impl ToolbarHandle {
             )
     }
 
-    /// Exact rectangle of the grid-mode Sort trigger, if it is visible.
     pub fn sort_menu_rect(&self) -> Option<Rect> {
         self.0.published.sort_menu.get()
     }
 
-    /// The Up nav button's on-screen rect, so a drag can be dropped on it to
-    /// move the carried items into the parent directory.
-    /// The path bar segment at `point` and the folder it leads to.
     pub fn crumb_at(&self, point: vello::kurbo::Point) -> Option<(std::path::PathBuf, Rect)> {
         self.0
             .published
@@ -207,15 +148,10 @@ impl ToolbarHandle {
         self.0.published.up.get()
     }
 
-    /// Whether compact navigation is active. Exposed for the Files responsive
-    /// layout test; all live behavior is driven by the toolbar's layout.
     pub fn is_compact(&self) -> bool {
         self.0.published.compact.get()
     }
 
-    /// Tell the toolbar how wide its content column is. Narrower than the
-    /// direct controls need and they move into the overflow; a change
-    /// rebuilds the controls next frame.
     pub fn set_content_width(&self, width: f64) {
         let compact = width < self.0.published.compact_below.get();
         if self.0.published.compact.replace(compact) != compact {
@@ -223,13 +159,11 @@ impl ToolbarHandle {
         }
     }
 
-    /// Whether a compact overflow should offer Forward navigation.
     pub fn can_go_forward(&self) -> bool {
         self.0.context.borrow().nav.forward
     }
 }
 
-/// What both toolbar widgets build their controls from.
 struct Controls {
     sink: CommandSink,
     shared: Rc<Shared>,
@@ -289,7 +223,6 @@ impl Controls {
         let mut out: Vec<Box<dyn Widget>> = Vec::new();
 
         if !compact {
-            // View switch — labelled, so the active view is obvious.
             let view_sink = self.sink.clone();
             let selected = match view_mode {
                 ViewMode::List => 0,
@@ -348,12 +281,7 @@ impl Controls {
             );
         }
 
-        // Archive browsing is read-only and already has a direct Extract
-        // control. Its overflow would contain only a duplicate Extract row,
-        // so omit the no-choice menu entirely.
         if !archive_read_only {
-            // Overflow: the labelled View-options menu (new folder/file, show
-            // hidden, terminal). Every action it reveals is spelled out.
             let sink = self.sink.clone();
             out.push(
                 Button::icon_only(
@@ -369,7 +297,6 @@ impl Controls {
     }
 }
 
-/// A row of controls laid out left to right at the header's control height.
 fn row_style(sp: &ui::tokens::spacing::Spacing, grows: bool) -> Style {
     Style {
         display: Display::Flex,
@@ -389,18 +316,13 @@ fn row_style(sp: &ui::tokens::spacing::Spacing, grows: bool) -> Style {
     }
 }
 
-/// The header's leading fill: the nav cluster and the path bar.
 pub struct FileToolbar {
     controls: Controls,
-    /// The editable path bar (breadcrumb / text field). Persistent so an
-    /// in-progress path edit survives the app's per-frame rebuild.
     path_bar: PathBar,
-    // Stateless children, rebuilt each `build_layout`.
     left: Vec<Box<dyn Widget>>,
     rect: Rect,
 }
 
-/// The header's actions: view switch, sort and overflow.
 pub struct ToolbarActions {
     controls: Controls,
     right: Vec<Box<dyn Widget>>,
@@ -408,8 +330,6 @@ pub struct ToolbarActions {
 }
 
 impl FileToolbar {
-    /// The leading fill and the actions for the shell to own, and the handle
-    /// the app keeps.
     pub fn new(sink: CommandSink) -> (Self, ToolbarActions, ToolbarHandle) {
         let shared = Rc::new(Shared {
             context: RefCell::new(Context {
@@ -423,9 +343,7 @@ impl FileToolbar {
             }),
             published: Published::default(),
         });
-        // Start compact: an initial layout does not yet know its viewport. A
-        // wide window promotes the full controls on the next frame; narrow
-        // windows are correct from their very first frame.
+        // Start compact: the first layout does not yet know how wide it is.
         shared.published.compact.set(true);
         let leading = Self {
             path_bar: PathBar::new(sink.clone()),
@@ -488,8 +406,6 @@ impl Widget for FileToolbar {
             child_nodes.push(c.build_layout(taffy, theme, node_map));
         }
         child_nodes.push(self.path_bar.build_layout(taffy, theme, node_map));
-        // `new_with_children` only fails when a child belongs to a different
-        // tree; every entry in `child_nodes` was just built in this one above.
         taffy.widget_node(
             row_style(&theme.tokens.spacing, true),
             &child_nodes,
@@ -545,7 +461,6 @@ impl Widget for FileToolbar {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // The path bar's completion popover is the only overlay here.
         self.path_bar
             .draw_overlay(scene, transform, tr, theme, presence);
     }
@@ -565,7 +480,6 @@ impl Widget for FileToolbar {
         let Some(&path_n) = rest.first() else {
             return;
         };
-        // Path bar first, so it captures the keyboard while editing.
         self.path_bar
             .handle_event(event, &mut ctx.reborrow(ctx.path, path_n));
         self.controls
@@ -581,8 +495,6 @@ impl Widget for FileToolbar {
         }
     }
 
-    /// What its buttons and the path bar changed: the toolbar paints
-    /// nothing of its own.
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
         for child in &self.left {
             child.collect_damage(regions);
@@ -641,8 +553,6 @@ impl Widget for ToolbarActions {
             .iter_mut()
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
-        // `new_with_children` only fails when a child belongs to a different
-        // tree; every entry in `child_nodes` was just built in this one above.
         taffy.widget_node(
             row_style(&theme.tokens.spacing, false),
             &child_nodes,

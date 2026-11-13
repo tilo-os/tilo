@@ -1250,10 +1250,7 @@ impl NotificationStack {
             .caption(Self::source_line(n))
     }
 
-    /// The small source line over a banner's title: the app that sent it, and nothing where the
-    /// sender is the person the card already leads with (an agent's own notice, "Claude Code
-    /// finished: …", sent as Claude Code): their face stands beside the title, and a line repeating
-    /// their name only takes the room the title needs on a phone.
+    /// The app's name, or empty when it equals the sender's name, which the card already shows.
     fn source_line(n: &Notification) -> &str {
         let app = n.app_name.as_deref().unwrap_or("");
         match &n.from {

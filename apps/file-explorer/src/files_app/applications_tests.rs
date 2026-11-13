@@ -1,6 +1,5 @@
 use super::*;
 
-/// What the window asked the shell for, across the threads it asks on.
 static ASKED: Mutex<Vec<ToolIntent>> = Mutex::new(Vec::new());
 
 #[expect(
@@ -16,7 +15,6 @@ fn asked(intent: &ToolIntent) -> bool {
     ASKED.lock().unwrap().contains(intent)
 }
 
-/// Wait for a request that runs off the UI thread to reach the shell.
 fn settle(files: &FileExplorerWidget, intent: &ToolIntent) {
     tilo_test_env::wait_until(format!("the shell to be asked for {intent:?}"), || {
         files.state().poll_applications(ui::time::now());
@@ -24,7 +22,6 @@ fn settle(files: &FileExplorerWidget, intent: &ToolIntent) {
     });
 }
 
-/// The Applications place, showing one app of each kind.
 fn place() -> FileExplorerWidget {
     let files = FileExplorerWidget::new();
     files.state().debug_show_applications(sample_apps());
@@ -63,7 +60,6 @@ fn every_kind_of_app_is_an_item_of_the_applications_place() {
         .iter()
         .map(|entry| entry.name.clone())
         .collect();
-    // An added Tilo app, a Flatpak, an AppImage and a menu entry of the OS.
     for name in ["Notes", "Chess", "Krita", "Text Editor"] {
         assert!(
             names.contains(&name.to_owned()),
@@ -217,8 +213,6 @@ fn an_apps_row_offers_open_and_its_way_out_to_agents() {
     );
 }
 
-/// The list shows facts the applications model has: a size where it is
-/// known and nothing where it is not, never a placeholder.
 #[test]
 fn an_apps_size_shows_only_where_it_is_known() {
     let files = place();
@@ -236,8 +230,6 @@ fn an_apps_size_shows_only_where_it_is_known() {
     assert_eq!(size_of("Text Editor"), "");
 }
 
-/// The Applications place as it stands after the frame loop has taken the
-/// shell's answer in: shown, and no read under way.
 fn settled(lister: AppLister) -> FileExplorerWidget {
     let files = FileExplorerWidget::new();
     files.state().debug_show_applications(sample_apps());

@@ -1,4 +1,5 @@
 //! Same-user ciphertext handoff. Activation belongs exclusively to Tilo first use.
+
 use super::journey::prepared_media::PreparedMedia;
 use imager_backend::{
     migration::{PinnedDirectory, changed, check_cancel},
@@ -77,8 +78,6 @@ impl Publication {
             PublishMode::IfAbsent,
             Privacy::OwnerOnly,
         );
-        // Publication may have succeeded before a durability barrier failed.
-        // Track only an admitted matching result, never another file to clean up.
         if existing(
             directory,
             name,
@@ -182,8 +181,6 @@ fn stamp(metadata: &std::fs::Metadata) -> (u64, u64, u64, i64, i64, i64, i64) {
     )
 }
 
-/// Publish the already authenticated preparation without changing the current
-/// account, password, device key, documents or application data.
 pub(crate) fn deliver(
     prepared: Arc<PreparedMedia>,
     target_home: &Path,
@@ -256,7 +253,6 @@ pub(crate) fn deliver(
     }
     check_cancel(cancel)?;
     prepared.desktop_manifest()?;
-    // The final receipt is the first-use consumer's readiness marker.
     publication.publish(&setup_root, "receipt.json", &setup_receipt, cancel)?;
     prepared.desktop_manifest()?;
     publication.committed = true;
@@ -283,7 +279,6 @@ fn publish_payloads(
         .map(|_| publication.directory(directory, "prepared-browser", true))
         .transpose()?;
     let setup_receipt = serde_json::to_vec(&artifact.expectation)?;
-    // Verify every existing destination before publishing anything new.
     existing(
         &setup_root,
         "prepared-setup.sealed",

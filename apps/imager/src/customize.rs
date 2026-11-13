@@ -1,15 +1,4 @@
-//! The **guided-customization form** — the one composition that collects a
-//! Tilo install profile (identity, region, storage) for *both* imager flows:
-//! writing a pre-configured image to a stick, and installing Tilo onto a disk.
-//!
-//! Every field is a toolkit control in a [`Form`]: names are [`TextInput`]s,
-//! the catalog choices are [`Dropdown`]s that filter while open. Each control
-//! is bound to the field edit at the profile's path — one undo boundary,
-//! replicated to collaborators and the same edit the palette or an agent
-//! would make. The form
-//! holds no profile of its own: it is composed from an [`InstallProfile`]
-//! snapshot, so the document stays authoritative. Secrets stay off the host
-//! and are collected only on the target machine (HIG §3).
+//! The customization page's fields, over the install profile they edit.
 
 use ui::framework::Actions;
 use ui::local_state::LocalState;
@@ -55,10 +44,6 @@ fn keyboard_id(label: &str) -> Option<&'static str> {
 }
 
 fn timezones() -> Vec<String> {
-    // A comprehensive canonical catalog is compiled into every build. Runtime
-    // discovery does not determine whether Windows/macOS users get a worldwide
-    // chooser, and cannot introduce host-only aliases that the live image may
-    // reject at its zoneinfo trust boundary.
     let mut zones = IANA_TIMEZONES
         .lines()
         .map(str::trim)
@@ -70,7 +55,6 @@ fn timezones() -> Vec<String> {
     zones
 }
 
-/// One editable field of the profile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CzField {
     Hostname,
@@ -83,8 +67,6 @@ pub enum CzField {
 }
 
 impl CzField {
-    /// The catalogue message naming this field, so the label beside its
-    /// control reads in the window's language.
     fn message(self) -> &'static str {
         match self {
             Self::Hostname => "imager-profile-hostname",
@@ -97,8 +79,6 @@ impl CzField {
         }
     }
 
-    /// The message for a required field left empty, naming the field the
-    /// person has to fill in.
     fn required_message(self) -> &'static str {
         match self {
             Self::Hostname => "imager-profile-hostname-required",
@@ -107,8 +87,6 @@ impl CzField {
         }
     }
 
-    /// The refusal for a value none of this field's choices lists, naming the
-    /// field the person has to pick a listed value for.
     fn choose_message(self) -> String {
         CATALOG.t_args(
             "imager-profile-choose-listed-field",
@@ -132,15 +110,11 @@ impl CzField {
         }
     }
 
-    /// The control's id on the page.
     pub(crate) fn id(self) -> String {
         format!("imager.profile.{}", self.key())
     }
 }
 
-/// The catalogue message naming `filesystem` as the form shows it: the
-/// filesystem's own name, the same in every language, resolved here so a
-/// translated window paints it through the catalogue like any other word.
 fn filesystem_message(filesystem: Filesystem) -> &'static str {
     match filesystem {
         Filesystem::Btrfs => "imager-filesystem-btrfs",
@@ -149,7 +123,6 @@ fn filesystem_message(filesystem: Filesystem) -> &'static str {
     }
 }
 
-/// The value `field` holds in `profile`, as the form shows it.
 fn shown_value(profile: &InstallProfile, field: CzField) -> String {
     match field {
         CzField::Hostname => profile.hostname.clone(),
@@ -162,9 +135,6 @@ fn shown_value(profile: &InstallProfile, field: CzField) -> String {
     }
 }
 
-/// The profile value for what the person chose or typed in `field`,
-/// normalized through the same catalogs the choosers show. `None` for a
-/// value no catalog lists. Free-text identity fields stay as typed.
 pub(crate) fn profile_value(field: CzField, value: &str) -> Option<String> {
     match field {
         CzField::Locale => install_profile_model::locales()
@@ -190,8 +160,6 @@ pub(crate) fn profile_value(field: CzField, value: &str) -> Option<String> {
     }
 }
 
-/// The text path of `field` in the profile; `None` for the filesystem,
-/// which is a choice.
 fn text_path(field: CzField) -> Option<ui::tilo_resource::Path<Imager, String>> {
     let profile = Imager::paths().profile;
     Some(match field {
@@ -205,8 +173,6 @@ fn text_path(field: CzField) -> Option<ui::tilo_resource::Path<Imager, String>> 
     })
 }
 
-/// The field edit that sets `field` to the normalized `value`; `None` for
-/// a filesystem the installer does not know.
 pub(crate) fn field_edit(field: CzField, value: String) -> Option<ui::tilo_resource::Edit<Imager>> {
     match text_path(field) {
         Some(path) => Some(path.replace(value)),
@@ -215,8 +181,6 @@ pub(crate) fn field_edit(field: CzField, value: String) -> Option<ui::tilo_resou
     }
 }
 
-/// The binding that sets `field` to the value its control shows, or refuses
-/// a value the catalog does not list; `None` before the framework attaches.
 fn field_binding(
     field: CzField,
     actions: Option<&Actions<Imager>>,
@@ -288,8 +252,6 @@ fn choice_field(
     }
 }
 
-/// The customization form for `profile`. `timezone_open` poses the
-/// time-zone chooser open for a documentation frame.
 pub(crate) fn form(
     profile: &InstallProfile,
     actions: Option<&Actions<Imager>>,
@@ -337,8 +299,6 @@ pub(crate) fn form(
                     false,
                 )),
         )
-        // Security, the storage target and destructive choices are completed
-        // on the device; the filesystem is the one storage preference here.
         .section(
             FormSection::new(CATALOG.t("imager-profile-section-storage")).field(
                 choice_field(profile, CzField::Filesystem, filesystems, actions, false)
@@ -351,7 +311,6 @@ pub(crate) fn form(
 mod tests {
     use super::*;
 
-    /// Timezone catalog and canonical values.
     #[test]
     fn customization_catalogs_match_the_embedded_profile_contract() {
         {

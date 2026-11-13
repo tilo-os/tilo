@@ -1,21 +1,14 @@
-//! `guard`, `scan` and `quarantine`.
+//! `guard`, `scan` and `quarantine`: what the runtime can establish, reported.
 //!
-//! This module reports and acts on facts the runtime can establish:
-//!
-//! - `guard status` — the enforcement in place right now, read back
-//!   from the kernel and the session, not the configuration that asked for
-//!   it. A Landlock ruleset that only partially applied says so; the network
-//!   line comes from connecting to an address nothing granted, and to a
-//!   granted host ([`network_report`]).
-//! - `scan <path>` — everything establishable about a path (which image it
-//!   comes from, executable/setuid/setgid, granted-dir membership) with no
-//!   verdict and no claim that clean means safe.
-//! - `quarantine` — move a file into the environment's quarantine with its
-//!   executable bits cleared, list it, restore it; nothing is quarantined
-//!   automatically, because nothing here is entitled to that judgement.
-//!
-//! A `scan` reports established properties and does not infer safety from
-//! the absence of a matching condition.
+//! `guard status` reads back the enforcement in place from the kernel and the session
+//! rather than the configuration that asked for it (a partially applied Landlock ruleset
+//! says so; the network line comes from connecting to an address nothing granted and to
+//! a granted host, [`network_report`]). `scan <path>` reports what is establishable about
+//! a path — its image, executable and setuid bits, granted-dir membership — with no
+//! verdict and no claim that clean means safe. `quarantine` moves a file into the
+//! environment's quarantine with its executable bits cleared, lists it and restores it;
+//! nothing is quarantined automatically, because nothing here is entitled to that
+//! judgement.
 
 use std::path::{Path, PathBuf};
 
@@ -29,11 +22,8 @@ use tilo_clock::unix_now;
 /// than merely time out.
 pub const UNLISTED_PROBE: &str = "1.1.1.1:443";
 
-/// How long a network test may take.
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// The network lines of `guard status`: what the session says it enforces,
-/// then what connecting from in here shows.
 pub fn network_report(status: &crate::broker::NetworkStatus) -> Vec<String> {
     use crate::broker::NetworkStatus;
     let mut lines = Vec::new();
@@ -112,13 +102,8 @@ fn probe_granted(host: &str) -> String {
     }
 }
 
-/// Where quarantined files go: the environment's own `/var/lib`, which
-/// outlives the session and is nowhere on the host's paths.
 pub const QUARANTINE_DIR: &str = "/var/lib/ush/quarantine";
 
-/// What Landlock actually did, as opposed to what was asked for — worded for
-/// `guard status`, which reports to the person at the shell rather than to a
-/// launch log.
 pub fn describe(outcome: LandlockOutcome) -> &'static str {
     match outcome {
         LandlockOutcome::FullyEnforced => "enforcing (every requested right honoured)",
@@ -130,8 +115,6 @@ pub fn describe(outcome: LandlockOutcome) -> &'static str {
     }
 }
 
-/// Cap at V4, matching the app sandbox's shim: V5 adds rights this runtime
-/// doesn't use, turning a fully-enforced ruleset partial on some kernels.
 pub const TARGET_ABI: ABI = ABI::V4;
 
 /// The ruleset [`restrict_self`] installs: every ABI-4 filesystem right
@@ -157,8 +140,6 @@ pub fn ruleset_spec(rw: &[PathBuf], ro: &[PathBuf]) -> RulesetSpec {
         connect_ports: Vec::new(),
         rules,
         trim_file_rights: false,
-        // The guest's own namespaces bound its IPC; this ruleset stays the
-        // filesystem layer it has always been.
         scoped: BitFlags::EMPTY,
     }
 }
@@ -187,16 +168,13 @@ pub fn restrict_self(rw: &[PathBuf], ro: &[PathBuf]) -> LandlockOutcome {
     }
 }
 
-/// Ask the kernel whether the Landlock ruleset is in force, by
-/// trying something it forbids. [`restrict_self`] gives the guest's root
-/// read-only access, so creating an entry at `/` is refused when the
-/// ruleset applied and succeeds when it did not; either way the probe
-/// leaves nothing behind.
+/// Ask the kernel whether the Landlock ruleset is in force, by trying something it
+/// forbids: [`restrict_self`] gives the guest's root read-only access, so creating an entry
+/// there is refused when the ruleset applied and succeeds when it did not.
 ///
-/// A probe, rather than a read of `/proc/self/status`: not every
-/// kernel reports Landlock there, and a status line that says "installed"
-/// because the code path ran is exactly the check that passes when it
-/// cannot detect kernels that omit enforcement.
+/// A probe rather than a read of `/proc/self/status`: not every kernel reports Landlock
+/// there, and a status line that says "installed" because the code path ran passes exactly
+/// when it cannot detect a kernel that omits enforcement.
 pub fn landlock_probe() -> LandlockOutcome {
     let probe = Path::new("/").join(format!(".ush-landlock-probe-{}", std::process::id()));
     match std::fs::create_dir(&probe) {
@@ -213,9 +191,6 @@ pub fn landlock_probe() -> LandlockOutcome {
     }
 }
 
-/// What `scan` found. Every field is something the runtime established, and
-/// there is no "verdict".
-// Each bool records one independently established fact about the path.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is one independently-established scan fact, not a state machine"
@@ -229,9 +204,7 @@ pub struct ScanReport {
     pub executable: bool,
     pub setuid: bool,
     pub setgid: bool,
-    /// The image this path comes from, if one does — see [`provenance`].
     pub image: Option<String>,
-    /// The path is under a directory the user trusted.
     pub in_trusted_dir: bool,
     /// Human-readable notes, including what was *not* checked.
     pub notes: Vec<String>,
@@ -295,21 +268,14 @@ pub fn scan(path: &Path, trusted: &[PathBuf], image: Option<String>) -> ScanRepo
             .notes
             .push("inside a directory you trusted, so a write here reaches the host.".into());
     }
-    // The limit, stated every time rather than in a footnote.
     report.notes.push(NO_DATABASE.into());
     report
 }
 
-/// The sentence every [`ScanReport`] carries, on every path through [`scan`].
-/// Without it, a `scan` would sooner or later be read as a clean bill of health.
 pub const NO_DATABASE: &str = "no signature or reputation check was performed: \
      this runtime ships no such database. A clean report means nothing above \
      was true, not that the file is safe.";
 
-/// Which image a guest path comes from: the topmost of `images` (label,
-/// root; topmost first, as they stack) that has the path. `None` for a path
-/// outside `/usr` and `/etc` — home, `/var`, scratch, a grant — which no
-/// image provides.
 pub fn provenance(path: &Path, images: &[(String, PathBuf)]) -> Option<String> {
     let relative = path.strip_prefix("/").ok()?;
     let subtree = relative.components().next()?.as_os_str();
@@ -334,8 +300,6 @@ pub fn quarantine_add(path: &Path, quarantine_dir: &Path) -> std::io::Result<Pat
     let name = path
         .file_name()
         .map_or_else(|| "unnamed".into(), |n| n.to_string_lossy().into_owned());
-    // Keep the original location in the stored name: restoring has to put it
-    // back where it came from, and a bare basename cannot say where that was.
     let encoded = path.to_string_lossy().replace('/', "%2F");
     let dest = quarantine_dir.join(format!("{}-{encoded}", unix_now()));
     std::fs::rename(path, &dest).or_else(|_| {
@@ -350,7 +314,6 @@ pub fn quarantine_add(path: &Path, quarantine_dir: &Path) -> std::io::Result<Pat
     Ok(dest)
 }
 
-/// One quarantined file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuarantineEntry {
     pub stored_at: PathBuf,
@@ -359,7 +322,6 @@ pub struct QuarantineEntry {
     pub bytes: u64,
 }
 
-/// What is in quarantine.
 pub fn quarantine_list(quarantine_dir: &Path) -> Vec<QuarantineEntry> {
     let Ok(entries) = std::fs::read_dir(quarantine_dir) else {
         return Vec::new();
@@ -382,7 +344,6 @@ pub fn quarantine_list(quarantine_dir: &Path) -> Vec<QuarantineEntry> {
     out
 }
 
-/// Put a quarantined file back where it came from.
 pub fn quarantine_restore(entry: &QuarantineEntry) -> std::io::Result<()> {
     if let Some(parent) = entry.original.parent() {
         std::fs::create_dir_all(parent)?;
@@ -400,15 +361,12 @@ mod tests {
 
     #[test]
     fn scan_reports_what_it_saw_and_what_it_did_not_check() {
-        // phase: scanning_an_absent_path_says_so_rather_than_guessing
         {
             let dir = tempfile::tempdir().unwrap();
             let report = scan(&dir.path().join("nothing"), &[], None);
             assert!(!report.exists);
             assert!(report.notes.iter().any(|n| n.contains("not present")));
         }
-        // phase: every_report_states_that_nothing_was_checked_against_a_database
-        // Every report carries a note describing unchecked conditions.
         {
             let dir = tempfile::tempdir().unwrap();
             let file = dir.path().join("thing");
@@ -424,7 +382,6 @@ mod tests {
                 );
             }
         }
-        // phase: scan_reports_the_bits_that_matter
         {
             let dir = tempfile::tempdir().unwrap();
             let file = dir.path().join("tool");
@@ -437,7 +394,6 @@ mod tests {
             assert!(report.notes.iter().any(|n| n.contains("setuid")));
             assert!(report.notes.iter().any(|n| n.contains("reaches the host")));
         }
-        // phase: a_path_outside_every_trusted_directory_is_not_reported_as_inside_one
         {
             let dir = tempfile::tempdir().unwrap();
             let trusted = dir.path().join("src");
@@ -448,7 +404,6 @@ mod tests {
             std::fs::write(&file, b"x").unwrap();
             assert!(!scan(&file, &[trusted], None).in_trusted_dir);
         }
-        // phase: provenance_names_the_topmost_image_with_the_path
         {
             let dir = tempfile::tempdir().unwrap();
             let tool = dir.path().join("tool");
@@ -476,7 +431,6 @@ mod tests {
 
     #[test]
     fn quarantine_moves_files_aside_and_restores_them() {
-        // phase: quarantine_moves_the_file_and_clears_its_executable_bits
         {
             let dir = tempfile::tempdir().unwrap();
             let q = dir.path().join("quarantine");
@@ -504,14 +458,12 @@ mod tests {
             assert!(file.exists());
             assert!(quarantine_list(&q).is_empty());
         }
-        // phase: listing_an_empty_or_absent_quarantine_is_not_an_error
         {
             let dir = tempfile::tempdir().unwrap();
             assert!(quarantine_list(&dir.path().join("absent")).is_empty());
             std::fs::create_dir_all(dir.path().join("q")).unwrap();
             assert!(quarantine_list(&dir.path().join("q")).is_empty());
         }
-        // phase: the_quarantine_lives_in_the_environments_own_state
         {
             assert!(
                 QUARANTINE_DIR.starts_with("/var/lib/"),
@@ -602,7 +554,6 @@ mod tests {
                 ]
             );
         }
-        // phase: the_landlock_outcomes_describe_themselves_honestly
         {
             assert!(describe(LandlockOutcome::NotEnforced).contains("NOT"));
             assert!(describe(LandlockOutcome::Errored).contains("NOT"));

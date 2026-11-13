@@ -12,7 +12,7 @@ use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::{InvokeOutcome, Principal, ResourceRef, Value};
 use tilolang_tilo::host::Package;
 
-use crate::fixtures::Replica;
+use crate::fixtures::{Replica, action_id};
 
 const DISCUSSION: (&str, &str) = (
     include_str!("../../../../apps/tl/discussion/app.tl"),
@@ -104,15 +104,6 @@ fn notebook(device: &Device) -> (Replica, Vec<Package>) {
     ada.host.root_of(APP).unwrap();
     ada.commit();
     (ada, loaded)
-}
-
-fn action_id(meta: &tilolang_runtime::Meta, name: &str) -> String {
-    meta.actions
-        .iter()
-        .find(|action| action.name == name)
-        .unwrap_or_else(|| panic!("the action `{name}`"))
-        .id
-        .clone()
 }
 
 /// What `action` of the notes app answered, on `args`.

@@ -16,7 +16,6 @@ impl CodeApp {
         }
     }
 
-    /// LSP `languageId` string for a language (the server's expected token).
     pub(super) fn language_id(lang: crate::model::Language) -> &'static str {
         use crate::model::Language::{
             C, Cpp, Css, Go, Html, JavaScript, Json, Markdown, PlainText, Python, Rust, Shell,
@@ -43,10 +42,6 @@ impl CodeApp {
         }
     }
 
-    /// Whether language servers are wanted: in a window someone uses (a
-    /// capture or a past version reaches nothing outside the process), when
-    /// the person has not turned them off, for a project that is a real
-    /// directory to root them at.
     pub(super) fn lsp_enabled(&self) -> bool {
         self.live
             && self
@@ -56,9 +51,6 @@ impl CodeApp {
             && self.session.project.is_disk_backed()
     }
 
-    /// Start (or restart) a language server for the active buffer's language,
-    /// rooted at the real project directory. A missing binary is reported once
-    /// and not retried every frame.
     pub(super) fn maybe_start_lsp(&mut self, doc: &AutoCommit) {
         if !self.lsp_enabled() {
             if self.lsp.is_some() {
@@ -88,8 +80,6 @@ impl CodeApp {
         let Some(root) = self.session.project.root_path() else {
             return;
         };
-        // Launching a server spawns a process and looks at the project
-        // directory: on the frame loop that happens on a background thread.
         self.lsp_launching = true;
         let tools = self.lsp_tools.clone();
         self.on_disk(
@@ -106,7 +96,6 @@ impl CodeApp {
         }
     }
 
-    /// Make sure the language server serving `lang` has `node` open.
     fn open_on_language_server(
         &mut self,
         doc: &AutoCommit,
@@ -127,8 +116,6 @@ impl CodeApp {
         self.lsp_uri = Some(uri);
     }
 
-    /// Fold in launching the server for `lang`. The file it serves is opened
-    /// on it at the next sync ([`Self::open_on_language_server`]).
     fn language_server_started(
         &mut self,
         lang: crate::model::Language,
@@ -138,7 +125,6 @@ impl CodeApp {
         self.lsp_launching = false;
         match started {
             Ok(client) => {
-                // Turned off, or another project opened, while it launched.
                 if !self.lsp_enabled() || self.session.project.root_path().as_deref() != Some(root)
                 {
                     return;
@@ -172,8 +158,6 @@ impl CodeApp {
         }
     }
 
-    /// Drain events the LSP reader thread produced and fold them into the editor
-    /// (diagnostics → panel + squiggles; completion/hover/definition → editor).
     pub(super) fn poll_lsp(&mut self) {
         let events = match self.lsp.as_mut() {
             Some(c) => c.poll(),
@@ -215,8 +199,6 @@ impl CodeApp {
                     };
                 }
                 crate::lsp::LspEvent::Initialized => {
-                    // Only claim ready if nothing is still in flight; the
-                    // initialize response usually lands before indexing starts.
                     if !self
                         .lsp
                         .as_ref()
@@ -249,8 +231,6 @@ impl CodeApp {
         )
     }
 
-    /// Push the active buffer's LSP diagnostics into the editor's inline model
-    /// and merge them with the local linter for the Problems panel.
     pub(super) fn apply_diagnostics_to_editor(&mut self) {
         let uri = self.lsp_uri.clone();
         let lsp_diags = uri
@@ -261,13 +241,6 @@ impl CodeApp {
         self.editor.set_diagnostics(&lsp_diags);
     }
 
-    /// Jump to a definition result.
-    ///
-    /// A same-file result just moves the caret. A result in another file — the
-    /// common case once the server is rooted at a real workspace, since most
-    /// definitions live in another module or another crate — opens that file
-    /// first. Without this, go-to-definition silently does nothing for exactly
-    /// the jumps people use it for.
     pub(super) fn apply_definition(&mut self, locs: Vec<crate::lsp::Location>) {
         let Some(loc) = locs.into_iter().next() else {
             return;
@@ -280,8 +253,6 @@ impl CodeApp {
             self.editor.move_caret_to(line, col);
             return;
         }
-        // Another file: resolve the URI back to a path through the same strict
-        // mapping the portal uses, open it, and land the caret there.
         let Ok(url) = url::Url::parse(&loc.uri) else {
             return;
         };
@@ -296,7 +267,6 @@ impl CodeApp {
         self.pending_jump = Some((line, col));
     }
 
-    /// The LSP position of the editor's primary caret.
     pub(super) fn caret_lsp_pos(&self) -> crate::lsp::Position {
         let (line, col) = self.editor.primary_caret();
         crate::lsp::Position {
@@ -305,8 +275,6 @@ impl CodeApp {
         }
     }
 
-    /// Issue the language-server request the editor asked for, at the caret.
-    /// A no-op when no server is live (opt-in).
     pub(super) fn dispatch_lsp_ask(&mut self, ask: LspAsk) {
         let Some(uri) = self.lsp_uri.clone() else {
             return;

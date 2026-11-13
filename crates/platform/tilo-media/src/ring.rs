@@ -1,13 +1,10 @@
-//! A bounded byte ring + a background prefetcher.
+//! A bounded byte ring and a background prefetcher.
 //!
-//! [`RingBuffer`] is a fixed-capacity FIFO of bytes: pushing past capacity
-//! drops the oldest bytes, modelling a streaming buffer that keeps only the
-//! most recent window in memory. [`Prefetcher`] drives a reader on a background
-//! thread through such a ring, tracking how much of the source has been pulled
-//! so a consumer can render a buffering percentage.
-//!
-//! For a [`crate::Source::Workspace`] the reader is the FUSE mount, so
-//! prefetching pulls content down on demand and reports its progress.
+//! [`RingBuffer`] is a fixed-capacity FIFO that drops the oldest bytes when it is full,
+//! so only the most recent window of a stream stays in memory. [`Prefetcher`] runs a
+//! reader through one on a background thread and tracks how much of the source has been
+//! pulled, for a buffering percentage. For a [`crate::Source::Workspace`] that reader is
+//! the FUSE mount, so prefetching hydrates content on demand.
 
 use std::collections::VecDeque;
 use std::io::Read;
@@ -63,14 +60,12 @@ impl RingBuffer {
         self.buf.extend(bytes);
     }
 
-    /// Pop up to `max` of the oldest bytes into a fresh vector (consumer read).
     pub fn drain(&mut self, max: usize) -> Vec<u8> {
         let n = max.min(self.buf.len());
         self.buf.drain(..n).collect()
     }
 }
 
-/// Prefetch progress, cheaply pollable from the UI thread.
 #[derive(Clone)]
 pub struct PrefetchProgress {
     bytes_read: Arc<AtomicU64>,
@@ -85,18 +80,14 @@ impl PrefetchProgress {
         self.bytes_read.load(Ordering::Relaxed)
     }
 
-    /// The source's total byte length, if it was known at spawn.
     pub fn total(&self) -> Option<u64> {
         self.total
     }
 
-    /// Whether the reader has drained the source (or hit its end / an error).
     pub fn is_done(&self) -> bool {
         self.done.load(Ordering::Relaxed)
     }
 
-    /// Buffering percentage 0..=100. With a known total it is read progress;
-    /// without one it reports 100 as soon as the read completes, else 0.
     pub fn percent(&self) -> u8 {
         match self.total {
             Some(total) if total > 0 => {
@@ -114,22 +105,17 @@ impl PrefetchProgress {
         }
     }
 
-    /// Drain up to `max` buffered bytes from the ring (the most-recent window).
     pub fn drain(&self, max: usize) -> Vec<u8> {
         self.ring.lock_recover().drain(max)
     }
 }
 
-/// A background reader pulling a source through a bounded ring.
 pub struct Prefetcher {
     progress: PrefetchProgress,
     _handle: std::thread::JoinHandle<()>,
 }
 
 impl Prefetcher {
-    /// Spawn a thread that reads `reader` in `chunk`-sized reads into a ring of
-    /// `ring_capacity` bytes, counting total bytes pulled. `total` is the
-    /// source's byte length when known (drives the percentage).
     pub fn spawn(
         mut reader: Box<dyn Read + Send>,
         total: Option<u64>,
@@ -171,7 +157,6 @@ impl Prefetcher {
         })
     }
 
-    /// A cheap, cloneable handle to this prefetch's progress.
     pub fn progress(&self) -> PrefetchProgress {
         self.progress.clone()
     }

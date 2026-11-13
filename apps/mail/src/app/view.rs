@@ -13,10 +13,10 @@ use ui::widget::Element;
 
 use super::{MailApp, Mailroom};
 use crate::actions::{MailEffect, Outgoing, ServerUpdate};
+use crate::i18n::CATALOG;
 use crate::resource::Mail;
 use crate::state::MailState;
 
-/// Whether an account set up on this device sends from `address`.
 fn holds_account(state: &MailState, address: &str) -> bool {
     state
         .accounts
@@ -25,15 +25,9 @@ fn holds_account(state: &MailState, address: &str) -> bool {
         .any(|account| account.config.email == address)
 }
 
-/// The window as the view lays it out: it follows the person's records in
-/// a live window, carries out the document's server updates and outbox
-/// from a device with the account, answers [`MailEffect`]s from the
-/// [`Mailroom`] it shares with the window, and publishes the rows and
-/// search entries the mailbox does not hold.
 pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
     window.live = Some(cx.live().clone());
     window.attach_framework(cx.dispatcher());
-    // A screenshot shows its fixture as it is, whatever the profile holds.
     if cx.mode().is_live() {
         window.wake_from_workers(cx.waker());
         window.follow_preferences(cx.settings::<crate::resource::MailPreferences>());
@@ -97,7 +91,6 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
         },
     );
     window.follow_delivery(delivery);
-    // A search hit, or an agent's `open`, shows the folder or message.
     cx.on_open(window.opener());
     let room = window.room();
     {
@@ -146,7 +139,6 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
     )
 }
 
-/// Every draft, as the item (`mail.draft:<id>`) its verbs name.
 fn draft_rows(mail: &Mail) -> Vec<ui::framework::LiveRow> {
     mail.drafts_listed()
         .into_iter()
@@ -156,7 +148,6 @@ fn draft_rows(mail: &Mail) -> Vec<ui::framework::LiveRow> {
         .collect()
 }
 
-/// The draft `id`, as the item its verbs name, while it is there.
 fn draft_row(mail: &Mail, id: &str) -> Option<ui::framework::LiveRow> {
     let id = crate::resource::draft_named(id);
     let draft = mail.draft_at(Some(id))?;
@@ -164,14 +155,11 @@ fn draft_row(mail: &Mail, id: &str) -> Option<ui::framework::LiveRow> {
         .then(|| ui::framework::LiveRow::from_resource(crate::actions::draft_resource(id, draft)))
 }
 
-/// Answer `effect` from what the window shares with the view; what needs
-/// the window waits in `room` for its next sync.
 fn answer_effect(
     room: &Rc<RefCell<Mailroom>>,
     effect: MailEffect,
     cx: &mut EffectCx<Mail>,
 ) -> EffectAnswer {
-    // Held mail is read from the record alone, in a window or a worker.
     if let Some(answer) = crate::held::effect(&effect, &cx.live().get()) {
         return answer;
     }
@@ -222,9 +210,16 @@ fn answer_effect(
         _ => {}
     }
     if let MailEffect::Save { message, index } = &effect {
-        let (name, bytes) = room.borrow().attachment_to_save(message, *index)?;
+        let (name, bytes) = room
+            .borrow()
+            .attachment_to_save(message, *index)
+            .map_err(|cause| cause.message())?;
         let resource = format!("mail.attachment:{message}:{index}");
-        let request = PickRequest::save("Save attachment", "Save", &name)
+        let (title, accept) = (
+            CATALOG.t("mail-save-attachment"),
+            CATALOG.t("mail-attachment-save-accept"),
+        );
+        let request = PickRequest::save(&title, &accept, &name)
             .thread_name("mail-portal-save-attachment")
             .filter(FileFilter::all_files());
         let room = Rc::clone(room);
@@ -247,11 +242,6 @@ fn answer_effect(
     Ok(answer)
 }
 
-/// Open the attachment `handed` over as workspace content through the
-/// desktop's `open`, in the app registered for its media type: as a tab of
-/// the window `group`, else a window of its own. The desktop decides it as
-/// this effect's caller and answers once the window is up; the answer is
-/// the window's, with the content it shows.
 fn open_on_desktop(handed: Effected, group: Option<&str>, cx: &mut EffectCx<Mail>) -> EffectAnswer {
     use ui::desktop::{OPEN, PROVIDER, RESOURCE};
     let Effected::Done(handed) = handed else {
@@ -286,15 +276,10 @@ fn open_on_desktop(handed: Effected, group: Option<&str>, cx: &mut EffectCx<Mail
     }))
 }
 
-/// Why `message` names nothing to read.
 fn no_such_message(message: &str) -> String {
     format!("no message `{message}` is kept here: search-messages lists the messages there are")
 }
 
-/// Start a new draft answering `message`, from the account it came
-/// through, as the `create-draft` verb records it. Refused, before
-/// anything is recorded, when the message is not kept here or the draft
-/// would not be one.
 fn draft_reply(
     room: &Rc<RefCell<Mailroom>>,
     message: &str,
@@ -345,15 +330,10 @@ fn draft_reply(
 }
 
 impl Mailroom {
-    /// Whether this window reaches mail servers: it runs the engine that
-    /// carries out what the document asks of them.
     pub(crate) const fn reaches_servers(&self) -> bool {
         self.engine.is_some()
     }
 
-    /// The message `item` names, fetched or held: the record's held mail
-    /// first, then what this device keeps of its servers. `None` once it
-    /// was deleted for good.
     pub(crate) fn synced_message(&self, mail: &Mail, item: &str) -> Option<crate::model::Message> {
         if let Some(held) = mail.held_shown(item) {
             return Some(held);
@@ -365,8 +345,6 @@ impl Mailroom {
         self.shared.borrow().mailbox.get(id.parse().ok()?).cloned()
     }
 
-    /// What `query` finds in the mail this device keeps and the record's
-    /// held mail, each message once.
     pub(crate) fn search_synced(
         &self,
         mail: &Mail,
@@ -391,7 +369,6 @@ impl Mailroom {
         )
     }
 
-    /// The account `address` names, as a draft's sender.
     pub(crate) fn sender_for(&self, address: &str) -> Option<crate::model::DraftSender> {
         let shared = self.shared.borrow();
         shared
@@ -405,8 +382,6 @@ impl Mailroom {
             })
     }
 
-    /// Keep attachment `index` of `message` in the workspace's content and
-    /// answer its address, name and media type.
     pub(crate) fn attachment_content(
         &self,
         mail: &Mail,
@@ -421,7 +396,9 @@ impl Mailroom {
             .get(index)
             .ok_or_else(|| format!("the message has no attachment {index}"))?;
         let media_type = attachment.mime.clone();
-        let (name, bytes) = self.attachment_to_save(&found.id.to_string(), index)?;
+        let (name, bytes) = self
+            .attachment_to_save(&found.id.to_string(), index)
+            .map_err(|cause| cause.message())?;
         let store = ui::tilo_resource::content::current()
             .ok_or("this window keeps no content to hand the attachment over in")?;
         let hash = store
@@ -440,16 +417,12 @@ impl Mailroom {
         }))
     }
 
-    /// Every message already loaded, outside Trash: its subject, sender and
-    /// body come from the engine, not the document. And the contacts a
-    /// draft can be prepared for.
     fn search_entries(&self) -> Vec<SearchEntry> {
         let mut entries = crate::search::message_entries(&self.shared_mailbox());
         entries.extend(self.contact_recipient_search_entries());
         entries
     }
 
-    /// Fetching and preparing an invitation need a connected account.
     fn effect_statuses(&self) -> Vec<EffectStatus> {
         if self.can_sync() {
             return Vec::new();
@@ -468,7 +441,6 @@ impl Mailroom {
         ]
     }
 
-    /// Stage screenshot `scenario` on the next sync, which has the document.
     pub(crate) fn request_stage(&mut self, scenario: &str) {
         self.pending_stage = Some(scenario.to_owned());
         self.dirty = true;
@@ -478,7 +450,6 @@ impl Mailroom {
         !self.pending_send.is_empty()
     }
 
-    /// The loaded mailbox, which search reads its messages from.
     pub(crate) fn shared_mailbox(&self) -> std::cell::Ref<'_, crate::model::Mailbox> {
         std::cell::Ref::map(self.shared.borrow(), |state| &state.mailbox)
     }

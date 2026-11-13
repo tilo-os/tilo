@@ -19,33 +19,19 @@ use tilo_session_core::arrangement::Door;
 use tilo_session_core::door::{Look, Published};
 
 #[cfg(target_os = "linux")]
-use crate::activity::{Activity, now_seconds};
+use crate::activity::Activity;
 
 pub use tilo_session_core::arrangement::{
-    Arrangement, ArrangementAction, Ask, Busy, Catalog, Find, Found, Item, OPERATION, PLACE_KIND,
-    PlaceReading, RECORD_RESOURCE, RESOURCE, ROW_KIND, Reading, RowReading, STRIP_KIND,
-    StripReading, Surface, Target, WorkspaceReading, found, place_kind_resource, placed, resources,
-    row_kind_resource, strip_kind_resource, tab_app,
+    Arrangement, ArrangementAction, Ask, Busy, Catalog, Find, FindDone, Found, Item, OPERATION,
+    PLACE_KIND, PlaceReading, RECORD_RESOURCE, RESOURCE, ROW_KIND, Reading, RowReading, STRIP_KIND,
+    StripReading, Surface, Target, WorkspaceReading, canvas_find_within, found_resource,
+    place_kind_resource, placed, resources, row_kind_resource, strip_kind_resource, tab_app,
 };
 
-/// `person` 's arrangement of `handle` 's desk, whose changes `activity` keeps: a device that kept
-/// its arrangement beside the desk before this build has what it holds opened on the desk, once
-/// ([`crate::desk_migration::arrangement`]).
+/// `person` 's arrangement of `handle` 's desk, whose changes `activity` keeps.
 #[cfg(target_os = "linux")]
 #[must_use]
-pub(crate) fn open(
-    person: &str,
-    handle: DesktopHandle,
-    activity: &Activity,
-    state: Option<&std::path::Path>,
-) -> Arrangement {
-    if let Some(state) = state
-        && let Some(adopted) =
-            crate::desk_migration::arrangement::adopt(state, &handle.read(Clone::clone))
-    {
-        handle.replace_tree(adopted.desk.clone());
-        activity.record_desk_now(&adopted.desk, now_seconds(), &adopted.shows);
-    }
+pub(crate) fn open(person: &str, handle: DesktopHandle, activity: &Activity) -> Arrangement {
     let names = Rc::new(crate::app_names::window_name);
     Arrangement::new(person, handle, activity.desk(), names)
 }

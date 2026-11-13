@@ -1,6 +1,3 @@
-//! The shared map through the door the host uses: verbs, field edits and
-//! merging.
-
 use super::*;
 use crate::model::Category;
 use ui::tilo_resource::{Edit, Invoke, Replica};
@@ -45,8 +42,6 @@ fn accept_route(name: &str, distance_m: f64, mode: TravelMode) -> Invoke<Workspa
     })
 }
 
-/// Accepting places keeps one row per place and its saved flag; saving
-/// and renaming are field edits; where a place is never changes.
 #[test]
 fn places_are_accepted_once_and_saved_by_field_edits() {
     let mut map = Replica::<Workspace>::new();
@@ -78,7 +73,6 @@ fn places_are_accepted_once_and_saved_by_field_edits() {
     );
 }
 
-/// The search history holds the last searches, newest first, each once.
 #[test]
 fn the_search_history_dedupes_and_caps() {
     let mut map = Replica::<Workspace>::new();
@@ -101,9 +95,6 @@ fn the_search_history_dedupes_and_caps() {
     assert!(map.state().unwrap().recents.is_empty());
 }
 
-/// An accepted route and its endpoints win or lose together when two
-/// people accept different planner replies at once; transit options keep
-/// their own.
 #[test]
 fn divergent_route_acceptances_converge_without_torn_context() {
     let mut ours = Replica::<Workspace>::new();

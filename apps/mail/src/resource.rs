@@ -1,18 +1,11 @@
-//! Mail's mailbox: what the reader's devices share of their mail, its
-//! verbs, the places derived from it, and the app.
+//! Mail's mailbox: what the reader's devices share of their mail, its verbs, the places
+//! derived from it, and the app.
 //!
-//! The mail itself (headers, bodies, attachments) stays with the engine and
-//! the server; the mailbox holds what the reader did with each message —
-//! read, starred, which folder, labels, deleted for good — and what its
-//! server holds of that, the folders the reader made, the message being
-//! written, and the messages sent and not yet delivered. Starring, moving
-//! one message, labels, folder names and the draft's fields are field edits;
-//! the methods below are what is more than setting a field. Where a
-//! message's flags and folder differ from what its server holds, the
-//! mailbox queues telling the server ([`Mail::server_updates`] into
-//! [`Mail::server`]), whoever made the change — a click, the palette, an
-//! agent, a collaborator or an undo; the device with the account carries it
-//! out and records what the server confirmed.
+//! The mail itself stays with the engine and the server; the mailbox holds what the reader did
+//! with each message, what its server holds of that, the folders the reader made, the draft
+//! being written and the messages sent and not yet delivered. Where a message's flags or folder
+//! differ from what its server holds, the mailbox queues telling the server, whoever made the
+//! change; the device with the account does it and records what the server confirmed.
 
 use tilo_document::{RichText, RichTextAction};
 #[cfg(feature = "samples")]
@@ -184,7 +177,6 @@ pub struct DraftState {
     /// The message it answers, by id.
     pub in_reply_to: Option<String>,
     /// Private notes on the draft: a review, what to check before sending.
-    /// They are never sent and never leave the mailbox.
     pub notes: String,
     /// The copy its account's server keeps in Drafts, as the server
     /// confirmed it, so other mail clients show it too.
@@ -890,9 +882,7 @@ impl Mail {
         }
     }
 
-    /// The ids, as fetched messages, of the copies servers keep of drafts:
-    /// the copy its server confirmed, and the one it is being sent now. A
-    /// copy is the draft itself, so a fetched one is kept as nothing.
+    /// The ids, as fetched messages, of the copies servers keep of drafts.
     pub(crate) fn draft_copy_ids(&self) -> Vec<String> {
         self.drafts_listed()
             .into_iter()
@@ -1443,8 +1433,7 @@ pub(crate) fn draft_body_resource_id(draft: Option<&str>) -> String {
     tilo_resource::child_resource_id::<Mail>(&child)
 }
 
-/// The dispatcher the composer edits the body of the draft `draft` through:
-/// each edit is the mailbox's field edit of that body.
+/// The dispatcher the composer edits the body of the draft `draft` through.
 pub(crate) fn draft_body_dispatcher(
     dispatcher: &Dispatcher<Mail>,
     draft: Option<&str>,
@@ -1641,13 +1630,6 @@ const SCENARIOS: &[&str] = &[
 ];
 
 /// What the binary runs instead of opening a window.
-///
-/// `--probe-accounts-engine VALUE` and `--probe-contact-directory-engine
-/// VALUE` (the value is ignored) run the self-checks of account custody with
-/// the IMAP client, and of the contact directory, without a network or an
-/// account. They need `runtime-engine`, the release build, where that code is
-/// in `libtilo_accounts_engine.so` and `libtilo_contact_directory_engine.so`;
-/// the checks prove Mail loads those libraries and runs them.
 const COMMANDS: &[ui::framework::Command] = &[
     ui::framework::Command {
         option: "--probe-accounts-engine",
@@ -2239,8 +2221,7 @@ mod tests {
             );
         }
 
-        /// The purge confirmation shows messages that really are in Trash:
-        /// staging moved them there through the resource's own action.
+        /// The purge confirmation shows messages that really are in Trash.
         #[test]
         fn the_purge_confirmation_stages_its_messages_in_trash_through_actions() {
             ui::i18n::I18nManager::init("en-US");

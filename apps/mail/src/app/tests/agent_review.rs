@@ -16,7 +16,6 @@ use crate::actions::MailEffect;
 use crate::resource::MailShell;
 use crate::review_fixture::{CANDIDATES, ME, cv_line, cv_pdf};
 
-/// The value an answer carries.
 fn value(output: tilo_actions::ActionOutput) -> serde_json::Value {
     output.value.expect("the effect answers")
 }
@@ -40,7 +39,6 @@ fn eight_applications_are_found_read_drafted_and_handed_to_the_pdf_viewer() {
             folder: None,
             from: None,
             subject: Some("application".into()),
-            // The test server dates what it holds from 2026-01-01.
             since: Some("2026-01-01".into()),
             until: Some("2026-01-02".into()),
             has_attachment: Some(true),
@@ -106,7 +104,6 @@ fn eight_applications_are_found_read_drafted_and_handed_to_the_pdf_viewer() {
         let attachment = &read["attachments"][0];
         assert_eq!(attachment["type"], "application/pdf", "{read}");
 
-        // The CV becomes workspace content, which the PDF viewer reads.
         let index = usize::try_from(attachment["index"].as_u64().unwrap()).unwrap();
         let handed = app
             .effect_on(
@@ -144,7 +141,6 @@ fn eight_applications_are_found_read_drafted_and_handed_to_the_pdf_viewer() {
     }
     app.settle();
 
-    // Eight drafts of their own, each answering its message, with notes.
     let mail = app.state();
     assert_eq!(mail.drafts.len(), CANDIDATES.len());
     for id in &drafted {
@@ -209,10 +205,6 @@ fn eight_applications_are_found_read_drafted_and_handed_to_the_pdf_viewer() {
     }
 }
 
-/// Open every application's CV through its attachment's `open`, as the
-/// agent, as a tab of the window group `4242`: Mail hands it over as
-/// content and asks the desktop's `open` for it, which a stand-in desktop
-/// answers. How many opened.
 fn cvs_open_through_the_desktop(
     app: &mut TestApp<MailShell>,
     messages: &[serde_json::Value],
@@ -267,8 +259,6 @@ fn cvs_open_through_the_desktop(
     opened
 }
 
-/// A Mail window opened afresh at `message` shows it; one opened at
-/// `draft` edits that draft; a draft that is not there is refused.
 fn each_opens_in_a_window_of_its_own(profile: &std::path::Path, message: &str, draft: &str) {
     let mut window = crate::review_fixture::offline_window(profile);
     window
@@ -319,9 +309,6 @@ fn each_opens_in_a_window_of_its_own(profile: &std::path::Path, message: &str, d
     );
 }
 
-/// Each draft is published as the item its verbs answer
-/// (`mail.draft:<id>`, of kind `mail.draft`), so the desktop finds the app
-/// that opens it; it goes when the draft does.
 #[test]
 fn each_draft_is_published_as_the_item_its_verbs_name() {
     let profile = tempfile::tempdir().unwrap();
@@ -358,12 +345,6 @@ fn each_draft_is_published_as_the_item_its_verbs_name() {
     );
 }
 
-/// The drafts made in a window that reached no server are kept in the
-/// server's Drafts folder by the first window that reaches it, marked as
-/// drafts and without their notes. Fetched back with Drafts, each copy is
-/// the draft itself: it becomes no message, no entry in the record and
-/// nothing kept on the device. And the window fetches when asked once its
-/// first sync is over.
 fn drafts_reach_the_server_and_come_back_as_nothing(
     profile: &std::path::Path,
     imap: &crate::fake_servers::FakeImap,

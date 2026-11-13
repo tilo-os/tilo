@@ -11,7 +11,6 @@ use ui::webview::{
 use super::tests::{effect_operation, synced};
 use super::*;
 
-/// A window in `mode` at `url`, its engine the tests' own.
 fn page_in(mode: BrowsingMode, url: &str) -> (Arc<TestEngine>, BrowserWidget, AutoCommit, ObjId) {
     let engine = TestEngine::new();
     engine.send(WebViewCommand::Navigate(url.into()));
@@ -20,7 +19,6 @@ fn page_in(mode: BrowsingMode, url: &str) -> (Arc<TestEngine>, BrowserWidget, Au
     (engine, widget, doc, root)
 }
 
-/// The page resource this window publishes.
 fn page_resource(widget: &BrowserWidget) -> ui::tilo_actions::ResourceSpec {
     widget
         .published()
@@ -30,7 +28,6 @@ fn page_resource(widget: &BrowserWidget) -> ui::tilo_actions::ResourceSpec {
         .expect("the page is published")
 }
 
-/// Start page action `id` with `args`, as a caller does.
 fn start(
     widget: &mut BrowserWidget,
     id: &str,
@@ -55,7 +52,6 @@ fn start(
     invocation
 }
 
-/// What `invocation` answered with, once the window has synced.
 fn answer(
     widget: &mut BrowserWidget,
     doc: &AutoCommit,
@@ -68,7 +64,6 @@ fn answer(
         .expect("the invocation answered")
 }
 
-/// Every page request the engine was sent, in order.
 fn page_requests(engine: &TestEngine) -> Vec<PageRequest> {
     engine
         .commands()
@@ -80,7 +75,6 @@ fn page_requests(engine: &TestEngine) -> Vec<PageRequest> {
         .collect()
 }
 
-/// Every answer the window gave to a held request, in order.
 fn held_answers(engine: &TestEngine) -> Vec<(u32, bool)> {
     engine
         .commands()
@@ -92,7 +86,6 @@ fn held_answers(engine: &TestEngine) -> Vec<(u32, bool)> {
         .collect()
 }
 
-/// A submission the engine reports holding, as the visa form's is.
 fn held_submit(id: u32) -> HeldRequest {
     let mut request = HeldRequest::new(id, HeldKind::Submit);
     request.method = "POST".into();
@@ -100,7 +93,6 @@ fn held_submit(id: u32) -> HeldRequest {
     request
 }
 
-/// The code an action answers when what it reached waits for the person.
 fn needs_the_person(update: &ui::tilo_actions::InvocationUpdate) -> bool {
     matches!(
         update,
@@ -192,10 +184,6 @@ fn a_form_fills_without_asking_and_asks_once_when_it_is_submitted() {
     );
 }
 
-/// A hold a page action's own run reached answers with the departure it holds,
-/// so the host holding a person's window asks them what leaves — the page it
-/// leaves from, what it does, the method, where it goes — and the picture of
-/// the filled page when this window kept one.
 #[test]
 fn a_hold_a_page_action_reached_states_the_departure_it_holds() {
     let (engine, mut widget, doc, root) =
@@ -296,7 +284,6 @@ fn the_persons_allow_releases_the_held_submission_instead_of_submitting_again() 
     );
 }
 
-/// The payload of the page's own `submit-page`, as a caller sends it again.
 fn submit_payload(widget: &BrowserWidget) -> Vec<u8> {
     page_resource(widget)
         .actions
@@ -422,7 +409,6 @@ fn a_request_the_page_sends_on_its_own_is_published_and_answered() {
         widget.page_operation.is_none(),
         "no action was running: the page posted on its own"
     );
-    // The window publishes the wait, so whoever may ask the page answers it.
     let resource = page_resource(&widget);
     let ids: Vec<&str> = resource
         .actions
@@ -467,8 +453,6 @@ fn a_request_the_page_sends_on_its_own_is_published_and_answered() {
     assert_eq!(held_answers(&engine), vec![(4, true)]);
 }
 
-/// A hold whose engine painted the filled page publishes that picture by its
-/// content address, so the person asked about it is shown what they allow.
 #[test]
 fn a_held_departure_names_the_picture_of_the_filled_page() {
     let (engine, mut widget, doc, root) =
@@ -553,7 +537,6 @@ fn a_hold_nobody_answers_is_dropped_and_the_page_stays() {
     engine.hold(request);
     widget.sync(&doc, &root);
     assert_eq!(widget.holds.waiting().count(), 1);
-    // The window's own deadline passes with nobody answering.
     let dropped = widget
         .holds
         .expire(std::time::Instant::now() + std::time::Duration::from_secs(60 * 60));

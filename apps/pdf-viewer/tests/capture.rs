@@ -1,4 +1,3 @@
-//! Exercise the production owner-worker backend, not the synchronous unit-test backend.
 #![allow(clippy::expect_used, reason = "test assertions")]
 
 use std::time::Duration;
@@ -10,8 +9,6 @@ use pdf_viewer::markup::{ImportedPage, PagePlanEntry};
 
 fn require_raster_worker(path: &std::path::Path) {
     use pdf_viewer::source::{RasterEvent, RasterHandle};
-    // Opening text successfully does not qualify the native raster pipeline.
-    // Probe the actual owner thread, never bind PDFium from the test thread.
     let worker = RasterHandle::new(ContentStore::memory()).expect("start PDF owner worker");
     let request = worker.open_path(path).expect("queue PDF fixture open");
     let result = tilo_test_env::wait_for("the PDF fixture open", || {
@@ -49,8 +46,6 @@ fn capture_waits_for_production_visual_work() {
         .pinned_source()
         .expect("the record pins the bytes its markup is made against");
     assert_eq!(pinned.hash(), tilo_content::hash_bytes(&opened));
-    // The profile's content store is the one the reader keeps documents in,
-    // and the record's reference opens them there.
     let content = ContentStore::in_dir(profile.path().join("content"));
     assert_eq!(
         pinned.bytes(&content).as_deref(),
@@ -62,9 +57,6 @@ fn capture_waits_for_production_visual_work() {
         "and kept sealed, never in the clear"
     );
 
-    // Arrival of an imported payload must invalidate the materialised plan,
-    // even though the CRDT plan itself does not change. (The opened file is
-    // itself pinned in the store, so the import is a different PDF.)
     let bytes = std::fs::read(std::path::Path::new(env!("OUT_DIR")).join("latin.pdf"))
         .expect("fixture bytes");
     let hash = tilo_content::hash_bytes(&bytes);
@@ -89,8 +81,6 @@ fn capture_waits_for_production_visual_work() {
     ))
     .expect("the owner imports pages");
     app.harness().relayout();
-    // Without its bytes the imported page cannot finish, however long a
-    // frame waited: one frame shows the work still pending.
     assert!(app.harness().wait_for_visuals(Duration::ZERO).is_err());
     assert_eq!(content.put(&bytes).ok(), Some(hash));
     app.harness()

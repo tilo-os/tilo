@@ -1,23 +1,5 @@
-//! `CalendarApp` — the root widget. Owns the in-memory [`Calendar`], the
-//! current view + selection, and a single SDK rich-text editor
-//! ([`RichTextSurface`]) for the **notes** attached to the selected
-//! event/task.
-//!
-//! Layout is hand-positioned (like the Notes `MainPanel`) rather than
-//! delegated to taffy, because the month grid / week timeline / day
-//! timeline are bespoke Vello canvases. The only taffy-registered child
-//! is the notes editor, positioned absolutely inside the detail panel.
-//!
-//! Five-pass `Widget` contract:
-//! - `sync` — seed the CRDT on first frame, bind the notes editor to
-//!   the selected item's block list, run the editor's sync.
-//! - `build_layout` — register the editor node, return a full-bleed root.
-//! - `apply_layout` — compute region rects, place the editor.
-//! - `draw` — paint the active view + detail panel (the sidebar is the
-//!   shell's, `shell`),
-//!   rebuilding the click hit-map.
-//! - `handle_event` — route clicks against the hit-map, keyboard
-//!   shortcuts, and forward to the editor when notes are active.
+//! `CalendarApp`, the root widget: the in-memory [`Calendar`], the current view and selection, and
+//! one rich-text editor.
 
 use automerge::transaction::Transactable;
 use std::collections::{HashMap, HashSet};
@@ -77,20 +59,14 @@ pub(crate) use store::{Ask, window};
 
 use editor::{Choices, FormRects};
 
-/// First-run onboarding shown centered over an empty calendar (no events):
-/// a friendly headline + hint instead of a blank grid.
 const EMPTY_ONBOARDING_TITLE: &str = "No events yet";
 const EMPTY_ONBOARDING_HINT: &str = "Select New event to add your first one.";
 
-/// The zone tests view the calendar from.
 #[cfg(test)]
 pub(crate) const TEST_ZONE: &str = "Europe/Berlin";
 
-/// The most all-day events a week or day stacks above its hours; the last
-/// row counts the rest.
 const MAX_ALL_DAY_ROWS: usize = 3;
 
-/// The hour a working day starts at: the week and day views open on it.
 const WORKING_DAY_START: u8 = 7;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -99,7 +75,6 @@ pub enum Sel {
     Task(Id),
 }
 
-/// A click target produced while drawing and resolved on the next press.
 #[derive(Clone)]
 enum Action {
     View(View),
@@ -111,27 +86,20 @@ enum Action {
     OpenEvent(Id),
     ToggleTask(Id),
     List(ListSel),
-    /// Put the sidebar's task list away.
     CloseList,
     CloseDetail,
     Export,
     Import,
     NewEvent,
-    /// Open the one-line quick add: a day, a time and a length read out of
-    /// what the person types, written as an event when they press Add.
     QuickAdd,
-    /// Show this window's keys.
     Shortcuts,
     ToggleSelectedTask,
     OpenTaskPopover(TaskPopover),
     DismissTaskPopover,
     SetTaskDue(Option<NaiveDate>),
     ShiftTaskDueMonth(i32),
-    /// Select a task to view its detail (without toggling completion).
     OpenTask(Id),
-    /// Focus the Tasks screen entry to create a task.
     NewTask,
-    /// Focus the Tasks screen entry.
     FocusTaskEntry,
     /// Set whether a synced remote calendar's events are shown. This carries
     /// the resulting absolute value, never a replay-unsafe toggle.
@@ -139,62 +107,34 @@ enum Action {
         id: String,
         visible: bool,
     },
-    /// Collapse/expand one account's calendar list in the sidebar.
     ToggleAccountCollapsed(String),
-    /// Pull events from the configured `CalDAV` calendars.
     Sync,
-    /// Flip the selected event's all-day flag.
     ToggleAllDay,
-    /// Open one of the form's date or time pickers over the edited event.
     OpenPopover(FormPopover),
-    /// Focus one of the form's text fields (used by the title/location field
-    /// click targets so a press lands the caret).
     FocusField(FormField),
-    /// Delete an event from the model + CRDT (and queue a `CalDAV` delete for a
-    /// synced event). Fired by the editor's trash button and the Delete key.
     DeleteEvent(Id),
-    /// Give the edited event one of the calendar colours.
     SetEventColor(Palette),
-    /// Throw away the new event the sheet was opened for, unsaved.
     DiscardDraft(Id),
-    /// Delete a task (and its subtasks) from the model + CRDT.
     DeleteTask(Id),
-    /// Move the occurrence drawn on a day to another day of the month grid,
-    /// keeping its time of day and its length: what a drag from one day to
-    /// another means.
     MoveEventToDay {
         id: Id,
-        /// The day the occurrence is drawn on, which a repeating event's
-        /// override is keyed by.
         original: NaiveDate,
         day: NaiveDate,
     },
-    /// Absorb a click without acting on it — the modal card's own backing, so a
-    /// press on the card padding doesn't fall through to the dismiss scrim.
     Noop,
 }
 
-/// How far a press on a month chip travels before it is a drag of the event
-/// rather than a click on it: the slop a press's hand wobbles within, the
-/// same every control on every display allows.
 const CHIP_DRAG_SLOP: f64 = ui::tokens::Metrics::BASE.click_slop as f64;
 
-/// An event's chip pressed in the month grid: which event, where the press
-/// landed, the day it is drawn on, and — once the pointer has moved far
-/// enough — the day it would be dropped on.
 #[derive(Clone, Debug)]
 struct ChipDrag {
     id: Id,
     from: Point,
     original: NaiveDate,
-    /// Whether the pointer travelled far enough for this to be a drag.
     moved: bool,
-    /// The day cell the pointer is over now.
     over: Option<NaiveDate>,
 }
 
-/// The two keyboard-focusable text fields in the form. Tab cycles between them
-/// (and the notes editor); the pickers/selector are opened with Enter/click.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FormField {
     Title,
@@ -207,25 +147,16 @@ enum TaskPopover {
     Due,
 }
 
-/// A calendar an event can be filed under: the on-device local calendar, or a
-/// specific remote `CalDAV` collection (identified by its stable id, matching
-/// [`Event::calendar_id`]).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum CalTarget {
     Local,
     Remote(String),
 }
 
-/// Payload delivered by a finished background `CalDAV` sync worker: the pull
-/// result, the merged outcome, the ids that uploaded successfully, and the
-/// ids the server confirmed deleted.
-/// The notes of the selected event or task, edited as calendar actions.
 type NotesEditor = RichTextSurface<RichTextField>;
 
 type SyncWorkerResult = (caldav::SyncResult, SyncOutcome);
 
-/// What the scheduled reminders follow: the document, the hidden calendars
-/// and the hour (the horizon moves on with it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RemindersBasis {
     heads: (Vec<ChangeHash>, usize),
@@ -233,16 +164,9 @@ struct RemindersBasis {
     hour: i64,
 }
 
-/// The calendar window.
-///
-/// The widgets that carry bulk — the notes editor, the editor's text fields
-/// and dropdowns, the quick add and the sidebar's task list — sit behind
-/// [`Box`]. A window is made by value: `build` fills a literal, and every
-/// constructor on the way out (`new`, `new_detached`, `new_demo`) hands the
-/// whole thing on. Measured by value, those widgets would make a window a
-/// fifth of a megabyte, so one construction would spend most of a stack on
-/// copies of it. Behind boxes a window is a handful of kilobytes, and making
-/// one costs what its widgets' own construction costs.
+/// The calendar window. The widgets that carry bulk (the notes editor, the editor's fields, the quick
+/// add, the sidebar's task list) sit behind [`Box`], so a window is kilobytes by value rather than a
+/// fifth of a megabyte, and making one costs what its widgets' own construction costs.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag (demo mode, sidebar state, sync status, form scratch state); grouping them into enums would not express any real invariant between them and would touch every read/write site across this file"
@@ -250,230 +174,117 @@ struct RemindersBasis {
 pub struct CalendarApp {
     model: Calendar,
     today: NaiveDate,
-    /// The moment shown as now, when a capture pins it; else the clock's.
     pinned_now: Option<chrono::NaiveDateTime>,
-    /// The zone the views are drawn in and new events are authored in.
     viewer: crate::shown::Viewer,
     anchor: NaiveDate,
     view: View,
     /// `None` shows every visible collection; a stable local/remote calendar
     /// id is set only by the collection resource's canonical `open` action.
     calendar_filter: Option<String>,
-    /// The task list the sidebar shows under the places, when one is
-    /// chosen.
     list_sel: Option<ListSel>,
     selection: Option<Sel>,
     detail_open: bool,
 
-    /// `CalDAV` accounts + their calendars as this person shows them: the
-    /// accounts Settings configured on this device ([`Self::configured`])
-    /// with the person's display choices applied.
     accounts: AccountStore,
-    /// The accounts as Settings configured them on this device.
     configured: AccountStore,
-    /// The same accounts, as the drains of the upload and delete queues
-    /// read them.
     device_accounts: crate::outbox::DeviceAccounts,
-    /// The person's display choices for their calendars.
     display: crate::display::CalendarDisplay,
-    /// Where those choices are kept, following the person across devices.
     display_setting: Option<ui::framework::Setting<crate::display::CalendarDisplay>>,
 
     notes_editor: Box<NotesEditor>,
     bound: Option<Sel>,
     seeded: bool,
 
-    // --- event form (live only while an Event detail is open) -----------
-    /// Editable title field (local text, mirrored into the event on change).
     title_input: Box<TextInput>,
-    /// Editable location field.
     location_input: Box<TextInput>,
     invite_input: Box<TextInput>,
-    /// Which event the form widgets are currently seeded from — so a new
-    /// selection reseeds the inputs and edits land on the right event.
     form_event: Option<Id>,
-    /// Self-contained date/time picker controller: exclusive open state,
-    /// embedded widgets, drawing, hit-testing and event routing.
     event_popovers: EventPopovers,
     task_popover: Option<TaskPopover>,
-    /// Shared date-grid widget embedded in the task due-date popover.
     task_due_picker: DatePicker,
-    /// The editor's dropdowns (calendar, repeat, alert, time zone, colour;
-    /// a task's priority and project).
     choices: Box<Choices>,
-    /// Cached form field geometry (see [`FormRects`]).
     form: FormRects,
-    /// The modal sheet the editor is presented in, laid out against the
-    /// window; `None` while no editor is open.
     modal: Option<ModalLayout>,
-    /// The one-line quick add, and this window's keys, as cards over the
-    /// calendar.
     quick_add: Box<sheets::QuickAdd>,
     shortcuts: sheets::ShortcutSheet,
-    /// Height of the notes editor's content at its last layout, so the sheet
-    /// grows with the notes.
     notes_content_h: f64,
-    /// The sidebar's overflow menu (export, import).
-    /// "Only this event / All future events", asked after a drag on an
-    /// occurrence of a repeating event.
     repeat_scope_menu: Box<Popover>,
-    /// The drag that question is about, until it is answered or dismissed.
     pending_repeat: Option<repeat_scope::PendingRepeatChange>,
-    /// Opens the platform search scoped to contacts when the Guests field
-    /// asks to invite one.
     search_opener: ui::search::SearchOpener,
-    /// The sidebar's places, as the shell's list shows them.
     places: ui::widget::NavFeed,
-    /// The month navigator at the sidebar's foot.
     month: ui::widget::DateFeed,
-    /// The shell's sidebar and its slots in the window's bar; `None` while
-    /// the calendar stands alone (a test's bare surface).
     bar: Option<ui::widget::WindowBarLink>,
-    /// The window bar's entries, each carrying what it asks for.
     bar_entries: ui::framework::BarCommands<crate::window_bar::BarAction>,
-    /// Shots-only: spawn a fresh event on the first sync so the offscreen
-    /// renderer can capture the New-Event form. No effect on live runtime.
     staged_new_event: bool,
-    /// What an effect asked for that writes a fresh event, so the window
-    /// starts it when it next has the document to write.
     wanted_new_event: bool,
-    /// Shots-only: open this popover once the form is bound.
     staged_popover: Option<FormPopover>,
-    /// Shots-only: open the calendar dropdown once the form is bound.
     shots_pending_calendar_menu: bool,
     shots_detail_scroll_to_end: bool,
 
-    /// The accounts are a capture's sample ones: their servers answer from
-    /// bundled sample calendars, and display choices are not saved.
     sample_accounts: bool,
-    /// The configuration directory of the host's profile, where this
-    /// window's accounts, their credentials and their sync health are kept;
-    /// `None` outside a live window.
     config_root: Option<std::path::PathBuf>,
-    /// The person's accounts, which Settings keeps and every device of theirs
-    /// shares, followed in a live window; and the revision last shown.
     person_accounts: Option<(
         ui::framework::PersonRecord<accounts::person::PersonAccounts>,
         Option<u64>,
     )>,
-    /// Set by the Guests field's Contacts button, taken on the next frame.
     contacts_requested: std::rc::Rc<std::cell::Cell<bool>>,
 
-    // --- responsive state ------------------------------------------------
-    /// The theme of the last layout pass, so the renderer-less layout reads
-    /// the same tokens and text roles the painters do.
     layout_theme: Theme,
-    // --- layout caches (filled by `relayout`) ----------------------------
     rect: Rect,
-    /// The shell's content column, holding the calendar view.
     content_rect: Rect,
-    /// Direct touch on the calendar, read for a sideways swipe.
     fingers: ui::gesture::TouchGestureArena,
-    /// The fingers down began on the calendar's period, so a sideways swipe
-    /// of them steps it.
     swipe_steps: bool,
-    /// The editor sheet's card while it is open.
     detail_rect: Rect,
     notes_origin: Point,
     notes_w: f64,
     detail_scroll_y: f64,
     detail_scroll_max: f64,
     editor_node: Option<NodeId>,
-    /// Notes-column width the editor node was last built with. When the current
-    /// width (from `detail_body_w`) diverges — i.e. a resize crossed the
-    /// breakpoint or reshaped the detail pane — `take_structure_dirty` requests
-    /// a rebuild so the editor's own text-wrap width tracks the new layout
-    /// instead of staying frozen at the width it launched with.
     built_notes_w: f64,
 
     hits: Vec<(Rect, Action)>,
     last_mouse: Point,
-    /// The result of the last sync, import or edit, shown as the window
-    /// bar's notice for a notice's lifetime.
     status: status::Status,
-    /// What the person can do about the status up, when it asks them to act.
     status_actions: status::StatusActions,
     /// A just-created blank event is a provisional draft until the user edits
     /// any event field or adds notes. Back/Escape may discard *only* this exact
     /// pristine object; every other event follows normal autosave semantics.
     fresh_draft: Option<Event>,
-    /// An event's chip pressed in the month grid and not yet let go: moved far
-    /// enough to be a drag, it moves the event to the day it is dropped on;
-    /// let go where it was pressed, it opens the event as a click always did.
     chip_drag: Option<ChipDrag>,
     dirty: bool,
     /// What the view painted, this frame and as the last presented frame
     /// showed it: the frame damages the view's box only when it painted
     /// differently, so a hover in the sidebar repaints none of it.
     own: ui::own_paint::OwnPaint,
-    /// The editor's switch and checkboxes, sliding and filling as a click
-    /// turns them.
     faces: ui::widget::FaceMotions,
 
-    // --- timeline (week/day) scroll + drag -------------------------------
-    /// Vertical scroll of the full-24h week/day hour grid. Driven manually
-    /// (the timeline is painted imperatively, not through a child widget), it
-    /// still reuses the shared [`Scrollable`] for offset clamping, wheel /
-    /// keyboard / momentum, and the overlay bar.
     timeline: TimelineInteraction,
-    /// Vertical scroll of the agenda list, so a short window pages through the
-    /// upcoming days instead of clipping them.
-    /// Self-contained upcoming-list view: scroll state, input, drawing and row
-    /// actions live together instead of leaking into the root widget.
     agenda: AgendaView,
-    /// The Tasks screen: the selected list in full, with its entry field.
     tasks: Box<TasksView>,
-    /// Receiver for an in-flight background `CalDAV` pull. The live sync runs on a
-    /// worker thread (the `ui` event loop is synchronous and must never block on
-    /// the network); its result is drained here on the next `sync` pass.
-    /// Delivers `(pull result, outcome, pushed uids, deleted uids)` — the
-    /// events that uploaded and the ones the server confirmed removed, so both
-    /// outboxes can be cleared.
+    /// An in-flight background `CalDAV` pull: the live sync runs on a worker, since the `ui` event loop
+    /// must never block on the network, and its result is drained on the next `sync`.
     sync_rx: Option<std::sync::mpsc::Receiver<SyncWorkerResult>>,
-    /// What the window shares with the view's effect handler and what it
-    /// publishes: the sync running, the Contacts picker, and what effects
-    /// asked the window to show.
     store: store::Shared,
-    /// The calendar as the document holds it, shown as it changes; `None`
-    /// for a window outside the framework.
     live: Option<ui::framework::Live<Calendar>>,
-    /// The `(revision, loads)` of the calendar last shown.
     presented: Option<(u64, u64)>,
-    /// Where reminders are scheduled, in a live window.
     notifier: Option<std::sync::Arc<dyn ui::notify::Notifier>>,
-    /// What clicked reminders asked to open, taken on the next sync.
     activations: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     /// What the reminders were last reconciled from, and what was scheduled:
     /// they are worked out again only when it changes.
     reminders: Option<(RemindersBasis, Vec<crate::reminders::Reminder>)>,
 
-    /// Where the calendar's edits go: the framework's dispatcher, attached
-    /// before the first frame.
     dispatcher: Option<ui::framework::Dispatcher<Calendar>>,
-    /// The last edit an on-screen control dispatched, for the tests that
-    /// check a control and its published action build the same edit.
     #[cfg(test)]
     last_dispatched: std::cell::RefCell<Option<ui::tilo_resource::Invoke<Calendar>>>,
 
-    /// The document heads the in-memory [`Calendar`] was last derived from. When the
-    /// document moves past this out of band — a Ctrl+K palette action, a peer's
-    /// change merged in — the next `sync` re-reads the model so those mutations
-    /// show up in the views, exactly as an on-screen edit already does.
     model_heads: (Vec<ChangeHash>, usize),
 }
 
 impl CalendarApp {
-    /// The live app: persisted to disk, no sample content, accounts sourced
-    /// from OS Settings (none on a fresh machine).
     pub fn new() -> Self {
-        // The launcher's shared store owns loading, autosave and the exit flush.
-        // A second widget-owned writer would keep importing stale legacy data
-        // and bypass the host's persistence policy.
         Self::build()
     }
 
-    /// An empty calendar whose edits apply to the document its tests hand it,
-    /// through a dispatcher of no window.
     #[cfg(test)]
     pub(crate) fn new_detached() -> Self {
         let mut app = Self::build();
@@ -483,8 +294,6 @@ impl CalendarApp {
         app
     }
 
-    /// The sample calendar tests start from: the sample events, tasks and
-    /// accounts around today, the "Design review" event open.
     #[cfg(test)]
     pub(crate) fn new_demo() -> Self {
         let mut app = Self::new_detached();
@@ -506,7 +315,6 @@ impl CalendarApp {
             today,
             anchor: today,
             pinned_now: None,
-            // Tests read the calendar from one zone, whatever the machine's.
             #[cfg(not(test))]
             viewer: crate::shown::Viewer::device(),
             #[cfg(test)]
@@ -593,16 +401,11 @@ impl CalendarApp {
         }
     }
 
-    /// Adopt the framework's live model projection.
     pub(crate) fn adopt_resource_state(&mut self, state: &std::rc::Rc<crate::model::Calendar>) {
         self.model = (**state).clone();
         self.dirty = true;
     }
 
-    /// Attach the framework dispatcher, with the accounts the window shows
-    /// (`None` keeps none); `sample` when they are a capture's sample ones.
-    /// Show `now` as the present: a capture's fixed day and time, the same
-    /// on every run.
     pub(crate) fn pin_now(&mut self, now: chrono::NaiveDateTime) {
         let today = now.date();
         self.pinned_now = Some(now);
@@ -615,7 +418,6 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// The present: the pinned moment of a capture, else the clock's.
     fn now(&self) -> chrono::NaiveDateTime {
         self.pinned_now
             .unwrap_or_else(|| Local::now().naive_local())
@@ -637,8 +439,6 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Open the sample calendar's "Design review" event, as a populated
-    /// capture shows it.
     fn open_sample_event(&mut self) {
         let event = self
             .model
@@ -652,23 +452,18 @@ impl CalendarApp {
         }
     }
 
-    /// Show the calendar screen (close the detail panel) for a screenshot.
     pub fn shots_show_calendar(&mut self) {
         self.detail_open = false;
         self.selection = None;
         self.dirty = true;
     }
 
-    /// Open a representative task detail for deterministic visual review of
-    /// the compact task editor controls.
     pub fn shots_show_task_detail(&mut self) {
         if let Some(id) = self.model.tasks.first().map(|task| task.id) {
             self.select_task(id);
         }
     }
 
-    /// Stage the view state of the screenshot scenario `scenario` (`None`
-    /// for a plain capture) over the resource its actions filled.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         let name = scenario.unwrap_or("event_editor");
         let view = match name {
@@ -680,9 +475,7 @@ impl CalendarApp {
             _ => None,
         };
         match name {
-            // The sample's richest list: due dates, priorities and subtasks.
             "tasks" => self.list_sel = Some(ListSel::Upcoming),
-            // A first run as `show-tasks` opens it.
             "empty_tasks" => self.list_sel = Some(ListSel::Inbox),
             _ => {}
         }
@@ -736,7 +529,6 @@ impl CalendarApp {
         }
     }
 
-    /// Deterministic transport-state presentation for visual regression shots.
     pub fn shots_set_sync_state(&mut self, state: &str) {
         let syncing = state == "syncing";
         self.state().syncing = syncing;
@@ -768,19 +560,12 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Open the calendar dropdown of a new event's form for a screenshot.
     pub fn shots_open_calendar_popover(&mut self) {
         self.staged_new_event = true;
         self.shots_pending_calendar_menu = true;
         self.dirty = true;
     }
 
-    /// Kick off a `CalDAV` pull from the configured calendars. The live pull
-    /// touches the network, so it runs on a worker thread and its result is
-    /// drained in [`Self::poll_sync`]; the UI stays responsive throughout. The
-    /// hermetic demo/test build stays fully synchronous (it synthesises each
-    /// calendar's events through the real [`ics::parse`] path — no network, no
-    /// thread — so `--shots` and tests are deterministic).
     #[allow(
         clippy::too_many_lines,
         reason = "sync orchestration keeps worker admission and failure contracts together"
@@ -808,8 +593,6 @@ impl CalendarApp {
             return self.apply_sync_result(result, &outcome, doc);
         }
 
-        // No account configured: answer instantly rather than spinning up a
-        // worker that would only return Offline.
         if self.accounts.is_empty() {
             self.show_status_with(
                 crate::resource::t("calendar-sync-no-accounts"),
@@ -819,10 +602,8 @@ impl CalendarApp {
             return Ok(());
         }
 
-        // A live pull as a task on the app runtime; the result lands via
-        // `poll_sync`. Uploads and deletes are drained as they are queued
-        // (`crate::outbox`); an item still waiting for its upload is never
-        // overwritten or removed by what the server sends meanwhile.
+        // A live pull runs as a task on the app runtime and lands through `poll_sync`; uploads and deletes
+        // are drained as they are queued (`crate::outbox`).
         let runtime = match ui::rt::try_app() {
             Ok(runtime) => runtime,
             Err(error) => return Err(self.sync_unavailable(&error.to_string())),
@@ -836,8 +617,6 @@ impl CalendarApp {
             .iter()
             .map(|(calendar, token)| (calendar.clone(), token.clone()))
             .collect();
-        // The worker's reply wakes the app (`waking_channel`): nothing polls
-        // for it frame by frame while a slow server keeps the request open.
         let (tx, rx) = ui::wake::waking_channel();
         let today = self.today;
         let config_root = self.config_root.clone();
@@ -901,20 +680,12 @@ impl CalendarApp {
             } else {
                 caldav::SyncOutcome::Offline
             };
-            // Do not overwrite a locally edited object still waiting for its
-            // upload (or whose conditional upload conflicted). It stays
-            // queued; the next upload can be resolved without destroying
-            // either copy.
             result.resources.retain(|resource| {
                 !protected_hrefs.iter().any(|(calendar_id, href)| {
                     calendar_id == &resource.calendar_id
                         && caldav::hrefs_equal(href, &resource.href)
                 })
             });
-            // A failed/conflicted local edit wins neither side automatically.
-            // Suppress an incremental tombstone for it and treat it as seen in
-            // a full fallback, leaving the local copy and outbox intact for an
-            // explicit retry/resolution.
             result.deletions.retain(|deletion| {
                 !protected_hrefs.iter().any(|(calendar_id, href)| {
                     calendar_id == &deletion.calendar_id
@@ -941,11 +712,6 @@ impl CalendarApp {
         Ok(())
     }
 
-    /// The calendar `doc` holds, read to plan or fold in a pull. One that
-    /// does not read is not an empty calendar: a pull planned from nothing
-    /// drops the protection of every edit still waiting for its upload, and
-    /// its answer folded into nothing gives every item the server holds a
-    /// new identity. So the pull is refused, and the bar says why.
     fn synchronizable(&mut self, doc: &AutoCommit) -> Result<Calendar, String> {
         Calendar::read_whole(doc).map_err(|error| self.sync_unavailable(&error.to_string()))
     }
@@ -961,9 +727,8 @@ impl CalendarApp {
         text
     }
 
-    /// Drain a finished background sync, if any. Called every `sync` pass; a
-    /// no-op until the worker delivers. Keeping this off the click path is why
-    /// a slow or unreachable server never freezes the window.
+    /// Drain a finished background sync; a no-op until the worker delivers. Kept off the click path so a
+    /// slow or unreachable server never freezes the window.
     fn poll_sync(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(rx) = self.sync_rx.as_ref() else {
             return;
@@ -988,7 +753,6 @@ impl CalendarApp {
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                // Worker panicked or dropped the sender without a reply.
                 self.sync_rx = None;
                 self.state().syncing = false;
                 self.show_status_with(
@@ -1007,9 +771,8 @@ impl CalendarApp {
         }
     }
 
-    /// Atomically reconcile server resources by stable collection href. A
-    /// title/date is presentation, never identity; edits update the same local
-    /// UUID across pulls and server deletions remove it without resurrection.
+    /// Reconcile server resources by stable collection href: a title or date is presentation, never
+    /// identity.
     #[allow(
         clippy::too_many_lines,
         reason = "remote reconciliation is deliberately kept in one transactional merge routine"
@@ -1020,11 +783,7 @@ impl CalendarApp {
         outcome: &SyncOutcome,
         doc: &mut ui::widget::Edits<'_>,
     ) -> Result<(), String> {
-        // The counts the outcome reports are the server's; what this pass
-        // takes in is the events themselves.
         let current = self.synchronizable(doc.doc())?;
-        // Where each item a server holds lives there, as the calendar knows
-        // it and as this pull adds to it.
         let mut known: Vec<(Id, String, String)> = current
             .remote
             .iter()
@@ -1041,7 +800,6 @@ impl CalendarApp {
                 .map(|(id, _, _)| *id)
         };
 
-        // Sample results carry no server address of their own.
         for mut e in result.events {
             if self
                 .model
@@ -1062,18 +820,12 @@ impl CalendarApp {
         }
         for resource in result.resources {
             for (index, mut event) in resource.events.into_iter().enumerate() {
-                // Current parser represents recurrence as one event. If a
-                // server returns multiple components in one object, retain
-                // stable identities for all by an internal component suffix.
                 let binding_href = if index == 0 {
                     resource.href.clone()
                 } else {
                     format!("{}#tilo-component-{index}", resource.href)
                 };
                 let id = find(&known, &resource.calendar_id, &binding_href);
-                // An item deleted here keeps what its server held until the
-                // server deleted it too: a late pull still carrying it does
-                // not bring it back.
                 if id.is_some_and(|id| current.event(id).is_none()) {
                     continue;
                 }
@@ -1143,8 +895,6 @@ impl CalendarApp {
                 self.drop_remote(doc, id);
             }
         }
-        // A successful full query is authoritative for that collection. This
-        // is also the invalid-token recovery path.
         for checkpoint in &result.checkpoints {
             if checkpoint.full {
                 let seen: HashSet<&str> =
@@ -1160,8 +910,6 @@ impl CalendarApp {
                 }
             }
         }
-        // Commit markers are deliberately last: a crash before here repeats a
-        // response idempotently; a crash after here sees fully reconciled data.
         for checkpoint in result.checkpoints {
             self.submit(
                 doc,
@@ -1210,7 +958,6 @@ impl CalendarApp {
         Ok(())
     }
 
-    /// Write `event` as its server holds it, at `at`.
     fn adopt_event(
         &self,
         doc: &mut ui::widget::Edits<'_>,
@@ -1226,7 +973,6 @@ impl CalendarApp {
         );
     }
 
-    /// Drop the item `id` its server no longer holds.
     fn drop_remote(&mut self, doc: &mut ui::widget::Edits<'_>, id: Id) {
         self.submit(
             doc,
@@ -1236,10 +982,6 @@ impl CalendarApp {
         self.model.tasks.retain(|task| task.id != id);
     }
 
-    /// The notes editor, bound to `owner`'s notes: every edit is the
-    /// calendar's field edit at their path, through the notes' child of the
-    /// calendar's dispatcher. Until the calendar is hosted there is none, and
-    /// the notes are shown, not edited.
     fn new_notes_editor(
         owner: Option<Sel>,
         calendar: Option<&ui::framework::Dispatcher<Calendar>>,
@@ -1257,8 +999,6 @@ impl CalendarApp {
         RichTextSurface::field(field)
             .with_placeholder(&crate::resource::t("calendar-notes-placeholder"))
     }
-
-    // --- CRDT plumbing ---------------------------------------------------
 
     /// The configuration-only portion of Calendar's resource/search surface.
     /// It deliberately excludes account collapse (pure sidebar presentation)
@@ -1296,7 +1036,6 @@ impl CalendarApp {
         if self.bound == Some(sel) {
             return;
         }
-        // Every action that creates an event or a task starts its notes.
         let (Sel::Event(id) | Sel::Task(id)) = sel;
         if crate::resource::notes_path(id).object(doc).is_some() {
             *self.notes_editor = Self::new_notes_editor(Some(sel), self.dispatcher.as_ref());
@@ -1305,11 +1044,8 @@ impl CalendarApp {
         }
     }
 
-    /// Seed the form's title/location fields and clock spinners from the
-    /// currently-selected event whenever the selection changes. The fields are
-    /// local (widget-owned) text/values; edits flow back into the model +
-    /// CRDT via [`Self::flush_form_edits`]. A stale popover is closed so it
-    /// can't act on the previous event.
+    /// Seed the form's fields and clock spinners from the selected event, and close a stale popover so it
+    /// cannot act on the previous one.
     fn ensure_form_bound(&mut self) {
         let ev_id = match self.selection {
             Some(Sel::Event(id)) if self.detail_open => Some(id),
@@ -1334,9 +1070,6 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Pull any pending text edits out of the title/location fields and mirror
-    /// them into the selected event (model + CRDT). Called after routing an
-    /// event to the inputs so a keystroke persists like every other edit.
     fn flush_form_edits(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(Sel::Event(id)) = self.selection else {
             return;
@@ -1414,10 +1147,6 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Take what `state` holds as the calendar. A document that does not
-    /// read keeps the calendar that last read whole: the framework shows why
-    /// in place of the view, and what is derived from the model (the
-    /// reminders scheduled with the system, the selection) does not empty.
     fn reread(&mut self, state: &AutoCommit) {
         match Calendar::read_whole(state) {
             Ok(model) => {
@@ -1442,13 +1171,6 @@ impl CalendarApp {
         }
     }
 
-    // --- submitting edits ------------------------------------------------
-
-    /// Submit one edit or verb through the calendar's dispatcher — the one
-    /// write path, shared with the palette, agents and scripts: checked
-    /// against the participant's permissions, attributed and recorded in
-    /// history. The in-memory calendar is updated by the caller for
-    /// immediate feedback and re-read from the document on the next `sync`.
     fn submit(
         &self,
         doc: &mut ui::widget::Edits<'_>,
@@ -1459,7 +1181,6 @@ impl CalendarApp {
         }
     }
 
-    /// [`Self::submit`], reporting a refusal.
     fn try_submit(
         &self,
         doc: &mut ui::widget::Edits<'_>,
@@ -1510,22 +1231,16 @@ impl CalendarApp {
         }
     }
 
-    /// The last invocation an on-screen affordance submitted, for the tests
-    /// that check a control and its published action build the same edit.
     #[cfg(test)]
     fn last_dispatched(&self) -> Option<ui::tilo_resource::Invoke<Calendar>> {
         self.last_dispatched.borrow().clone()
     }
 
-    /// Invoke one of the calendar's effects through the door, as the palette
-    /// or an agent does.
     fn invoke_effect(&self, effect: &crate::resource::CalendarEffect) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.effect(effect);
         }
     }
-
-    // --- mutations -------------------------------------------------------
 
     fn select_event(&mut self, id: Id) {
         self.selection = Some(Sel::Event(id));
@@ -1533,8 +1248,6 @@ impl CalendarApp {
         self.open_detail();
     }
 
-    /// The event currently selected, if the selection is an event (not a task).
-    /// Lets a test observe where a Ctrl+K activation navigated.
     pub fn selected_event(&self) -> Option<Id> {
         match self.selection {
             Some(Sel::Event(id)) => Some(id),
@@ -1548,7 +1261,6 @@ impl CalendarApp {
         self.open_detail();
     }
 
-    /// The task currently selected, if the selection is a task (not an event).
     pub fn selected_task(&self) -> Option<Id> {
         match self.selection {
             Some(Sel::Task(id)) => Some(id),
@@ -1556,8 +1268,6 @@ impl CalendarApp {
         }
     }
 
-    /// Open the editor sheet for the current selection. A sidebar floating
-    /// as a drawer goes away so it isn't left over the sheet.
     fn open_detail(&mut self) {
         self.detail_open = true;
         self.detail_scroll_y = 0.0;
@@ -1565,8 +1275,6 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Delete an event and its notes; a server holding it deletes it next.
-    /// Closes the editor if the deleted event was the one on screen.
     fn delete_event(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
         self.model.events.retain(|e| e.id != id);
         self.submit(doc, Calendar::DELETE_EVENT.with(crate::model::key(id)));
@@ -1577,8 +1285,6 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Delete a task (and any subtasks) from the model + CRDT. Closes the editor
-    /// if the deleted task was the one on screen.
     fn delete_task(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
         let victims: Vec<Id> = std::iter::once(id)
             .chain(
@@ -1598,9 +1304,8 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Release keyboard focus from every editor field.
-    /// and drop any open popover. Called whenever the editor leaves the screen
-    /// so keystrokes meant for the calendar can't leak into a hidden field.
+    /// Release keyboard focus from every editor field and drop any open popover, so keystrokes meant for
+    /// the calendar cannot leak into a hidden field.
     fn blur_editor(&mut self) {
         self.notes_editor.set_focus(false);
         self.title_input.set_focus(false);
@@ -1609,8 +1314,6 @@ impl CalendarApp {
         self.event_popovers.close();
     }
 
-    /// Shared teardown after deleting the on-screen item: drop the selection,
-    /// close the editor, and return to the calendar.
     fn close_after_delete(&mut self) {
         self.selection = None;
         self.detail_open = false;
@@ -1693,17 +1396,10 @@ impl CalendarApp {
     }
 
     fn new_event(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        // A new event starts at the next quarter hour rather than at noon:
-        // an event added now is nearly always an event that starts soon, and
-        // the form shows the hour it began with.
         let start = self
             .anchor
             .and_time(crate::quick_add::next_quarter_hour(self.now()));
         let ev = Event {
-            // Empty title: the form's title field shows its "New event"
-            // placeholder rather than literal text the user has to clear. The
-            // event still renders as "New event" in the views via
-            // `Event::display_title`.
             id: Uuid::new_v4(),
             title: String::new(),
             start,
@@ -1711,8 +1407,6 @@ impl CalendarApp {
             color: self.model.next_event_order_color(),
             reminder_min: Some(10),
             timezone: self.authoring_zone(),
-            // Filed on the local (on-device) calendar by default; the form's
-            // calendar selector can retarget it to a configured account.
             ..Event::default()
         };
         self.spawn_event(ev, doc);
@@ -1725,11 +1419,6 @@ impl CalendarApp {
         self.viewer.zone_name().unwrap_or("floating").to_owned()
     }
 
-    /// Insert a freshly-authored event into the model + CRDT (through the action
-    /// model), select it, and open its edit form with the caret in the title so
-    /// the next keystroke names it. Shared by the New button and the timeline's
-    /// drag-to-create. Notes are left EMPTY on purpose — the editor paints its
-    /// placeholder until the user types.
     fn spawn_event(&mut self, ev: Event, doc: &mut ui::widget::Edits<'_>) {
         let id = ev.id;
         self.submit(
@@ -1748,11 +1437,6 @@ impl CalendarApp {
         self.focus_field(FormField::Title);
     }
 
-    /// Delete an untouched new draft when its editor is dismissed. This is
-    /// deliberately narrower than “cancel event”: a user-created event with a
-    /// title, any changed field, or notes is already useful work and remains
-    /// autosaved. The delete travels through the normal replayable action path,
-    /// so collaborators and history see the same discard.
     fn discard_pristine_draft(&mut self, doc: &mut ui::widget::Edits<'_>) -> bool {
         let Some(initial) = self.fresh_draft.take() else {
             return false;
@@ -1773,8 +1457,6 @@ impl CalendarApp {
         true
     }
 
-    /// Create a timed event spanning `[start_min, end_min]` minutes-of-day on
-    /// `day` and open it for editing — the timeline drag-to-create commit.
     fn create_event_in_range(
         &mut self,
         day: NaiveDate,
@@ -1804,10 +1486,6 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Move the occurrence drawn on `original` to `day`, keeping the local
-    /// time of day and the length it shows: a chip dragged from one day of
-    /// the month grid to another. The write is the same published reschedule
-    /// the timeline's drag makes, so History undoes it in one step.
     fn move_event_to_day(
         &mut self,
         id: Id,
@@ -1823,14 +1501,10 @@ impl CalendarApp {
         };
         let (start, end) = crate::shown::wall_interval(&before, original);
         if !before.all_day {
-            // A timed event keeps its time of day, which the timeline's own
-            // move already knows how to place on another day.
             let minutes = i64::from(start.time().hour()) * 60 + i64::from(start.time().minute());
             self.move_event(id, original, (day, minutes), doc);
             return;
         }
-        // An all-day event is whole days on the viewer's clock: its span moves
-        // by however many days the chip was dragged over.
         let days = (day - original).num_days();
         let (start, end) = (start + Duration::days(days), end + Duration::days(days));
         if self
@@ -1848,10 +1522,8 @@ impl CalendarApp {
         }
     }
 
-    /// Reschedule an occurrence to a new day and start on the viewer's clock,
-    /// keeping its length: the timeline's drag-to-move. A one-off event moves;
-    /// of a repeating one only the occurrence dragged moves, the person's
-    /// "Only this event" answer (`repeat_scope`).
+    /// Reschedule an occurrence to another day and start, keeping its length: the timeline's drag to move.
+    /// A repeating event moves only the occurrence dragged (`repeat_scope`).
     fn move_event(
         &mut self,
         id: Id,
@@ -1878,10 +1550,6 @@ impl CalendarApp {
         if after == before {
             return;
         }
-        // Reschedule changes both wall endpoints together. For a reversed
-        // fold interval, first use a non-reversed bridge, then select its
-        // later endpoint before writing the final wall end. Every published
-        // edit remains valid, without replacing unrelated collaborative fields.
         let bridge_end = after.end.max(after.start);
         if let Err(error) = self.try_submit(
             doc,
@@ -1906,9 +1574,8 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Give an occurrence a new end, `end` on the viewer's clock: the
-    /// timeline's drag on a block's bottom edge. A repeating event changes
-    /// only the occurrence dragged ("Only this event", `repeat_scope`).
+    /// Give an occurrence a new end on the viewer's clock: the timeline's drag on a block's bottom edge.
+    /// A repeating event changes only the occurrence dragged (`repeat_scope`).
     fn resize_event(
         &mut self,
         id: Id,
@@ -1952,8 +1619,6 @@ impl CalendarApp {
         }
     }
 
-    /// The wall end `duration` after `start` in `zone`, and whether it is
-    /// the later reading of a repeated hour.
     fn end_after(zone: &str, start: NaiveDateTime, duration: Duration) -> (NaiveDateTime, bool) {
         if let Some((instant, _)) = crate::timezone::wall_to_utc(zone, start)
             && let Ok(tz) = zone.parse::<chrono_tz::Tz>()
@@ -1967,8 +1632,6 @@ impl CalendarApp {
         (start + duration, false)
     }
 
-    /// Move one occurrence of a repeating event to `start` (the event's own
-    /// clock), as an override of that date.
     fn move_occurrence(
         &mut self,
         before: &Event,
@@ -2002,16 +1665,10 @@ impl CalendarApp {
         }
     }
 
-    // --- week/day timeline + agenda: scroll & drag input -----------------
-
-    /// Whether the calendar content (as opposed to a modal editor)
-    /// currently owns pointer input.
     fn calendar_content_interactive(&self) -> bool {
         self.content_rect.area() > 0.0 && !(self.detail_open && self.detail_rect.area() > 0.0)
     }
 
-    /// Route input to the Agenda scroller or the self-contained week/day
-    /// controller. Typed timeline effects return here for domain/CRDT mutation.
     fn handle_timeline_input(&mut self, input: &mut InputContext<'_>) -> bool {
         if !matches!(self.view, View::Week | View::Day) {
             self.timeline.cancel_drag();
@@ -2081,8 +1738,6 @@ impl CalendarApp {
         }
     }
 
-    /// The Agenda view's timeline input: scroll only, no drag. Split out of
-    /// `handle_timeline_input` to keep it within the line-count lint.
     fn handle_agenda_timeline_input(&mut self, input: &mut InputContext<'_>) -> bool {
         if matches!(
             input.event,
@@ -2105,7 +1760,6 @@ impl CalendarApp {
         false
     }
 
-    /// The Tasks screen's scroll input: wheel and scrollbar over its rows.
     fn handle_tasks_scroll_input(&mut self, input: &mut InputContext<'_>) -> bool {
         if !matches!(
             input.event,
@@ -2155,7 +1809,6 @@ impl CalendarApp {
             .collect()
     }
 
-    /// What the Tasks screen lists: the sidebar's selected list.
     fn tasks_source(&self) -> TasksSource<'_> {
         TasksSource {
             model: &self.model,
@@ -2164,8 +1817,6 @@ impl CalendarApp {
         }
     }
 
-    /// Add a task titled `title` to the list on screen, through the same
-    /// action the root's `new-task` builds, filed so the list shows it.
     fn add_task(&mut self, title: &str, doc: &mut ui::widget::Edits<'_>) {
         let (project, due) = self.tasks_source().placement();
         let task = Task {
@@ -2193,8 +1844,6 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Show the Tasks screen with its entry field focused. Completed takes
-    /// no new task, so a new one is typed into the Inbox instead.
     fn start_new_task(&mut self) {
         if matches!(self.list_sel, Some(ListSel::Completed)) {
             self.list_sel = Some(ListSel::Inbox);
@@ -2204,10 +1853,8 @@ impl CalendarApp {
         self.tasks.set_entry_focus(true);
     }
 
-    /// The Tasks screen to assistive technology, only while it is on
-    /// screen: the "Task list" region with one item per task (empty when the
-    /// list is), and the empty state's explanation when it shows one. Each
-    /// row's open and complete controls are published from the hit map.
+    /// The Tasks screen to assistive technology: the "Task list" region with an item per task, the empty
+    /// state when it shows one, and each row's open and complete controls.
     fn task_list_access_nodes(&self) -> Vec<AccessNode> {
         if self.view != View::Tasks || self.content_rect.area() <= 0.0 {
             return Vec::new();
@@ -2279,15 +1926,10 @@ impl CalendarApp {
         nodes
     }
 
-    // --- event form model edits -----------------------------------------
-
-    /// The accounts the upload and delete drains reach.
     pub(crate) fn device_accounts(&self) -> &crate::outbox::DeviceAccounts {
         &self.device_accounts
     }
 
-    /// Attach where the person's display choices are kept, and show the
-    /// accounts as they choose.
     pub(crate) fn follow_display(
         &mut self,
         setting: ui::framework::Setting<crate::display::CalendarDisplay>,
@@ -2298,7 +1940,6 @@ impl CalendarApp {
         self.show_accounts();
     }
 
-    /// The configured accounts with the person's display choices applied.
     fn show_accounts(&mut self) {
         self.device_accounts.replace(self.configured.clone());
         self.accounts = self.display.applied_to(&self.configured);
@@ -2312,14 +1953,11 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// The accounts as configured, before display choices apply.
     #[cfg(test)]
     pub(crate) fn configured_for_test(&self) -> &AccountStore {
         &self.configured
     }
 
-    /// Keep this window's accounts in the host profile at `config_root`, and
-    /// the accounts that profile holds on this device.
     pub(crate) fn bind_profile(&mut self, config_root: Option<std::path::PathBuf>) -> AccountStore {
         self.config_root = config_root;
         self.config_root
@@ -2327,7 +1965,6 @@ impl CalendarApp {
             .map_or_else(AccountStore::default, AccountStore::load_from_settings_in)
     }
 
-    /// Follow the person's accounts, which Settings keeps, in this window.
     pub(crate) fn follow_person_accounts(
         &mut self,
         accounts: ui::framework::PersonRecord<accounts::person::PersonAccounts>,
@@ -2336,9 +1973,6 @@ impl CalendarApp {
         self.adopt_person_accounts();
     }
 
-    /// Show the person's `CalDAV` accounts when their record moved: each
-    /// account's settings from the record, its password from this device's
-    /// vault. An empty record leaves the accounts this device's file holds.
     fn adopt_person_accounts(&mut self) {
         let Some((record, seen)) = &mut self.person_accounts else {
             return;
@@ -2352,9 +1986,6 @@ impl CalendarApp {
         if person.accounts.is_empty() {
             return;
         }
-        // The accounts show whether or not this device's credential store
-        // opens: without it their servers refuse the sign-in, and the sync
-        // says so, instead of the calendars vanishing.
         let credentials = self
             .config_root
             .as_deref()
@@ -2373,7 +2004,6 @@ impl CalendarApp {
         }
     }
 
-    /// Pick up display choices made in another window or on another device.
     fn refresh_display(&mut self) {
         if let Some(setting) = &self.display_setting {
             let current = setting.get();
@@ -2384,7 +2014,6 @@ impl CalendarApp {
         }
     }
 
-    /// Change the person's display choices and keep them.
     fn change_display(
         &mut self,
         change: impl FnOnce(&mut crate::display::CalendarDisplay),
@@ -2401,9 +2030,6 @@ impl CalendarApp {
         Ok(())
     }
 
-    /// Show or hide a calendar — an *absolute* state, so the sidebar row, a
-    /// screen reader, the palette and an agent retry cannot invert a newer
-    /// choice by replaying a toggle.
     pub(crate) fn set_calendar_visibility(
         &mut self,
         id: &str,
@@ -2421,7 +2047,6 @@ impl CalendarApp {
         })
     }
 
-    /// Fold or unfold an account's calendars in the sidebar.
     fn toggle_account_collapsed(&mut self, id: &str) {
         let Some(collapsed) = self
             .accounts
@@ -2442,10 +2067,8 @@ impl CalendarApp {
         }
     }
 
-    /// Every calendar an event can be filed under: the local on-device
-    /// calendar plus each remote `CalDAV` collection configured in Settings
-    /// (the shared [`AccountStore`]). This is the selector's option list —
-    /// sourced from real configured accounts, never fabricated.
+    /// Every calendar an event can be filed under: the local calendar plus each remote `CalDAV` collection
+    /// configured in Settings ([`AccountStore`]), never a fabricated one.
     fn calendar_options(&self) -> Vec<(CalTarget, String)> {
         let mut out = vec![(CalTarget::Local, "On this device".to_string())];
         for acc in &self.accounts.accounts {
@@ -2459,15 +2082,10 @@ impl CalendarApp {
         out
     }
 
-    /// File the selected event on `target`. A remote target tags the event
-    /// with the calendar id and adopts that calendar's colour, and its server
-    /// takes it next; the local target clears the tag.
     fn set_event_calendar(&mut self, target: &CalTarget, doc: &mut ui::widget::Edits<'_>) {
         let Some(Sel::Event(id)) = self.selection else {
             return;
         };
-        // Resolve the remote calendar's palette up front (immutable borrow of
-        // `self.accounts`) so the mutable event borrow below doesn't overlap.
         let remote_color = match target {
             CalTarget::Remote(cid) => self
                 .accounts
@@ -2505,9 +2123,6 @@ impl CalendarApp {
         self.event_popovers.close();
     }
 
-    /// Open one of the form popovers, seeding the embedded picker from the
-    /// event's current value and giving it keyboard focus so it is immediately
-    /// arrow-navigable. Opening a popover takes focus off the text fields.
     fn open_popover(&mut self, which: FormPopover) {
         let ev = match self.selection {
             Some(Sel::Event(id)) => self.model.event(id).cloned(),
@@ -2521,7 +2136,6 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Move keyboard focus to a form text field (click / Tab target).
     fn focus_field(&mut self, field: FormField) {
         self.event_popovers.close();
         self.notes_editor.set_focus(false);
@@ -2545,8 +2159,6 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// The topmost hit-map action under point `p`, if any (later hits win, so
-    /// popovers/scrims added last take precedence over the fields beneath).
     fn hit_action_at(&self, p: Point) -> Option<Action> {
         self.hits
             .iter()
@@ -2555,9 +2167,6 @@ impl CalendarApp {
             .map(|(_, a)| a.clone())
     }
 
-    /// Advance (or, with `backwards`, retreat) keyboard focus through the
-    /// form's fields: title → location → notes → title. Opening a field closes
-    /// any popover.
     fn cycle_form_focus(&mut self, backwards: bool) {
         let cur: i32 = if self.title_input.is_focused() {
             0
@@ -2590,8 +2199,6 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Route input through the self-contained popover controller, then apply
-    /// any semantic edit it emits through the calendar action model.
     fn handle_popover_event(&mut self, input: &mut InputContext<'_>) {
         let edit = self.event_popovers.handle_event(input, self.last_mouse);
         match edit {
@@ -2605,21 +2212,13 @@ impl CalendarApp {
         }
     }
 
-    /// Flip the selected event's all-day flag.
     fn toggle_all_day(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.cycle_event(doc, |e| {
             if e.all_day {
-                // Preserve the date range when returning to a timed event.
-                // A midnight exclusive end is a useful all-day boundary but
-                // reads as an accidental overnight event on the timed grid.
                 let last = e.all_day_last_date();
                 e.all_day = false;
                 e.end = last.and_time(NaiveTime::from_hms_opt(17, 0, 0).unwrap_or(NaiveTime::MIN));
             } else {
-                // Calendar's editor chooses inclusive days; the durable
-                // all-day representation is [start, end), as required by
-                // RFC 5545.  A timed event ending on its start date therefore
-                // becomes one full all-day date, not a zero-length event.
                 let last = if e.end.date() > e.start.date() {
                     if e.end.time() == NaiveTime::MIN {
                         e.end.date() - Duration::days(1)
@@ -2637,9 +2236,6 @@ impl CalendarApp {
         self.event_popovers.close();
     }
 
-    /// Apply the date grid's current selection to the start or end of the
-    /// event, keeping the clock time and preserving a sane ordering (a start
-    /// past the end drags the end along; an end before the start is clamped).
     fn set_event_date(
         &mut self,
         which: FormPopover,
@@ -2675,7 +2271,6 @@ impl CalendarApp {
         });
     }
 
-    /// Apply a clock spinner's current value to the start or end time.
     fn set_event_time(
         &mut self,
         which: FormPopover,
@@ -2701,8 +2296,6 @@ impl CalendarApp {
         });
     }
 
-    /// Every event and task as an iCalendar file, and the name to suggest
-    /// for it.
     fn cycle_event<F: Fn(&mut Event)>(&mut self, doc: &mut ui::widget::Edits<'_>, f: F) {
         if let Some(Sel::Event(id)) = self.selection
             && let Some(e) = self.model.event_mut(id)
@@ -2726,9 +2319,6 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Follow one finger's contact; a one-finger sideways swipe that began
-    /// on the shown period steps to the next period (leftwards) or the
-    /// previous one (rightwards). True when the swipe stepped.
     fn swipe(&mut self, touch: &winit::event::Touch, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         use ui::gesture::{GesturePhase, TouchGestureEvent, TouchSwipeDirection};
         use winit::event::TouchPhase;
@@ -2779,17 +2369,11 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Recompute every layout rect from the allocated size (the shell's
-    /// content column). Called from `apply_layout`: the active view, and the
-    /// editor sheet over it.
     fn relayout(&mut self) {
         let r = self.rect;
         let theme = self.layout_theme.clone();
         self.content_rect = r;
 
-        // Point the active view's scroll container at the fresh geometry so a
-        // resize reflows the scroll extents (and re-clamps the offset) every
-        // frame rather than laying out once.
         match self.view {
             View::Week | View::Day => self.update_timeline_scroll(),
             View::Agenda => {
@@ -2827,13 +2411,9 @@ impl CalendarApp {
         self.layout_sheets();
     }
 
-    /// Point the timeline viewport at its new geometry, seeding the initial
-    /// work-day scroll the first time the full day does not fit.
     fn update_timeline_scroll(&mut self) {
         let area = self.view_rect();
         let days = self.timeline_days();
-        // Open on the working day; when the current time is past what that
-        // shows, open an hour before it instead.
         let working = f64::from(WORKING_DAY_START);
         let focus_hour = if days.contains(&self.today) {
             let now = self.now();
@@ -2858,9 +2438,6 @@ impl CalendarApp {
     /// model; it never claims that a remote participant is available.
     fn local_schedule_conflicts(&self, edited: &Event) -> Vec<String> {
         let (start, end) = Self::event_interval(edited, edited.start.date());
-        // Named zones can put the same instant on different calendar dates.
-        // Two days covers the full IANA offset spread without moving any
-        // recurrence anchor into a different timezone.
         let window_start = start.date() - Duration::days(2);
         let window_end = end.date().max(start.date()) + Duration::days(2);
         let resolved = Self::resolved_event_interval(edited, edited.start.date());
@@ -2910,7 +2487,6 @@ impl CalendarApp {
         conflicts
     }
 
-    /// Bounds one materialized occurrence in the editor's wall-time domain.
     fn event_interval(event: &Event, occurrence_date: NaiveDate) -> (NaiveDateTime, NaiveDateTime) {
         crate::shown::wall_interval(event, occurrence_date)
     }
@@ -2924,9 +2500,6 @@ impl CalendarApp {
         crate::shown::instants(event, date)
     }
 
-    /// Complete schedule-conflict statement for assistive technology. The
-    /// paint surface uses a compact count to retain its geometry at 200% text,
-    /// while this semantic value retains every affected event name.
     fn local_schedule_conflict_summary(&self) -> Option<String> {
         let Sel::Event(id) = self.selection? else {
             return None;
@@ -2944,7 +2517,6 @@ impl CalendarApp {
     fn apply_action(&mut self, action: Action, doc: &mut ui::widget::Edits<'_>) {
         match action {
             Action::View(v) => {
-                // The chosen view shows at once, with no drawer over it.
                 self.view = v;
                 self.put_drawer_away();
             }
@@ -2961,8 +2533,6 @@ impl CalendarApp {
             Action::NewTask | Action::FocusTaskEntry => self.start_new_task(),
             Action::ToggleTask(id) => self.toggle_task(id, doc),
             Action::List(s) => {
-                // The list's tasks show in the sidebar, under the places;
-                // choosing the shown list again puts it away.
                 self.list_sel = (self.list_sel != Some(s)).then_some(s);
             }
             Action::CloseList => self.list_sel = None,
@@ -3026,16 +2596,9 @@ impl CalendarApp {
             }
             Action::Noop => {}
         }
-        // Discrete actions are worth an immediate save; if the action didn't
-        // touch the document (view/navigation) the head check in `maybe_persist`
-        // makes this a no-op.
         self.dirty = true;
     }
 
-    /// A compact semantic projection for the global controls in the painted
-    /// hit map. Event cells keep their existing keyboard/search routes; this
-    /// adapter covers the shared navigation and creation controls that every
-    /// view paints itself.
     #[allow(
         clippy::too_many_lines,
         reason = "one exhaustive projection keeps painted hit actions and their accessible names, roles, and selection state in lockstep"
@@ -3399,10 +2962,6 @@ impl CalendarApp {
         Some((target, name, role, state))
     }
 
-    // --- calendar visibility --------------------------------------------
-
-    /// Ids of every remote calendar currently unchecked in the sidebar. A synced
-    /// event whose source calendar is in this set is filtered out of every view.
     fn hidden_calendar_ids(&self) -> HashSet<String> {
         self.accounts
             .accounts
@@ -3423,10 +2982,6 @@ impl CalendarApp {
         })
     }
 
-    /// The occurrences shown from `from` to `to` (dates on the viewer's
-    /// clock), minus those of hidden calendars: all-day ones first, then by
-    /// start. This is the one filter every view draws through, so unchecking
-    /// a calendar hides its synced events at once.
     pub(crate) fn visible_between(
         &self,
         from: NaiveDate,
@@ -3449,7 +3004,6 @@ impl CalendarApp {
         shown
     }
 
-    /// What each of `days` shows, in their order.
     pub(crate) fn visible_by_day(&self, days: &[NaiveDate]) -> Vec<Vec<crate::shown::Shown<'_>>> {
         let (Some(&from), Some(&to)) = (days.iter().min(), days.iter().max()) else {
             return Vec::new();
@@ -3460,19 +3014,10 @@ impl CalendarApp {
             .collect()
     }
 
-    // ====================================================================
-    // Drawing — each helper takes `&self` and returns its click targets.
-    // ====================================================================
-
-    /// The active view: the whole content column, its controls being the
-    /// window bar's ([`crate::window_bar`]).
     fn view_rect(&self) -> Rect {
         self.content_rect
     }
 
-    // ── week / day timeline geometry + hit-testing ──────────────────────
-
-    /// Days shown in the current timeline view: the whole week, or a single day.
     fn timeline_days(&self) -> Vec<NaiveDate> {
         match self.view {
             View::Day => vec![self.anchor],
@@ -3480,8 +3025,6 @@ impl CalendarApp {
         }
     }
 
-    /// Timed event spans supplied to the interaction controller. The host owns
-    /// event visibility policy; the controller owns block hit-testing.
     fn timeline_spans(&self, days: &[NaiveDate]) -> Vec<TimelineSpan> {
         let mut spans = Vec::new();
         for (day, shown) in days.iter().zip(self.visible_by_day(days)) {
@@ -3506,8 +3049,6 @@ impl CalendarApp {
         spans
     }
 
-    /// The minutes of `day` an occurrence's block covers: at least the
-    /// shortest block.
     fn block_minutes(shown: &crate::shown::Shown<'_>, day: NaiveDate) -> (i64, i64) {
         let (start_min, end_min) = shown.minutes_on(day);
         let start_min = start_min.min(24 * 60 - TIMELINE_SNAP_MIN);
@@ -3517,9 +3058,6 @@ impl CalendarApp {
         )
     }
 
-    /// Presentation-ready timeline snapshot. Calendar policy decides which
-    /// events are visible and how untitled events are labelled; the timeline
-    /// component owns all geometry and painting from here on.
     fn timeline_render_events<'a>(&'a self, days: &[NaiveDate]) -> Vec<TimelineRenderEvent<'a>> {
         let mut events = Vec::new();
         for (day, shown) in days.iter().zip(self.visible_by_day(days)) {
@@ -3562,9 +3100,6 @@ impl CalendarApp {
         events
     }
 
-    /// The first-run onboarding prompt to show over an empty view, or `None`
-    /// once the calendar holds events. Returned as `(headline, hint)` so the
-    /// draw path and tests gate on the same real state.
     pub fn empty_onboarding_prompt(&self) -> Option<(&'static str, &'static str)> {
         if self.model.events.is_empty() {
             Some((EMPTY_ONBOARDING_TITLE, EMPTY_ONBOARDING_HINT))
@@ -3573,13 +3108,6 @@ impl CalendarApp {
         }
     }
 
-    /// The open popover owns input first: the picker itself, then (if it
-    /// didn't consume the event) a left click resolved against the hit map
-    /// — the dismiss scrim, a calendar row, or a popover guard (part of
-    /// [`Widget::handle_event`]).
-    /// Route input to the editor's dropdowns: an open list owns every
-    /// event; a press on a closed dropdown opens it. Picks are applied at
-    /// once. Returns whether the event was consumed.
     fn handle_choice_event(
         &mut self,
         event: &WindowEvent,
@@ -3642,11 +3170,6 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Keyboard handling: Escape (cancel drag → blur field → dismiss flap →
-    /// pop the narrow detail screen → close detail), Delete (remove the
-    /// selected event/task), Tab (cycle form focus), and global letter/
-    /// arrow shortcuts (part of [`Widget::handle_event`]). Returns `true` if
-    /// the event was consumed.
     fn handle_keyboard(
         &mut self,
         event: &WindowEvent,
@@ -3693,8 +3216,6 @@ impl CalendarApp {
             return true;
         }
 
-        // Tab / Shift+Tab move between the form fields (title → location →
-        // notes) on the real key path while an event is being edited.
         if form_active && matches!(logical_key, Key::Named(NamedKey::Tab)) {
             self.cycle_form_focus(modifiers.state().shift_key());
             *handled = true;
@@ -3743,10 +3264,6 @@ impl CalendarApp {
         true
     }
 
-    /// Escape: cancel a live timeline drag first (it commits nothing), then
-    /// blur a focused text control, then dismiss the overlay flap, then pop the
-    /// narrow detail screen, then close the detail. Split out of
-    /// `handle_keyboard` to keep that under the line cap.
     fn handle_keyboard_escape(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -3772,8 +3289,6 @@ impl CalendarApp {
             self.dirty = true;
             return true;
         }
-        // A field outside any sheet (the sidebar's new-task line) gives up the
-        // keyboard first: nothing there is a surface to put away.
         if field_focused || notes_focused {
             self.title_input.set_focus(false);
             self.location_input.set_focus(false);
@@ -3834,8 +3349,6 @@ impl CalendarApp {
         if let Key::Character(ch) = logical_key
             && plain
         {
-            // A capital letters means Shift: `N` is the one-line add where
-            // `n` opens the full form.
             let act = match ch.as_str() {
                 "N" => Some(Action::QuickAdd),
                 "?" => Some(Action::Shortcuts),
@@ -3875,9 +3388,6 @@ impl CalendarApp {
         false
     }
 
-    /// Mouse click resolution: a form text field, the notes region, or the
-    /// generic hit-map (topmost last) (part of [`Widget::handle_event`]).
-    /// Returns `true` if the event was consumed.
     fn handle_mouse_click(
         &mut self,
         input: &mut InputContext<'_>,
@@ -3893,10 +3403,7 @@ impl CalendarApp {
             return false;
         };
         let p = self.last_mouse;
-        // Only the visible part of the sheet's scrolled body holds its
-        // fields: a field scrolled under the footer is not where Done is.
         let form_active = form_active && self.modal.as_ref().is_some_and(|m| m.body.contains(p));
-        // A click inside a form text field focuses it and lands the caret.
         if form_active && self.form.title.contains(p) {
             self.location_input.set_focus(false);
             self.invite_input.set_focus(false);
@@ -3930,8 +3437,6 @@ impl CalendarApp {
             self.dirty = true;
             return true;
         }
-        // A click in the Tasks screen's entry field focuses it and lands the
-        // caret, unless the editor floats over it.
         if !form_active
             && !in_notes
             && self.view == View::Tasks
@@ -3945,7 +3450,6 @@ impl CalendarApp {
             self.dirty = true;
             return true;
         }
-        // Clicks inside the notes region go to the editor (focus + caret).
         if in_notes {
             self.title_input.set_focus(false);
             self.location_input.set_focus(false);
@@ -3957,16 +3461,12 @@ impl CalendarApp {
             self.dirty = true;
             return true;
         }
-        // Otherwise resolve against the hit-map (topmost last).
         if let Some(a) = self.hit_action_at(p) {
             self.title_input.set_focus(false);
             self.location_input.set_focus(false);
             self.invite_input.set_focus(false);
             self.tasks.set_entry_focus(false);
             self.notes_editor.set_focus(false);
-            // An event's chip in the month grid is held rather than acted on at
-            // once: let go where it was pressed it opens the event, and dragged
-            // to another day it moves there.
             if let Action::OpenEvent(id) = a
                 && let Some(day) = self.month_day_at(p)
             {
@@ -3988,9 +3488,6 @@ impl CalendarApp {
         false
     }
 
-    /// Follow a chip held in the month grid: a move far enough to be a drag
-    /// marks the day it is over, and the release either moves the event there
-    /// or opens it where it was pressed. Whether the event was this drag's.
     fn handle_chip_drag(&mut self, event: &WindowEvent, state: &mut ui::widget::Edits<'_>) -> bool {
         if self.chip_drag.is_none() {
             return false;
@@ -4013,8 +3510,6 @@ impl CalendarApp {
                 self.dirty = true;
                 true
             }
-            // The window lost the pointer with the button still down: nothing
-            // is being dragged any more, and the next press starts afresh.
             WindowEvent::CursorLeft { .. } | WindowEvent::Focused(false) => {
                 self.chip_drag = None;
                 self.dirty = true;
@@ -4035,7 +3530,6 @@ impl CalendarApp {
                             original: drag.original,
                             day,
                         },
-                        // Let go where it was pressed, or off the grid: a click.
                         _ => Action::OpenEvent(drag.id),
                     },
                     state,
@@ -4047,7 +3541,6 @@ impl CalendarApp {
         }
     }
 
-    /// The day of the month grid whose cell holds `p`, while the month shows.
     fn month_day_at(&self, p: Point) -> Option<NaiveDate> {
         if self.view != View::Month {
             return None;
@@ -4061,10 +3554,6 @@ impl CalendarApp {
             })
     }
 
-    /// Forward typing (and other events) to a focused form text field so
-    /// edits land, mirroring the change into the event via
-    /// [`Self::flush_form_edits`] (part of [`Widget::handle_event`]).
-    /// Returns `true` if the caller should stop dispatching.
     fn handle_form_field_input(&mut self, input: &mut InputContext<'_>) -> bool {
         if self.tasks.entry_focused() {
             if let Some(title) = self.tasks.handle_entry_event(input) {
@@ -4111,7 +3600,6 @@ impl Widget for CalendarApp {
         self.publish_status();
         self.adopt_person_accounts();
         if !self.seeded {
-            // Whatever the document holds is now authoritative for the UI.
             self.reread(state);
             self.model_heads = (state.base_heads(), state.pending_ops());
             self.seeded = true;
@@ -4177,16 +3665,10 @@ impl Widget for CalendarApp {
                 reply.finish(started.map(|()| tilo_actions::ActionOutput::default()));
             }
         }
-        // Drain a finished background CalDAV pull, if one landed since the last
-        // frame, before binding the editor so a freshly-synced selection reads
-        // back its notes.
-        // A scenario's fresh event, to capture the New-Event form without the
-        // toast an interactive creation shows.
         if std::mem::take(&mut self.staged_new_event) {
             self.new_event(edits);
             self.status.dismiss();
         }
-        // An effect's New event: the same event the window's own button starts.
         if std::mem::take(&mut self.wanted_new_event) {
             self.new_event(edits);
         }
@@ -4251,11 +3733,7 @@ impl Widget for CalendarApp {
         }
         self.rect = new_rect;
 
-        // Recompute the responsive rects (sidebar / content / detail / notes)
-        // from the new allocated size, then place the notes editor.
         if let Some(n) = self.editor_node {
-            // The sheet grows with the notes: take their height from this
-            // layout before the sheet is solved.
             self.notes_content_h = taffy
                 .layout(n)
                 .map_or(0.0, |layout| f64::from(layout.size.height));
@@ -4275,10 +3753,7 @@ impl Widget for CalendarApp {
         presence: &PresenceCtx,
     ) {
         let t = transform;
-        // The toolbar is the window bar's: what the sidebar's own shortcut
-        // or a narrow window changed shows there this frame.
         self.declare_window_toolbar();
-        // No ground of our own: the framework painted the window ground.
         let mut own = std::mem::take(&mut self.own);
         let rect = self.rect;
         own.record(scene, t, |scene| {
@@ -4288,8 +3763,6 @@ impl Widget for CalendarApp {
         self.own = own;
     }
 
-    /// The window's top layer: the editor sheet and its pickers, the
-    /// sidebar's overflow menu, and transient status.
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -4310,18 +3783,12 @@ impl Widget for CalendarApp {
                 presence,
             );
         }
-        // The two cards sit over the calendar and its editor alike.
         self.shortcuts.draw(scene, transform, text_renderer, theme);
         self.quick_add
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    // This is the widget system's event-dispatch contract, implemented by
-    // every widget; every parameter is independently meaningful (the raw
-    // event, scaling, modifiers, CRDT handle+path, two out-params, and the
-    // node's own identity/layout).
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // Track the pointer in logical coordinates.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse = ctx.logical(position);
             self.dirty = true;
@@ -4332,22 +3799,16 @@ impl Widget for CalendarApp {
             return;
         }
 
-        // An event's chip held in the month grid takes the pointer until it is
-        // let go: dragging it moves the event to the day it is dropped on.
         if self.handle_chip_drag(event, &mut ctx.state) {
             *ctx.handled = true;
             return;
         }
 
-        // A card over the calendar holds input while it is up: nothing behind
-        // it reacts to a press or a key meant for the card.
         if self.sheet_open() {
             self.dispatch_to_sheet(event, ctx);
             return;
         }
 
-        // The question a drag on a repeating event asks owns input while it
-        // is open.
         if self.handle_repeat_scope_event(event, ctx) {
             return;
         }
@@ -4356,11 +3817,8 @@ impl Widget for CalendarApp {
         let editor_active = self.detail_open && self.detail_rect.area() > 0.0;
         let form_active = editor_active && matches!(self.selection, Some(Sel::Event(_)));
         let popover_open = form_active && self.event_popovers.is_open();
-        // Bounded to the notes column of the detail card/page so a click below
-        // or beside a floating modal isn't swallowed by the editor.
         let in_notes = editor_active && self.notes_region().contains(self.last_mouse);
 
-        // --- Open popover owns input first --------------------------------
         if popover_open {
             self.handle_popover_priority(&mut InputContext {
                 event,
@@ -4386,9 +3844,6 @@ impl Widget for CalendarApp {
             return;
         }
 
-        // --- Week/day timeline + agenda: scroll and drag ------------------
-        // Owns mouse input inside the scrolling views (wheel, scrollbar,
-        // drag-to-create / drag-to-move) before the generic hit-map path.
         let timeline_handled = self.handle_timeline_input(&mut InputContext {
             event,
             scale_factor: ctx.scale_factor,
@@ -4427,8 +3882,6 @@ impl Widget for CalendarApp {
             return;
         }
 
-        // Forward typing (and other events) to a focused form text field so
-        // edits land, mirroring the change into the event via `flush_form_edits`.
         if self.handle_form_field_input(&mut InputContext {
             event,
             scale_factor: ctx.scale_factor,
@@ -4443,8 +3896,6 @@ impl Widget for CalendarApp {
             return;
         }
 
-        // Forward remaining events (key typing, mouse move) to the editor
-        // when the notes panel is active so editing works.
         if editor_active && let Some(n) = self.editor_node {
             self.notes_editor
                 .handle_event(event, &mut ctx.reborrow(ctx.path, n));
@@ -4460,8 +3911,6 @@ impl Widget for CalendarApp {
         Some(self)
     }
 
-    /// The vertical resize shape over an event's bottom edge in the week
-    /// and day views, where a drag changes its end.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         if !matches!(self.view, View::Week | View::Day) || !self.calendar_content_interactive() {
             return None;
@@ -4473,8 +3922,6 @@ impl Widget for CalendarApp {
             .then_some(winit::window::CursorIcon::NsResize)
     }
 
-    /// The notes editor is laid out for the detail pane's notes, also while
-    /// the calendar paints over it.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
         visitor(&*self.notes_editor);
         true
@@ -4577,9 +4024,6 @@ impl Widget for CalendarApp {
             || ui::widget::Widget::needs_animation_frame(self)
     }
 
-    /// Where the view painted differently from the last presented frame.
-    /// The sheet, its pickers and the menus are in the overlay, which the
-    /// host repaints whole.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         self.own.damage(regions);
     }
@@ -4611,8 +4055,6 @@ impl Widget for CalendarApp {
         self.notes_editor.take_structure_dirty() || width_changed
     }
 
-    /// Wake for the next minute while the now line is on screen, else for
-    /// the next hour: today rolls over, and the reminders' horizon moves on.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         if self.pinned_now.is_some() {
             return None;
@@ -4679,8 +4121,6 @@ impl Widget for CalendarApp {
 }
 
 impl CalendarApp {
-    /// Paint the view in view (month, week or day, agenda, tasks) and take
-    /// the places a click acts on.
     fn draw_view(
         &mut self,
         scene: &mut Scene,
@@ -4772,8 +4212,6 @@ impl ui::widget::controls::ActionControls for CalendarApp {
 }
 
 impl CalendarApp {
-    /// Schedule reminders as system notifications from a live window, and
-    /// open the event of a reminder the person clicks.
     pub(crate) fn notify_with(
         &mut self,
         notifier: std::sync::Arc<dyn ui::notify::Notifier>,
@@ -4795,8 +4233,6 @@ impl CalendarApp {
         });
     }
 
-    /// Reconcile the scheduled reminders with what is due, when what they
-    /// follow moved.
     fn schedule_reminders(&mut self) {
         let Some(notifier) = self.notifier.clone() else {
             return;
@@ -4828,7 +4264,6 @@ impl CalendarApp {
         }
         match crate::reminders::reconcile(&*notifier, &due) {
             Ok(()) => self.reminders = Some((basis, due)),
-            // Tried again when the hour or the calendar moves on.
             Err(error) => {
                 tracing::debug!(%error, "calendar: reminders were not scheduled");
                 self.reminders = Some((basis, Vec::new()));
@@ -4836,8 +4271,6 @@ impl CalendarApp {
         }
     }
 
-    /// Move today on at midnight in a window left open: the highlight, the
-    /// now line and the anchor when it was on today.
     fn roll_today(&mut self) {
         if self.pinned_now.is_some() {
             return;
@@ -4854,7 +4287,6 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Show every calendar again, after one calendar's events were shown.
     pub(crate) fn show_all_calendars(&mut self) {
         self.calendar_filter = None;
         self.detail_open = false;
@@ -4871,7 +4303,6 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Show the inbox of tasks.
     fn show_tasks(&mut self) {
         self.view = View::Tasks;
         self.list_sel = Some(ListSel::Inbox);
@@ -4882,7 +4313,6 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Do what the view's effects asked of the window since it last looked.
     fn answer_asks(&mut self) {
         let asks = std::mem::take(&mut self.state().asks);
         for ask in asks {
@@ -4908,22 +4338,18 @@ impl CalendarApp {
         }
     }
 
-    /// The store the window shares with the view, for the view to reach.
     pub(crate) fn shared(&self) -> store::Shared {
         std::rc::Rc::clone(&self.store)
     }
 
-    /// What the window shares with the view's effect handler.
     pub(crate) fn state(&self) -> std::cell::RefMut<'_, store::Store> {
         self.store.borrow_mut()
     }
 
-    /// Whether a sync with the accounts' servers runs.
     fn syncing(&self) -> bool {
         self.store.borrow().syncing
     }
 
-    /// Show the calendar the document holds now, when it changed since.
     fn follow_document(&mut self) {
         let Some(live) = &self.live else {
             return;
@@ -4935,8 +4361,6 @@ impl CalendarApp {
     }
 }
 
-/// The Guests field: an address typed in, or its Contacts button, which
-/// sets `requested` for the next frame to open the picker.
 fn invite_input(requested: &std::rc::Rc<std::cell::Cell<bool>>) -> Box<TextInput> {
     let requested = std::rc::Rc::clone(requested);
     Box::new(
@@ -4951,7 +4375,6 @@ fn invite_input(requested: &std::rc::Rc<std::cell::Cell<bool>>) -> Box<TextInput
     )
 }
 
-/// The event form's title field.
 fn title_field() -> Box<TextInput> {
     Box::new(
         TextInput::local()
@@ -4961,7 +4384,6 @@ fn title_field() -> Box<TextInput> {
     )
 }
 
-/// The event form's location field.
 fn location_field() -> Box<TextInput> {
     Box::new(
         TextInput::local()
@@ -4970,8 +4392,6 @@ fn location_field() -> Box<TextInput> {
     )
 }
 
-/// The question a dragged occurrence of a repeating event asks: this event
-/// alone, or this one and those after it.
 fn repeat_scope_menu() -> Box<Popover> {
     Box::new(
         Popover::new()
@@ -4980,11 +4400,8 @@ fn repeat_scope_menu() -> Box<Popover> {
     )
 }
 
-/// A minute-of-day (0..=1439) as a wall-clock time.
 fn min_to_time(min: i64) -> NaiveTime {
     let m = min.clamp(0, 24 * 60 - 1);
-    // `m` is clamped to 0..=1439, so hour/minute are always in-range and this
-    // is always `Some`; the fallback is unreachable.
     NaiveTime::from_hms_opt((m / 60) as u32, (m % 60) as u32, 0).unwrap_or(NaiveTime::MIN)
 }
 

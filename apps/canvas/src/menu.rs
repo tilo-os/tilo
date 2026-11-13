@@ -72,7 +72,6 @@ fn applying(dispatcher: &Dispatcher<Artwork>, label: &str, action: Invoke<Artwor
     MenuEntry::new(lookup(label), move || dispatcher.submit(action.clone()))
 }
 
-/// What the menu offers now.
 fn entries(tools: &Tools, art: &Artwork, dispatcher: &Dispatcher<Artwork>) -> Vec<MenuEntry> {
     let picked = tools.selection.get();
     let mut entries = Vec::new();

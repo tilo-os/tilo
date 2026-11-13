@@ -69,7 +69,7 @@ class AddressProfile(TypedDict):
 
 class Application(Resource):
     """Browser — `browser.application`."""
-    __surface__ = "so.tilo.browser@60987c5bdbbdea2d"
+    __surface__ = "so.tilo.browser@b99f0cb69ffd791f"
     bookmarks: list[Bookmark]
     preferences: Settings
     @property
@@ -104,7 +104,7 @@ class Application(Resource):
 
 class PersonalBookmarks(Resource):
     """Personal bookmarks — `browser.personal-bookmarks`."""
-    __surface__ = "so.tilo.browser@60987c5bdbbdea2d"
+    __surface__ = "so.tilo.browser@b99f0cb69ffd791f"
     @property
     def added(self) -> dict[str, Added]:
         """Read only."""
@@ -157,7 +157,7 @@ class PersonalBookmarks(Resource):
 
 class BrowsingHistory(Resource):
     """Browsing history — `browser.browsing-history`."""
-    __surface__ = "so.tilo.browser@60987c5bdbbdea2d"
+    __surface__ = "so.tilo.browser@b99f0cb69ffd791f"
     @property
     def visits(self) -> dict[str, Visit]:
         """Read only."""
@@ -207,7 +207,7 @@ class BrowsingHistory(Resource):
 
 class AddressBook(Resource):
     """Address book — `browser.address-book`."""
-    __surface__ = "so.tilo.browser@60987c5bdbbdea2d"
+    __surface__ = "so.tilo.browser@b99f0cb69ffd791f"
     enabled: bool
     profiles: list[AddressProfile]
 

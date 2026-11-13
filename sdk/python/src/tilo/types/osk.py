@@ -37,7 +37,7 @@ class Lesson(TypedDict):
 
 class Keyboard(Resource):
     """On-screen keyboard — `osk.keyboard`."""
-    __surface__ = "so.tilo.osk@cc8a202934dfe9a2"
+    __surface__ = "so.tilo.osk@7269ebb0b14b83ff"
     def set_layout(self, *, value: str) -> None:
         """Runs the app's action."""
         return self.action("set-layout", value=value)
@@ -69,7 +69,7 @@ class Keyboard(Resource):
 
 class Learned(Resource):
     """What the keyboard learned — `osk.learned`."""
-    __surface__ = "so.tilo.osk@cc8a202934dfe9a2"
+    __surface__ = "so.tilo.osk@7269ebb0b14b83ff"
     @property
     def transitions(self) -> dict[str, dict[str, dict[str, int]]]:
         """Read only."""

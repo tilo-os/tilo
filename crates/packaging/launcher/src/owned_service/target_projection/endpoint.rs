@@ -8,8 +8,7 @@ use getrandom::rand_core::TryRng as _;
 use runtime_portal::process_binding::{self, ExecutingPeer};
 use std::os::fd::AsFd;
 
-/// The root owner retains this together with the actual service child. Exported
-/// view FDs are valid only while this endpoint/source authority remains current.
+/// The root owner retains this together with the actual service child.
 pub struct TargetProjectionEndpoint {
     service: super::super::ServiceEndpoint,
     authority: Arc<dyn TargetProjectionAuthority>,
@@ -24,8 +23,7 @@ pub struct TargetProjectionEndpoint {
     observation_peer: std::sync::Mutex<Option<ExecutingPeer>>,
 }
 impl TargetProjectionEndpoint {
-    /// Called only by canonical `NamespaceOwner` after it held the actual init
-    /// pidfd/PID namespace. An ordinary callback cannot mint mount authority.
+    /// Called only by canonical `NamespaceOwner` after it held the actual init pidfd/PID namespace.
     pub(in crate::owned_service) fn receive(
         service: super::super::ServiceEndpoint,
         admission: &TargetProjectionAdmission,
@@ -116,8 +114,7 @@ impl TargetProjectionEndpoint {
             observation_peer: std::sync::Mutex::new(None),
         })
     }
-    /// Independent kernel stop observation remains available after grant or
-    /// target-session revocation. It never mints a successful exit receipt.
+    /// Independent kernel stop observation remains available after grant or target-session revocation.
     pub fn projection_mode(&self) -> TargetProjectionMode {
         self.record.mode
     }
@@ -155,9 +152,7 @@ impl TargetProjectionEndpoint {
         }
         self.service.custody().map(|_| ())
     }
-    /// Available before FUSE initialization. The caller starts the actual root
-    /// filesystem relay on this stream before waiting for `observe_ready()`. The target
-    /// worker completes QPE1 on its connected control stream before first RPC.
+    /// Available before FUSE initialization.
     pub fn connect_control(&self) -> io::Result<UnixStream> {
         self.check()?;
         let deadline = std::time::Instant::now()
@@ -190,7 +185,6 @@ impl TargetProjectionEndpoint {
         Ok(stream)
     }
     /// Observe actual post-drop worker readiness, then verify the kernel mount.
-    /// The relay must already be serving: statfs can require an actual source RPC.
     pub fn observe_ready(&self) -> io::Result<()> {
         self.check()?;
         let mut slot = self
@@ -229,8 +223,7 @@ impl TargetProjectionEndpoint {
         self.check()?;
         self.mount_namespace.try_clone()
     }
-    /// Metadata observations come only from the authenticated fully dropped
-    /// canonical worker. This token grants no read/write/lookup permission.
+    /// Metadata observations come only from the authenticated fully dropped canonical worker.
     pub fn observe_held_view(&self) -> io::Result<ObservedTargetObject<'_>> {
         self.observe_object_inner(&self.view, true)
     }
@@ -260,8 +253,7 @@ impl TargetProjectionEndpoint {
         let facts = match result {
             Ok(facts) => facts,
             Err(error) => {
-                // A stalled worker may be in a genuine kernel FUSE syscall. Cancel
-                // the existing canonical namespace; root keeps custody until reap.
+                // A stalled worker may be in a genuine kernel FUSE syscall.
                 self.fail_observation(stream);
                 self.service.cancellation.cancel();
                 return Err(error);
@@ -358,7 +350,6 @@ impl TargetProjectionEndpoint {
             .store(true, std::sync::atomic::Ordering::Release);
         self.service.cancellation.cancel();
         // Linearizes channel EOF against clone acquisition just like signals.
-        // Keep unusable transport owned while any actual exposure is live.
         if self.exposure.begin_stop() {
             let _ = stream.shutdown(std::net::Shutdown::Both);
         }
@@ -405,8 +396,8 @@ fn authenticate(stream: &mut UnixStream, uid: u32) -> io::Result<ExecutingPeer> 
     Ok(peer)
 }
 
-/// Nonserializable evidence of the exact descriptor measured by this endpoint's
-/// actual signed dropped worker. No public DTO/path/FD constructor exists.
+/// Nonserializable evidence of the exact descriptor measured by this endpoint's actual signed dropped
+/// worker.
 pub struct ObservedTargetObject<'a> {
     pub(super) endpoint: &'a TargetProjectionEndpoint,
     file: File,

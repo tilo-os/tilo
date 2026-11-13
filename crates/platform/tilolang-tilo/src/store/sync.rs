@@ -135,25 +135,8 @@ impl TiloStore {
         let (changed, ends, placed) = inner.apply_new_changes(chunk, &arrived);
         inner.chunks.set_seen(chunk, heads);
         let Some(changed) = changed else {
-            let before = inner.index.clone();
             // The mirror held a change of its own, which only a copy of the record removes.
-            inner.versions.remove(&chunk);
-            inner.nested.clear();
-            inner.stats.full_syncs = inner.stats.full_syncs.saturating_add(1);
-            inner.chunks.insert(chunk, mirror_of(doc));
-            if chunk == chunk::FIRST {
-                inner.chunks.reread_placement();
-            }
-            inner.rescan();
-            // What the record did not take is not the record's: it is written onto the fresh
-            // copy, and derived again over the indexes the record's changes left, so reads keep
-            // the values and items it holds where they are.
-            inner.reapply_kept(chunk);
-            let reached = everything(&before, &inner.index);
-            inner.derive_all(&reached, None);
-            inner.rebuild_overlay();
-            inner.changed();
-            inner.notify_all();
+            inner.copy_record(chunk, doc);
             return true;
         };
         inner.stats.incremental_syncs = inner.stats.incremental_syncs.saturating_add(1);
@@ -234,6 +217,28 @@ impl TiloStore {
 }
 
 impl Inner {
+    /// Take a copy of the record `doc` as the mirror of `chunk`, and tell every reader.
+    fn copy_record(&mut self, chunk: ChunkNo, doc: &Doc) {
+        let before = self.index.clone();
+        self.versions.remove(&chunk);
+        self.nested.clear();
+        self.stats.full_syncs = self.stats.full_syncs.saturating_add(1);
+        self.chunks.insert(chunk, mirror_of(doc));
+        if chunk == chunk::FIRST {
+            self.chunks.reread_placement();
+        }
+        self.rescan();
+        // What the record did not take is not the record's: it is written onto the fresh copy,
+        // and derived again over the indexes the record's changes left, so reads keep the values
+        // and items it holds where they are.
+        self.reapply_kept(chunk);
+        let reached = everything(&before, &self.index);
+        self.derive_all(&reached, None);
+        self.rebuild_overlay();
+        self.changed();
+        self.notify_all();
+    }
+
     /// The snapshot each index that answers reads now, by its app.
     fn answering(&self) -> BTreeMap<AppId, Arc<idx::Snapshot>> {
         self.apps
@@ -339,8 +344,10 @@ impl Inner {
 /// The edits `changes` carry, in order, each with the change carrying it: what the store's own
 /// writes are the record's by ([`Inner::drop_committed_local`]). Every change of a tilolang
 /// action records the action it made, and so the edits it wrote; a change that records none —
-/// the record's own genesis, a merge — took none of the store's writes. Also whether every one
-/// of `changes` records some.
+/// the record's own genesis, a merge — took none of the store's writes. A change whose action
+/// keeps its large parts as content carries references where the store wrote what they stand
+/// for, so it reads here as the action the store handed over ([`sent_as`]). Also whether every
+/// one of `changes` records some.
 pub(super) fn committed_edits(
     changes: &[automerge::Change],
     sent: &[DynAction],
@@ -349,12 +356,14 @@ pub(super) fn committed_edits(
     let mut out = Vec::new();
     for change in changes {
         let hash = change.hash();
-        let mut edits = idx::reflect::edits_of(change);
-        if edits.is_empty()
-            && let Some(action) = sent_as(change, sent)
-        {
-            edits.clone_from(&action.edits);
-        }
+        // The action the store handed over first: a recorded action that keeps its large parts
+        // as content reads differently from what the store wrote whether or not the rest of its
+        // payload decodes — a rich text's operations are JSON, so its action does decode, with a
+        // reference standing where the body was — and only the action as it ran names the write.
+        let edits = match sent_as(change, sent) {
+            Some(action) => action.edits.clone(),
+            None => idx::reflect::edits_of(change),
+        };
         every &= !edits.is_empty();
         out.extend(edits.into_iter().map(|edit| (hash, edit)));
     }
@@ -362,10 +371,10 @@ pub(super) fn committed_edits(
 }
 
 /// The action of `sent` the change `change` records with its large parts kept as content: the
-/// recorded action does not decode without that content, which may never reach this device,
-/// but it reads as the action this store handed over with those parts taken out. Without this
-/// the store would not know its own write in the record, and would write it again over every
-/// change that arrives after it: a long note's whole body, over a peer's edit of it.
+/// recorded action does not read as the action that ran without that content, which may never
+/// reach this device, but it reads as the action this store handed over with those parts taken
+/// out. Without this the store would not know its own write in the record, and would write it
+/// again over every change that arrives after it: a pasted body, over a peer's edit of it.
 fn sent_as<'a>(change: &automerge::Change, sent: &'a [DynAction]) -> Option<&'a DynAction> {
     if sent.is_empty() {
         return None;

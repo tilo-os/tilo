@@ -273,6 +273,8 @@ mod settings;
 // The person's settings sections the page keeps: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod kept_settings;
+#[cfg(target_arch = "wasm32")]
+pub use browser::{RENDERER_CODE, RendererCode, builtin_renderer_code};
 #[cfg(any(target_arch = "wasm32", test))]
 pub use kept_settings::{SETTINGS_KEEPER, SettingsKeeper, builtin_settings_keeper};
 #[cfg(target_arch = "wasm32")]

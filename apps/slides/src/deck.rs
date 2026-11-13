@@ -1,19 +1,10 @@
-//! The deck as Slides stores it, and the operations on it that are more
-//! than editing one field.
-//!
-//! [`Deck`] is the record: its title and theme, and its slides in one
-//! [`Collection`] whose order is the deck's. Each slide holds its elements
-//! in a collection of its own whose order is the stacking order, back to
-//! front. A text box's words are rich text, edited by field edits at their
-//! path (`Deck::paths().slides.item(&slide).elements.item(&element).body`);
-//! an element's place, size and style, a slide's layout, background and
-//! speaker notes, the deck's title and theme are plain field edits. The
-//! verbs below are what is more than that: adding, copying, moving and
-//! deleting slides and elements, restacking, and replacing the whole deck
-//! with a presentation file.
-//!
-//! The window works on [`crate::model::Deck`], the deck as it draws it,
-//! made from this record by [`mirror`].
+//! The deck as Slides stores it, with the operations on it that are more than
+//! editing one field. [`Deck`]'s slides are one [`Collection`] in the deck's
+//! order; each slide holds its elements in a collection whose order is the
+//! stacking order, back to front. Everything else is a field edit; the verbs
+//! below add, copy, move and delete slides and elements and replace the deck.
+//! The window works on [`crate::model::Deck`], made from this record by
+//! [`mirror`].
 
 use serde::{Deserialize, Serialize};
 use tilo_document::{ClipBlock, RichText, RichTextAction};
@@ -26,9 +17,7 @@ use crate::model::{
     STROKE_ROLES, TextAlign,
 };
 
-/// The most slides one deck holds.
 pub const MAX_SLIDES: usize = 1_000;
-/// The most elements one slide holds.
 pub const MAX_ELEMENTS_PER_SLIDE: usize = 10_000;
 
 /// A deck.
@@ -100,7 +89,7 @@ pub struct Element {
 }
 
 impl Element {
-    /// An element whose place and style are ones the inspector can make.
+    /// Refused unless the place and style are ones the inspector can make.
     fn valid(&self) -> Result<(), Refusal> {
         if !valid_geometry(self.kind, self.x, self.y, self.w, self.h) {
             return Err(Refusal::new("the element's place or size is off the slide"));
@@ -125,11 +114,10 @@ impl Element {
     }
 }
 
-/// An element as a verb carries it whole: the window's paste, a slide's
-/// copy, a file's import. `blocks` are a text box's words as written.
+/// An element as a verb carries it whole. `blocks` are a text box's words as
+/// written.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct ElementData {
-    /// The id it is kept under.
     pub id: String,
     pub kind: ElementKind,
     pub x: f64,
@@ -152,62 +140,44 @@ pub struct ElementData {
     pub radius: f64,
 }
 
-/// An element an agent adds: its kind and place, its words or picture, and
-/// any style other than its kind's.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct NewElement {
-    /// What to add.
     pub kind: ElementKind,
-    /// Left edge, in slide units (the slide is 1280 wide).
     pub x: f64,
-    /// Top edge, in slide units (the slide is 720 high).
     pub y: f64,
-    /// Width, in slide units.
     pub w: f64,
-    /// Height, in slide units.
     pub h: f64,
     /// A text box's words, a paragraph per line.
     #[serde(default)]
     pub text: Option<String>,
-    /// A picture's content id: `asset:blake3:<reference>`, or the
-    /// `tilo.content:<reference>` address another app or an import answered.
+    /// `asset:blake3:<reference>`, or the `tilo.content:<reference>` address
+    /// another app answered.
     #[serde(default)]
     pub src: Option<String>,
-    /// Fill colour, and a text box's text colour: a palette role (accent,
-    /// accent-soft, accent-deep, surface, surface-dim, deep, text, text-dim,
-    /// on-accent, white, success, warning, danger, info), `#RRGGBB`, or
-    /// `none`.
+    /// Fill colour, and a text box's text colour: a palette role, `#RRGGBB`, or
+    /// `none`. The inspector lists the roles.
     #[serde(default)]
     pub fill: Option<String>,
-    /// A text box's text colour: the same value as `fill`, by its text name.
     #[serde(default)]
     pub text_color: Option<String>,
-    /// Outline colour: `none`, a palette role or `#RRGGBB`.
     #[serde(default)]
     pub stroke: Option<String>,
-    /// Outline width in slide units, 0 to 64.
     #[serde(default)]
     pub stroke_width: Option<f64>,
-    /// Font size in slide units, 4 to 256.
     #[serde(default)]
     pub font_size: Option<f64>,
-    /// Text alignment.
     #[serde(default)]
     pub align: Option<TextAlign>,
-    /// Bold text.
     #[serde(default)]
     pub bold: Option<bool>,
-    /// Italic text.
     #[serde(default)]
     pub italic: Option<bool>,
-    /// Corner radius of a rectangle, in slide units, 0 to 720.
     #[serde(default)]
     pub radius: Option<f64>,
 }
 
 impl NewElement {
-    /// The element as a verb carries it, refused when its words, picture or
-    /// colours do not fit its kind.
+    /// Refused when its words, picture or colours do not fit its kind.
     fn data(&self) -> Result<ElementData, Refusal> {
         let text = self.text.clone().unwrap_or_default();
         let src = self.src.as_deref().map(picture_id).unwrap_or_default();
@@ -256,11 +226,9 @@ impl NewElement {
     }
 }
 
-/// The picture id a deck stores for `src`: content the workspace holds
-/// (`tilo.content:<reference>`) is the same bytes under the deck's own
-/// prefix, so a picture another app kept or an agent was handed goes
-/// straight onto a slide. The reference's key is case-sensitive: it is kept
-/// as it is.
+/// Content the workspace holds (`tilo.content:<reference>`) becomes the same
+/// bytes under the deck's prefix, so a picture another app kept goes straight
+/// onto a slide. The reference's key is case-sensitive.
 fn picture_id(src: &str) -> String {
     let src = src.trim();
     match ui::tilo_actions::content_hash(src) {
@@ -272,19 +240,16 @@ fn picture_id(src: &str) -> String {
 /// A slide as a verb carries it whole.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct SlideData {
-    /// The id it is kept under.
     pub id: String,
     pub layout: Layout,
     pub background: Background,
     #[serde(default)]
     pub notes: String,
-    /// Back to front.
     #[serde(default)]
     pub elements: Vec<ElementData>,
 }
 
 impl ElementData {
-    /// `element` of the window's deck as a verb carries it.
     #[must_use]
     pub fn of(element: &crate::model::Element) -> Self {
         let text = element.kind == ElementKind::Text;
@@ -316,7 +281,6 @@ impl ElementData {
         }
     }
 
-    /// The element as the deck stores it.
     #[must_use]
     pub fn stored(&self) -> Element {
         let mut body = RichText::default();
@@ -346,7 +310,6 @@ impl ElementData {
 }
 
 impl SlideData {
-    /// `slide` of the window's deck as a verb carries it.
     #[must_use]
     pub fn of(slide: &crate::model::Slide) -> Self {
         Self {
@@ -358,7 +321,6 @@ impl SlideData {
         }
     }
 
-    /// This slide with fresh ids for it and its elements, minted by `cx`.
     fn reminted(&self, cx: &mut ActionCx) -> Self {
         let mut copy = self.clone();
         copy.id = cx.uuid().to_string();
@@ -368,7 +330,6 @@ impl SlideData {
         copy
     }
 
-    /// The slide as the deck stores it, and its id.
     fn stored(&self) -> Result<(Id, Slide), Refusal> {
         if !valid_id(&self.id) {
             return Err(Refusal::new("a slide's id is not blank"));
@@ -398,13 +359,8 @@ impl SlideData {
 }
 
 impl Deck {
-    /// What the record holds: the title and theme, and the slides in their order, each with the
-    /// elements it holds.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// Answers through [`fields`](tilo_resource::read::fields), so a caller with
+    /// no window open reads the record as it reads any app's.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -423,12 +379,6 @@ impl Deck {
 )]
 impl Deck {
     /// Add slide
-    ///
-    /// A new slide after `after` (last when none), its title and body text
-    /// boxes holding `title` and `body` when given. A `title` layout makes a
-    /// cover slide. A new deck's starter slide that nothing has changed yet
-    /// gives way to it, so a deck an agent composes keeps no empty first
-    /// slide; a starter someone edited stays.
     #[action(answers)]
     pub fn add_slide(
         &mut self,
@@ -462,9 +412,6 @@ impl Deck {
     }
 
     /// Insert slide
-    ///
-    /// The slide `slide`, whole, at position `at` (counting from 0): the
-    /// window's new and pasted slides, under the ids they carry.
     #[action]
     pub fn insert_slide(
         &mut self,
@@ -475,8 +422,6 @@ impl Deck {
     }
 
     /// Duplicate slide
-    ///
-    /// A copy of the slide, right after it.
     #[action(item = slides)]
     pub fn duplicate_slide(&mut self, cx: &mut ActionCx, slide: &Id) -> Result<(), Refusal> {
         let slide = &self.slide_key(slide)?;
@@ -511,8 +456,6 @@ impl Deck {
     }
 
     /// Move slide
-    ///
-    /// Put the slide at `position`, counting from 0 for the first slide.
     #[action(item = slides, answers)]
     pub fn move_slide(
         &mut self,
@@ -530,10 +473,6 @@ impl Deck {
     }
 
     /// Set slide text
-    ///
-    /// Replace the words of the slide's title (its first text box) and/or
-    /// body (its second) as plain text, a paragraph per line, keeping their
-    /// place and style.
     #[action(item = slides, answers)]
     pub fn set_text(
         &mut self,
@@ -577,9 +516,6 @@ impl Deck {
     }
 
     /// Add element
-    ///
-    /// A text box, shape, line or picture on the slide, above everything on
-    /// it, styled as its kind is unless `element` names a style.
     #[action(item = slides, answers)]
     pub fn add_element(
         &mut self,
@@ -594,9 +530,6 @@ impl Deck {
     }
 
     /// Insert element
-    ///
-    /// The element `element`, whole, above everything on the slide: the
-    /// window's pasted and new elements, under the ids they carry.
     #[action(item = slides)]
     pub fn insert_element(
         &mut self,
@@ -642,9 +575,6 @@ impl Deck {
     }
 
     /// Replace deck
-    ///
-    /// Replace the whole deck — its title, theme, look and every slide — with
-    /// another: a presentation file opened into it.
     #[action]
     pub fn replace_deck(
         &mut self,
@@ -681,9 +611,8 @@ impl Deck {
 }
 
 impl Deck {
-    /// What an edit of the deck answers its caller: the deck's outline,
-    /// titled and with its handles, so an agent sees what it changed
-    /// without reading the deck again.
+    /// The deck's outline, titled and with its handles, so an agent sees what it
+    /// changed without reading the deck again.
     fn outline(
         doc: &tilo_resource::Doc,
         _action: &str,
@@ -692,9 +621,8 @@ impl Deck {
         crate::outline::of_document(doc).map(|outline| serde_json::json!({ "outline": outline }))
     }
 
-    /// The deck every new record begins with, under fixed ids: the genesis
-    /// is the same change on every device, so two people creating the
-    /// workspace's deck before they sync converge on one first slide.
+    /// Fixed ids, so the genesis is the same change on every device: two people
+    /// creating the deck before they sync converge on one first slide.
     #[must_use]
     pub fn starter() -> Self {
         let deck = crate::model::starter_deck();
@@ -722,9 +650,9 @@ impl Deck {
         }
     }
 
-    /// The id of the slide `key` names: its id (also as `#id` or the
-    /// slide's item resource id), or its number counting from 1 as the
-    /// outline shows it, so a caller that counted slides needs no id.
+    /// Its id (also as `#id` or the slide's item resource id), or its number
+    /// counting from 1 as the outline shows it, so a caller that counted slides
+    /// needs no id.
     pub fn slide_key(&self, key: &Id) -> Result<Id, Refusal> {
         if self.slides.contains(key) {
             return Ok(key.clone());
@@ -759,8 +687,7 @@ impl Deck {
         )))
     }
 
-    /// The starter slide a new deck begins with, while it is the deck's
-    /// only slide and nothing has changed it.
+    /// While it is the deck's only slide and nothing has changed it.
     fn untouched_starter_slide(&self) -> Option<Id> {
         let starter = Self::starter();
         let (id, _) = self
@@ -776,9 +703,7 @@ impl Deck {
         (shown(self) == shown(&starter)).then(|| id.clone())
     }
 
-    /// Whether the deck is still the one a new record begins with: its
-    /// untouched starter slide under its starter title. An import replaces
-    /// only such a deck, never one someone wrote.
+    /// An import replaces only such a deck, never one someone wrote.
     #[must_use]
     pub fn is_untouched(&self) -> bool {
         self.title == Self::starter().title && self.untouched_starter_slide().is_some()
@@ -820,7 +745,6 @@ impl Deck {
     }
 }
 
-/// A copy of `element` with its words as written.
 fn copied(element: &Element) -> Element {
     let mut copy = element.clone();
     if element.kind == ElementKind::Text {
@@ -833,7 +757,6 @@ fn copied(element: &Element) -> Element {
     copy
 }
 
-/// The paragraphs of `body` as the editor shows them.
 #[must_use]
 pub fn blocks_of(body: &RichText) -> Vec<BlockContent> {
     let Some(state) = body.state() else {
@@ -847,7 +770,6 @@ pub fn blocks_of(body: &RichText) -> Vec<BlockContent> {
         .collect()
 }
 
-/// The deck as the window draws it.
 #[must_use]
 pub fn mirror(deck: &Deck) -> crate::model::Deck {
     crate::model::Deck {
@@ -891,8 +813,8 @@ fn mirror_element(id: &Id, element: &Element, z: usize) -> crate::model::Element
     mirrored.radius = element.radius;
     mirrored.z = i64::try_from(z).unwrap_or(i64::MAX);
     if element.kind == ElementKind::Text {
-        // The paragraphs keep the ids the record names them by, so a style
-        // set over the box's words marks them where they are.
+        // The paragraphs keep the record's ids, so a style set over the box marks
+        // them where they are.
         let blocks = blocks_of(&element.body);
         mirrored.set_blocks(blocks.clone());
         mirrored.blocks = blocks;
@@ -903,8 +825,7 @@ fn mirror_element(id: &Id, element: &Element, z: usize) -> crate::model::Element
     mirrored
 }
 
-/// The object text box `element` of slide `slide` keeps its words in, in
-/// `doc`.
+/// The object a text box keeps its words in.
 #[must_use]
 pub fn body_object(
     doc: &tilo_resource::Doc,
@@ -916,8 +837,7 @@ pub fn body_object(
         .object(doc)
 }
 
-/// The rich-text op setting or clearing `mark` over every word of a text
-/// box showing `blocks`.
+/// Sets or clears `mark` over every word.
 #[must_use]
 pub fn mark_all(blocks: &[BlockContent], mark: &Mark, on: bool) -> RichTextAction {
     let (name, value) = tilo_rich_text::document_mark(mark);
@@ -938,9 +858,8 @@ pub fn mark_all(blocks: &[BlockContent], mark: &Mark, on: bool) -> RichTextActio
     }
 }
 
-/// The rich-text op making every paragraph of a text box showing `blocks`
-/// a bulleted list (`Some(false)`), a numbered one (`Some(true)`), or
-/// paragraphs again (`None`), each at the top of the outline.
+/// A bulleted list (`Some(false)`), a numbered one (`Some(true)`), or paragraphs
+/// again (`None`), each at the top of the outline.
 #[must_use]
 pub fn list_all(blocks: &[BlockContent], list: Option<bool>) -> RichTextAction {
     let (kind, level) = match list {
@@ -960,8 +879,7 @@ pub fn list_all(blocks: &[BlockContent], list: Option<bool>) -> RichTextAction {
     }
 }
 
-/// Whether a deck titled `title` of `slides` stays within what one deck
-/// holds, counted across the deck.
+/// Counted across the deck.
 fn within_limits(title: &str, slides: &[SlideData]) -> bool {
     let mut elements = 0_usize;
     let mut text = title.chars().count();
@@ -987,8 +905,7 @@ fn valid_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_whitespace)
 }
 
-/// Whether `value` is a colour the inspector offers: a role of the theme, a
-/// canonical `#RRGGBB[AA]`, or `none` where that is allowed.
+/// A role of the theme, a canonical `#RRGGBB[AA]`, or `none` where allowed.
 #[must_use]
 pub fn exact_paint(value: &str, allow_none: bool) -> bool {
     (allow_none && value == "none")
@@ -1000,8 +917,8 @@ pub fn exact_paint(value: &str, allow_none: bool) -> bool {
         || (value.starts_with('#') && ui::color::parse_hex(value).is_some())
 }
 
-/// Whether an element of `kind` at `x, y` sized `w × h` lies within reach of
-/// the slide.
+/// Whether an element of `kind` at `x, y` sized `w × h` lies within reach of the
+/// slide.
 #[must_use]
 pub fn valid_geometry(kind: ElementKind, x: f64, y: f64, w: f64, h: f64) -> bool {
     x.is_finite()
@@ -1011,8 +928,8 @@ pub fn valid_geometry(kind: ElementKind, x: f64, y: f64, w: f64, h: f64) -> bool
         && (-SLIDE_W..=SLIDE_W * 2.0).contains(&x)
         && (-SLIDE_H..=SLIDE_H * 2.0).contains(&y)
         && match kind {
-            // Lines are stored as the bounding rectangle of their endpoints.
-            // A horizontal or vertical line deliberately has one zero extent.
+            // A line is stored as its endpoints' bounding rect, so a horizontal
+            // or vertical one has a zero extent.
             ElementKind::Line => {
                 (0.0..=SLIDE_W * 2.0).contains(&w)
                     && (0.0..=SLIDE_H * 2.0).contains(&h)

@@ -1,24 +1,13 @@
 //! Keeping what the office codecs do not model: unmodeled package parts split into atoms for
 //! qdoc's preservation layer, and unmodeled body content kept in place in the model.
 //!
-//! A part the codec does not model is carried through export verbatim. It is stored as ordered
-//! atoms so two replicas changing different parts of it merge instead of one clobbering the
-//! other; for XML that means one atom per element at the first level where the tree branches.
-
-//!
-//! Unmodeled content *inside* the regenerated body part is kept in place instead:
-//! - a body-level element becomes a `fidelity` block whose `xml` attr holds the element verbatim
-//!   and whose [`ATTR_FORMAT`] attr names the format it came from;
-//! - an element inside a paragraph (a field, content control, formula, drawing that is not a
-//!   plain image, …) becomes its visible text in the paragraph — a field's result, a content
-//!   control's content — or one [`FIELD_PLACEHOLDER`] when it shows no text, covered by a mark
-//!   ([`MARK_DOCX_XML`] / [`MARK_ODT_XML`]) whose value is the element verbatim.
-//!
-//! Both are re-emitted verbatim at the same position by the codec that captured them, and
-//! skipped by the other one (the XML of one format means nothing in the other). An inline
-//! element's text edits like any other; once it no longer matches the element (see
-//! [`run_content`]), the edited text is written instead of the element. Deleting the block,
-//! or all of an element's text, deletes the element.
+//! A part the codec does not model is stored as ordered atoms, so two replicas changing different
+//! parts of it merge instead of one clobbering the other; for XML that means one atom per element
+//! at the first level where the tree branches. Unmodeled content inside the regenerated body part
+//! is kept in place instead: a body-level element becomes a `fidelity` block whose `xml` attr
+//! holds it verbatim, and an element inside a paragraph becomes its visible text or one
+//! [`FIELD_PLACEHOLDER`], covered by a mark whose value is the element verbatim. Text edited away
+//! from an element writes the edited text instead of the element.
 
 use std::fmt::Write as _;
 use tilo_content::ContentInputs;
@@ -101,7 +90,6 @@ pub fn run_content<'a>(
         .and_then(|m| m.value.as_str())
     {
         let covered = covered_text(xml, own_mark);
-        // Text typed right after the element joins its mark: it follows the element.
         if let Some(rest) = text.strip_prefix(covered.as_str()) {
             return RunContent {
                 kept: Some(xml),
@@ -178,8 +166,6 @@ fn docx_visible_text(xml: &str) -> String {
     )
 }
 
-/// The visible text of an ODF paragraph-content element: its text, `text:tab`, `text:s` and
-/// `text:line-break`, leaving out drawings and frames, notes and annotations.
 fn odt_visible_text(xml: &str) -> String {
     let hidden = |name: &[u8]| {
         name.starts_with(b"draw:")
@@ -244,7 +230,6 @@ fn visible_text(
             Event::Empty(e) if skip == 0 && !hidden(e.name().as_ref()) => empty(&e, &mut out),
             Event::Text(t) if skip == 0 && open.last().is_some_and(|n| text_in(n)) => {
                 if let Ok(txt) = t.xml10_content()
-                    // Pretty-printer indentation between elements, not text.
                     && !(txt.chars().all(char::is_whitespace) && txt.contains(['\n', '\r']))
                 {
                     out.push_str(&txt);
@@ -259,8 +244,6 @@ fn visible_text(
     }
 }
 
-/// The start tag of an XML document's root element (`<w:document …>`), for re-emitting a
-/// regenerated part under the original namespace declarations.
 pub fn root_start_tag(xml: &[u8]) -> Option<String> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
@@ -321,7 +304,6 @@ pub fn set_preserved(doc: &mut DocMut<'_>, key: &str, bytes: &[u8], inputs: &mut
     }
 }
 
-/// Whether a part starts like XML (an `<?xml` prologue or a leading tag, after whitespace).
 fn looks_like_xml(bytes: &[u8]) -> bool {
     let head: &[u8] = bytes.get(..bytes.len().min(64)).unwrap_or(bytes);
     let trimmed = head
@@ -360,8 +342,6 @@ fn parse_elem_spans(bytes: &[u8]) -> Option<Vec<ElemSpan>> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
     let s = std::str::from_utf8(bytes).ok()?;
-    // quick-xml 0.36 defaults `expand_empty_elements` to false, so a self-closing
-    // `<x/>` arrives as one `Event::Empty` rather than a Start+End pair.
     let mut reader = Reader::from_str(s);
     let mut depth: usize = 0;
     let mut spans: Vec<ElemSpan> = Vec::new();
@@ -409,7 +389,6 @@ fn split_xml_top_level(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
     // is a valid split point only if its parent held exactly one element. Depth 0's "parent" is the implicit document root.
     let max_depth = spans.iter().map(|s| s.depth).max().unwrap_or(0);
     for d in 0..=max_depth {
-        // Require a single shared parent: exactly one element at the parent depth.
         if d > 0
             && spans
                 .iter()
@@ -425,8 +404,6 @@ fn split_xml_top_level(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
         if at_d.len() < 2 {
             continue; // single wrapper (or none) at this depth — descend further
         }
-        // Split at the boundaries between sibling elements: the leading atom is everything before the first sibling
-        // (prologue + ancestor open tags); the final atom runs to EOF (last sibling + ancestor close tags + trailing text).
         let mut boundaries: Vec<usize> = Vec::new();
         for s in at_d.iter().skip(1) {
             boundaries.push(s.start);
@@ -467,8 +444,6 @@ mod tests {
     fn preserved_parts_split_into_atoms_and_concatenate_back() {
         {
             let atoms = split_atoms(TWO_STYLE_PART);
-            // Two depth-1 siblings → two atoms: [prologue + root-open + style A], [style B + root-close]
-            // (the first sibling rides with the leading material; each subsequent sibling opens a new atom).
             assert_eq!(atoms.len(), 2, "two style atoms: {atoms:?}");
             let joined: Vec<u8> = atoms.iter().flatten().copied().collect();
             assert_eq!(

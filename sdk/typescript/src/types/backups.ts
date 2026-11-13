@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.backups@2365a05054a2a5f9";
+export const SURFACE = "so.tilo.backups@6f8503c299024f50";
 
 export interface RetentionPolicy {
   hourly: number;

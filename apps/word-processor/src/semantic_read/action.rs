@@ -27,7 +27,6 @@ struct Request {
     format: Format,
 }
 
-/// What a page reads as: Markdown by default, or the raw segments.
 #[derive(
     Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::JsonSchema,
 )]
@@ -38,10 +37,8 @@ enum Format {
     Segments,
 }
 
-/// A page's size when the caller names none: the most one page holds.
 const DEFAULT_PAGE_SIZE: u8 = 64;
 
-/// Shape validation only; no supplied heads or cursor confer authority.
 fn validate_request(resource: &ResourceSpec, payload: &[u8]) -> Result<(), SemanticReadError> {
     let request: Request = decode_request(payload)?;
     let kind = <crate::model::Document as ui::tilo_resource::Resource>::KIND;
@@ -55,17 +52,13 @@ fn validate_request(resource: &ResourceSpec, payload: &[u8]) -> Result<(), Seman
     Ok(())
 }
 
-/// What `read-text` is invoked with.
 #[derive(Deserialize, ui::tilo_resource::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct Params {
-    /// Maximum blocks in this page (default 64)
     #[schema(range(min = 1, max = 64))]
     page_size: Option<u8>,
-    /// Opaque nextCursor from the preceding page
     #[schema(range(max = 1024))]
     cursor: Option<String>,
-    /// markdown (default) or segments: each block's raw text, kind and id, cells too
     format: Option<Format>,
 }
 
@@ -95,7 +88,6 @@ pub fn spec() -> ActionSpec {
     )
 }
 
-/// One page of body text at `heads`, for a request [`validate_request`] accepted.
 fn project(
     document: &automerge::AutoCommit,
     heads: &[automerge::ChangeHash],
@@ -121,8 +113,6 @@ fn project(
     })
 }
 
-/// The SDK stamps `record` and `basis`; the projection supplies `content` and
-/// `nextCursor`.
 pub fn result_schema() -> &'static serde_json::Value {
     static SCHEMA: OnceLock<serde_json::Value> = OnceLock::new();
     SCHEMA.get_or_init(|| {

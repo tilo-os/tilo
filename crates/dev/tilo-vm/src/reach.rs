@@ -1,13 +1,7 @@
-//! Reaching a device by name and waking it.
-//!
-//! A device's address is only a hint: DHCP hands out another one, a laptop
-//! roams between access points. tilo-vm records a device's hostname, its MAC
-//! on the network it was reached on and what can wake it ([`NetFacts`],
-//! read by [`NET_PROBE`]) whenever it reaches the device. When the recorded
-//! address stops answering it looks the device up as `<hostname>.local`
-//! (mDNS, through `getent hosts` or `avahi-resolve`) and keeps the new
-//! address. A device that is not found either is asleep or gone, and
-//! `tilo-vm vm wake` sends its Wake-on-LAN magic packet from this machine.
+//! Reaching a device by name and waking it. A recorded address is only a hint:
+//! when it stops answering, tilo-vm looks the device up as `<hostname>.local`
+//! and keeps the new address, or sends a Wake-on-LAN packet when it is asleep or
+//! gone.
 
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::time::Duration;
@@ -53,8 +47,6 @@ if command -v tilo-device-admin >/dev/null 2>&1; then
 fi
 true"#;
 
-/// [`NET_PROBE`] for a device reached at `host`, on one line: a remote
-/// command is one line of the login shell's.
 pub fn net_probe(host: &str) -> String {
     NET_PROBE
         .replace("%ADDR%", &crate::vmbuild::sh_quote(host))
@@ -66,7 +58,6 @@ pub fn net_probe(host: &str) -> String {
         .replace("else;", "else")
 }
 
-/// What reaching and waking a device needs, as it reported it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetFacts {
     pub hostname: Option<String>,
@@ -75,36 +66,25 @@ pub struct NetFacts {
     pub peer: Option<crate::config::PeerRoute>,
 }
 
-/// How the device can be woken, as it reported it when last reached.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WakeInfo {
-    /// The interface tilo-vm reached it on.
     pub interface: String,
     /// `wol` (Ethernet Wake-on-LAN) or `wowlan` (Wi-Fi).
     pub via: String,
     /// `enabled`, `disabled`, `unsupported`, or `unknown` when the device
     /// has no tool that says (`ethtool`, `iw`).
     pub state: String,
-    /// Its subnet's broadcast address, where the magic packet goes besides
-    /// 255.255.255.255.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub broadcast: Option<String>,
-    /// The Wi-Fi interface's phy, for `iw phy <phy> wowlan`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phy: Option<String>,
 }
 
 impl WakeInfo {
-    /// Can a magic packet be counted on to wake it? Only Ethernet
-    /// Wake-on-LAN that is enabled. A Wi-Fi chip may list `WoWLAN` and keep
-    /// its association in suspend while the machine around it still does
-    /// not wake on the packet (a Snapdragon laptop's WCN7850, say), so
-    /// `WoWLAN` is never counted on.
     pub fn reliable(&self) -> bool {
         self.via == "wol" && self.state == "enabled"
     }
 
-    /// One line: what wakes it, and how to turn it on when it is off.
     pub fn describe(&self) -> String {
         let on = self.enable_command();
         let interface = &self.interface;
@@ -134,7 +114,6 @@ impl WakeInfo {
         }
     }
 
-    /// The command that turns magic-packet wake on, as root on the device.
     pub fn enable_command(&self) -> String {
         match (self.via.as_str(), &self.phy) {
             ("wowlan", Some(phy)) => format!("iw phy {phy} wowlan enable magic-packet"),
@@ -144,7 +123,6 @@ impl WakeInfo {
     }
 }
 
-/// What `tilo-device-admin id` prints.
 #[derive(Deserialize)]
 struct AdminId {
     device: String,
@@ -157,7 +135,6 @@ struct AdminId {
     home_relay: Option<String>,
 }
 
-/// Read [`NET_PROBE`]'s answer.
 pub fn parse_net_probe(output: &str) -> NetFacts {
     let mut sections = output.split("@@");
     let head = sections.next().unwrap_or_default();
@@ -286,8 +263,6 @@ pub fn wake_targets(broadcast: Option<&str>) -> Vec<Ipv4Addr> {
     targets
 }
 
-/// Send the magic packet for `mac` to each target's [`WAKE_PORT`]; the
-/// targets it went to.
 pub fn send_magic_packet(mac: [u8; 6], targets: &[Ipv4Addr]) -> std::io::Result<Vec<String>> {
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
     socket.set_broadcast(true)?;
@@ -306,8 +281,6 @@ pub fn send_magic_packet(mac: [u8; 6], targets: &[Ipv4Addr]) -> std::io::Result<
     }
 }
 
-/// Is this ssh failure a lost route rather than a refusal: the device
-/// asleep, gone, or on another address?
 pub fn lost(detail: &str) -> bool {
     let detail = detail.to_ascii_lowercase();
     [
@@ -322,23 +295,13 @@ pub fn lost(detail: &str) -> bool {
     .any(|sign| detail.contains(sign))
 }
 
-/// What an authenticated SSH attempt says about device reachability.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Probe {
-    /// The machine answers; normal connection handling reports any refusal.
     There,
-    /// No route, or no answer in time.
     Lost(String),
-    /// The SSH transport could not be run; normal connection handling explains it.
     Unknown,
 }
 
-/// Check reachability through the ordinary key-only SSH transport.
-///
-/// A raw TCP connect followed by close counts as an unauthenticated connection
-/// to sshd and can penalize later legitimate requests. Authenticate instead,
-/// using the same key and host-key policy as the eventual daemon connection.
-/// `true` needs neither root nor the daemon to be installed.
 pub fn probe(
     runner: &mut dyn Runner,
     endpoint: &SshEndpoint,
@@ -362,9 +325,6 @@ pub fn probe(
     }
 }
 
-/// `name` (`<hostname>.local`) through the system resolver (`getent hosts`,
-/// which asks mDNS where nss-mdns is set up) or Avahi; IPv4 first, never a
-/// link-local IPv6 address ssh could not use without its interface.
 pub fn resolve(runner: &mut dyn Runner, name: &str) -> Option<IpAddr> {
     let lookups = [
         CommandLine::new("getent", &["hosts", name]),
@@ -400,8 +360,6 @@ mod tests {
     use crate::error::CliError;
     use crate::hypervisor::Output;
 
-    /// A magic packet is six 0xff bytes and the MAC sixteen times, to the
-    /// limited and the subnet broadcast.
     #[test]
     fn the_magic_packet_is_the_mac_sixteen_times_after_six_ff() {
         let mac = parse_mac("AA:bb:cc:01:02:03").unwrap();
@@ -424,9 +382,6 @@ mod tests {
         assert_eq!(wake_targets(Some("garbage")), [Ipv4Addr::BROADCAST]);
     }
 
-    /// The probe's answer gives the hostname, MAC and an honest wake state:
-    /// enabled, disabled (with the command that enables it), unsupported or
-    /// unknown.
     #[test]
     fn the_net_probe_reports_enabled_disabled_and_unsupported_wake() {
         let wired = |ethtool: &str| {
@@ -471,7 +426,6 @@ mod tests {
             "\tWoWLAN support:\n\t\t * wake up on magic packet\n",
         );
         assert_eq!((on.via.as_str(), on.state.as_str()), ("wowlan", "enabled"));
-        // Listed and enabled is still not a machine known to wake on it.
         assert!(!on.reliable());
         assert!(
             on.describe().contains("not known to wake"),
@@ -531,8 +485,6 @@ mod tests {
         );
     }
 
-    /// Answers `getent` and `avahi-resolve` from a script; a missing tool is
-    /// what the system runner reports for one.
     struct Lookups {
         getent: Option<&'static str>,
         avahi: Option<&'static str>,
@@ -565,8 +517,6 @@ mod tests {
         }
     }
 
-    /// The name is looked up through the system resolver first, then Avahi;
-    /// IPv4 wins, and link-local IPv6 is never used.
     #[test]
     fn a_name_resolves_through_getent_then_avahi() {
         let mut runner = Lookups {
@@ -580,7 +530,6 @@ mod tests {
         );
         assert_eq!(runner.asked, ["getent hosts yoga.local"]);
 
-        // getent has no mDNS here (exit 2, nothing printed): Avahi answers.
         let mut runner = Lookups {
             getent: Some(""),
             avahi: Some("yoga.local\t10.0.0.77\n"),
@@ -592,7 +541,6 @@ mod tests {
         );
         assert_eq!(runner.asked.len(), 2);
 
-        // Neither tool, or only link-local: not found.
         let mut runner = Lookups {
             getent: None,
             avahi: None,

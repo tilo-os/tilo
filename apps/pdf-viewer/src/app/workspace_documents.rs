@@ -7,23 +7,14 @@ use vello::kurbo::{Point, Rect};
 
 use super::PdfApp;
 
-/// A document this reader's workspace holds, as its empty state offers it: a
-/// reviewer opens the `application.pdf` an agent filled in without opening a
-/// file chooser.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceDocument {
-    /// What opens it: the launch argument that shows the document in this
-    /// window.
     pub target: String,
-    /// What it is called.
     pub name: String,
-    /// How long it is, under the name.
     pub caption: String,
 }
 
 impl PdfApp {
-    /// The documents this reader's workspace holds, as the empty state
-    /// offers them: a press on one opens it here, on its own markup record.
     pub(crate) fn attach_workspace_documents(&mut self, documents: Vec<WorkspaceDocument>) {
         if self.workspace_documents != documents {
             self.dirty = true;
@@ -31,29 +22,20 @@ impl PdfApp {
         self.workspace_documents = documents;
     }
 
-    /// The workspace's documents the empty state offers, in the order it
-    /// shows them: each opens in this window by its target.
     pub fn workspace_documents(&self) -> &[WorkspaceDocument] {
         &self.workspace_documents
     }
 
-    /// The document a press or an assistive action at `point` opens, as the
-    /// last draw pass placed it: what the empty state lists, in the order it
-    /// shows them.
     pub(crate) fn workspace_document_at(&self, point: Point) -> Option<&WorkspaceDocument> {
         let rows = self.empty_document_rows.borrow();
         let index = rows.iter().position(|row| row.contains(point))?;
         self.workspace_documents.get(index)
     }
 
-    /// The rows the empty state's documents took, in the order it lists them.
     pub(crate) fn workspace_document_rows(&self) -> Vec<Rect> {
         self.empty_document_rows.borrow().clone()
     }
 
-    /// Open the workspace's document `target` (the identity a row names) in
-    /// this window, in place of the record it shows: the host rebuilds the
-    /// window on that document's own markup record. Whether a host can.
     pub(crate) fn open_workspace_document(&mut self, target: &str) -> bool {
         let Some(open_here) = self.open_here.clone() else {
             return false;

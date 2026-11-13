@@ -255,7 +255,6 @@ pub struct Outcome {
     pub text: String,
     pub data: Value,
     pub next: Vec<String>,
-    /// Set by checks that report rather than fail, like `doctor`.
     pub failed: bool,
 }
 
@@ -307,7 +306,6 @@ impl Resolved {
     }
 }
 
-/// A published dev disk, found but not yet downloaded.
 struct Published {
     tag: String,
     disk: disk::Disk,
@@ -317,14 +315,11 @@ struct Published {
     auth: disk::AuthHeader,
 }
 
-/// What `vm create` will do, settled before it does anything.
 struct Plan {
     choice: host::Choice,
     ssh_port: Option<u16>,
     image: Option<PathBuf>,
-    /// The format of `image`.
     image_format: Option<image::Format>,
-    /// Where `image`, on a network path, is imported to first (WHPX).
     import: Option<PathBuf>,
     boot_esp: Option<PathBuf>,
     published: Option<Published>,
@@ -392,10 +387,7 @@ pub struct App {
     pub registry_path: PathBuf,
     pub runner: SystemRunner,
     pub receipt: Receipt,
-    /// Non-fatal findings surfaced after the main output.
     pub warnings: Vec<String>,
-    /// The peer-network session the last connection took, when the device
-    /// was not on this network.
     pub peer: Option<remote::PeerSession>,
 }
 
@@ -408,7 +400,6 @@ pub fn human_bytes(bytes: u64) -> String {
     }
 }
 
-/// Set `key` on a JSON object; no-op for anything else.
 fn insert(value: &mut Value, key: &str, item: Value) {
     if let Value::Object(map) = value {
         map.insert(key.into(), item);
@@ -419,9 +410,6 @@ fn short(hash: &str) -> &str {
     hash.get(..12).unwrap_or(hash)
 }
 
-/// What an apply did, in one sentence per consequence.
-/// The rest of [`describe_apply`] for a laptop's `device` slot, the owner's
-/// login: what merged, which services and desktops restarted, or why not.
 fn describe_login(result: &ApplyResult, desktops: &[&str], text: &mut String) {
     text.push_str("; merged into the machine's /usr with systemd-sysext");
     let services: Vec<&str> = result
@@ -546,19 +534,14 @@ pub fn describe_apply(result: &ApplyResult) -> String {
     text
 }
 
-/// The registry that publishes images and CI layers. Anyone may pull from
-/// it: no pull needs a login.
 pub const REGISTRY: &str = "registry.tilo.so";
 
-/// `path`, or its nearest ancestor that exists.
 fn existing_ancestor(path: &Path) -> &Path {
     path.ancestors()
         .find(|p| p.exists())
         .unwrap_or_else(|| Path::new("/"))
 }
 
-/// Free bytes of the filesystem that holds (or will hold) `path`, where the
-/// host can tell.
 fn host_free(path: &Path) -> Option<u64> {
     #[cfg(windows)]
     {
@@ -636,8 +619,6 @@ impl App {
         )
     }
 
-    /// # Errors
-    /// No VM selected, or a name the registry does not know.
     pub fn resolve_vm(&self, explicit: Option<&str>) -> Result<Resolved, CliError> {
         if let (Some(target), Some(name)) = (self.target.as_deref(), explicit)
             && target != name
@@ -697,16 +678,10 @@ impl App {
         commands
     }
 
-    /// Open tilo-vmd's RPC. A device is reached where it is now
-    /// ([`Self::endpoint`]), and a connection lost to a roam between that
-    /// check and ssh is tried once more. A device with a recorded peer route
-    /// that is not on this network, at its address or by name, is reached
-    /// over the peer network instead ([`Self::connect_peer`]).
     fn connect(&mut self, vm: &Resolved) -> Result<Remote, CliError> {
         self.connect_with_wake(vm, false)
     }
 
-    /// Swaps may resume a managed VM before transport; status remains observational.
     fn connect_for_swap(&mut self, vm: &Resolved) -> Result<Remote, CliError> {
         self.connect_with_wake(vm, true)
     }
@@ -722,14 +697,10 @@ impl App {
         if let Some(route) = vm.entry.peer.clone()
             && vm.entry.hypervisor == hypervisor::DEVICE
             && std::env::var_os("TILO_VM_SSH").is_none()
-        {
-            // One look on the LAN, at the address and by name: the peer
-            // network rides out roams itself, so no minute of retries here.
-            if let Err(CliError::DeviceAsleep { detail, .. }) =
+            && let Err(CliError::DeviceAsleep { detail, .. }) =
                 self.reach_device(&vm.name, Duration::ZERO, false)
-            {
-                return self.connect_peer(vm, &route, &detail);
-            }
+        {
+            return self.connect_peer(vm, &route, &detail);
         }
         let adapter = Self::adapter(vm)?;
         let debug = Self::debug_commands(adapter.as_ref(), &vm.name);
@@ -763,7 +734,6 @@ impl App {
         };
         let remote = match connected {
             Ok(remote) => remote,
-            // SSH works; whether vm upgrade can fix it depends on bootc.
             Err(CliError::ProtocolMismatch { client, daemon, .. }) => {
                 return Err(CliError::ProtocolMismatch {
                     vm: vm.name.clone(),
@@ -790,8 +760,6 @@ impl App {
         Ok(remote)
     }
 
-    /// Open tilo-vmd's RPC over the peer network, as this machine's admin
-    /// identity, and say which route it took.
     fn connect_peer(
         &mut self,
         vm: &Resolved,
@@ -816,14 +784,11 @@ impl App {
         Ok(remote)
     }
 
-    /// Does the VM have bootc? `None` when SSH did not say.
     fn probe_bootc(&mut self, vm: &Resolved, endpoint: &SshEndpoint) -> Option<bool> {
         let output = self.vm_sh(vm, endpoint, imageup::BOOTC_PROBE).ok()?;
         imageup::parse_bootc_probe(&output.stdout)
     }
 
-    /// Why `connect` failed, as `status` and `vm status` report it; asks the
-    /// hypervisor whether the VM is running at all.
     fn connect_failure(
         &mut self,
         vm: &Resolved,
@@ -843,8 +808,6 @@ impl App {
         connect_failure(&vm.name, running, &debug, error)
     }
 
-    /// The slot commands use when none is named: `TILO_VM_SLOT`, then
-    /// `slot = "<name>"` in the worktree's `.tilo-vm`, then the branch's.
     pub fn default_slot(&self) -> Option<String> {
         if let Ok(name) = std::env::var("TILO_VM_SLOT")
             && !name.trim().is_empty()
@@ -858,8 +821,6 @@ impl App {
             .or_else(|| worktree.default_slot())
     }
 
-    /// # Errors
-    /// Outside a worktree, or a branch that makes no usable name.
     pub fn slot_name(&self, explicit: Option<String>) -> Result<String, CliError> {
         if let Some(name) = explicit.or_else(|| self.default_slot()) {
             return Ok(name);
@@ -884,12 +845,9 @@ impl App {
         })
     }
 
-    /// # Errors
-    /// Whatever the command reports.
     pub fn run(&mut self, command: Option<Command>) -> Result<Outcome, CliError> {
         let named = command.as_ref().and_then(named_slot);
         let mut outcome = self.dispatch(command)?;
-        // Hints follow the slot in use when it is not the default one.
         if let Some(slot) = named
             && self.default_slot().as_deref() != Some(slot.as_str())
         {
@@ -1270,7 +1228,6 @@ impl App {
         doctor_outcome(&checks)
     }
 
-    /// The checks that need the VM's daemon.
     fn vm_checks(&mut self, remote: &mut Remote, vm: &Resolved, checks: &mut Vec<Check>) {
         let hello = remote.hello.clone();
         checks.push(Check::ok(
@@ -1468,8 +1425,6 @@ impl App {
         Ok(started)
     }
 
-    /// Shut down under the guest's VM lock, so no swap, gc or upgrade is cut
-    /// off halfway; the lock is held until the VM is down.
     fn vm_stop(&mut self, name: Option<&str>, force: bool) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(name)?;
         let adapter = Self::adapter(&vm)?;
@@ -1488,9 +1443,6 @@ impl App {
                 )),
             }
         }
-        // A session holding logind's power-key lock (on seat0 it owns the
-        // key) turns the ACPI request into its own power-key action, so the
-        // guest is asked directly next, and powered off as a last resort.
         let poweroff = self.endpoint(&vm).ok().map(|endpoint| {
             remote::ssh_command(
                 &endpoint,
@@ -1547,9 +1499,6 @@ impl App {
         .next(&["tilo-vm vm start"]))
     }
 
-    /// Delete a VM: power it off (with `force`), unregister it from the
-    /// hypervisor, remove the files `vm create` made for it, and drop it
-    /// from the registry. The image it was created from stays.
     fn vm_rm(
         &mut self,
         runner: &mut dyn Runner,
@@ -1581,8 +1530,6 @@ impl App {
             && force
             && let Some(off) = adapter.power_off(&vm.vm())
         {
-            // The adapter cannot tell whether it runs; a hard power-off of a
-            // VM that is already off is harmless.
             let _ = runner.output(&off);
         }
         let mut removed = Vec::new();
@@ -1754,8 +1701,6 @@ impl App {
             command.is_empty(),
         );
         let ok = self.runner.interactive(&line)?;
-        // A remote command that fails has said why itself: pass its failure
-        // on as the exit status, without a hint of ours.
         let mut outcome = Outcome::new("", json!({ "vm": vm.name, "command": command, "ok": ok }));
         outcome.failed = !ok && !command.is_empty();
         Ok(outcome)
@@ -1783,7 +1728,6 @@ impl App {
                 let hello = remote.hello.clone();
                 drop(remote);
                 if let Some(session) = self.peer.clone() {
-                    // No SSH beyond the LAN: what it reported when last on it stands.
                     lines.push(format!(
                         "  reached over the peer network: {} (session {} in its journal); commands that need SSH (exec, builds on it, vm ssh) wait until it is on this network",
                         session.describe(),
@@ -1829,9 +1773,6 @@ impl App {
         }
     }
 
-    /// Everything `vm create` needs, checked before anything is downloaded
-    /// or created: the hypervisor and its tools, a local `--image`, the
-    /// published disk for the tag, the VM disk path, and free space.
     #[expect(
         clippy::too_many_lines,
         reason = "one preflight sequence for all VM creation inputs"
@@ -2103,8 +2044,6 @@ impl App {
             );
             image = Some(published.dest.display().to_string());
         }
-        // utmctl cannot import a disk, but UTM's AppleScript can: the disk
-        // becomes the template VM each dev VM is a clone of.
         let template = match (
             plan.choice.adapter == "utm",
             args.template.clone(),
@@ -2141,7 +2080,6 @@ impl App {
         }
         let key = sshkey::key_path(&self.registry_path, &args.name);
         let root_key = sshkey::ensure(&mut self.runner, &key, &args.name)?;
-        // A new VM has new host keys: forget those of any earlier VM of this name.
         let known_hosts = remote::known_hosts_path(&key.display().to_string());
         match std::fs::remove_file(&known_hosts) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
@@ -2149,8 +2087,6 @@ impl App {
             }
             _ => {}
         }
-        // A UUID and MAC of its own, written into its definition, so a VM
-        // branched from it later can tell it is not this one.
         let (uuid, nic_mac) = hypervisor::new_identity();
         let identified = matches!(plan.choice.adapter, "libvirt" | "whpx");
         let entry = VmEntry {
@@ -2237,8 +2173,6 @@ impl App {
         Ok(outcome)
     }
 
-    /// Find the published dev disk for `arch`/`format` (the newest tag when
-    /// none is given) without downloading it.
     fn resolve_published(
         &mut self,
         tag: Option<&str>,
@@ -2259,9 +2193,6 @@ impl App {
             status: format!("HTTP {status}"),
             stderr: body.chars().take(300).collect(),
         };
-        // Each architecture's lane publishes its own manifest, so the newest
-        // tag may not have this host's yet: without --tag, take the newest
-        // that does.
         let tags: Vec<String> = if let Some(tag) = tag {
             vec![tag.to_owned()]
         } else {
@@ -2338,7 +2269,6 @@ impl App {
         ))
     }
 
-    /// No tag in `tags` has `arch`: say what the newest offers instead.
     fn no_disk_for_host(
         &mut self,
         tags: &[String],
@@ -2399,9 +2329,6 @@ impl App {
         Ok(())
     }
 
-    /// Register a device that runs a Tilo dev image: as root, its address
-    /// and its own root key, which is installed once with the dev account;
-    /// as another account, that account's key and sudo ([`device`]).
     fn vm_add(&mut self, args: &AddArgs) -> Result<Outcome, CliError> {
         let (name, ssh) = (args.name.as_str(), args.ssh.as_str());
         let endpoint = SshEndpoint::parse(ssh).ok_or_else(|| CliError::Config {
@@ -2434,7 +2361,6 @@ impl App {
         }
         let key = sshkey::key_path(&self.registry_path, name);
         sshkey::ensure(&mut self.runner, &key, name)?;
-        // Another device of this name had other host keys.
         let known_hosts = remote::known_hosts_path(&key.display().to_string());
         match std::fs::remove_file(&known_hosts) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
@@ -2501,8 +2427,6 @@ impl App {
         })
     }
 
-    /// Restart a device that tilo-vm cannot power on: reboot it over SSH
-    /// under the VM lock, wait for the new boot, then for tilo-vmd.
     fn vm_reboot(&mut self, vm: &Resolved) -> Result<Outcome, CliError> {
         let endpoint = self.endpoint(vm)?;
         let old_boot = self
@@ -2533,7 +2457,6 @@ impl App {
         if !self.json {
             eprintln!("tilo-vm: rebooting {}", vm.name);
         }
-        // The connection drops as the device goes down; its status says nothing.
         let _ = self.vm_sh(vm, &endpoint, "systemctl reboot");
         drop(lock);
         let started = Instant::now();
@@ -2579,8 +2502,6 @@ impl App {
         .next(&["tilo-vm status"]))
     }
 
-    /// Start the VM when it is off; wake it when it is suspended, since a
-    /// suspended VM is running, not off.
     fn power_up(&mut self, adapter: &dyn Hypervisor, vm: &Resolved) -> Result<(), CliError> {
         if adapter.suspended(&vm.vm(), &mut self.runner) == Some(true)
             && let Some(wake) = adapter.wake(&vm.vm())
@@ -2631,7 +2552,6 @@ impl App {
                     no_daemon = Some(error);
                     break;
                 }
-                // Connection transport failures can resolve while the VM boots.
                 Err(CliError::Unreachable { .. }) => {
                     if vm.entry.hypervisor == "whpx"
                         && last_whpx_running_check.elapsed() >= Duration::from_secs(2)
@@ -2639,8 +2559,6 @@ impl App {
                         self.ensure_whpx_running(&vm, adapter.as_ref())?;
                         last_whpx_running_check = Instant::now();
                     }
-                    // WHPX boots quickly enough that a two-second SSH poll
-                    // accounts for a noticeable part of the restart time.
                     let interval = if vm.entry.hypervisor == "whpx" {
                         Duration::from_millis(500)
                     } else {
@@ -2699,7 +2617,6 @@ impl App {
         })
     }
 
-    /// Run one shell line in the VM as root, capturing its output.
     fn vm_sh(
         &mut self,
         vm: &Resolved,
@@ -2715,8 +2632,6 @@ impl App {
         self.runner.output(&line)
     }
 
-    /// Boot id, base.json, free space and bootc status, in one round trip.
-    /// `command` is what needs them, named when the VM has no bootc.
     fn vm_facts(
         &mut self,
         vm: &Resolved,
@@ -2765,10 +2680,8 @@ impl App {
         };
         self.receipt.set("image", &image);
         if !imageup::is_dev_name(&image) {
-            // Refused by name alone, before anything is built or inspected.
             imageup::check_image(&image, &imageup::ImageFacts::default())?;
         }
-        // Fail on an unreachable or non-bootc VM before a long build.
         self.vm_facts(&vm, &endpoint, "vm upgrade")?;
         if build {
             self.build_dev_image(&image, base.as_deref(), args.rebuild_base)?;
@@ -2785,12 +2698,6 @@ impl App {
         self.move_onto_layout(&vm, &endpoint, args, &image, &image_facts, &layout, digest)
     }
 
-    /// `image build`: the dev image `--from local` builds, written as an OCI
-    /// layout with its facts and digest (and with `disk`, the dev disk) into
-    /// `out`, for `vm upgrade --image` and `vm create --image`. It needs no VM,
-    /// so it runs anywhere the checkout is, including a copy without git.
-    /// The checkout `image` commands build from: the worktree, or (without git)
-    /// the tree around the working directory.
     fn checkout(&self) -> Result<PathBuf, CliError> {
         match &self.worktree {
             Some(worktree) => Ok(worktree.root.clone()),
@@ -2801,10 +2708,6 @@ impl App {
         }
     }
 
-    /// `image disk`: the disk step of the build, for an image `image build`
-    /// wrote (here or on another machine): the layout into podman's storage,
-    /// then `os/dev/build-image.sh` with `TILO_SKIP_BUILD=1`, as
-    /// `build-dev-image.sh` runs it.
     fn image_disk(&mut self, layout: &Path) -> Result<Outcome, CliError> {
         let started = Instant::now();
         let root = self.checkout()?;
@@ -2980,8 +2883,6 @@ impl App {
         Ok(Outcome::new(text, data).next(&next))
     }
 
-    /// `--image <dir>`: an OCI layout `tilo-vm image build` wrote, here or on
-    /// another machine, with its facts and digest beside it.
     fn vm_upgrade_layout(
         &mut self,
         vm: &Resolved,
@@ -3010,8 +2911,6 @@ impl App {
         self.move_onto_layout(vm, endpoint, args, &image, &image_facts, layout, digest)
     }
 
-    /// The image is in `layout` with `digest`: check it, send the VM its new
-    /// blobs, and boot it.
     fn move_onto_layout(
         &mut self,
         vm: &Resolved,
@@ -3084,7 +2983,6 @@ impl App {
         self.stage_and_boot(vm, endpoint, &facts, &stage)
     }
 
-    /// What `--from` resolves to.
     fn upgrade_source(
         &mut self,
         vm: &Resolved,
@@ -3113,7 +3011,6 @@ impl App {
                         alternative: "the CI build is the base: tilo-vm vm upgrade --from ci:<tag>   |   or build one here: tilo-vm vm upgrade --from local --rebuild-base".into(),
                     });
                 }
-                // Fail on an unreachable or non-bootc VM before looking for images.
                 let facts = self.vm_facts(vm, endpoint, "vm upgrade")?;
                 let target = CiTarget {
                     arch: facts
@@ -3121,8 +3018,6 @@ impl App {
                         .unwrap_or_else(|| std::env::consts::ARCH.to_owned()),
                     board: facts.board,
                 };
-                // WHPX on Windows needs no host-side image tools. Main dev
-                // tags are deterministic, and bootc pulls inside the VM.
                 if cfg!(windows)
                     && tag.starts_with("main-")
                     && let Some(image) = target.candidates(&tag).dev_images.into_iter().next()
@@ -3141,9 +3036,6 @@ impl App {
         }
     }
 
-    /// `--from ci:<tag>`: the dev image published for that build (publish-os-dev-<arch>),
-    /// which the VM pulls itself; else the production image it was built FROM,
-    /// pulled here so a dev image can be built on top of it.
     fn resolve_ci_upgrade(&mut self, tag: &str, target: &CiTarget) -> Result<CiUpgrade, CliError> {
         let candidates = target.candidates(tag);
         let runner = &mut self.runner;
@@ -3158,7 +3050,6 @@ impl App {
                     return Ok(Some(CiUpgrade::Base(base.clone())));
                 }
             }
-            // Not a main build: a branch or pull request build of the commit.
             let Some(sha) = imageup::ci_commit(tag) else {
                 return Ok(None);
             };
@@ -3213,8 +3104,6 @@ impl App {
         Ok(found)
     }
 
-    /// `vm upgrade`, `vm upgrade --image` and a published `--from ci:`: bootc
-    /// pulls from a registry.
     fn vm_upgrade_registry(
         &mut self,
         vm: &Resolved,
@@ -3265,9 +3154,6 @@ impl App {
         }
     }
 
-    /// A private registry image: this host pulls it with its own login into
-    /// the VM's host-side layout, and the VM gets only the new layers, as for
-    /// a local image. The credentials never leave this host.
     fn relay_private(
         &mut self,
         vm: &Resolved,
@@ -3320,7 +3206,6 @@ impl App {
         self.move_onto_layout(vm, endpoint, args, image, &facts, &layout, digest)
     }
 
-    /// rsync the layout into the VM; the bytes that crossed, when rsync says.
     fn send_layout(
         &mut self,
         vm: &Resolved,
@@ -3350,7 +3235,6 @@ impl App {
         })
     }
 
-    /// `--from local`: the dev image build, which skips every cached step.
     fn build_dev_image(
         &mut self,
         image: &str,
@@ -3407,7 +3291,6 @@ impl App {
         }
     }
 
-    /// Run `words` under the VM lock; exit 75 means another command holds it.
     fn vm_locked(
         &mut self,
         vm: &Resolved,
@@ -3432,8 +3315,6 @@ impl App {
         Ok(output)
     }
 
-    /// Stage an image with bootc under the VM lock, reboot into it, wait for
-    /// SSH and tilo-vmd, and check the VM booted what was staged.
     #[expect(
         clippy::too_many_lines,
         reason = "one checked bootc staging transaction"
@@ -3445,29 +3326,22 @@ impl App {
         facts: &imageup::VmFacts,
         stage: &Stage,
     ) -> Result<Outcome, CliError> {
-        // The image is the VM's rollback deployment already (after rollback-image):
-        // bootc will not stage it again, but rolling back boots exactly it.
         let mut reuse = facts.bootc.staged.is_none()
             && stage.expected.is_some()
             && facts.bootc.rollback.as_ref().map(|r| &r.digest) == stage.expected.as_ref();
         let words = if reuse {
             vec!["bootc".to_owned(), "rollback".to_owned()]
         } else if stage.transport == "registry" {
-            // The device's own update path: the named image pinned in its channel's place,
-            // or none named, back to its channel.
             imageup::update_command(stage.pin.as_deref())
         } else {
             imageup::stage_command(&facts.bootc, stage.transport, &stage.imgref)
         };
         let mut staged = self.vm_locked(vm, endpoint, &words)?;
         if !staged.success && imageup::is_already_rollback(&staged.stderr) {
-            // bootc resolved the requested tag to its existing rollback image.
             staged = self.vm_locked(vm, endpoint, &["bootc".into(), "rollback".into()])?;
             reuse = staged.success;
         }
         if !staged.success && imageup::is_already_booted(&staged.stderr) {
-            // The same image under another manifest digest (a disk installs
-            // from a recompressed registry copy of the layout's image).
             return Ok(Outcome::new(
                 format!(
                     "VM {} already runs this image (same composefs digest); nothing to do\n  {}",
@@ -3584,9 +3458,6 @@ impl App {
         .next(&["tilo-vm status", "tilo-vm vm rollback-image"]))
     }
 
-    /// Which slots keep layers built on the previous image, as tilo-vmd
-    /// recorded at this boot: its last image change, if that change is to
-    /// the booted image (the kernel command line names it).
     fn image_change_of_this_boot(
         &mut self,
         vm: &Resolved,
@@ -3596,12 +3467,10 @@ impl App {
         let booted = tilo_vm_protocol::booted_image(&cmdline.stdout)?;
         let status = self.connect(vm).ok()?.call(Status { slot: None }).ok()?;
         if status.slots_image.as_deref() != Some(booted.as_str()) {
-            // A daemon that does not record images, or one that has not yet.
             return None;
         }
         match status.image_change {
             Some(change) if change.to == booted => Some(change),
-            // No change recorded for this image: no slot runs layers.
             _ => Some(tilo_vm_protocol::ImageChange {
                 from: None,
                 to: booted,
@@ -3614,12 +3483,6 @@ impl App {
         }
     }
 
-    /// Gives the deployments bootc just staged or reordered their boot loader
-    /// try counters, before anything reboots into them (see
-    /// `imageup::BOOT_ENTRIES`). `staged` is the deployment the next boot
-    /// takes; when the VM's image is too old for its own pass to see the ESP,
-    /// that one entry is counted here instead, so moving a machine off such an
-    /// image is protected too.
     fn put_on_trial(
         &mut self,
         vm: &Resolved,
@@ -3667,8 +3530,6 @@ impl App {
         }
     }
 
-    /// So the shutdown can apply the staged deployment (see
-    /// `imageup::ESP_WRITABLE_UNTIL_BOOT`).
     fn keep_esp_writable(&mut self, vm: &Resolved, endpoint: &SshEndpoint) -> Result<(), CliError> {
         let writable = self.vm_sh(vm, endpoint, imageup::ESP_WRITABLE_UNTIL_BOOT)?;
         if !writable.success {
@@ -3759,9 +3620,6 @@ impl App {
                 .lines()
                 .find_map(|line| line.strip_prefix(prefix).map(str::trim))
         };
-        // bootc stages the new BLS options before shutdown, in
-        // entries.staged. If the kernel did not change, that entry correctly
-        // reuses the previous deployment's kernel and initrd directory.
         let base = field("linux ")
             .and_then(|path| path.strip_suffix("vmlinuz"))
             .ok_or_else(|| CliError::Config {
@@ -3860,8 +3718,6 @@ impl App {
         Ok(updated)
     }
 
-    /// Reboot, wait for a new boot id over SSH, then for tilo-vmd, and check
-    /// that the booted image has `digest`.
     #[expect(
         clippy::too_many_lines,
         reason = "one checked reboot and image verification"
@@ -3885,7 +3741,6 @@ impl App {
                 imageup::short_digest(digest)
             );
         }
-        // The connection drops as the VM goes down; its exit status says nothing.
         let reboot = format!("{}; systemctl reboot", imageup::ESP_WRITABLE_UNTIL_BOOT);
         let _ = self.vm_sh(vm, endpoint, &reboot);
         let started = Instant::now();
@@ -4043,7 +3898,6 @@ impl App {
     }
 
     fn slot(&mut self, command: SlotCommand) -> Result<Outcome, CliError> {
-        // A typo in the set name needs no VM to be reported.
         if let SlotCommand::Apps(SlotAppsCommand::Install { set, .. }) = &command {
             app_set(set)?;
         }
@@ -4146,9 +4000,6 @@ impl App {
         }
     }
 
-    /// `slot apps install`: the set's packages through `tilo-vmd
-    /// install-packages` over SSH (output streams), then a session restart
-    /// so the slot sees the VM's new `/usr`.
     fn apps_install(
         &mut self,
         vm: &Resolved,
@@ -4158,7 +4009,6 @@ impl App {
     ) -> Result<Outcome, CliError> {
         let apps = app_set(set)?;
         let slot = self.slot_name(name)?;
-        // Fail on a missing slot before downloading anything.
         self.connect(vm)?.call(SlotShow { name: slot.clone() })?;
         let packages: Vec<String> = apps.apps.iter().map(|a| a.package.clone()).collect();
         let endpoint = self.endpoint(vm)?;
@@ -4205,8 +4055,6 @@ impl App {
         ]))
     }
 
-    /// `slot exec`: `tilo-vmd exec` over SSH, output streaming straight
-    /// through; its exit status is the command's.
     fn slot_exec(
         &mut self,
         vm: &Resolved,
@@ -4231,14 +4079,11 @@ impl App {
         Ok(outcome)
     }
 
-    /// Does the VM have bootc (so vm upgrade can move it)? `None` when
-    /// SSH does not say.
     fn vm_has_bootc(&mut self, vm: &Resolved) -> Option<bool> {
         let endpoint = self.endpoint(vm).ok()?;
         self.probe_bootc(vm, &endpoint)
     }
 
-    /// Say where a build runs before it starts, when it is not the VM.
     fn announce_builder(&mut self, vm: &Resolved, note: Option<String>) {
         let Some(note) = note else { return };
         let fix = if self.vm_has_bootc(vm) == Some(true) {
@@ -4254,7 +4099,6 @@ impl App {
         }
     }
 
-    /// `choose_builder`'s refusal, with the fix that fits this VM.
     fn cannot_build(&mut self, vm: &Resolved, error: CliError) -> CliError {
         match error {
             CliError::VmCannotBuild { missing, .. } => CliError::VmCannotBuild {
@@ -4265,7 +4109,6 @@ impl App {
         }
     }
 
-    /// Use the imported replacement's mount logic for the ordinary VM swap.
     fn handoff_daemon(
         &mut self,
         vm: &Resolved,
@@ -4352,7 +4195,6 @@ impl App {
         if matches!(source, ci::Source::Worktree)
             && let Some(explicit @ Builder::Host) = builder
         {
-            // Fail before connecting: no host build is possible off Linux.
             choose_builder(
                 Some(explicit),
                 &VmTools::default(),
@@ -4408,7 +4250,6 @@ impl App {
             self.cohort_prerequisites(&slot, &component, inputs, apps_build)?;
         }
         self.receipt.set("layer", &layer);
-        // Building or pulling the layer can outlast the idle connection.
         remote = self.connect_with_wake(&vm, true)?;
         if component == "vmd" {
             remote = self.handoff_daemon(&vm, remote, &layer)?;
@@ -4481,7 +4322,6 @@ impl App {
     ) -> Result<String, CliError> {
         let selected = if entry.image_assembled && entry.name == "apps+runtime" {
             if apps_build == Some(AppsRuntimeBuild::Local) {
-                // This host builds the whole cohort itself, then uploads it.
                 self.receipt.set("builder", "host");
                 return self.build_layer_local_pack(
                     remote,
@@ -4497,7 +4337,6 @@ impl App {
         self.build_worktree_layer(remote, vm, &entry.clone().with_profile(profile), selected)
     }
 
-    /// The same source's normal session components understand its installed pins.
     fn cohort_prerequisites(
         &mut self,
         slot: &str,
@@ -4548,8 +4387,6 @@ impl App {
         Ok(())
     }
 
-    /// A boot component: the kernel swaps, the rest are refused with their
-    /// scenario driver.
     fn swap_boot(
         &mut self,
         slot: Option<&str>,
@@ -4576,7 +4413,6 @@ impl App {
         self.swap_kernel(slot, entry, from, kernel)
     }
 
-    /// `--from worktree` with the chosen builder.
     fn build_worktree_layer(
         &mut self,
         remote: &mut Remote,
@@ -4616,7 +4452,6 @@ impl App {
         }
     }
 
-    /// Refuse to add layers to a VM below its free-space floor.
     fn check_vm_space(&self, remote: &mut Remote, vm: &Resolved) -> Result<(), CliError> {
         let status = remote.call(Status { slot: None })?;
         let floor = self.registry()?.min_free_bytes();
@@ -4630,7 +4465,6 @@ impl App {
         }
     }
 
-    /// rsync this worktree into the VM; returns its id there.
     fn sync_worktree(&mut self, vm: &Resolved) -> Result<(Worktree, String), CliError> {
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
         if !on_path("rsync") {
@@ -4664,7 +4498,6 @@ impl App {
         Ok((worktree, id))
     }
 
-    /// Run a streaming job in the VM and record its phases.
     fn vm_job(
         &mut self,
         vm: &Resolved,
@@ -4684,7 +4517,6 @@ impl App {
         Ok(output)
     }
 
-    /// `--builder vm`: sync, build in the VM, import there; no bytes return.
     fn build_layer_vm(&mut self, vm: &Resolved, component: &Component) -> Result<String, CliError> {
         let (worktree, id) = self.sync_worktree(vm)?;
         let job = BuildJob {
@@ -4707,8 +4539,6 @@ impl App {
         }
     }
 
-    /// `--from sha:` / `--from ci:`: the component's manifest paths out of
-    /// the published CI image, as a layer with `authority = "ci"`.
     fn ci_layer(
         &mut self,
         remote: &mut Remote,
@@ -4751,9 +4581,6 @@ impl App {
         self.ci_layer_from_host(remote, vm, component, &image, &job, from_host)
     }
 
-    /// `--from ci:` with the pull on this host: a device, or a VM without
-    /// podman. Only the component's layer goes to the guest, and it stays
-    /// kept here for the next swap of the same build.
     fn ci_layer_from_host(
         &mut self,
         remote: &mut Remote,
@@ -4784,8 +4611,6 @@ impl App {
                 component.name
             );
             self.receipt.set("ci_cache", "hit");
-            // The device may hold it already (a rollback, a second swap):
-            // then there is nothing to send.
             if let Some(hash) = digest
                 .as_deref()
                 .and_then(|digest| cache.layer_hash(digest, &component.name))
@@ -4841,14 +4666,11 @@ impl App {
             })
         })?;
         if let Some(digest) = &digest {
-            // So the next swap of this build can ask the device first.
             let _ = cache.record_hash(digest, &component.name, &imported.hash);
         }
         Ok(imported.hash)
     }
 
-    /// `swap app:<dir>`: package the app as a self-signed `.tapp` and
-    /// install it into the slot user's store. Not a generation.
     fn swap_app(
         &mut self,
         slot: &str,
@@ -5011,7 +4833,6 @@ impl App {
             .phase("metadata", || build::cargo_metadata(runner))
     }
 
-    /// `--builder host`: cargo on this Linux host, layer uploaded.
     fn build_layer(
         &mut self,
         remote: &mut Remote,
@@ -5064,8 +4885,6 @@ impl App {
             Ok(())
         });
         assembled?;
-        // A build can outlast an idle SSH connection (a release shell takes
-        // most of an hour): talk to the daemon on a fresh one.
         *remote = self.connect_with_wake(vm, false)?;
         let features = component.build_features(&extra);
         let provenance = build::provenance(
@@ -5078,7 +4897,6 @@ impl App {
         self.import_host_layer(remote, &staging, provenance)
     }
 
-    /// Reuse an already imported content-identical layer before packing or sending it.
     fn import_host_layer(
         &mut self,
         remote: &mut Remote,
@@ -5455,10 +5273,6 @@ impl App {
     }
 }
 
-/// How `stage_and_boot` stages: bootc's transport and reference, and the
-/// manifest digest it must stage when that is known in advance.
-/// What a CI tag resolves to for one VM: its architecture, and the board
-/// its image was built for, if any.
 struct CiTarget {
     arch: String,
     board: Option<String>,
@@ -5476,35 +5290,25 @@ impl CiTarget {
 struct Stage {
     transport: &'static str,
     imgref: String,
-    /// The registry image named to move onto, which the device follows in place of its
-    /// channel until the channel moves on; `None` returns it to its channel.
     pin: Option<String>,
     expected: Option<String>,
     no_reboot: bool,
 }
 
-/// What `vm upgrade --from` moves the VM onto.
 enum UpgradeSource {
-    /// An image in local storage, built first when `build` (FROM `base`, or
-    /// the default base).
     Local {
         image: String,
         build: bool,
         base: Option<String>,
     },
-    /// A dev image in the registry, which the VM pulls itself.
     Published(String),
 }
 
-/// Where `vm upgrade --from ci:<tag>` found its image.
 enum CiUpgrade {
-    /// A dev image in the registry: the VM switches to it directly.
     Published(String),
-    /// A production image, now in local storage: build the dev image FROM it.
     Base(String),
 }
 
-/// `podman image inspect` plus a look inside: the facts `check_image` judges.
 fn local_image_facts(
     runner: &mut SystemRunner,
     image: &str,
@@ -5544,15 +5348,12 @@ fn local_image_facts(
     Ok(facts)
 }
 
-/// The Tilo checkout `dir` is in, found by its dev image build script (for a
-/// copy of the tree without git, such as a synced copy on a build machine).
 fn checkout_root(dir: &Path) -> Option<PathBuf> {
     dir.ancestors()
         .find(|d| d.join(imageup::BUILD_SCRIPT).is_file())
         .map(Path::to_path_buf)
 }
 
-/// Require the imported daemon to match the guest and identify its build source.
 fn daemon_import_receipt<'a>(
     layers: &'a [tilo_vm_protocol::LayerInfo],
     hash: &str,
@@ -5581,8 +5382,6 @@ fn daemon_import_receipt<'a>(
     Ok(provenance)
 }
 
-/// What `image build` runs: `--from local`'s build, the base rebuilt only
-/// when its inputs changed, with or without the disk step.
 fn image_build_command(script: &Path, image: &str, disk: bool, scratch: &Path) -> CommandLine {
     CommandLine::new(&script.display().to_string(), &[])
         .env("TILO_DEV_DISK", if disk { "1" } else { "0" })
@@ -5591,14 +5390,11 @@ fn image_build_command(script: &Path, image: &str, disk: bool, scratch: &Path) -
         .env("TILO_OUTPUT", scratch.display().to_string())
 }
 
-/// What `image disk` runs: the build's disk step for an image already in
-/// podman's storage.
 fn image_disk_command(script: &Path, image: &str, scratch: &Path) -> CommandLine {
     CommandLine::new(&script.display().to_string(), &[])
         .env("TILO_IMAGE", image)
         .env("TILO_SKIP_BUILD", "1")
         .env("TILO_OUTPUT", scratch.display().to_string())
-        // The size os/dev/build-dev-image.sh and the published dev disks use.
         .env("TILO_DISK_SIZE", "64G")
         .env(
             "TILO_ROOT_PODMAN_STORE",
@@ -5606,14 +5402,10 @@ fn image_disk_command(script: &Path, image: &str, scratch: &Path) -> CommandLine
         )
 }
 
-/// Where the disk step's root podman keeps its copy of the image: in the
-/// scratch directory, removed once the disk is written, not in
-/// /var/lib/containers.
 fn root_podman_store(scratch: &Path) -> PathBuf {
     scratch.join("root-podman")
 }
 
-/// The disk the build left in `scratch`, moved to `<out>/disk.qcow2`.
 fn move_built_disk(scratch: &Path, out: &Path) -> Result<PathBuf, CliError> {
     let built = scratch.join("qcow2").join("disk.qcow2");
     let dest = out.join(imageup::BUILT_DISK);
@@ -5625,8 +5417,6 @@ fn move_built_disk(scratch: &Path, out: &Path) -> Result<PathBuf, CliError> {
     Ok(dest)
 }
 
-/// `image build`'s scratch directory: next to its output, never inside it, so
-/// fetching the output does not fetch the build's temporary files.
 fn build_scratch(out: &Path) -> PathBuf {
     let name = out
         .file_name()
@@ -5634,8 +5424,6 @@ fn build_scratch(out: &Path) -> PathBuf {
     out.with_file_name(format!("{name}-build"))
 }
 
-/// [`imageup::layout_facts_text`] for a local image: its inspect output and a
-/// look inside.
 fn image_facts_text(runner: &mut SystemRunner, image: &str) -> Result<String, CliError> {
     let mut run = |command: CommandLine| -> Result<String, CliError> {
         let output = runner.output(&command)?;
@@ -5654,8 +5442,6 @@ fn image_facts_text(runner: &mut SystemRunner, image: &str) -> Result<String, Cl
     Ok(imageup::layout_facts_text(&inspect, &probe))
 }
 
-/// Write `image` into the VM's host-side OCI layout and drop what it no
-/// longer references; returns the manifest digest bootc will report.
 fn export_layout(
     runner: &mut SystemRunner,
     image: &str,
@@ -5689,8 +5475,6 @@ fn export_layout(
     Ok(digest)
 }
 
-/// SSH answered but refused the VM's recorded key: name the one-time step
-/// that installs it. Every other error passes through.
 fn key_refusal(
     vm: &Resolved,
     adapter: &dyn Hypervisor,
@@ -5701,8 +5485,6 @@ fn key_refusal(
     else {
         return error;
     };
-    // A device reached as its owner's account (through sudo) uses that
-    // account's key; tilo-vm has no root key to install there.
     if !detail.contains("Permission denied") || endpoint.user != "root" {
         return error;
     }
@@ -5718,19 +5500,13 @@ fn key_refusal(
     }
 }
 
-/// `swap --profile` names a cargo profile and builds a component from the worktree.
-/// `swap` options that only the kernel takes.
 #[derive(Debug, Clone, Default)]
 pub struct KernelFlags {
-    /// Boot the host build directly (libvirt) instead of installing it.
     pub direct: bool,
-    /// Parallel compile jobs.
     pub jobs: Option<u32>,
-    /// The direct boot's kernel command line.
     pub cmdline: Option<String>,
 }
 
-/// `--direct` and `--jobs` belong to the kernel's own build.
 fn reject_kernel_flags(component: &str, kernel: &KernelFlags) -> Result<(), CliError> {
     if kernel.direct || kernel.jobs.is_some() {
         return Err(CliError::Unsupported {
@@ -5767,7 +5543,6 @@ fn entry_image(registry: &Registry, name: &str) -> Option<String> {
     registry.vms.get(name).and_then(|e| e.image.clone())
 }
 
-/// Where builds and CI extraction run for a VM with these tools.
 pub fn describe_tools(tools: &VmTools, ci_from_host: bool) -> String {
     let build = if tools.can_build() {
         format!(
@@ -5795,14 +5570,10 @@ pub fn describe_tools(tools: &VmTools, ci_from_host: bool) -> String {
     format!("{build}; {ci}")
 }
 
-/// The step of `vm stop` that got the VM down (or the last one tried).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopStep {
-    /// The hypervisor's ACPI shutdown request.
     Acpi,
-    /// `systemctl poweroff` in the guest, over SSH.
     GuestPoweroff,
-    /// The hypervisor's hard power-off.
     HardPowerOff,
 }
 
@@ -5816,7 +5587,6 @@ impl StopStep {
     }
 }
 
-/// How long each [`StopStep`] may take before the next one.
 #[derive(Debug, Clone, Copy)]
 pub struct StopGraces {
     pub acpi: Duration,
@@ -5836,11 +5606,6 @@ impl Default for StopGraces {
     }
 }
 
-/// Stop `vm`: adapters whose power button can suspend first try the guest's
-/// `systemctl poweroff` over SSH. Otherwise, ask over ACPI, then run the guest
-/// poweroff, then power it off hard where the hypervisor can. Each step waits its grace for the VM to be
-/// down; only a VM the hypervisor reports still running moves on. Returns
-/// whether it is down (`None`: nothing can tell) and the last step taken.
 pub fn stop_escalating(
     runner: &mut dyn Runner,
     adapter: &dyn Hypervisor,
@@ -5852,8 +5617,6 @@ pub fn stop_escalating(
     if adapter.guest_shutdown_first()
         && let Some(poweroff) = poweroff
     {
-        // WHPX's ARM power-button event suspended the guest, making the
-        // subsequent SSH shutdown time out. Ask the live guest first.
         let _ = runner.output(poweroff);
         let down = await_down(
             runner,
@@ -5882,7 +5645,6 @@ pub fn stop_escalating(
     let mut step = StopStep::Acpi;
     if let Some(poweroff) = poweroff {
         step = StopStep::GuestPoweroff;
-        // ssh fails as the guest drops the connection; the wait below judges.
         let _ = runner.output(poweroff);
         down = await_down(runner, adapter, vm, lock, graces.guest, graces.poll);
         if down != Some(false) {
@@ -5897,8 +5659,6 @@ pub fn stop_escalating(
     Ok((down, step))
 }
 
-/// Wait up to `limit` for `vm` to be down: the VM lock's SSH session closing
-/// and, where the hypervisor can say, the VM no longer running.
 fn await_down(
     runner: &mut dyn Runner,
     adapter: &dyn Hypervisor,
@@ -5921,11 +5681,6 @@ fn await_down(
     down
 }
 
-/// Refuse `swap --from worktree` for a component only the image build
-/// assembles: either builder would run a cargo build that cannot produce it.
-///
-/// # Errors
-/// [`CliError::Unsupported`], naming the swaps that do work.
 pub fn worktree_buildable(component: &Component) -> Result<(), CliError> {
     if !component.image_assembled {
         return Ok(());
@@ -5944,13 +5699,9 @@ pub fn worktree_buildable(component: &Component) -> Result<(), CliError> {
     })
 }
 
-/// Where the paired `apps+runtime` cohort is built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppsRuntimeBuild {
-    /// The configured remote builder for the device's architecture.
     Remote,
-    /// This host's own cargo, which must be a Linux machine of the device's
-    /// architecture so the thin graph, runtime ABI and loader closure match.
     Local,
 }
 
@@ -5964,13 +5715,6 @@ impl AppsRuntimeBuild {
     }
 }
 
-/// Choose the builder for `swap apps+runtime --from worktree`.
-///
-/// The cohort is signed with an ephemeral key that never leaves the build and
-/// is re-verified by tilo-vmd (publisher pins, runtime ABI, closure, every
-/// package), so the builder choice only decides where cargo runs: `--builder
-/// host` is accepted on a Linux host of the device's own architecture, and is
-/// the default when no remote builder is configured.
 pub fn plan_apps_runtime_build(
     builder: Option<Builder>,
     device_arch: &str,
@@ -5994,14 +5738,6 @@ pub fn plan_apps_runtime_build(
     )
 }
 
-/// Choose the builder for `swap app:<dir>` on a physical device.
-///
-/// The `.tapp` is self-signed and the device's own installer checks it like
-/// any other (architecture, publisher, the installed runtime's ABI), exactly
-/// as for a VM, so the builder only decides where cargo runs: this host when
-/// it is a Linux machine of the device's architecture (the default when no
-/// remote builder is configured), or the remote builder. The device itself
-/// never compiles an app.
 pub fn plan_device_app_build(
     dir: &str,
     builder: Option<Builder>,
@@ -6034,9 +5770,6 @@ pub fn plan_device_app_build(
     )
 }
 
-/// Builds for a device run on this host when it is a Linux machine of the
-/// device's architecture (asked for, or by default without a remote builder),
-/// else on the configured remote builder.
 fn plan_local_or_remote(
     what: &str,
     builder: Option<Builder>,
@@ -6062,12 +5795,6 @@ fn plan_local_or_remote(
     }
 }
 
-/// `swap app:<dir>` links the image's own `libruntime_dylib.so`, whose symbols
-/// carry crate hashes, so a worktree whose `Cargo.lock` is not the image's
-/// would install an app that cannot start.
-///
-/// # Errors
-/// [`CliError::Unsupported`] when both locks are known and differ.
 pub fn check_app_lock(
     worktree_lock: Option<&str>,
     image_lock: Option<&str>,
@@ -6085,7 +5812,6 @@ pub fn check_app_lock(
     }
 }
 
-/// Which builder `swap --from worktree` uses.
 pub fn choose_builder(
     explicit: Option<Builder>,
     tools: &VmTools,
@@ -6118,7 +5844,6 @@ pub fn choose_builder(
     }
 }
 
-/// `tilo-vm input` arguments as protocol actions.
 pub fn input_actions(command: InputCommand) -> Result<Vec<InputAction>, CliError> {
     let action = match command {
         InputCommand::Key { combos } => InputAction::Key { combos },
@@ -6345,7 +6070,6 @@ fn app_set(set: &str) -> Result<appsets::AppSet, CliError> {
     })
 }
 
-/// `slot apps list`: every set, what each app checks and how to start it.
 fn apps_list() -> Outcome {
     let sets = appsets::all();
     let text = sets
@@ -6369,7 +6093,6 @@ fn apps_list() -> Outcome {
     Outcome::new(text, json!(json)).next(&[&format!("tilo-vm slot apps install --set {first}")])
 }
 
-/// What `slot create` did, in a sentence or two.
 fn slot_created_text(
     name: &str,
     kind: SlotKind,
@@ -6380,8 +6103,6 @@ fn slot_created_text(
         tilo_vm_protocol::Action::SetOutputs { outputs } => Some(outputs.clone()),
         _ => None,
     });
-    // The restart that gives a new identity fresh desktop state is not a
-    // start of a stopped session.
     let started = result
         .actions
         .iter()
@@ -6458,8 +6179,6 @@ fn slot_line(info: &SlotInfo) -> String {
     )
 }
 
-/// `status` for a slot that does not exist: create it when the VM has no
-/// slots, else show the ones it has rather than suggest yet another.
 fn missing_slot(name: &str, slots: &[SlotInfo]) -> (Vec<String>, Vec<String>) {
     if name == tilo_vm_protocol::DEVICE_SLOT {
         return (
@@ -6497,7 +6216,6 @@ fn missing_slot(name: &str, slots: &[SlotInfo]) -> (Vec<String>, Vec<String>) {
     (lines, next)
 }
 
-/// `host:branch`, or whatever of host, branch and worktree is known.
 fn describe_owner(owner: &Owner) -> Option<String> {
     let place = owner.branch.clone().or_else(|| {
         owner
@@ -6513,9 +6231,6 @@ fn describe_owner(owner: &Owner) -> Option<String> {
     }
 }
 
-/// What exercises a scenario-only boot component. The installer has its
-/// own `tilo-vm scenario`; the others name the os/dev driver the manifest
-/// records.
 pub fn scenario_driver(entry: &Component) -> String {
     match entry.name.as_str() {
         "installer" => {
@@ -6528,7 +6243,6 @@ pub fn scenario_driver(entry: &Component) -> String {
     }
 }
 
-/// The slot a command names explicitly, after `--slot` was folded in.
 fn named_slot(command: &Command) -> Option<String> {
     match command {
         Command::SwapArtifact(request) => request.slot.clone(),
@@ -6553,8 +6267,6 @@ fn named_slot(command: &Command) -> Option<String> {
     }
 }
 
-/// `command` aimed at `slot`: `--slot <slot>` right after the subcommand
-/// (before any trailing arguments, which `control` would swallow).
 pub fn with_slot(command: &str, slot: &str) -> String {
     let words: Vec<&str> = command.split(' ').collect();
     if words.first() != Some(&"tilo-vm") || command.contains("--slot") {
@@ -6576,10 +6288,6 @@ pub fn with_slot(command: &str, slot: &str) -> String {
     out.join(" ")
 }
 
-/// The generation `rollback --forward` goes to: the next newer one.
-///
-/// # Errors
-/// An unknown slot, or one already at its newest generation.
 pub fn forward_target(slot: &str, info: Option<&SlotInfo>) -> Result<u64, CliError> {
     let info = info.ok_or_else(|| CliError::Unsupported {
         what: format!("rolling slot {slot} forward: the VM has no such slot"),
@@ -6600,9 +6308,6 @@ pub fn forward_target(slot: &str, info: Option<&SlotInfo>) -> Result<u64, CliErr
         })
 }
 
-/// The remote words of `slot exec`, quoted for the remote shell.
-/// The limits an app flight must stay within: the launch, the slowest control
-/// round trip, and the whole flight.
 #[derive(Clone, Copy)]
 struct FlightBudget {
     maximum_launch: Duration,
@@ -6703,7 +6408,6 @@ fn installed_builds<'a>(
         .collect()
 }
 
-/// `slot show` as text: the slot, then each component's files.
 fn describe_show(shown: &SlotShowResult) -> String {
     let info = &shown.slot;
     let mut lines = vec![
@@ -6741,7 +6445,6 @@ fn describe_show(shown: &SlotShowResult) -> String {
     lines.join("\n")
 }
 
-/// What gc kept for its age, and when it goes.
 fn describe_kept(result: &tilo_vm_protocol::GcResult) -> Option<String> {
     if result.kept_young.is_empty() {
         return None;
@@ -6773,9 +6476,6 @@ fn describe_kept(result: &tilo_vm_protocol::GcResult) -> Option<String> {
     Some(lines.join("\n"))
 }
 
-/// Where cargo and the compiler cache write on this host: every worktree's
-/// `target/` (all worktrees of the repository `root` belongs to) and the
-/// compiler cache directory.
 fn build_dirs(root: &Path) -> Vec<PathBuf> {
     let listing = std::process::Command::new("git")
         .args(["worktree", "list", "--porcelain"])
@@ -6800,7 +6500,6 @@ fn build_dirs(root: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-/// The `target/` of every worktree in `git worktree list --porcelain` output.
 fn worktree_targets(listing: &str) -> Vec<PathBuf> {
     listing
         .lines()
@@ -6832,31 +6531,22 @@ fn doctor_outcome(checks: &[Check]) -> Outcome {
     outcome
 }
 
-/// Put an error's `error`, `hint` and `see` at the top level of a report,
-/// the one shape every `--json` error has.
 fn merge_error(data: &mut Value, error: &CliError) {
     if let (Value::Object(map), Value::Object(fields)) = (data, error.to_json()) {
         map.extend(fields);
     }
 }
 
-/// Why a VM's daemon could not be reached, for `status` and `vm status`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectFailure {
-    /// `off`, `asleep`, `no-ssh`, `key-refused`, `peer-refused`, `no-daemon`,
-    /// `incompatible` or `error`.
     pub state: &'static str,
-    /// What the VM is doing, in one line.
     pub summary: String,
-    /// Whether SSH answered.
     pub ssh: bool,
     pub next: Vec<String>,
 }
 
 impl ConnectFailure {
     fn text(&self, error: &CliError) -> String {
-        // A VM that is off or suspended explains every connection error;
-        // repeating it is noise.
         if self.state == "off"
             || (self.state == "asleep" && !matches!(error, CliError::DeviceAsleep { .. }))
         {
@@ -6870,9 +6560,6 @@ impl ConnectFailure {
     }
 }
 
-/// Tell apart a VM that is off, one whose SSH does not answer, one without
-/// tilo-vmd and one whose tilo-vmd is incompatible; each has its own fix.
-/// [`connect_failure`] for a device the peer network did not reach.
 fn peer_route_failure(vm: &str, failure: crate::error::PeerFailure) -> ConnectFailure {
     use crate::error::PeerFailure;
     ConnectFailure {
@@ -7026,8 +6713,6 @@ struct LocalDisks {
     boot_esp: Option<PathBuf>,
 }
 
-/// `vm create`'s local files: `--image` and its format, where WHPX imports
-/// one on a network path, and a `--boot-esp` the adapter can attach.
 fn check_local_disks(
     adapter: &str,
     image: Option<&str>,
@@ -7045,7 +6730,6 @@ fn check_local_disks(
         }
         None => None,
     };
-    // Hyper-V copies its VHDX; the other adapters make a qcow2 child.
     let image_format =
         match &image {
             Some(path) if adapter != "hyperv" => Some(image::format_of(path).map_err(
@@ -7116,7 +6800,6 @@ fn check_local_disks(
     })
 }
 
-/// Copy a network image to `dest` through a verified partial file.
 fn import_image(
     runner: &mut dyn Runner,
     qemu_img: &str,
@@ -7150,8 +6833,6 @@ fn remove_if_present(path: &Path) -> Result<bool, CliError> {
     }
 }
 
-/// Resolve a CI dev-disk companion bundle before downloading or creating a VM.
-/// The kernel, initrd and command line must describe the same disk image.
 fn read_direct_boot_bundle(path: &Path) -> Result<DirectKernel, CliError> {
     let path = absolute(path);
     let text =
@@ -7247,7 +6928,6 @@ fn ensure_parent(path: &Path) -> Result<(), CliError> {
     }
 }
 
-/// Poll until the slot's session is active again, at most 30 seconds.
 fn wait_for_session(remote: &mut Remote, slot: &str) -> bool {
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(30) {
@@ -7266,7 +6946,6 @@ fn wait_for_session(remote: &mut Remote, slot: &str) -> bool {
     false
 }
 
-/// Resume only an observed suspended managed VM before the ordinary strict transport.
 fn swap_transport<T>(
     adapter: &dyn Hypervisor,
     vm: &Vm<'_>,
@@ -7331,8 +7010,6 @@ mod tests {
         }
     }
 
-    /// `image build` runs `--from local`'s build with or without the disk, keeps its scratch next
-    /// to (never inside) the output it leaves to be fetched, and finds a checkout without git.
     #[test]
     fn image_build_runs_the_local_build_into_its_own_directory() {
         let command = image_build_command(
@@ -7366,7 +7043,6 @@ mod tests {
             Path::new("/w/target/tilo-vm-build")
         );
 
-        // image disk: the build's own disk step, on the layout imported into podman.
         let disk = image_disk_command(
             Path::new("/w/os/dev/build-image.sh"),
             "localhost/tilo-vm:mine",
@@ -7374,7 +7050,6 @@ mod tests {
         );
         assert!(disk.env.contains(&("TILO_SKIP_BUILD".into(), "1".into())));
         assert!(disk.env.contains(&("TILO_DISK_SIZE".into(), "64G".into())));
-        // Root podman's copy stays in the scratch directory, not /var/lib/containers.
         assert_eq!(
             disk.env
                 .iter()
@@ -7418,15 +7093,12 @@ mod tests {
         }
     }
 
-    /// Swapping the installer redirects to its scenario; kernel applies say the reboot is next; apply
-    /// descriptions name the consequence; vm ssh refuses writes before it looks for a VM.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn commands_describe_their_consequence_and_redirect_where_needed() {
-        // Phase: swapping_the_installer_redirects_to_its_scenario.
         {
             let manifest = Manifest::parse(
                 "[[component]]\nname = \"installer\"\nkind = \"boot\"\nscope = \"vm\"\nscenario = \"os/dev/test-installer-cycle.sh\"\n\n[[component]]\nname = \"uki\"\nkind = \"boot\"\nscope = \"vm\"\nscenario = \"os/dev/test-measured-boot.sh\"\n",
@@ -7452,7 +7124,6 @@ mod tests {
             );
         }
 
-        // Phase: kernel_applies_say_the_reboot_is_next.
         {
             let mut swapped = result(Policy::Reboot, vec![Action::SysextRefresh], true);
             swapped.boot = Some(tilo_vm_protocol::BootChange {
@@ -7489,7 +7160,6 @@ mod tests {
             );
         }
 
-        // Phase: apply_descriptions_name_the_consequence.
         {
             assert_eq!(
                 describe_apply(&result(Policy::SessionRestart, vec![], true)),
@@ -7532,7 +7202,6 @@ mod tests {
             assert!(vm.contains("every slot so they see it: b"), "{vm}");
         }
 
-        // Phase: vm_ssh_refuses_writes_before_it_looks_for_a_vm.
         {
             let dir = tempfile::tempdir().unwrap();
             let mut app = app_with_empty_registry(dir.path());
@@ -7569,15 +7238,12 @@ mod tests {
         }
     }
 
-    /// Status tells off from silent from missing from incompatible; the builder choice prefers the
-    /// VM and explains fallbacks; a refused key names the install step.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn status_and_errors_explain_what_is_wrong_and_what_to_do() {
-        // Phase: vm_start_retries_only_transport_failures.
         {
             let unreachable = Err(CliError::Unreachable {
                 vm: "dev".into(),
@@ -7618,7 +7284,6 @@ mod tests {
             );
         }
 
-        // Phase: status_tells_off_from_silent_from_missing_from_incompatible.
         {
             let debug = [
                 "tilo-vm vm shot dev".to_owned(),
@@ -7695,10 +7360,8 @@ mod tests {
             );
         }
 
-        // Phase: vm_stop_escalates_past_a_guest_that_ignores_acpi.
         {
             struct Guest {
-                /// The command whose run brings the VM down.
                 obeys: &'static str,
                 ran: Vec<String>,
                 down: bool,
@@ -7824,7 +7487,6 @@ mod tests {
             assert_eq!(whpx_guest.ran, vec![poweroff.display()]);
         }
 
-        // Phase: image_assembled_components_refuse_a_worktree_build.
         {
             let manifest = Manifest::parse(
                 "[[component]]\nname = \"apps+runtime\"\npackages = [\"runtime-dylib\"]\n\
@@ -7842,7 +7504,6 @@ mod tests {
             worktree_buildable(manifest.get("fs").unwrap()).unwrap();
         }
 
-        // Phase: apps_runtime_builds_where_the_device_architecture_matches.
         {
             use AppsRuntimeBuild::{Local, Remote};
             let plan = |b, dev, host, linux, cfg| plan_apps_runtime_build(b, dev, host, linux, cfg);
@@ -7872,7 +7533,6 @@ mod tests {
             }
         }
 
-        // Phase: device_app_builds_on_a_matching_host_without_a_remote_builder.
         {
             let plan =
                 |b, dev, host, linux, cfg| plan_device_app_build("notes", b, dev, host, linux, cfg);
@@ -7908,7 +7568,6 @@ mod tests {
             }
         }
 
-        // Phase: app_swap_refuses_another_cargo_lock_with_the_cohort_hint.
         {
             check_app_lock(Some("aaaa"), Some("aaaa")).unwrap();
             check_app_lock(None, Some("aaaa")).unwrap();
@@ -7922,7 +7581,6 @@ mod tests {
             assert!(alternative.contains("rollback"), "{alternative}");
         }
 
-        // Phase: builder_choice_prefers_the_vm_and_explains_fallbacks.
         {
             let ready = VmTools {
                 cargo: true,
@@ -7956,7 +7614,6 @@ mod tests {
                 (Builder::Host, None)
             );
             assert!(describe_tools(&ready, false).starts_with("in the VM"));
-            // A device gets only the layer, whatever tools it has.
             assert!(
                 describe_tools(&ready, true)
                     .ends_with("CI layers extracted on this host, only the layer sent")
@@ -7969,7 +7626,6 @@ mod tests {
             );
         }
 
-        // Phase: a_refused_key_names_the_install_step.
         {
             let dir = tempfile::tempdir().unwrap();
             let key = dir.path().join("keys/dev_ed25519");
@@ -8036,7 +7692,6 @@ mod tests {
                 "{}",
                 libvirt.hint()
             );
-            // Anything else is still "unreachable".
             assert!(matches!(
                 key_refusal(
                     &vm,
@@ -8179,12 +7834,10 @@ mod tests {
         }
     }
 
-    /// `vm add` registers a device with its own key and refuses what cannot work.
     #[test]
     fn a_device_is_registered_with_its_own_key() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_empty_registry(dir.path());
-        // A key from an earlier run, so no ssh-keygen is needed here.
         let key = sshkey::key_path(&app.registry_path, "opi");
         std::fs::create_dir_all(key.parent().unwrap()).unwrap();
         std::fs::write(&key, "private").unwrap();
@@ -8195,7 +7848,6 @@ mod tests {
         .unwrap();
 
         {
-            // Nothing answers on port 1: registered, but not usable yet.
             let added = app.vm_add(&add("opi", "root@127.0.0.1:1")).unwrap();
             let registry = app.registry().unwrap();
             let entry = &registry.vms["opi"];
@@ -8217,7 +7869,6 @@ mod tests {
         {
             let again = app.vm_add(&add("opi", "root@127.0.0.1:1")).unwrap();
             assert_eq!(again.data["added"], json!(false));
-            // Another account: its own key, checked before anything connects.
             let error = app
                 .vm_add(&AddArgs {
                     key: Some(dir.path().join("missing")),
@@ -8280,8 +7931,6 @@ mod tests {
         }
     }
 
-    /// Input arguments become validated actions and a direct-boot bundle resolves files and requires a
-    /// root binding.
     #[test]
     fn stdin_input_preserves_bytes_and_redacts_failures_and_receipts() {
         use crate::cli::Cli;
@@ -8400,7 +8049,6 @@ mod tests {
 
     #[test]
     fn inputs_and_boot_bundles_are_validated_before_use() {
-        // Phase: input_arguments_become_validated_actions.
         {
             let click = input_actions(InputCommand::Click {
                 button: "right".into(),
@@ -8431,7 +8079,6 @@ mod tests {
             assert!(error.hint().contains("tilo-vm input key"));
         }
 
-        // Phase: direct_boot_bundle_resolves_files_and_requires_root_binding.
         {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("Image"), b"kernel").unwrap();
@@ -8596,8 +8243,6 @@ mod tests {
         }
     }
 
-    /// Preflight names a missing hypervisor first, checks the image and VM disk, takes a raw disk and a
-    /// boot ESP, and keeps raw QEMU to tilo worktrees; vm rm deletes what create made and keeps the image.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -8644,7 +8289,6 @@ mod tests {
             assert!(!dir.path().join("child.qcow2").exists());
         }
 
-        // Phase: preflight_names_the_missing_hypervisor_before_anything_else.
         {
             use crate::host::HostKind;
             use crate::host::tests::linux;
@@ -8672,7 +8316,6 @@ mod tests {
             assert!(!dir.path().join("vms.toml").exists());
         }
 
-        // Phase: preflight_checks_the_image_and_the_vm_disk.
         {
             use crate::host::HostKind;
             use crate::host::tests::{LIBVIRT, linux};
@@ -8709,7 +8352,6 @@ mod tests {
             assert!(text.contains("qemu:///session"), "{text}");
             assert!(text.contains("tilo-vm.qcow2"), "{text}");
 
-            // An emulated aarch64 VM needs libvirt to list an aarch64 guest.
             args.arch = Some("aarch64".into());
             args.emulated = true;
             let error = app
@@ -8725,7 +8367,6 @@ mod tests {
             );
         }
 
-        // Phase: preflight_takes_a_raw_disk_and_a_boot_esp.
         {
             use crate::host::HostKind;
             use crate::host::tests::{LIBVIRT, linux};
@@ -8765,7 +8406,6 @@ mod tests {
             assert!(text.contains("boot ESP"), "{text}");
         }
 
-        // Phase: preflight_keeps_raw_qemu_to_tilo_worktrees.
         {
             use crate::host::HostKind;
             use crate::host::tests::linux;
@@ -8788,7 +8428,6 @@ mod tests {
             );
         }
 
-        // Phase: vm_rm_deletes_what_create_made_and_keeps_the_image.
         {
             let dir = tempfile::tempdir().unwrap();
             let mut app = app_with_empty_registry(dir.path());
@@ -8884,15 +8523,12 @@ mod tests {
         }
     }
 
-    /// Hints follow a named slot; a missing slot shows the existing ones instead of create; slot lines name
-    /// the owner; slot exec quotes for the remote shell; slot show lists files by component with digests.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn slots_are_named_hinted_and_shown_with_their_owners() {
-        // Phase: hints_follow_a_named_slot.
         {
             assert_eq!(with_slot("tilo-vm shot", "ux1"), "tilo-vm shot --slot ux1");
             assert_eq!(
@@ -8934,7 +8570,6 @@ mod tests {
             assert_eq!(named_slot(&Command::Doctor), None);
         }
 
-        // Phase: a_missing_slot_shows_the_existing_ones_instead_of_create.
         {
             let (lines, next) = missing_slot("mine", &[slot_info("vm", SlotKind::Vm, 0, &[0])]);
             assert!(lines[0].contains("not created yet"));
@@ -8952,14 +8587,12 @@ mod tests {
             assert_eq!(next[0], "tilo-vm status --slot ux1");
         }
 
-        // Phase: slot_lines_name_the_owner.
         {
             let line = slot_line(&slot_info("ux1", SlotKind::Headful, 1, &[0, 1]));
             assert!(line.ends_with("owner laptop:ux-pass"), "{line}");
             assert_eq!(describe_owner(&Owner::default()), None);
         }
 
-        // Phase: slot_exec_quotes_the_command_for_the_remote_shell.
         {
             let words = exec_words(
                 None,
@@ -8976,7 +8609,6 @@ mod tests {
             assert_eq!(sudo[3], "exec");
         }
 
-        // Phase: slot_show_lists_files_by_component_with_digests.
         {
             let shown = SlotShowResult {
                 provenance: std::collections::BTreeMap::new(),
@@ -9072,11 +8704,8 @@ mod tests {
         assert_eq!(app.slot_name(Some("other".into())).unwrap(), "other");
     }
 
-    /// Rolling forward goes to the next newer generation; gc names what it kept and when it goes; bytes
-    /// read well.
     #[test]
     fn generations_roll_forward_and_gc_explains_itself() {
-        // Phase: rolling_forward_goes_to_the_next_newer_generation.
         {
             let info = slot_info("a", SlotKind::Headless, 1, &[0, 1, 2, 4]);
             assert_eq!(forward_target("a", Some(&info)).unwrap(), 2);
@@ -9087,7 +8716,6 @@ mod tests {
             assert!(forward_target("a", None).is_err());
         }
 
-        // Phase: gc_names_what_it_kept_and_when_it_goes.
         {
             let mut result = tilo_vm_protocol::GcResult {
                 dry_run: true,
@@ -9116,7 +8744,6 @@ mod tests {
             assert!(text.contains("--min-age 0"), "{text}");
         }
 
-        // Phase: bytes_read_well.
         {
             assert_eq!(human_bytes(5 << 30), "5.0 GB");
             assert_eq!(human_bytes(300 << 20), "300 MB");

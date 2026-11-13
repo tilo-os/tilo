@@ -287,6 +287,11 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     writeSetup({...kept, shown: {...frame}}, storage);
   };
   const view = new Proxy(drawn, {get: (target, name) => (...args) => {
+    // A closed screen draws nothing: the person is done with it, or the page
+    // was turned away at a door, and what comes after is not the setup. Every
+    // write it makes is the page's first screen itself (`domView`'s `state`),
+    // so a late answer cannot bring it back over what took its place.
+    if (closed && name !== 'close') return undefined;
     if (name === 'offer' && args[0] === 'setup') frame.offer = args[1]?.text ?? null;
     else if (name === 'waiting') {
       if (typeof args[1]?.text === 'string') frame.prompt = args[1].text;
@@ -676,6 +681,12 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     }
     const made = at.made;
     const text = prompts[kind](made.code, {site});
+    // Followed before it is handed over: the host keeps a code from its tab's
+    // first follow, and the clipboard holds this prompt the moment the click
+    // returns — an agent handed it that fast is told a code the host does not
+    // know yet. What the screen says of the code still waits for the copy's
+    // answer, which only the click can give.
+    follow(made, mode, ++attempt);
     let writing;
     try { writing = Promise.resolve(clipboard.copy(text)); } catch (error) { writing = Promise.reject(error); }
     return writing.then(() => true, error => { console.warn('first run: copy', error); return false; }).then(copied => {

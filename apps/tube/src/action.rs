@@ -1,12 +1,5 @@
-//! The action bus: how leaf widgets (cards, nav items, toggles, the
-//! scrubber) tell the root [`crate::app::TubeApp`] what the user did.
-//!
-//! Tube's screens are pure functions of the model, so their controls do not
-//! hold the root's state: every interactive widget holds a clone of the
-//! `ActionBus` and pushes an [`Action`] (open *this* video, skip to *this*
-//! fraction, set *this* like). The root drains the queue after each event:
-//! library edits and confirmed effects go through the framework's door,
-//! the rest changes what this window shows.
+//! The action bus: how leaf widgets (cards, nav items, toggles, the scrubber) tell the root
+//! [`crate::app::TubeApp`] what the user did.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -16,34 +9,22 @@ use crate::model::{ChannelId, Route, Settings, VideoId};
 use crate::resource::Library;
 use ui::tilo_resource::Edit;
 
-/// Everything a click can request.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Navigate(Route),
     OpenVideo(VideoId),
     OpenChannel(ChannelId),
-    /// Pop the navigation stack (`ui::NavStack`); also reached via Escape /
-    /// Alt-Left / edge-swipe.
     Back,
-    /// Fraction of the current video's duration, in `[0, 1]`.
     Seek(f64),
     TogglePlay,
-    /// Ask for the open video's stream again after no source played it.
     RetryPlayback,
     SubmitSearch,
     Share(VideoId),
-    /// A change to the shared library, submitted as it is through the
-    /// framework's door.
     Edit(Edit<Library>),
-    /// An effect, run through the framework's door, which confirms the ones
-    /// that ask for it (clearing the watch history, approving or revoking a
-    /// device) first.
     Effect(TubeEffect),
-    /// Pair with the Grayjay invite currently held in the local-only input.
     PairDevice,
 }
 
-/// Named boolean preferences the settings page can flip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingFlag {
     SponsorBlock,
@@ -109,7 +90,6 @@ impl SettingFlag {
         }
     }
 
-    /// Turn it on or off in `settings`.
     pub fn set(self, settings: &mut Settings, enabled: bool) {
         *self.slot(settings) = enabled;
     }
@@ -127,7 +107,6 @@ impl SettingFlag {
     }
 }
 
-/// Shared, single-threaded queue of pending actions.
 pub type ActionBus = Rc<RefCell<Vec<Action>>>;
 
 pub fn new_bus() -> ActionBus {

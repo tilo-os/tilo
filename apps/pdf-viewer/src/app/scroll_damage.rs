@@ -4,8 +4,6 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 use super::PdfApp;
 
-/// How one frame showed the document canvas: what a later frame compares to
-/// decide whether it only scrolled.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct CanvasShown {
     pub(super) scroll: (f64, f64),
@@ -14,14 +12,8 @@ pub(super) struct CanvasShown {
     pub(super) rect: Rect,
     pub(super) transform: Affine,
     pub(super) current_page: usize,
-    /// The vertical and horizontal scroll bar thumbs, which stay put while
-    /// the content moves under them.
     pub(super) thumbs: [Option<Rect>; 2],
-    /// The selection's bar, which stands where the selection was when it
-    /// was drawn while the pages scroll under it.
     pub(super) hud: Rect,
-    /// Whether anything else floated over the canvas (a toast, a tooltip,
-    /// a find bar, the selection's controls, an editor, the scrim).
     pub(super) floating: bool,
 }
 
@@ -47,8 +39,6 @@ impl ui::scroll_copy::Shown for CanvasShown {
 
     fn overlays(&self, out: &mut Vec<Rect>) {
         for thumb in self.thumbs.iter().flatten() {
-            // The whole lane the thumb runs in, so a thumb copied with the
-            // content is painted over where it lands.
             out.push(Rect::new(
                 thumb.x0.min(self.canvas.x1 - thumb.width()) - 2.0,
                 if thumb.width() < thumb.height() {
@@ -67,11 +57,6 @@ impl ui::scroll_copy::Shown for CanvasShown {
 }
 
 impl PdfApp {
-    /// A frame that only scrolled the document (and took in pages the
-    /// worker delivered) offers its host a copy of what stays on screen and
-    /// damages only what changed: the strip the scroll exposed, the pages
-    /// that arrived, the scroll bar and page bubble that stay put over the
-    /// content. Anything else repaints the window.
     pub(super) fn scroll_damage(&self, regions: &mut Vec<Rect>) {
         if !ui::widget::Widget::needs_redraw(self) {
             return;
@@ -93,7 +78,6 @@ impl PdfApp {
         let Some(drawing) = self.shown.drawing() else {
             return;
         };
-        // The page rail and the outline mark the current page.
         if current_page.0 != current_page.1 {
             if self.show_rail {
                 regions.push(self.rail_rect);
@@ -102,7 +86,6 @@ impl PdfApp {
                 regions.push(self.sidebar_rect);
             }
         }
-        // Pages whose pixels arrived repaint where they are now drawn.
         let card_size = vello::kurbo::Size::new(self.pw(), self.ph()) * self.zoom();
         let unit = self.stack_unit();
         for page in &self.delivered_pages {
@@ -114,8 +97,6 @@ impl PdfApp {
                 regions.push(card);
             }
         }
-        // A page's bitmap also stands in for its thumbnail until one of its
-        // own arrives.
         if (self.delivered_thumbs || !self.delivered_pages.is_empty()) && self.show_rail {
             regions.push(self.rail_rect);
         }

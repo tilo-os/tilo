@@ -1,12 +1,4 @@
 //! Watch history: the videos the person watched, newest first.
-//!
-//! History is a record of its own beside the library
-//! ([`RecordEnv::person`](ui::framework::RecordEnv::person)), kept in the
-//! workspace Tube is open in and synced with it; the library never holds
-//! it. Each video is kept once, at the time it was last watched, so two
-//! devices watching at once merge by video.
-//!
-//! The record's type and verbs are `tube-model`'s; this module is the app's side of them.
 
 pub use tube_model::{MAX_HISTORY_ENTRIES, RESUME_TOLERANCE_MS, WatchHistory};
 
@@ -28,7 +20,6 @@ mod tests {
         );
         assert_eq!(history.positions().get("lecture"), Some(&6_000_000));
 
-        // A video left at its end is watched: replaying starts at the start.
         history.progress("lecture".into(), 7_190_000, 7_200_000);
         assert_eq!(history.position_of("lecture"), None);
         assert!(
@@ -36,7 +27,6 @@ mod tests {
             "a finished video has no place to continue from"
         );
 
-        // Leaving at the very beginning is not a place to continue from.
         history.progress("other".into(), 0, 600_000);
         assert_eq!(history.position_of("other"), None);
     }

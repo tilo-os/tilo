@@ -14,3 +14,7 @@ example-todo-add = Add an item
 example-todo-set-done = Mark an item done or not done
 example-backups-back-up = Back up now
 example-backups-restore = Restore a snapshot
+
+# The name an item nobody named is offered under: the label field it has none of is the record's
+# own, so the word stands in wherever the item is listed, in the reading person's language.
+record-unnamed-item = Untitled

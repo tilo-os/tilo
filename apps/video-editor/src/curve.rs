@@ -1,50 +1,17 @@
-//! Tone curves: the fine half of the colour grade.
+//! Tone curves: a free function from input tone to output tone, shaped by
+//! dragging points, with a per-channel curve under a master.
 //!
-//! The three grade sliders ([`crate::model::Filters`]) move brightness,
-//! contrast and saturation as whole-frame multipliers. They cannot lift a
-//! shadow without lifting a highlight, and they cannot roll off a clipped
-//! sky. A curve can: it is a free function from input tone to output tone,
-//! shaped by dragging points.
-//!
-//! ## One mechanism for curves and 1D LUTs
-//!
-//! A curve is never evaluated per pixel. It is **baked on the CPU into a
-//! 256-entry lookup table** — one RGBA row, red/green/blue in the first
-//! three channels — and the shader does a table lookup. That is the same
-//! thing a 1D LUT is, so a curve and an imported LUT are one mechanism
-//! downstream: whatever fills the 256 entries, the compositor reads them
-//! identically.
-//!
-//! The bake folds [`Curve::mix`] in, so the shader has no blend term: at
-//! `mix = 0.4` the table already holds 40% of the way from the identity
-//! ramp to the shaped one. That is what makes `mix` an ordinary keyframable
-//! parameter ([`crate::param::Param::CurveMix`]) — animating it re-bakes a
-//! table, it does not add a second code path.
-//!
-//! ## Channel order
-//!
-//! Per-channel curves run **first**, then the master over the result:
-//! `out.r = master(red(in.r))`. That is the order a curves panel reads —
-//! the channel curves set the balance, the master shapes the tone of what
-//! came out.
-//!
-//! ## Interpolation
-//!
-//! Monotone cubic Hermite (Fritsch–Carlson). A plain Catmull-Rom through
-//! user points overshoots: three points shaping an S would push the segment
-//! between them past 1.0 and clip, producing a bright band nobody placed.
-//! Monotone interpolation cannot leave the interval its two endpoints span,
-//! so the drawn curve is the curve that renders. With two points it
-//! degenerates to the straight line between them, which is why an untouched
-//! curve is exactly the identity.
+//! The curve is baked on the CPU into a 256-entry RGBA row the shader looks up,
+//! so a curve and a 1D LUT are one mechanism downstream and [`Curve::mix`] folds
+//! into the bake. Interpolation is monotone cubic Hermite: the drawn curve is the
+//! curve that renders, and two points are the straight line between them.
 
 use serde::{Deserialize, Serialize};
 
-/// Entries in the baked table. 256 is what an 8-bit pipeline can address: a
-/// larger table cannot say anything the shader could read back.
+/// What an 8-bit pipeline can address.
 pub const LUT_SIZE: usize = 256;
 
-/// One control point. Both axes are 0..1 — input tone across, output tone up.
+/// Input tone across, output tone up, both 0..1.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CurvePoint {
     pub x: f64,
@@ -60,10 +27,9 @@ impl CurvePoint {
     }
 }
 
-/// Which curve a control edits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Channel {
-    /// Applied to all three channels, after the per-channel curves.
+    /// Over all three channels, after the per-channel curves.
     #[default]
     Master,
     Red,
@@ -102,13 +68,8 @@ impl Channel {
     }
 }
 
-/// The points of one channel's curve, kept sorted by `x`.
-///
-/// Both endpoints are always present: a curve with no point at 0 or at 1
-/// would leave those ends undefined, and holding the nearest value there is
-/// a different picture from the straight line the user thinks they drew.
-/// They can be dragged vertically (that is a lift or a crush) but never
-/// removed, and never moved sideways past each other.
+/// The points of one channel's curve, sorted by x. Both endpoints are always
+/// present and stay on their x, so the ends of the curve are defined.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Spline {
     pub points: Vec<CurvePoint>,
@@ -122,26 +83,23 @@ impl Default for Spline {
     }
 }
 
-/// How close two points may sit on the x axis. Closer than this and the
-/// slope between them is numerically meaningless, so an insert is refused
-/// rather than producing a near-vertical segment.
+/// Closer than this the slope between two points is meaningless, so an insert
+/// is refused rather than producing a near-vertical segment.
 pub const MIN_X_GAP: f64 = 1.0 / 64.0;
 
 impl Spline {
-    /// The straight line — what a channel nobody has touched looks like.
+    /// The straight line.
     pub fn identity() -> Self {
         Self::default()
     }
 
-    /// Whether this is still the untouched straight line.
     pub fn is_identity(&self) -> bool {
         self.points == [CurvePoint::new(0.0, 0.0), CurvePoint::new(1.0, 1.0)]
     }
 
-    /// Repair a spline that arrived from a document or a peer: sorted, in
-    /// range, with both endpoints, and no two points on top of each other.
-    /// Applied on every read, because a malformed curve reaching the bake
-    /// would fill the table with NaNs.
+    /// Sorted, in range, both endpoints, no two points on top of each other.
+    /// Applied on every read: a malformed curve reaching the bake would fill the
+    /// table with NaNs.
     #[must_use]
     pub fn normalised(&self) -> Self {
         let mut pts: Vec<CurvePoint> = self
@@ -170,9 +128,8 @@ impl Spline {
         Self { points: out }
     }
 
-    /// Add a point, or move the one already near `x`. Returns the index of
-    /// the point that ended up there, or `None` when `x` is too close to a
-    /// neighbour for a new point to mean anything.
+    /// Add a point or move the one near `x`, answering its index, or `None` when
+    /// `x` is too close to a neighbour for a new point to mean anything.
     pub fn set_point(&mut self, x: f64, y: f64) -> Option<usize> {
         let (x, y) = (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0));
         let n = self.points.len();
@@ -203,8 +160,8 @@ impl Spline {
         Some(at)
     }
 
-    /// Move the point at `idx`, holding the endpoints on their own x and
-    /// keeping interior points between their neighbours.
+    /// The endpoints stay on their x; interior points stay between their
+    /// neighbours.
     pub fn move_point(&mut self, idx: usize, x: f64, y: f64) -> bool {
         let n = self.points.len();
         let y = y.clamp(0.0, 1.0);
@@ -231,8 +188,7 @@ impl Spline {
         true
     }
 
-    /// Drop the interior point at `idx`. Endpoints are never removed — see
-    /// the struct docs.
+    /// Endpoints are never removed.
     pub fn remove_point(&mut self, idx: usize) -> bool {
         if idx == 0 || idx + 1 >= self.points.len() {
             return false;
@@ -241,7 +197,6 @@ impl Spline {
         true
     }
 
-    /// The index of the point within `tol` of `(x, y)`, nearest first.
     pub fn point_near(&self, x: f64, y: f64, tol: f64) -> Option<usize> {
         self.points
             .iter()
@@ -252,8 +207,7 @@ impl Spline {
             .map(|(i, _)| i)
     }
 
-    /// Evaluate the curve at `x` with monotone cubic Hermite interpolation,
-    /// held to 0..1 at both ends.
+    /// Monotone cubic Hermite, held to 0..1.
     #[expect(
         clippy::many_single_char_names,
         reason = "the textbook Hermite names: segment ends a/b, width h, parameter t"
@@ -290,7 +244,6 @@ impl Spline {
         let t = (x - a.x) / h;
         let t2 = t * t;
         let t3 = t2 * t;
-        // Hermite basis.
         let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
         let h10 = t3 - 2.0 * t2 + t;
         let h01 = -2.0 * t3 + 3.0 * t2;
@@ -298,17 +251,12 @@ impl Spline {
         (h00 * a.y + h10 * h * ma + h01 * b.y + h11 * h * mb).clamp(0.0, 1.0)
     }
 
-    /// The Fritsch–Carlson tangents at the two ends of segment `i`.
-    ///
-    /// Each interior tangent starts as the average of the two neighbouring
-    /// secant slopes, then is limited so the segment cannot overshoot: a
-    /// local extremum forces a zero tangent, and a tangent longer than three
-    /// times its secant is scaled back. That limiter is the whole reason
-    /// this is monotone rather than merely smooth.
+    /// The Fritsch–Carlson tangents for segment `i`. The limiter is what makes
+    /// the curve monotone rather than merely smooth: without it a segment
+    /// overshoots its endpoints and clips.
     fn tangents(&self, i: usize) -> (f64, f64) {
         let p = &self.points;
         let n = p.len();
-        // Every caller asks for a segment `k <= n - 2`, which has both ends.
         let slope = |k: usize| -> f64 {
             let Some(&[left, right]) = p.get(k..k + 2) else {
                 return 0.0;
@@ -329,8 +277,7 @@ impl Spline {
             }
             let (d0, d1) = (slope(k - 1), slope(k));
             if d0 * d1 <= 0.0 {
-                // A local extremum: a non-zero tangent here is exactly what
-                // produces an overshooting bulge.
+                // A local extremum: a tangent here is an overshooting bulge.
                 return 0.0;
             }
             let mean = d0.midpoint(d1);
@@ -348,8 +295,8 @@ impl Spline {
     }
 }
 
-/// A clip's whole tone curve: three per-channel splines under one master,
-/// plus how much of the result is mixed in.
+/// A clip's tone curve: three per-channel splines under one master, and how much
+/// of the result is mixed in.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Curve {
     #[serde(default)]
@@ -366,8 +313,8 @@ pub struct Curve {
     pub mix: f64,
 }
 
-/// A curve read from a document that predates `mix` is at full strength —
-/// serde's own `f64` default of `0.0` would silently bypass it.
+/// A curve that predates `mix` is at full strength; serde's `f64` default of 0.0
+/// would silently bypass it.
 fn full_strength() -> f64 {
     1.0
 }
@@ -403,10 +350,8 @@ impl Curve {
         }
     }
 
-    /// Whether this curve changes nothing — every channel is the straight
-    /// line, **or** it is mixed all the way out. Both mean "bind no table
-    /// for this layer": the shader then takes no lookup at all, so a clip
-    /// nobody has graded costs exactly what it did before curves existed.
+    /// Every channel straight, or mixed all the way out: both mean bind no table,
+    /// so an ungraded clip takes no lookup.
     pub fn is_identity(&self) -> bool {
         self.mix.abs() < 1e-9
             || (self.master.is_identity()
@@ -415,7 +360,7 @@ impl Curve {
                 && self.blue.is_identity())
     }
 
-    /// Which channels have been shaped, for a one-line summary.
+    /// For a one-line summary.
     pub fn shaped_channels(&self) -> Vec<Channel> {
         Channel::ALL
             .into_iter()
@@ -423,8 +368,7 @@ impl Curve {
             .collect()
     }
 
-    /// Repair every spline (see [`Spline::normalised`]) and hold `mix` in
-    /// range.
+    /// See [`Spline::normalised`].
     #[must_use]
     pub fn normalised(&self) -> Self {
         Self {
@@ -440,9 +384,8 @@ impl Curve {
         }
     }
 
-    /// Apply the curve to one colour on the CPU. Mirrors the shader's table
-    /// lookup at the sampled tones, and is what the representative preview
-    /// colour and the editor's own readout use.
+    /// On the CPU, at the sampled tones, as the shader's lookup does: what the
+    /// preview colour and the readout use.
     pub fn apply(&self, r: f64, g: f64, b: f64) -> (f64, f64, f64) {
         let mix = self.mix.clamp(0.0, 1.0);
         if mix <= 0.0 {
@@ -460,10 +403,7 @@ impl Curve {
         )
     }
 
-    /// Bake the curve into a `LUT_SIZE`-entry RGBA8 row, `mix` folded in.
-    ///
-    /// This is the only thing the GPU ever sees of a curve, and it is
-    /// tightly packed so it can be uploaded as one row of a
+    /// The `LUT_SIZE` RGBA8 entries the GPU reads, `mix` folded in: one row of a
     /// `LUT_SIZE × layers` texture.
     pub fn bake(&self) -> Vec<u8> {
         let mut out = vec![255u8; LUT_SIZE * 4];
@@ -521,7 +461,7 @@ mod tests {
                 (mid - 0.75).abs() < 1e-6,
                 "the point the user placed is honoured: {mid}"
             );
-            // And it lifts a range, not only the one sampled tone.
+            // It lifts a range, not only the sampled tone.
             assert!(c.apply(0.3, 0.3, 0.3).0 > 0.35);
             assert!(c.apply(0.7, 0.7, 0.7).0 > 0.72);
         }
@@ -535,8 +475,8 @@ mod tests {
             assert_eq!(c.shaped_channels(), vec![Channel::Red]);
         }
         {
-            // red: 0.5 -> 0.8; master: 0.8 -> 0.2. Composed one way the answer
-            // is 0.2, the other way it is not — so this pins the order.
+            // red: 0.5 -> 0.8, master: 0.8 -> 0.2. Composed the other way the
+            // answer is not 0.2, so this pins the order.
             let mut c = Curve::default();
             c.red.set_point(0.5, 0.8);
             c.master.set_point(0.8, 0.2);

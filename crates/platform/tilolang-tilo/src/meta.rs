@@ -5,8 +5,8 @@
 //! action.
 
 use tilolang_runtime::meta::{
-    EffectClass, FieldKind, FieldMeta, Meta, TriggerWhenMeta, Ty, TypeMeta, element_record,
-    field_kind, parse_ty,
+    ActionMeta, EffectClass, FieldKind, FieldMeta, Meta, TriggerWhenMeta, Ty, TypeMeta,
+    element_record, field_kind, parse_ty,
 };
 
 use crate::schema::{ColumnKind, ColumnSchema, FieldSchema, MergeKind, TypeSchema, lookup_in};
@@ -73,9 +73,13 @@ pub trait MetaExt {
     /// records was built for, and is built anew when it differs.
     fn schema_text(&self) -> String;
 
-    /// Register the schemas of every declared type, and the ids the app had before; peers that
-    /// replay this package's actions resolve its records through them.
+    /// Register the schemas of every declared type; peers that replay this package's actions
+    /// resolve its records through them.
     fn register_schemas(&self);
+
+    /// The action a caller at the door names `published`: actions are published by their name,
+    /// as a native verb is, while what is stored of one (its records, its words) keeps its id.
+    fn action_published_as(&self, published: &str) -> Option<&ActionMeta>;
 
     /// The resource kind of the type `type_name`: `tl.<app>.<Type>`.
     fn kind_of(&self, type_name: &str) -> String;
@@ -331,7 +335,12 @@ impl MetaExt for Meta {
         for schema in self.schemas() {
             crate::schema::register(schema);
         }
-        crate::schema::register_previously(&self.app, &self.previously);
+    }
+
+    fn action_published_as(&self, published: &str) -> Option<&ActionMeta> {
+        self.actions
+            .iter()
+            .find(|action| action.name == published && !action.scenario)
     }
 
     fn kind_of(&self, type_name: &str) -> String {

@@ -610,7 +610,9 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
     for strip in &ws.strips {
         for group in &strip.window_groups {
             for tab in &group.tabs {
-                apps.extend(tilo_desktop_model::apps::canonical_app_id(&tab.tile));
+                apps.extend(
+                    tilo_desktop_model::apps::canonical_app_id(&tab.tile).map(String::from),
+                );
             }
         }
     }

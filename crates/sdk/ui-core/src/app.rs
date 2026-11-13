@@ -1409,6 +1409,10 @@ impl App {
                     self.accessibility.ui_scale * self.accessibility.zoom.factor(),
                 ),
         };
+        // A window floating as a card draws on the card's ground.
+        if crate::window_toolbar::floats() {
+            self.theme = self.theme.clone().as_card();
+        }
         self.text_renderer
             .apply_typography(&self.theme.tokens.typography);
         // Deliver motion policy before the event loop consults
@@ -2917,14 +2921,14 @@ mod generic_floating_activity_tests {
 fn resolve_window_title(explicit: Option<&str>) -> String {
     let environment = crate::host::environment();
     let app_name = environment.identity.app_name.clone();
-    let package_id = environment.identity.package_id.clone();
+    let app_id = environment.identity.app_id.clone();
     let binary = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
     resolve_title_from(
         explicit,
         app_name.as_deref(),
-        package_id.as_deref(),
+        app_id.as_deref(),
         binary.as_deref(),
     )
 }
@@ -2934,11 +2938,11 @@ fn resolve_window_title(explicit: Option<&str>) -> String {
 /// ([`crate::presence::PointerSpace::Surface`]) — both ends must spell the
 /// surface the same way by calling this same function.
 pub fn local_surface_id() -> String {
-    let package_id = crate::host::environment().identity.package_id.clone();
+    let app_id = crate::host::environment().identity.app_id.clone();
     let binary = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
-    resolve_app_id(package_id.as_deref(), binary.as_deref())
+    resolve_app_id(app_id.as_deref(), binary.as_deref())
 }
 
 /// A shared generic id would collapse every id-keyed compositor lookup (tab

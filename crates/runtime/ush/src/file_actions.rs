@@ -1,48 +1,25 @@
 //! Carrying out an environment's file actions.
 //!
-//! `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `ln`, `truncate`, `touch` and `append`
-//! inside a guest are the environment record's own verbs
-//! ([`tilo_environment::files`]): each command line parses into one
-//! [`FileAction`] ([`cli`]), is invoked on the record as the person who typed
-//! it ([`invoke`]), and lands in the record's `files` outbox — checked as a
-//! whole against the record's grants by the verb itself. This module is the
-//! device's half: it [plans](plan) a queued task against the tree as it is,
-//! checks that plan against the same grants with the same function, carries
-//! it out, and settles the task with the [`UndoEntry`]s that take it back.
-//! History, undo and attribution are the record's, as for every other action
-//! of the record's: there is no second history here.
+//! `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `ln`, `truncate`, `touch` and `append` inside a
+//! guest are the environment record's own verbs ([`tilo_environment::files`]): each
+//! command line parses into one [`FileAction`] ([`cli`]), is invoked on the record as
+//! the person who typed it ([`invoke`]), and lands in the record's `files` outbox,
+//! checked against its grants by the verb itself. This module is the device's half: it
+//! [plans](plan) a queued task against the tree as it is, checks it with the same
+//! function, carries it out and settles the task with the [`UndoEntry`]s that take it
+//! back. History, undo and attribution are the record's.
 //!
-//! # Why one action per invocation
+//! One invocation is one action: a one-liner that copies forty files is refused or
+//! carried out whole, never left half done with no way to tell which.
 //!
-//! A shell one-liner that copies forty files is one thing the person asked
-//! for. Refusing the seventeenth file would leave thirty-nine copies and no
-//! way to tell which; recording each `open` would fill History with the
-//! implementation of one intent. So the action is checked before anything is
-//! written, and written as one unit.
+//! Nothing is unlinked. `rm` renames into the environment's recoverable store
+//! ([`RECOVERABLE_DIR`]), and an overwrite (`cp`, `mv`, `ln -f`, `truncate`, `append`)
+//! moves the previous contents aside the same way; `rmdir` only succeeds on an empty
+//! directory, so its undo recreates it.
 //!
-//! # Nothing is unlinked
-//!
-//! `rm` renames the path into the environment's recoverable store
-//! ([`RECOVERABLE_DIR`]) instead of unlinking it, and an overwrite (`cp`,
-//! `mv`, `ln -f`, `truncate`, `append`) moves the previous contents aside the
-//! same way. `rmdir` cannot lose anything — it only succeeds on an empty
-//! directory — so it removes the entry and its undo recreates the directory.
-//! `rm -f` is GNU's: it says nothing of a path that is not there, and what is
-//! there is kept aside like any removal.
-//!
-//! The store is where kept contents are, not a history: each entry names the
-//! path it came from, so what a task the record no longer lists kept aside —
-//! and what an older runtime kept, when it still wrote its own history — stays
-//! listed by `history` and comes back with the record's `restore` action.
-//!
-//! # Outside a guest
-//!
-//! The host's own shell has no environment record, so there is nothing to
-//! invoke an action on, no grants to check and no History to record in: a
-//! verb run there ([`perform`]) carries out the same plan with the person's
-//! own permissions as its only bound, still keeping what it replaces in
-//! `~/.local/share/ush/recoverable`, where `history` lists it and
-//! `history restore` puts it back.
+//! Outside a guest there is no record, so a verb run there ([`perform`]) carries out the
+//! same plan with the person's own permissions, keeping what it replaces in
+//! `~/.local/share/ush/recoverable`, where `history` lists it.
 
 use std::fs;
 use std::io;
@@ -75,33 +52,24 @@ use crate::records::{Invoker, RecordError, Records};
 /// own `/var/lib`.
 pub const RECOVERABLE_DIR: &str = "/var/lib/tilo-recoverable";
 
-/// The same directory as the environment's `/var` holds it, which is how the
-/// supervisor finds it on the host.
 pub const RECOVERABLE_IN_VAR: &str = "tilo-recoverable";
 
-/// Metadata kept beside every kept entry: the path it came from.
 pub const ENTRY_FILE: &str = "entry.json";
 
 /// Why an action will not run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
-    /// The path is outside every directory the caller was granted.
     Ungranted(PathBuf),
     /// The path is not there. `-f` silences it for `rm`, as GNU does.
     Missing(PathBuf),
-    /// A directory was asked for where a file stands, or the other way round.
     NotADirectory(PathBuf),
-    /// `cp` of a directory without `-r`.
     IsDirectory(PathBuf),
-    /// `cp -r` of a directory into itself.
     IntoItself(PathBuf),
     /// A destination already holds something and `-n` was given.
     Exists(PathBuf),
     /// `rmdir` of a directory that still holds something.
     NotEmpty(PathBuf),
-    /// `rm` of something that is neither a file nor `-r`. GNU's wording.
     CannotRemove(PathBuf),
-    /// A revert or a restore names nothing that can be put back.
     Nothing(String),
 }
 
@@ -149,8 +117,6 @@ impl std::fmt::Display for ActionError {
 
 impl std::error::Error for ActionError {}
 
-/// Either half of what carrying an action out can answer with: refused
-/// before it did anything, or stopped partway by the filesystem.
 #[derive(Debug)]
 pub enum FileActionError {
     Refused(Refusal),
@@ -168,14 +134,11 @@ impl std::fmt::Display for FileActionError {
 
 impl std::error::Error for FileActionError {}
 
-/// One thing to do, in the order to do it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Operation {
-    /// Create a directory.
     MakeDir {
         path: PathBuf,
     },
-    /// Remove an empty directory.
     RemoveDir {
         path: PathBuf,
     },
@@ -186,12 +149,9 @@ pub enum Operation {
         path: PathBuf,
         contents: Option<Vec<u8>>,
     },
-    /// Keep a copy of what is at `path` in the recoverable store, leaving
-    /// it where it is: what an `append` adds to.
     KeepCopy {
         path: PathBuf,
     },
-    /// Create or replace `path` with `contents`.
     Write {
         path: PathBuf,
         contents: Contents,
@@ -220,18 +180,13 @@ pub enum Operation {
     },
 }
 
-/// What a write puts in a file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Contents {
-    /// The bytes themselves, as the action carried them.
     Bytes(Vec<u8>),
-    /// Content in the environment's content store, by its hash: streamed
-    /// from there, whatever its size.
     Stored(String),
 }
 
 impl Contents {
-    /// What `hash` names in `content`, when this device has it.
     fn stored(hash: &str, content: &ContentStore) -> Result<Self, Refusal> {
         if content.has(hash) {
             Ok(Self::Stored(hash.to_owned()))
@@ -242,7 +197,6 @@ impl Contents {
         }
     }
 
-    /// Write all of it to `to`.
     fn write_to(&self, to: &mut fs::File, content: &ContentStore) -> io::Result<()> {
         use std::io::Write as _;
         match self {
@@ -260,12 +214,9 @@ impl Contents {
     }
 }
 
-/// What an action will do, decided before it does any of it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Plan {
-    /// Every path it reads from, in order.
     pub reads: Vec<PathBuf>,
-    /// Every path it writes to, creates or gives up, in order.
     pub writes: Vec<PathBuf>,
     pub ops: Vec<Operation>,
 }
@@ -371,8 +322,6 @@ pub fn apply(
             Operation::Write { path, contents } => write_file(path, contents, false, content)
                 .map_err(io(path))
                 .map(|()| UndoEntry::Write { path: path.clone() }),
-            // Undoing removes the file; what it held comes back from the
-            // copy kept beside it.
             Operation::Append { path, contents } => write_file(path, contents, true, content)
                 .map_err(io(path))
                 .map(|()| UndoEntry::Write { path: path.clone() }),
@@ -464,8 +413,6 @@ fn remove_if_present(path: &Path) -> Result<(), ActionError> {
     })
 }
 
-/// The recoverable store: a directory of entries, one per removed or
-/// replaced path, each holding what was there and naming where it came from.
 #[derive(Debug, Clone)]
 pub struct Recoverable {
     dir: PathBuf,
@@ -479,18 +426,13 @@ pub struct KeptEntry {
     /// The entry's id: when it was kept, and a sequence so two in the same
     /// second do not collide.
     pub id: String,
-    /// The invocation an older runtime recorded it under.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub action: String,
-    /// Seconds since the Unix epoch.
     pub at: u64,
-    /// `keep` for an entry holding contents.
     pub op: String,
-    /// The path the entry came from.
     pub path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub other: Option<PathBuf>,
-    /// The entry's directory in the store.
     pub file: PathBuf,
 }
 
@@ -517,12 +459,6 @@ impl Recoverable {
         Err(io::Error::other("the recoverable store is full"))
     }
 
-    /// Move `path` into the store, keeping what was there; the entry's id.
-    ///
-    /// # Errors
-    ///
-    /// Whatever kept the move from happening — in which case nothing was
-    /// changed.
     pub fn stash(&self, path: &Path, contents: Option<&[u8]>) -> Result<String, ActionError> {
         self.stash_with(path, |kept| match contents {
             Some(bytes) => {
@@ -533,13 +469,6 @@ impl Recoverable {
         })
     }
 
-    /// Keep a copy of the file at `path`, leaving it where it is; the
-    /// entry's id.
-    ///
-    /// # Errors
-    ///
-    /// Whatever kept the copy from being made — in which case nothing was
-    /// changed.
     pub fn stash_copy(&self, path: &Path) -> Result<String, ActionError> {
         self.stash_with(path, |kept| fs::copy(path, kept).map(drop))
     }
@@ -557,7 +486,6 @@ impl Recoverable {
             keep(&kept)
         })();
         if let Err(error) = result {
-            // Nothing was changed; the slot holds no payload to put back.
             let _ = fs::remove_dir_all(&slot);
             return Err(ActionError::Io {
                 path: path.to_path_buf(),
@@ -579,7 +507,6 @@ impl Recoverable {
         Ok(id)
     }
 
-    /// Put the entry `id` back at `path`.
     pub fn restore(&self, id: &str, path: &Path) -> Result<(), ActionError> {
         let slot = self.slot(id)?;
         let kept = slot.join("payload");
@@ -742,13 +669,6 @@ pub fn carry_out(
     }
 }
 
-/// Plan `action`, check the plan against `policy` as a whole, and carry it
-/// out: the whole of what a device does for one copy, move or removal.
-///
-/// # Errors
-///
-/// The refusal that stopped it before it changed anything, or the
-/// filesystem error that stopped it partway, with what was done before it.
 pub fn perform(
     action: &FileAction,
     policy: &Policy,
@@ -764,27 +684,23 @@ pub fn perform(
     apply(&plan, store, content).map_err(|(error, done)| (FileActionError::Failed(error), done))
 }
 
-/// The answer to one invocation on the record.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Invoked {
-    /// The outbox entry the invocation queued.
     pub entry: Option<Id>,
-    /// How it settled here, once this device carried it out.
     pub settled: Option<Settlement>,
 }
 
-/// Invoke `invoke` on the environment `key` as `invoker` (when there is
-/// one), then carry out every task the record holds for `device`, settling
-/// each with what it did: one write of the record.
+/// Invoke `invoke` on the environment `key` as `invoker` (when there is one), then carry
+/// out every task the record holds for `device`, settling each with what it did: one write
+/// of the record.
 ///
-/// The invocation goes through the record's action door, so it is checked
-/// against the record's grants by the verb, attributed to `invoker` and
-/// recorded in the record's History with the compensation its undo applies.
+/// The invocation goes through the record's action door, so the verb checks it against the
+/// grants, attributes it to `invoker` and records it in History with its undo.
 ///
 /// # Errors
 ///
-/// The verb's refusal (nothing is queued or written), or a record that
-/// cannot be read or written.
+/// The verb's refusal (nothing is queued or written), or a record that cannot be read or
+/// written.
 pub fn invoke(
     records: &Records,
     key: &str,
@@ -814,8 +730,6 @@ pub fn invoke(
                 .into_iter()
                 .find_map(|(id, settled)| (id == *entry).then_some(settled))
         });
-        // What no task names any more, now that this one may have pushed
-        // the oldest out.
         if let Ok(state) = replica.state()
             && let Err(error) = content.collect(&state)
         {
@@ -825,8 +739,6 @@ pub fn invoke(
     })
 }
 
-/// Carry out every task `replica`'s record holds for `device`, oldest
-/// first, each under the record's grants as they stand, and settle it.
 pub fn drain(
     replica: &mut Replica<Environment>,
     device: &str,
@@ -879,13 +791,11 @@ pub fn subjects(action: &FileAction) -> String {
     }
 }
 
-/// The audit line for a file action that was carried out.
 #[must_use]
 pub fn audit_record(session: &str, environment: &str, action: &FileAction) -> AuditRecord {
     AuditRecord::new(session, environment, action.verb(), true).about(subjects(action))
 }
 
-/// Write one line for `action` to the audit log.
 pub fn log(log: &AuditLog, session: &str, environment: &str, action: &FileAction) {
     log.append(&audit_record(session, environment, action));
 }
@@ -953,9 +863,6 @@ pub fn brokered(
     }
 }
 
-/// Carry out every task the session's environment holds for this device
-/// that was queued elsewhere: an undo from History, an agent's `move`.
-/// Each settles in the record and is written to the audit log.
 pub fn carry_out_queued(state: &BrokerState) {
     let env = state.environment.current();
     if !env
@@ -1081,7 +988,6 @@ fn plan_move(op: &MoveOp) -> Result<Plan, Refusal> {
         if op.no_clobber && fs::symlink_metadata(&to).is_ok() {
             return Err(Refusal::Exists(to));
         }
-        // The source is what a `mv` gives up: written, and kept.
         plan = plan.writes(source.clone()).writes(to.clone());
         if fs::symlink_metadata(&to).is_ok() {
             plan = plan.push(Operation::Keep {
@@ -1182,8 +1088,6 @@ fn plan_link(op: &LinkOp) -> Result<Plan, Refusal> {
     };
     let mut plan = Plan::default().writes(path.clone());
     if !op.symbolic {
-        // A hard link is a second name for the target's file: writing one
-        // writes the other.
         plan = plan.writes(op.target.clone());
     }
     if fs::symlink_metadata(&path).is_ok() {
@@ -1242,8 +1146,6 @@ fn plan_touch(op: &AppendFileOp) -> Result<Plan, Refusal> {
                 if meta.is_dir() {
                     return Err(Refusal::IsDirectory(file.clone()));
                 }
-                // Touching what is there changes nothing: there is nothing
-                // to put back.
                 plan = plan
                     .writes(file.clone())
                     .push(Operation::Touch { path: file.clone() });
@@ -1320,7 +1222,6 @@ fn plan_write(op: &WriteOp, content: &ContentStore) -> Result<Plan, Refusal> {
     Ok(plan)
 }
 
-/// `size` bytes of zeroes, which is what `truncate` writes.
 fn sized(size: u64) -> Vec<u8> {
     vec![0u8; usize::try_from(size).unwrap_or(usize::MAX)]
 }
@@ -1329,8 +1230,6 @@ fn destination_is_dir(destination: &Path, sources: usize) -> bool {
     if destination.is_dir() {
         return true;
     }
-    // A destination ending in a separator names a directory even before it
-    // exists, as GNU reads it.
     sources > 1 || destination.as_os_str().to_string_lossy().ends_with('/')
 }
 
@@ -1360,8 +1259,6 @@ fn missing_ancestors(path: &Path) -> Vec<PathBuf> {
     missing
 }
 
-/// The existing ancestors of `dir` that `rmdir -p` may also remove, nearest
-/// first, as long as each is empty.
 fn existing_ancestors_are_empty(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut current = dir.to_path_buf();
@@ -1414,9 +1311,6 @@ fn write_file(
     contents.write_to(&mut file, content)
 }
 
-/// Move `from` to `to`: a rename, or, where the two are on different
-/// filesystems (a workspace mount and the store beside `/var`), a copy and
-/// then the removal of the original.
 fn move_path(from: &Path, to: &Path) -> io::Result<()> {
     match fs::rename(from, to) {
         Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {

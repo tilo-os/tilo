@@ -16,6 +16,39 @@ use ui::search::system::{self, KindGroup, ResourceKind};
 
 use crate::workers::{Answer, SearchWorkers};
 
+thread_local! {
+    /// Whether the code running on this thread is the one a host draws from, that may never wait
+    /// on a source: the desktop's loop. Set for the length of a pass ([`the_loop`] to guard it),
+    /// and read by [`search`] — the one entry point that waits for a source — so a search run on
+    /// the loop in a development build fails where it is called, rather than freezing the desktop
+    /// as it did on 2026-11-13. The host's own search takes that same path off the loop
+    /// ([`search_stream`]) and never reaches [`search`] there.
+    static ON_THE_LOOP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this thread is a loop a host draws from, marked by the pass that runs on it.
+#[must_use]
+pub fn on_the_loop() -> bool {
+    ON_THE_LOOP.with(std::cell::Cell::get)
+}
+
+/// Mark this thread as the loop that runs `pass`, for its whole length: a search that would wait
+/// for a source there panics in a development build (see [`search`]), which is the freeze the
+/// desktop had, caught where it is made. A host whose search runs on a thread of its own (a worker,
+/// a test) never marks it, and waits as it always did.
+pub fn the_loop<T>(pass: impl FnOnce() -> T) -> T {
+    /// Restores the marker the pass found, so a pass nested in another (a test driving a session)
+    /// leaves it as it was.
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ON_THE_LOOP.with(|on| on.set(self.0));
+        }
+    }
+    let _restore = Restore(ON_THE_LOOP.with(|on| on.replace(true)));
+    pass()
+}
+
 /// Where the view of an application a row opens goes: what a modifier held as the row
 /// is chosen asks of it ([`ActivationModifier`]), and what the selected row says it
 /// will do before it is.
@@ -843,6 +876,10 @@ impl SearchStream {
     /// Take the next answer the workers send, waiting for it when it is not
     /// in yet, and merge it: what a caller with no frame to wake does
     /// ([`search`]), and the one place a search waits on a source.
+    ///
+    /// A host that owns a loop never reaches this: its own search takes its
+    /// answers with [`Self::resume`] on a later pass, as a palette's frame does,
+    /// and [`search`]'s debug guard fails it where it is called.
     fn wait_for_answer(&mut self, used: &dyn Fn(&Hit) -> f32) {
         if let Ok(answer) = self.answers.recv() {
             self.collect(answer, used);
@@ -963,7 +1000,13 @@ impl std::fmt::Debug for SearchStream {
 
 /// One frame of a search: hand the sources to `workers`, take the answers
 /// that came back, and merge them, one row per thing ([`Thing`]). The sources
-/// still out wake the desk when they answer.
+/// still out wake the desk when they answer — or, where `workers` was made
+/// with a loop of its own ([`SearchWorkers::waking`]), the host's loop.
+///
+/// This is what a host asks a search it must not wait for with (the session's
+/// own): it returns at once with the rows that are in, and the caller takes
+/// the rest up on a later pass with [`SearchStream::resume`], as a palette's
+/// frame does.
 pub fn search_stream(
     needle: &str,
     sources: &[&dyn Source],
@@ -982,12 +1025,23 @@ pub fn search_stream(
 /// ([`crate::usage::Usage::strength`]).
 /// This caller has no frame to keep, so it waits for every source, which is the one
 /// place waiting for a source is right (an agent's find, text placed on the canvas).
+///
+/// A loop that draws must never reach this: it would wait for a source on the very thread that
+/// shows the desktop, and a source reading a disk, a mailbox or a service on a busy machine would
+/// freeze it, as it did on 2026-11-13. Such a host asks with [`search_stream`] and takes
+/// its answers up on a later pass. A development build fails here where it is called
+/// ([`the_loop`] is how a host marks its loop).
 pub fn search(
     needle: &str,
     sources: &[&dyn Source],
     row_budget: usize,
     used: &dyn Fn(&Hit) -> f32,
 ) -> Vec<KindGroup<Hit>> {
+    debug_assert!(
+        !on_the_loop(),
+        "a search that waits for its sources ran on the loop that draws the desktop: \
+         ask with `search_stream` and take the answers up on a later pass (`resume`)"
+    );
     let workers = SearchWorkers::new();
     let mut stream = SearchStream::new(needle, sources, row_budget, &workers);
     while stream.pending() {
@@ -1009,6 +1063,39 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     use ui::time::Duration;
+
+    /// A search that waits for its sources is the freeze the desktop had (2026-11-13): a source
+    /// that reads a disk, a mailbox or a service can take seconds, and a pass that waits for one
+    /// draws no frame until it answers. `search` fails a development build where such a search runs
+    /// on a marked loop, so the next host to call the waiting entry from its pass fails here rather
+    /// than freezing the desktop. The guard reads the marker, and `the_loop` sets it and puts it
+    /// back, so a pass nested in another leaves no trace.
+    #[test]
+    fn a_waiting_search_on_the_loop_fails_where_it_is_called() {
+        let world = world();
+        assert!(
+            !on_the_loop(),
+            "this test's thread is not a loop to begin with"
+        );
+        // On the loop: the waiting search fails rather than freezing the frames.
+        let waiting = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            the_loop(|| {
+                assert!(on_the_loop());
+                search("", &world.all(), 0, &|_| 0.0)
+            })
+        }));
+        assert!(
+            waiting.is_err(),
+            "a waiting search on the loop panicked where it was called"
+        );
+        assert!(
+            !on_the_loop(),
+            "the marker is put back when the pass returns, so the next caller waits as it did"
+        );
+        // Off the loop: the same search answers, which is what a test or an agent's own thread does.
+        let answered = search("", &world.all(), 0, &|_| 0.0);
+        assert!(!answered.is_empty(), "off the loop a source is waited for");
+    }
 
     /// A source that answers with its rows for any needle naming one of
     /// them, or all of them for the empty one.

@@ -1,5 +1,5 @@
-//! [`WindowsPlatform`] — the Win32 + Storage-cmdlet implementation of
-//! [`Platform`], and the unprivileged [`probe_facts`].
+//! [`WindowsPlatform`]: the Win32 and Storage-cmdlet implementation of [`Platform`], and the
+//! unprivileged [`probe_facts`].
 
 use std::cell::{Cell, RefCell};
 use std::time::Duration;
@@ -72,10 +72,7 @@ fn observe() -> Observed {
     }
 }
 
-/// Probe this Windows host (design spec §5). Never mutates and needs no
-/// elevation: the layout comes from metadata-only IOCTLs, everything else from
-/// the registry, `GetFirmwareType`, `GetSystemPowerStatus` and one read-only
-/// PowerShell Storage snapshot. Boot variables are left empty; see
+/// Never mutates and needs no elevation; boot variables are left empty, see
 /// [`facts::basis_firmware`].
 pub fn probe_facts() -> HostFacts {
     facts::assemble(&observe())
@@ -91,8 +88,8 @@ fn usize_of(value: u64) -> IoResult<usize> {
     usize::try_from(value).map_err(|_| "size exceeds the address space".to_string())
 }
 
-/// The open raw target of partition I/O: the physical drive plus locks on
-/// any (unmounted) volume Windows created inside the partition.
+/// The open raw target of partition I/O: the physical drive plus locks on any unmounted volume
+/// Windows created inside the partition.
 struct RawTarget {
     disk_id: String,
     partition_guid: String,
@@ -104,8 +101,7 @@ struct RawTarget {
     bounce: Option<AlignedBuf>,
 }
 
-/// A page-aligned bounce buffer of at least `len` bytes, allocated once and
-/// reused for every chunk.
+/// Page aligned, allocated once and reused for every chunk.
 fn bounce(slot: &mut Option<AlignedBuf>, len: usize) -> IoResult<&mut [u8]> {
     if slot.as_ref().is_none_or(|b| b.len() < len) {
         *slot = Some(AlignedBuf::new(len.max(IO_CHUNK_BYTES)).map_err(io_err)?);
@@ -117,12 +113,9 @@ fn bounce(slot: &mut Option<AlignedBuf>, len: usize) -> IoResult<&mut [u8]> {
         .ok_or_else(|| "bounce buffer too small".to_string())
 }
 
-/// The Windows staging adapter.
-///
-/// [`WindowsPlatform::read_only`] serves the unprivileged UI: every mutation
-/// and raw access is refused. [`WindowsPlatform::elevated`] serves the
-/// staging helper; it additionally reads the on-disk GPT on every
-/// [`Platform::system_disk`] and requires it to agree with Windows.
+/// [`WindowsPlatform::read_only`] serves the unprivileged UI and refuses every mutation and raw
+/// access; [`WindowsPlatform::elevated`] serves the staging helper and reads the on-disk GPT on
+/// every [`Platform::system_disk`].
 pub struct WindowsPlatform {
     elevated: bool,
     geometry_only: bool,
@@ -132,9 +125,8 @@ pub struct WindowsPlatform {
 }
 
 impl WindowsPlatform {
-    /// Read only the installed ESP named by its GPT PARTUUID. This bypasses
-    /// the staging writer's volume locks: a final ESP may have a Windows
-    /// volume object, but firmware registration must never write to it.
+    /// Read only the installed ESP named by its GPT PARTUUID, bypassing the staging writer's volume
+    /// locks: firmware registration must never write to a volume object Windows owns.
     pub fn read_installed_esp(
         &self,
         disk: &Disk,
@@ -161,9 +153,8 @@ impl WindowsPlatform {
         Ok(())
     }
 
-    /// Hash a loader with one GPT cross-check and one read-only physical
-    /// drive handle for the entire FAT traversal. The next pass reopens and
-    /// revalidates before changing firmware.
+    /// One GPT cross-check and one read-only physical drive handle for the whole FAT traversal; the
+    /// next pass reopens and revalidates before changing firmware.
     pub fn installed_esp_loader_sha256(
         &self,
         disk: &Disk,
@@ -219,9 +210,8 @@ impl WindowsPlatform {
         })
     }
 
-    /// Fails unless this process is an elevated administrator (proved by
-    /// enabling `SeSystemEnvironmentPrivilege`, which only elevated
-    /// administrator tokens hold).
+    /// Fails unless this process is an elevated administrator, proved by enabling
+    /// `SeSystemEnvironmentPrivilege`.
     pub fn elevated() -> IoResult<Self> {
         let platform = Self {
             elevated: true,
@@ -234,8 +224,8 @@ impl WindowsPlatform {
         Ok(platform)
     }
 
-    /// Final installed-OS firmware handoff needs fresh disk geometry, not
-    /// shrink capacity. Retain Windows/native/GPT cross-checks on every read.
+    /// The final firmware handoff needs fresh disk geometry, not shrink capacity; Windows, native
+    /// and GPT cross-checks stay on every read.
     pub fn elevated_final_boot() -> IoResult<Self> {
         let mut platform = Self::elevated()?;
         platform.geometry_only = true;
@@ -263,8 +253,7 @@ impl WindowsPlatform {
         self.target.replace(None);
     }
 
-    /// The system disk as the native layout reports it, cross-checked against
-    /// the Storage cmdlets (and, elevated, against the on-disk GPT).
+    /// Cross-checked against the Storage cmdlets, and against the on-disk GPT when elevated.
     fn current(&self) -> IoResult<(Disk, Snapshot)> {
         let snapshot = if self.geometry_only {
             parse_snapshot_program(&scripts::geometry_snapshot(self.drive))?
@@ -319,8 +308,8 @@ impl WindowsPlatform {
         Ok(())
     }
 
-    /// Open (or reuse) the raw target for partition I/O after proving the
-    /// partition is a staging partition with no mounted volume.
+    /// Open (or reuse) the raw target after proving the partition is a staging partition with no
+    /// mounted volume.
     fn with_target<R>(
         &self,
         disk: &Disk,
@@ -355,8 +344,8 @@ impl WindowsPlatform {
         let mut locks = Vec::new();
         for volume in sys::volumes().map_err(io_err)? {
             let device = volume.trim_end_matches('\\');
-            // A volume whose extents cannot be read (an empty card reader,
-            // an offline disk) is not on the target disk.
+            // A volume whose extents cannot be read (an empty card reader, an offline disk) is not
+            // on the target disk.
             let Ok(extents) = sys::volume_extents(device) else {
                 continue;
             };
@@ -393,8 +382,8 @@ impl WindowsPlatform {
     }
 }
 
-/// Read the primary GPT and its entry array from the raw disk and require
-/// both to match `disk` exactly (elevated only).
+/// Reads the primary GPT and its entry array from the raw disk and requires both to match `disk`
+/// exactly (elevated only).
 fn verify_gpt(disk: &Disk) -> IoResult<()> {
     let number = disk_number(disk)?;
     let handle = sys::open_physical_drive(number, DriveAccess::Read).map_err(io_err)?;
@@ -445,8 +434,6 @@ impl Platform for WindowsPlatform {
         let out = sys::powershell(&script, PARTITION_TIMEOUT)?;
         let json = serde_json::from_slice(&out).map_err(|e| format!("create JSON: {e}"))?;
         let guid = ops::parse_created(&json, offset, size, &spec.type_guid)?;
-        // `New-Partition` cannot set the GPT name; names are informational
-        // only (never identity), so the partition keeps an empty name.
         let (after, _) = self.current_for(disk)?;
         let created = ops::find(&after, &guid)?;
         if created.first_lba != spec.first_lba

@@ -20,21 +20,15 @@ use tilo_actions::remote::linux_apps::{OpenApp, UP_PROVIDER};
 pub enum AppRefused {
     /// The account's plan does not allow it: a Linux app is a Linux action.
     Refused(Refusal),
-    /// Anything else, in words.
     Error(String),
 }
 
-/// How long one answer is waited for: a wake and the session starting.
 const ANSWER_PATIENCE: Duration = Duration::from_secs(300);
 
-/// How long a host with no room is waited for before it is reported.
 const ROOM_PATIENCE: Duration = Duration::from_secs(10 * 60);
 
-/// How often a host with no room is asked again.
 const ASK_AGAIN: Duration = Duration::from_secs(2);
 
-/// The hosted-VM service on this member, as the place the workspaces'
-/// Browser starts, in their VMs of `size`.
 #[derive(Clone, Debug)]
 pub struct BrowserHost {
     socket: PathBuf,
@@ -127,7 +121,6 @@ impl BrowserHost {
         }
     }
 
-    /// End the apps session in `workspace`'s VM now, and every app in it.
     pub fn stop_apps(&self, workspace: &str) -> Result<(), String> {
         match self.ask(&Request::StopApps {
             workspace: workspace.to_owned(),
@@ -138,7 +131,6 @@ impl BrowserHost {
         }
     }
 
-    /// End the browser session in `workspace`'s VM now.
     pub fn stop(&self, workspace: &str) -> Result<(), String> {
         match self.ask(&Request::StopBrowser {
             workspace: workspace.to_owned(),

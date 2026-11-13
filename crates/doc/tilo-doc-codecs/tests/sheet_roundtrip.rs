@@ -17,7 +17,6 @@ use tilo_doc_codecs::{OdsCodec, SheetProvider, XlsxCodec};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-/// Build a ZIP (deflated) from `(name, bytes)` entries — a genuine OPC/ODF package.
 #[allow(
     clippy::unwrap_used,
     reason = "test fixture builder: a failure here means the test infra itself is broken, not the code under test"
@@ -44,9 +43,6 @@ fn imp(codec: &dyn SheetProvider, bytes: &[u8]) -> Workbook {
     wb
 }
 
-/// A real two-sheet `.xlsx` exercising every modeled cell kind: a number, an
-/// inline string, a formula (with cached result), and a **shared string** (t="s"
-/// into sharedStrings.xml) — so the sst-resolution path is covered.
 fn sample_xlsx() -> Vec<u8> {
     let content_types = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/></Types>"#.to_vec();
@@ -56,10 +52,8 @@ fn sample_xlsx() -> Vec<u8> {
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Budget" sheetId="1" r:id="rId1"/><sheet name="Data" sheetId="2" r:id="rId2"/></sheets></workbook>"#.to_vec();
     let wb_rels = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/></Relationships>"#.to_vec();
-    // Budget: A1 number 10, B1 inline string "Hello", A2 formula =A1*2 (cached 20).
     let sheet1 = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1"><v>10</v></c><c r="B1" t="inlineStr"><is><t>Hello</t></is></c></row><row r="2"><c r="A2"><f>A1*2</f><v>20</v></c></row></sheetData></worksheet>"#.to_vec();
-    // Data: A1 shared string idx 0 ("Region"), B1 number 42, C1 formula =B1+1 (cached 43).
     let sheet2 = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1"><v>42</v></c><c r="C1"><f>B1+1</f><v>43</v></c></row></sheetData></worksheet>"#.to_vec();
     let sst = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -152,24 +146,20 @@ fn assert_sample(snap: &WorkbookSnapshot, fmt: &str, a2_formula: &str, formula_c
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn real_spreadsheets_parse_roundtrip_and_edit_as_crdt() {
-    // Phase `xlsx_parses_real_file_into_crdt_model`.
     {
         let wb = imp(&XlsxCodec, &sample_xlsx());
         assert_sample(&wb.materialize(), "xlsx", "A1*2", "B1+1");
     }
-    // Phase `ods_parses_real_file_into_crdt_model`.
     {
         let wb = imp(&OdsCodec, &sample_ods());
         assert_sample(&wb.materialize(), "ods", "of:=[.A1]*2", "of:=[.B1]+1");
     }
-    // Phase `xlsx_roundtrips_cells_types_and_formulas`.
     {
         let wb = imp(&XlsxCodec, &sample_xlsx());
         let out = XlsxCodec.export(&wb).expect("export xlsx");
         let reopened = imp(&XlsxCodec, &out);
         assert_sample(&reopened.materialize(), "xlsx-reopened", "A1*2", "B1+1");
     }
-    // Phase `ods_roundtrips_cells_types_and_formulas`.
     {
         let wb = imp(&OdsCodec, &sample_ods());
         let out = OdsCodec.export(&wb).expect("export ods");
@@ -181,7 +171,6 @@ fn real_spreadsheets_parse_roundtrip_and_edit_as_crdt() {
             "of:=[.B1]+1",
         );
     }
-    // Phase `xlsx_edit_as_crdt_op_survives_reopen`.
     {
         let mut wb = imp(&XlsxCodec, &sample_xlsx());
         let budget = wb.sheet_ids_in_order()[0].clone();
@@ -209,7 +198,6 @@ fn real_spreadsheets_parse_roundtrip_and_edit_as_crdt() {
         );
         assert_eq!(b.cell("B1").unwrap().value, "Hello");
     }
-    // Phase `xlsx_keeps_theme_backed_styles_and_declares_minimal_styles`.
     {
         let mut entries = Vec::new();
         // Start from a genuine workbook, then add the pair Office uses for
@@ -255,7 +243,6 @@ fn real_spreadsheets_parse_roundtrip_and_edit_as_crdt() {
         assert!(types.contains("spreadsheetml.styles+xml"));
         assert!(types.contains("officedocument.theme+xml"));
     }
-    // Phase `entity_references_survive_in_strings_formulas_and_cell_text`.
     {
         let sheet = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>R&amp;D &lt;1&gt;</t></is></c><c r="B1" t="str"><f>IF(A2&gt;1,&quot;a&amp;b&quot;,&#39;x&#39;)</f><v>a&amp;b</v></c></row></sheetData></worksheet>"#;
         let parsed = XlsxCodec::parse(&xlsx_with(sheet, None)).unwrap();
@@ -275,7 +262,6 @@ fn real_spreadsheets_parse_roundtrip_and_edit_as_crdt() {
 
 #[test]
 fn hostile_spreadsheet_inputs_are_rejected() {
-    // Phase `xxe_dtd_is_rejected_in_both_spreadsheet_formats`.
     {
         // A DTD in a modeled XML part is rejected outright (defence in depth vs XXE /
         // billion-laughs), via the same codecs/safety.rs guard the doc codecs use.
@@ -310,7 +296,6 @@ fn hostile_spreadsheet_inputs_are_rejected() {
             "ods: expected a DTD rejection, got: {err2}"
         );
     }
-    // Phase `zip_bomb_is_rejected_in_both_spreadsheet_formats`.
     {
         // An entry-count amplification bomb (a few KB → thousands of parts, each read
         // into memory) is rejected fast by the bounded reader, before any part is
@@ -340,13 +325,11 @@ fn hostile_spreadsheet_inputs_are_rejected() {
             "ods: expected a bounded rejection, got: {err2}"
         );
     }
-    // Phase `garbage_input_is_rejected_cleanly`.
     {
         let mut wb = Workbook::new();
         assert!(XlsxCodec.import(b"not a zip at all", &mut wb).is_err());
         assert!(OdsCodec.import(&[0xff, 0x00, 0x13, 0x37], &mut wb).is_err());
     }
-    // Phase `ods_refuses_a_repeat_that_claims_too_many_cells`.
     {
         let table = r#"<table:table table:name="S"><table:table-row table:number-rows-repeated="1048576"><table:table-cell office:value-type="float" office:value="1" table:number-columns-repeated="16384"><text:p>1</text:p></table:table-cell></table:table-row></table:table>"#;
         let err = OdsCodec::parse(&ods_with(table)).unwrap_err();
@@ -354,10 +337,6 @@ fn hostile_spreadsheet_inputs_are_rejected() {
     }
 }
 
-/// A workbook of several sheets × hundreds of formula cells, exported +
-/// reimported for both formats with every cell and formula kept, and the
-/// time each took reported. The size is bounded so it stays fast in a debug
-/// `cargo test`.
 #[test]
 fn large_workbook_parse_and_serialize_keeps_every_cell() {
     use std::time::Instant;
@@ -434,7 +413,6 @@ fn large_workbook_parse_and_serialize_keeps_every_cell() {
     eprintln!("large_workbook_parse_and_serialize ({total} cells):\n{report}");
 }
 
-/// A one-sheet `.xlsx` whose worksheet XML and (optional) styles are given.
 fn xlsx_with(sheet_xml: &str, styles_xml: Option<&str>) -> Vec<u8> {
     let workbook = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>"#.to_vec();
@@ -457,7 +435,6 @@ fn xlsx_with(sheet_xml: &str, styles_xml: Option<&str>) -> Vec<u8> {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn spreadsheet_formulas_formats_and_repeats_expand_and_export() {
-    // Phase `xlsx_shared_formulas_expand_to_every_cell_of_their_range`.
     {
         let sheet = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>
     <row r="1"><c r="A1"><v>1</v></c><c r="B1"><f t="shared" ref="B1:B3" si="0">A1*$A$1+SUM(A$1:A1)</f><v>2</v></c></row>
@@ -485,14 +462,12 @@ fn spreadsheet_formulas_formats_and_repeats_expand_and_export() {
             Some("A3*$A$1+SUM(A$1:A3)")
         );
     }
-    // Phase `xlsx_date_style_refs_follow_the_cell_formats_number_format`.
     {
         let styles = r#"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="4"><numFmt numFmtId="164" formatCode="yyyy\-mm\-dd;@"/><numFmt numFmtId="165" formatCode="&quot;$&quot;#,##0.00"/><numFmt numFmtId="166" formatCode="[h]:mm:ss"/><numFmt numFmtId="167" formatCode="[Red]0.00;&quot;day&quot;"/></numFmts><cellStyleXfs count="1"><xf numFmtId="14"/></cellStyleXfs><cellXfs count="8"><xf numFmtId="0"/><xf numFmtId="14"/><xf numFmtId="164"></xf><xf numFmtId="165"/><xf numFmtId="10"/><xf numFmtId="166"/><xf numFmtId="167"/><xf numFmtId="46"/></cellXfs></styleSheet>"#;
         let refs = tilo_doc_codecs::xlsx::date_style_refs(styles.as_bytes());
         let refs: Vec<&str> = refs.iter().map(String::as_str).collect();
         assert_eq!(refs, ["1", "2", "5", "7"]);
     }
-    // Phase `xlsx_snapshot_export_writes_number_formats_and_valid_tab_names`.
     {
         use tilo_doc_codecs::xlsx::{date_style_refs, number_format_styles};
         let styles = number_format_styles(&["yyyy-mm-dd", "#,##0.00 \"CHF\""]);
@@ -524,7 +499,6 @@ fn spreadsheet_formulas_formats_and_repeats_expand_and_export() {
         let dates = date_style_refs(&parsed.preserved["xl/styles.xml"]);
         assert!(dates.contains("1") && !dates.contains("2"));
     }
-    // Phase `ods_repeated_populated_cells_and_rows_expand`.
     {
         let table = r#"<table:table table:name="S">
     <table:table-row><table:table-cell office:value-type="float" office:value="0" table:number-columns-repeated="3"><text:p>0</text:p></table:table-cell><table:table-cell table:style-name="ce1" table:number-columns-repeated="1000"/></table:table-row>
@@ -542,7 +516,6 @@ fn spreadsheet_formulas_formats_and_repeats_expand_and_export() {
         assert_eq!(parsed.sheets[0].cells[4].1.value, "x");
         assert_eq!(parsed.sheets[0].cells[4].1, parsed.sheets[0].cells[5].1);
     }
-    // Phase `ods_snapshot_export_carries_common_styles`.
     {
         let styles = tilo_doc_codecs::ods::common_styles_part(
             r#"<number:percentage-style style:name="pct"><number:number number:decimal-places="2"/><number:text>%</number:text></number:percentage-style><style:style style:name="coPct" style:family="table-cell" style:data-style-name="pct"/>"#,

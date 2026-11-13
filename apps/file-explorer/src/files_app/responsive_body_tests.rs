@@ -1,9 +1,5 @@
-//! The places list is a *navigation* sidebar over the file view, on the
-//! shared `NavShell`: a comfortably-wide window docks it beside the files;
-//! a narrow window turns it into an overlay drawer over them. The file
-//! list is the content at every width — it is never pushed off the window
-//! to make room for the list of places. Drives the real production path
-//! (`build_layout` → `apply_layout` at a size, then `handle_event`).
+//! Tests of the window's body at every width: the docked sidebar, the narrow
+//! drawer over the files, and the panes each lays out.
 #![allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 use super::*;
 use taffy::prelude::*;
@@ -31,8 +27,6 @@ impl H {
         Self::from_widget(w, width, height)
     }
 
-    /// Lay out a pre-built widget (e.g. one with a home and its standard
-    /// favourites, which `new`'s home-less widget lacks).
     fn from_widget(w: FileExplorerWidget, width: f32, height: f32) -> Self {
         let mut h = H {
             w,
@@ -42,9 +36,6 @@ impl H {
             tr: ui::text_render::TextRenderer::new(),
         };
         h.lay_out(width, height);
-        // Match the live host: a responsive child discovers its width
-        // during the first layout and asks for one immediate structural
-        // reflow when it crosses a breakpoint.
         if h.w.take_structure_dirty() {
             h.lay_out(width, height);
         }
@@ -116,7 +107,6 @@ impl H {
         self.dispatch(&ui::synthetic_input::mouse_press());
     }
 
-    /// The labels of the currently-open context/favourite menu, if any.
     fn open_menu_labels(&mut self) -> Vec<String> {
         let chrome = self.w.chrome();
         if !chrome.context_menu.is_open() {
@@ -130,9 +120,6 @@ impl H {
             .collect()
     }
 
-    /// The laid-out rect of a named widget in the live tree. Asserting on
-    /// the *file view's* own rect is what makes the narrow test about the
-    /// files rather than about whichever pane happens to be full-width.
     fn rect_of(&self, name: &str) -> Option<vello::kurbo::Rect> {
         fn find(w: &dyn Widget, name: &str) -> Option<vello::kurbo::Rect> {
             if w.name() == name {
@@ -148,8 +135,6 @@ impl H {
         find(&self.w, name)
     }
 
-    /// The pane's empty state, as assistive technology reads it, and
-    /// where its action stands.
     fn empty_state(&self) -> Option<(ui::a11y::AccessNode, vello::kurbo::Rect)> {
         fn find(w: &dyn Widget) -> Option<(ui::a11y::AccessNode, vello::kurbo::Rect)> {
             if w.name() == "EmptyState" {
@@ -161,9 +146,6 @@ impl H {
         find(&self.w)
     }
 
-    /// Run a real draw pass so immediate-mode children (the file view)
-    /// publish their per-frame geometry — e.g. the in-place rename field's
-    /// rect.
     fn draw(&mut self) {
         let theme = Theme::dark();
         let presence = ui::presence::PresenceCtx::empty();
@@ -195,7 +177,6 @@ impl H {
         self.dispatch(&ui::synthetic_input::keyboard_input(ev));
     }
 
-    /// Press `s` with Ctrl held; whether Files took the key.
     fn ctrl_char(&mut self, s: &str) -> bool {
         let ev = ui::synthetic_input::key_event(
             winit::keyboard::Key::Character(winit::keyboard::SmolStr::new(s)),
@@ -211,7 +192,6 @@ impl H {
             .handled
     }
 
-    /// Paint the window's top layer: open menus.
     fn draw_overlay(&mut self) {
         let theme = Theme::dark();
         let presence = ui::presence::PresenceCtx::empty();
@@ -226,9 +206,6 @@ impl H {
     }
 }
 
-/// Feedback is quiet unless there is something to do about it: selecting
-/// says nothing in the bar, a move to Trash is one notice whose Undo
-/// asks the host for the window's Undo, and Ctrl+Z is the host's.
 #[test]
 fn changes_announce_once_with_the_windows_undo() {
     use crate::file_ops::Change;
@@ -253,7 +230,6 @@ fn changes_announce_once_with_the_windows_undo() {
         "Ctrl+Z falls through to the window's Undo"
     );
 
-    // The host publishes what the window can undo every frame.
     ui::undo::UndoControl::set_undo_status(&mut h.w, &mut || ui::UndoStatus {
         can_undo: true,
         ..ui::UndoStatus::default()
@@ -273,7 +249,6 @@ fn changes_announce_once_with_the_windows_undo() {
         "one plain line, no meta text"
     );
     h.lay_out(1000.0, 720.0);
-    // The change waits for the person, with Undo as its one action.
     let waiting = ui::attention::items()
         .into_iter()
         .find(|item| item.owner().app == "so.tilo.files")
@@ -294,7 +269,6 @@ fn changes_announce_once_with_the_windows_undo() {
         "acting on the notice takes it down"
     );
 
-    // A rename or a new folder shows in the listing and says nothing.
     h.w.state().settle_op(
         OpFollowUp::Rename,
         &ui::tilo_resource::Settled::Done(vec![Change::Moved {
@@ -305,7 +279,6 @@ fn changes_announce_once_with_the_windows_undo() {
     assert!(h.w.state().notice_line().is_none());
     assert!(h.w.state().status_line().is_none());
 
-    // A failure says what and why, in words.
     h.w.state().settle_op(
         OpFollowUp::Rename,
         &ui::tilo_resource::Settled::Failed {
@@ -318,8 +291,6 @@ fn changes_announce_once_with_the_windows_undo() {
     assert!(!told.contains("os error"), "{told}");
 }
 
-/// A move to Trash's Undo is the one action of the row it waits on,
-/// wherever the person is.
 #[test]
 fn a_move_to_trash_keeps_its_undo_where_the_person_can_take_it() {
     use crate::file_ops::Change;
@@ -348,9 +319,6 @@ fn a_move_to_trash_keeps_its_undo_where_the_person_can_take_it() {
     );
     drop(w);
     harness.recompose().unwrap();
-    // The move waits for the person with one action, and its row is the
-    // same row at every width: it is not a notice with a lifetime and a
-    // strip of its own.
     let waiting = ui::attention::items()
         .into_iter()
         .find(|item| item.owner().app == "so.tilo.files")
@@ -361,8 +329,6 @@ fn a_move_to_trash_keeps_its_undo_where_the_person_can_take_it() {
     drop(harness);
 }
 
-/// Alt+Left, Alt+Right and Alt+Up go back, forward and up; typing the
-/// start of a name moves to it.
 #[test]
 fn keys_go_back_forward_up_and_type_to_a_name() {
     let dir = tempfile::tempdir().unwrap();
@@ -407,8 +373,6 @@ fn keys_go_back_forward_up_and_type_to_a_name() {
     assert_eq!(h.w.state().current_path(), dir.path());
 }
 
-/// A drag resting on a folder opens it, so a drop reaches deeper; a
-/// drag that moved on, or ended, opens nothing.
 #[test]
 fn a_drag_resting_on_a_folder_opens_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -441,8 +405,6 @@ fn rename_selects_the_name_but_not_its_extension() {
     assert_eq!(rename_stem_end("photos.2024", true), None);
 }
 
-/// Wide/narrow body modes and the narrow places drawer, each phase on its
-/// own temp dir and harness.
 #[test]
 fn places_list_docks_wide_and_takes_turns_with_the_files_when_narrow() {
     body_docks_wide_and_reflows_to_push_when_narrowed();
@@ -460,30 +422,16 @@ fn body_docks_wide_and_reflows_to_push_when_narrowed() {
         SidebarPlacement::Docked,
         "a wide window docks the places list beside the file view"
     );
-    // Resize DOWN on the same instance (a real window resize re-runs
-    // apply_layout) — the body must reflow to a single pane, not freeze.
     h.lay_out(480.0, 720.0);
     assert_eq!(
         h.w.debug_body_mode(),
         SidebarPlacement::Screen,
         "a narrow window shows one pane at a time"
     );
-    // ...and back up again proves it isn't one-way.
     h.lay_out(1200.0, 720.0);
     assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Docked);
 }
 
-/// An empty folder's message belongs to the file pane and is centred in
-/// it — under the docked places list, and at a width where the places are
-/// a screen of their own — in either view mode. Anchored to the window
-/// instead, it centres behind the places list and its first word is
-/// covered.
-/// An empty folder's message stands in the file pane and centres there —
-/// under a docked places list, and at a width where the places are a
-/// screen of their own — in either view mode, on every frame of a resize
-/// across the breakpoint. Anchored to the window instead, it centres
-/// behind the places list and its first word is covered; laid out at the
-/// window's width inside the docked pane, it runs past the window's edge.
 #[test]
 fn the_empty_state_is_centred_in_the_content_pane() {
     const WIDTHS: [f32; 19] = [
@@ -499,8 +447,6 @@ fn the_empty_state_is_centred_in_the_content_pane() {
                 h.w.debug_show_places();
             }
             for width in WIDTHS {
-                // The frame a resize lands on draws the frame after it: both
-                // must be right, the first included.
                 for _ in 0..2 {
                     h.lay_out(width, 720.0);
                     h.draw();
@@ -539,7 +485,6 @@ fn the_empty_state_is_centred_in_the_content_pane() {
     }
 }
 
-/// Each phase lays out its own harness (or App) at its own size.
 #[test]
 fn toolbar_adapts_to_width_and_its_menus_open_through_every_door() {
     toolbar_reprioritizes_before_desktop_controls_can_overlap_on_phone_width();
@@ -563,9 +508,6 @@ fn toolbar_reprioritizes_before_desktop_controls_can_overlap_on_phone_width() {
         "compact overflow retains history navigation rather than removing it"
     );
 
-    // Beside the docked places list the folder still gets a 560 px
-    // column, which fits the direct controls; only a phone width moves
-    // them into the overflow.
     h.lay_out(900.0, 760.0);
     h.lay_out(900.0, 760.0);
     assert!(
@@ -576,8 +518,6 @@ fn toolbar_reprioritizes_before_desktop_controls_can_overlap_on_phone_width() {
     h.lay_out(390.0, 760.0);
     assert!(h.w.state().toolbar.is_compact(), "back to phone width");
 
-    // The width is discovered during layout; one follow-up composition is
-    // how the live app promotes wide controls after a real resize.
     h.lay_out(1200.0, 720.0);
     assert!(
         h.w.take_structure_dirty(),
@@ -625,7 +565,6 @@ fn toolbar_more_menu_tracks_its_trigger_and_flips_inside_the_viewport() {
     );
 }
 
-/// Each phase drives real events into its own temp dir and harness.
 #[test]
 fn keyboard_and_pointer_events_drive_rename_menus_and_retry() {
     keyboard_context_menu_reaches_selection_actions_and_executes_them();
@@ -687,7 +626,6 @@ fn shared_toolbar_resource_action_opens_view_options() {
         .is_some(),
         "the same resource action an AT-SPI client discovers is handled"
     );
-    // The button queued its command; the frame after applies it.
     h.lay_out(1200.0, 720.0);
     assert!(
         h.w.chrome().context_menu.is_open(),
@@ -703,16 +641,6 @@ fn shared_toolbar_resource_action_opens_view_options() {
 }
 
 fn accesskit_view_options_activation_updates_the_exported_menu_tree() {
-    // This is the same retained-control path used by the Unix AT-SPI
-    // provider: find the visual button in an AccessKit update, dispatch
-    // its action through App, then require the newly opened menu item in
-    // the next update. A `DoAction` reply alone is not enough.
-    //
-    // The item is matched by role as well as name: the folder's
-    // "New folder" resource action is exported as a button whether or not
-    // the menu is open, so a name alone cannot tell the opened menu apart
-    // from the closed one. The installed-image AT-SPI smoke looks for this
-    // same menu item.
     let new_folder_item = t("files-menu-new-folder");
     let exports_new_folder_item = |update: &ui::accesskit::TreeUpdate| {
         update.nodes.iter().any(|(_, node)| {
@@ -809,9 +737,6 @@ fn narrow_shows_the_files_not_the_places_list() {
         !h.w.debug_places_open(),
         "a narrow window opens on the folder, so the files are what you see",
     );
-    // The file view's OWN rect, not "whichever pane is full-width": under
-    // the original bug the places list was the full-width pane and the file
-    // view was laid out off the right edge of the window.
     let files = h
         .rect_of("FileView")
         .expect("the file view must be in the tree at a narrow width");
@@ -834,8 +759,6 @@ fn keyboard_context_menu_reaches_selection_actions_and_executes_them() {
     std::fs::write(dir.path().join("report.txt"), b"draft").unwrap();
     let mut h = H::new(Some(dir.path()), 900.0, 720.0);
 
-    // Arrow navigation selects the first row. The platform Menu key must
-    // open the same selection-aware surface as right-click.
     h.press_named(winit::keyboard::NamedKey::ArrowDown);
     h.press_named(winit::keyboard::NamedKey::ContextMenu);
     assert!(h.w.chrome().context_menu.is_open());
@@ -843,9 +766,6 @@ fn keyboard_context_menu_reaches_selection_actions_and_executes_them() {
     assert!(labels.iter().any(|label| label == "Open"));
     assert!(labels.iter().any(|label| label == "Rename"));
 
-    // Menu keyboard handling skips separators and maps the selected row
-    // back onto the exact FileCommand. Down moves through the rows to
-    // Rename, and Enter executes it without any pointer event.
     let rows: Vec<&String> = labels.iter().collect();
     let steps = rows
         .iter()
@@ -863,9 +783,6 @@ fn keyboard_context_menu_reaches_selection_actions_and_executes_them() {
     );
 }
 
-/// The pointer reaches the menu's rows through the menu itself, as the keys
-/// do: a click on "Send to…" opens the send-to box beside the menu, which
-/// stays open and draws it, and a click on another row runs its command.
 fn a_click_runs_a_menu_row_and_send_to_opens_the_box_beside_the_menu() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("budget.txt"), b"40 EUR").unwrap();
@@ -929,11 +846,6 @@ fn a_click_runs_a_menu_row_and_send_to_opens_the_box_beside_the_menu() {
     assert!(h.w.state().renaming.is_some(), "a click runs Rename");
 }
 
-/// Narrow, the places are a screen of their own: the whole window, brought
-/// over the files by the bar's sidebar button, nothing darkened (HIG §1a).
-/// The files are the list the window opened on, so they are a place of their
-/// own: Back drills past nothing and the bar's button is the way to the
-/// places behind them.
 fn narrow_places_are_a_screen_of_their_own() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
@@ -952,7 +864,6 @@ fn narrow_places_are_a_screen_of_their_own() {
         toggle.width() > 0.0 && toggle.height() > 0.0,
         "the bar holds the sidebar's button at this width: {toggle:?}"
     );
-    // The shell draws that button, and its press runs this toggle.
     h.w.chrome().nav.toggle_sidebar();
     h.w.chrome().nav.snap();
     h.lay_out(480.0, 720.0);
@@ -962,7 +873,6 @@ fn narrow_places_are_a_screen_of_their_own() {
         h.rect_of("FileView").is_none(),
         "one column at a time: the files are not under the places"
     );
-    // Choosing a destination on the places screen returns to the files.
     h.w.chrome().nav.show(ui::widget::NavPane::Content);
     h.w.chrome().nav.snap();
     h.lay_out(480.0, 720.0);
@@ -992,8 +902,6 @@ fn narrow_places_screen_takes_input_the_files_do_not() {
     );
 }
 
-/// Picking a destination on the narrow places screen moves on to the
-/// files there.
 fn narrow_navigation_returns_to_the_files() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("sub")).unwrap();
@@ -1003,9 +911,6 @@ fn narrow_navigation_returns_to_the_files() {
     h.lay_out(480.0, 720.0);
     assert!(h.w.debug_places_open());
 
-    // A place-navigation (what tapping a place in the list emits). Inject
-    // the command the places list pushes, then pump an event so
-    // `handle_event` drains it and moves on.
     crate::command::push(
         &h.w.state().cmds,
         FileCommand::Navigate(dir.path().join("sub")),
@@ -1028,9 +933,6 @@ fn narrow_navigation_returns_to_the_files() {
     );
 }
 
-/// An inline rename is edited *in place* — a field placed over the row's
-/// name inside the file view — not in a bottom bar. The file view publishes
-/// the field rect during paint; it must sit within the file rows.
 fn rename_is_edited_in_place_over_the_row() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("old.txt"), b"x").unwrap();
@@ -1045,8 +947,6 @@ fn rename_is_edited_in_place_over_the_row() {
     assert!(h.w.state().apply_command(FileCommand::Rename));
     assert!(h.w.state().is_renaming());
 
-    // Rebuild with the rename active, then paint so the file view publishes
-    // the editor's on-screen rect.
     h.lay_out(1000.0, 720.0);
     h.draw();
 
@@ -1066,7 +966,6 @@ fn rename_is_edited_in_place_over_the_row() {
         "the field spans the name column: {field:?}"
     );
 
-    // Cancelling clears the published rect (nothing left drawn).
     h.w.state().cancel_rename();
     h.lay_out(1000.0, 720.0);
     h.draw();
@@ -1076,9 +975,6 @@ fn rename_is_edited_in_place_over_the_row() {
     );
 }
 
-/// Typing into the in-place editor and pressing Enter renames the file on
-/// disk — driving the real keystroke path through the app into the shared
-/// `TextInput` and its CRDT-backed field. F2 opens the editor.
 fn typing_in_the_in_place_editor_renames_on_enter() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
@@ -1091,14 +987,11 @@ fn typing_in_the_in_place_editor_renames_on_enter() {
             .unwrap();
     h.w.state().select(Some(idx));
 
-    // F2 begins the rename; rebuild + paint places + seeds the editor.
     h.press_named(winit::keyboard::NamedKey::F2);
     assert!(h.w.state().is_renaming(), "F2 starts an inline rename");
     h.lay_out(1000.0, 720.0);
     h.draw();
 
-    // The seed selected the name but not its extension, so typing
-    // replaces the name and keeps the type.
     h.type_char("b");
     h.press_named(winit::keyboard::NamedKey::Enter);
 
@@ -1113,7 +1006,6 @@ fn typing_in_the_in_place_editor_renames_on_enter() {
     assert!(!dir.path().join("a.txt").exists(), "the old name is gone");
 }
 
-/// Each phase builds its own harness and config dir.
 #[test]
 fn row_drags_and_sidebar_favourites_respond_to_real_pointer_events() {
     dropping_a_folder_on_the_sidebar_pins_it();
@@ -1121,8 +1013,6 @@ fn row_drags_and_sidebar_favourites_respond_to_real_pointer_events() {
     a_row_press_still_becomes_a_drag_after_the_view_is_rebuilt();
 }
 
-/// Dragging a folder out of the list and dropping it on the docked sidebar
-/// pins it to Favorites; a release off the sidebar pins nothing.
 fn dropping_a_folder_on_the_sidebar_pins_it() {
     let cfg = tempfile::tempdir().unwrap();
     let w =
@@ -1132,14 +1022,12 @@ fn dropping_a_folder_on_the_sidebar_pins_it() {
     let before = h.w.state().favorites().len();
     let folder = PathBuf::from("/home/tester/Projects/tilo");
 
-    // Begin the drag (what the file view emits once a folder press travels).
     assert!(h.w.state().apply_command(FileCommand::BeginDrag {
         path: folder.clone(),
         is_dir: true
     }));
     assert!(h.w.state().debug_pin_dragging(), "the drag is in flight");
 
-    // Move over the sidebar, then release → pin.
     let sb = h.w.debug_sidebar_rect();
     h.cursor(sb.center().x, sb.center().y);
     h.left_release();
@@ -1165,7 +1053,6 @@ fn releasing_a_pin_drag_off_the_sidebar_pins_nothing() {
         path: PathBuf::from("/home/tester/Downloads/tmp"),
         is_dir: true,
     });
-    // Release over the content pane (not the sidebar).
     let content = h.w.debug_content_rect();
     h.cursor(content.center().x, content.center().y);
     h.left_release();
@@ -1177,17 +1064,11 @@ fn releasing_a_pin_drag_off_the_sidebar_pins_nothing() {
     );
 }
 
-/// A press on a row, a frame (the click changed the selection, so the
-/// content pane — and the view that saw the press — is rebuilt), then
-/// a move past the threshold: the drag must start anyway. This is the
-/// real mouse sequence; state parked only in the view was lost between
-/// press and move, and no drag ever began from a fresh click.
 fn a_row_press_still_becomes_a_drag_after_the_view_is_rebuilt() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("photo.png"), b"png").unwrap();
     let mut h = H::new(Some(dir.path()), 1200.0, 720.0);
     let view = h.rect_of("FileView").expect("the file view is laid out");
-    // First list row: below the header band.
     let row = (view.x0 + 60.0, view.y0 + 30.0 + 17.0);
     h.cursor(row.0, row.1);
     h.left_press();
@@ -1195,7 +1076,6 @@ fn a_row_press_still_becomes_a_drag_after_the_view_is_rebuilt() {
         !h.w.state().debug_pin_dragging(),
         "a press alone is not a drag"
     );
-    // The frame after the click rebuilds the content pane.
     h.lay_out(1200.0, 720.0);
     h.cursor(row.0 + 40.0, row.1 + 20.0);
     assert!(
@@ -1212,9 +1092,6 @@ fn a_row_press_still_becomes_a_drag_after_the_view_is_rebuilt() {
     assert_eq!(crate::external_drag::unclaimed(), None);
 }
 
-/// A right-click on a sidebar favourite opens *its* menu (Open + Remove from
-/// Favorites), not the file-view context menu. The pinned Home entry offers
-/// no Remove. Drives the real right-press path end to end.
 #[test]
 fn right_clicking_a_favourite_opens_its_menu() {
     fn row(w: &dyn Widget, label: &str) -> Option<vello::kurbo::Point> {
@@ -1261,13 +1138,11 @@ fn right_clicking_a_favourite_opens_its_menu() {
         labels.iter().any(|l| l == "Open"),
         "with the Open folder action: {labels:?}"
     );
-    // It is NOT the file-view context menu (which would offer New Folder).
     assert!(
         !labels.iter().any(|l| l == "New Folder"),
         "not the file menu: {labels:?}"
     );
 
-    // The pinned Home favourite (row 0) has no Remove.
     let (hx, hy) = (home_row.x, home_row.y);
     h.cursor(hx, hy);
     h.right_press();
@@ -1306,16 +1181,11 @@ fn wide_docks_the_places_list_beside_the_files() {
     );
 }
 
-/// With the places list not beside the files (hidden), the shell's toggle
-/// sits at the leading edge of the content header; the toolbar starts
-/// after it instead of drawing over it.
 #[test]
 fn the_toolbar_starts_after_the_shells_toggle_when_the_places_list_is_away() {
     let mut h = H::new(None, 1200.0, 720.0);
     h.w.chrome().nav.close_sidebar();
     for _ in 0..2 {
-        // The inset is discovered by a layout and applied by the rebuild
-        // it asks for, as the live frame loop does.
         h.w.chrome().nav.snap();
         h.w.take_structure_dirty();
         h.lay_out(1200.0, 720.0);
@@ -1332,8 +1202,6 @@ fn the_toolbar_starts_after_the_shells_toggle_when_the_places_list_is_away() {
         "the toolbar's controls clear the toggle: toggle={toggle:?} up={up:?}"
     );
 
-    // Beside the files the toggle belongs to the sidebar's own header, so
-    // the toolbar needs no room for it.
     h.w.chrome().nav.open_sidebar();
     h.w.chrome().nav.snap();
     h.lay_out(1200.0, 720.0);
@@ -1343,8 +1211,6 @@ fn the_toolbar_starts_after_the_shells_toggle_when_the_places_list_is_away() {
     assert!(docked.toggle.x1 <= docked.content_column.x0 + 1.0);
 }
 
-/// The state a menu row shows as a check follows the sort in force and
-/// whether hidden files are shown; no other row is a state.
 #[test]
 fn menu_rows_show_the_sort_and_hidden_state_as_checks() {
     let w = FileExplorerWidget::with_persistence(None, None);
@@ -1374,8 +1240,6 @@ fn menu_rows_show_the_sort_and_hidden_state_as_checks() {
     assert_eq!(w.state().command_checked(None), None);
 }
 
-/// A folder that did not open, or is still opening, has no item count to
-/// float over the surface that says what is happening.
 #[test]
 fn the_item_count_is_withheld_while_a_folder_is_loading_or_failed() {
     let dir = tempfile::tempdir().unwrap();

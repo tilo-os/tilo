@@ -1,7 +1,5 @@
-//! The report says what the probe found and never more. These tests hold the
-//! two properties a person relies on: an observation is never called
-//! supported, and every component they might notice is named with a reason
-//! and a next step.
+//! The report says what the probe found and never more: the two properties a person
+//! relies on.
 
 use super::*;
 use imager_backend::support_report::{
@@ -68,8 +66,6 @@ fn drawn(widget: &dyn Widget) -> Vec<String> {
     let mut stack: Vec<&dyn Widget> = vec![widget];
     while let Some(widget) = stack.pop() {
         if let Some(node) = widget.accessibility() {
-            // A row says its class in `name` and its reason in `value`; both
-            // reach a screen reader, so the test reads both.
             found.extend(node.name);
             found.extend(node.description);
             found.extend(node.value);
@@ -83,8 +79,6 @@ fn drawn(widget: &dyn Widget) -> Vec<String> {
 fn a_component_the_probe_observed_is_never_reported_as_supported() {
     let report = report(vec![observed_graphics()]);
     let summary = summary_text(&report);
-    // The count of supported components is zero, and the sentence that says
-    // what an observation can establish follows the counts.
     assert!(summary.contains(&t("installer-hardware-summary-observation")));
     let facts = report
         .components
@@ -122,7 +116,6 @@ fn every_component_the_probe_covered_gets_a_row_with_its_reason() {
         .iter()
         .flat_map(|row| drawn(row.as_ref()))
         .collect::<Vec<_>>();
-    // The class is named, so a person can find the part that will not work.
     for kind in [
         ComponentKind::Graphics,
         ComponentKind::Fingerprint,
@@ -134,11 +127,8 @@ fn every_component_the_probe_covered_gets_a_row_with_its_reason() {
             kind.key()
         );
     }
-    // The observation's own evidence reaches the row: the driver bound here
-    // and the reader's own name.
     assert!(text.iter().any(|line| line.contains("amdgpu")));
     assert!(text.iter().any(|line| line.contains("Goodix reader")));
-    // A limitation says what the person can do instead of failing silently.
     assert!(text.contains(&t("installer-hardware-remedy-password")));
     assert!(text.contains(&t("installer-hardware-remedy-connect")));
 }
@@ -180,14 +170,10 @@ fn a_component_with_no_next_step_still_says_the_release_was_not_checked() {
     let rows = component_rows(&report);
     assert_eq!(rows.len(), 1, "one component is one row");
     let text = drawn(rows[0].as_ref());
-    // Nothing to do, so no next step is invented.
     assert!(
         text.iter()
             .all(|line| !line.contains(&t("installer-hardware-remedy-check-driver")))
     );
-    // But the scope is always stated: this driver was seen here, it was not
-    // checked against the release, and a person must not read the row as
-    // support.
     assert!(text.contains(&t("installer-hardware-scope-observation")));
 }
 
@@ -247,8 +233,6 @@ fn a_caller_without_a_screen_reads_the_same_facts_as_the_rows_draw() {
     assert_eq!(component["component"], "fingerprint");
     assert_eq!(component["state"], "limited");
     assert_eq!(component["applicability"], "observation-only");
-    // The words the row shows are the words the caller reads: an agent and a
-    // screen reader are answered by one implementation.
     assert!(
         component["reason"]
             .as_str()

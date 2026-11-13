@@ -70,21 +70,54 @@ pub struct NamedApp {
 }
 
 impl NamedApp {
-    /// What the app is called in `locale` (BCP 47): its exact tag, else its
-    /// language, else the name its package gives itself.
+    /// What the app is called in `locale`: [`localized_name`], else the name its package gives
+    /// itself.
     #[must_use]
     pub fn name_in(&self, locale: &str) -> &str {
-        let language = locale.split(['-', '_']).next().unwrap_or(locale);
-        [locale, language]
-            .into_iter()
-            .find_map(|wanted| {
-                self.names
-                    .iter()
-                    .find(|(tag, _)| tag.eq_ignore_ascii_case(wanted))
-                    .map(|(_, name)| name.as_str())
-            })
-            .unwrap_or(self.name.as_str())
+        localized_name(&self.names, locale).unwrap_or(self.name.as_str())
     }
+}
+
+/// The name `names` (a package's `[package.names]`, by language tag) gives in `locale`: the
+/// name of its exact tag, else of its language, else of another region of its language. A tag is
+/// matched however it is spelled: the POSIX `de_DE` a machine's locale says and the BCP 47
+/// `de-DE` a package writes are one language, and a German machine reads `de-DE = "Aufgaben"`.
+#[must_use]
+pub fn localized_name<'a>(
+    names: &'a std::collections::BTreeMap<String, String>,
+    locale: &str,
+) -> Option<&'a str> {
+    fn language(tag: &str) -> &str {
+        tag.split(['-', '_', '.', '@']).next().unwrap_or(tag)
+    }
+    fn same(one: &str, other: &str) -> bool {
+        let spelled = |byte: u8| {
+            if byte == b'_' {
+                b'-'
+            } else {
+                byte.to_ascii_lowercase()
+            }
+        };
+        one.len() == other.len()
+            && one
+                .bytes()
+                .zip(other.bytes())
+                .all(|(a, b)| spelled(a) == spelled(b))
+    }
+    let locale = locale.trim();
+    let wanted = language(locale);
+    if wanted.is_empty() {
+        return None;
+    }
+    let find = |matches: &dyn Fn(&str) -> bool| {
+        names
+            .iter()
+            .find(|(tag, _)| matches(tag))
+            .map(|(_, name)| name.as_str())
+    };
+    find(&|tag| same(tag, locale))
+        .or_else(|| find(&|tag| same(tag, wanted)))
+        .or_else(|| find(&|tag| same(language(tag), wanted)))
 }
 
 /// Collect up to `max` ops of `artifact` with `seq < before_seq`: the newest

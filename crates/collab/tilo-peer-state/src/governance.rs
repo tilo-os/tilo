@@ -3,7 +3,7 @@
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use web_time::SystemTime;
 
-use crate::state::{GovernedIdentity, RedemptionReceipt, put_member, put_member_joined_once};
+use crate::state::{GovernedIdentity, RedemptionReceipt};
 
 /// How many later redemption receipts one governed identity row keeps beside
 /// its first (`GovernedIdentity::admission`).
@@ -140,11 +140,6 @@ pub(crate) fn admit_invited_member(
         .map_err(|error| error.to_string())?
         .ok_or("governed peers missing")?
         .1;
-    let caps = candidate
-        .get(ROOT, "members")
-        .map_err(|error| error.to_string())?
-        .ok_or("governed members missing")?
-        .1;
     let ledger = match candidate
         .get(ROOT, crate::state::invitation_ledger::RECEIPTS_KEY)
         .map_err(|error| error.to_string())?
@@ -236,20 +231,6 @@ pub(crate) fn admit_invited_member(
                     .map_err(|error| error.to_string())?;
             }
         }
-    }
-    // The workspace's owner is not one of its members: they hold it from its
-    // beginning, whatever role an invitation names, and their device's
-    // certificate is what admits it. A member row for them would be a
-    // membership no operation reproduces ([`crate::members::replay`]), so the
-    // redemption records the device and its receipt alone.
-    if !policy.is_owner(&hex::encode(cert.user_public_key)) {
-        put_member(
-            &mut candidate,
-            &caps,
-            cert.user_public_key,
-            grant.role.into(),
-        )?;
-        put_member_joined_once(&mut candidate, cert.user_public_key, now_ns / 1_000_000)?;
     }
     candidate.commit();
     crate::workspace::media::refresh_authorization(document, &mut candidate)

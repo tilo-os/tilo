@@ -6,8 +6,6 @@ use super::*;
 use ui::{theme::Theme, widget::Widget};
 
 fn visible_text(widget: &dyn Widget) -> String {
-    // ListRow exposes its title as the name and its visible subtitle as the
-    // value. Inspect both (and descriptions), including for privacy assertions.
     let mut text = widget
         .accessibility()
         .map(|node| {
@@ -57,8 +55,6 @@ fn metadata_uuid_is_absent_from_default_overview_but_provider_and_count_remain()
     assert!(super::super::accounts::candidate_label(candidate).contains("5e9af371"));
     let before = preview.accounts.projection();
     let text = visible_text(preview.composition(&Theme::dark()).as_ref());
-    // Format the independently known fixture count through Fluent without
-    // normalizing the production text (including any interpolation isolation).
     let expected = t_args(
         "installer-belongings-connections-found",
         &[
@@ -75,8 +71,6 @@ fn metadata_uuid_is_absent_from_default_overview_but_provider_and_count_remain()
     assert_eq!(preview.accounts.projection(), before);
     assert!(preview.accounts.prepared_handle().is_none());
 
-    // The expanded review still identifies the source; no formatter or grant
-    // checks on the account-specific route have changed.
     preview.journey.details = true;
     let detail = visible_text(preview.composition(&Theme::dark()).as_ref());
     assert!(detail.contains("5e9af371"));
@@ -100,8 +94,6 @@ fn multiple_saved_accounts_have_deterministic_provider_counts_and_keep_detail_id
     dropbox.provider = account_transfer::Provider::Dropbox;
     dropbox.label = "Private source name".into();
     preview.belongings.accounts.candidates.push(dropbox);
-    // The provider/count pairs and their order come from this fixture, not the
-    // overview helper's grouping or provider mapping.
     let expected = [
         ("installer-accounts-dropbox", 1_i64),
         ("installer-accounts-nextcloud", 2_i64),

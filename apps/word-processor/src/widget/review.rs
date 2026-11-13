@@ -23,7 +23,6 @@ use super::{
     RemoteCaretOverlay, RemoteSelectionOverlay, block_presence_key, is_scope_digest_key,
 };
 
-/// A comment's own text, its paragraphs joined.
 fn thread_root_text(comment: &tilo_doc::snapshot::CommentView) -> String {
     comment
         .blocks
@@ -34,9 +33,6 @@ fn thread_root_text(comment: &tilo_doc::snapshot::CommentView) -> String {
         .join(" ")
 }
 
-/// Lay `view` out in `x0..x1` from `top` so its text, not the editor's
-/// padding around it, starts at `x0` (the edge the author's name above it
-/// starts at). Returns its height.
 fn lay_out_flush(
     view: &mut RichTextView,
     (x0, x1, top): (f64, f64, f64),
@@ -57,8 +53,6 @@ fn lay_out_flush(
 }
 
 impl Editor {
-    /// The margin column beside the page: a card per comment and tracked
-    /// change, and the open thread expanded in place of its comment's card.
     pub(super) fn draw_review_column(
         &mut self,
         scene: &mut Scene,
@@ -95,7 +89,6 @@ impl Editor {
         }
     }
 
-    /// The comment whose thread is open, its replies in reading order.
     fn open_thread(&self) -> Option<tilo_doc::snapshot::CommentView> {
         let id = self.thread_comment.as_ref()?;
         let mut comment = self
@@ -109,8 +102,6 @@ impl Editor {
         Some(comment)
     }
 
-    /// The open thread's card: its comment's card, expanded in place, in the
-    /// colour presence paints its author.
     fn thread_face<'a>(
         comment: &'a tilo_doc::snapshot::CommentView,
         presence: &PresenceCtx,
@@ -120,10 +111,6 @@ impl Editor {
             .leading_stripe(Tone::Presence(presence.hue_of(&comment.author)))
     }
 
-    /// Lay out the open thread's card body from `top`, `x0..x1`: the
-    /// comment, every reply shown (up to three) and the composer with its
-    /// actions. Returns the body's height; positions the reply views and
-    /// the composer.
     fn lay_out_thread_body(
         &mut self,
         comment: &tilo_doc::snapshot::CommentView,
@@ -152,14 +139,11 @@ impl Editor {
             y += lay_out_flush(view, (x0, x1, y), tr, theme);
         }
         y += f64::from(sp.s3);
-        // The composer stands in a field well, its actions under it.
         let field_h = ButtonFace::height(ControlSize::Regular, theme);
         y += field_h + f64::from(sp.s2) + ButtonFace::height(ControlSize::Small, theme);
         y - top
     }
 
-    /// The open thread's height at `width`, the slot its comment's card
-    /// gives up for it.
     fn comment_thread_height(
         &mut self,
         width: f64,
@@ -174,9 +158,6 @@ impl Editor {
         Some(face.height_for_body(tr, theme, width, content))
     }
 
-    /// Draw the open thread in `slot`, where its comment's card stands in
-    /// the margin: the same card, expanded with every reply and the reply
-    /// composer, so the thread and the card are one object.
     fn draw_comment_thread(
         &mut self,
         scene: &mut Scene,
@@ -213,7 +194,6 @@ impl Editor {
             Some(wrap),
             &body_style,
         );
-        // Each reply: its author over its text, both from the body's edge.
         for (reply, view) in comment
             .replies
             .iter()
@@ -232,8 +212,6 @@ impl Editor {
             view.draw(scene, transform, tr, theme);
         }
 
-        // The composer in its field well, then Cancel and Send (the card's
-        // one primary action) along the card's foot.
         let btn_h = ButtonFace::height(ControlSize::Small, theme);
         let field_h = ButtonFace::height(ControlSize::Regular, theme);
         let btn_top = body.y1 - btn_h;
@@ -288,29 +266,14 @@ impl Editor {
         );
     }
 
-    /// Resolve every remote collaborator's caret + selection against this
-    /// frame's laid-out blocks, into content-space rectangles ready to paint
-    /// through the page content transform.
-    ///
-    /// Factored out of [`Widget::draw`] so it's directly assertable (a populated
-    /// `PresenceCtx` yields the expected rect; an empty one yields nothing). Looks
-    /// up presence under the same [`block_presence_key`] the local caret is
-    /// broadcast under, then maps offsets through the same `caret_geometry`/
-    /// `selection_rects` the local caret uses — so remote and local are
-    /// pixel-identical, just recoloured.
-    ///
-    /// Meaningful only after `self.laid`/`self.layout_cache` are populated by a
-    /// `draw` pass.
     pub(crate) fn remote_presence_overlays(
         &self,
         presence: &PresenceCtx,
     ) -> (Vec<RemoteCaretOverlay>, Vec<RemoteSelectionOverlay>) {
         let mut carets = Vec::new();
         let mut selections = Vec::new();
-        // LIVE_V1 files carets in blocks whose scoped anchor exceeds the wire
-        // bound (e.g. 130-byte worker-minted ids) under a digest stand-in key;
-        // resolve those against this widget's own blocks. Only hashed when
-        // such a key is present.
+        // A caret whose scoped anchor exceeds the wire bound is filed under a digest
+        // stand-in key; resolve those against this widget's own blocks.
         let digests = presence
             .carets
             .keys()
@@ -323,7 +286,6 @@ impl Editor {
             let exact = block_presence_key(&l.id);
             let digest = digests.then(|| exact.digest_form()).flatten();
             for key in std::iter::once(exact).chain(digest) {
-                // Remote selections (drawn under the text, like the local one).
                 if let Some(list) = presence.selections.get(&key) {
                     for (user, range) in list {
                         if range.start >= range.end {
@@ -350,7 +312,6 @@ impl Editor {
                     }
                 }
 
-                // Remote carets (drawn over the text, like the local one).
                 if let Some(list) = presence.carets.get(&key) {
                     for (user, byte_pos) in list {
                         let (cx, cy, ch) = layout.caret_geometry(l.shown(*byte_pos));
@@ -373,17 +334,6 @@ impl Editor {
         (carets, selections)
     }
 
-    /// A peer's just-typed runs, mapped onto this frame's laid-out blocks.
-    ///
-    /// `PresencePayload::Typing` names the span a peer just inserted; it decays
-    /// over `TYPING_FADE` so the glow follows them through the document instead
-    /// of accumulating. Resolved from the same `self.laid` + `self.layout_cache`
-    /// the caret/selection overlays use, so all three can't drift apart.
-    ///
-    /// This is the *ephemeral* half of authorship — the durable half ("this
-    /// paragraph is hers") is `tilo_doc::author_runs`, already fed to
-    /// [`ui::presence::PresenceCtx::draw_peer_authorship`] by
-    /// [`ui::widget::block_editor`]; this widget doesn't call it yet.
     pub(crate) fn remote_typing_overlays(
         &self,
         presence: &PresenceCtx,
@@ -422,12 +372,8 @@ impl Editor {
         out
     }
 
-    /// Context-menu rows offering Accept/Reject for a tracked-change range or
-    /// Resolve for a comment range under the click, plus Accept All / Reject
-    /// All whenever the document has any tracked change. The clicked word
-    /// span `[wstart, wend)` (falling back to `raw_click_off` for a
-    /// whitespace click) is matched against `block`'s `ins`/`del`/`comment`
-    /// marks. A no-op unless the review overlay is visible.
+    /// Context-menu rows for the tracked change or comment range under the click, plus
+    /// Accept All and Reject All; a no-op unless the review overlay is visible.
     pub(super) fn push_review_rows(
         &self,
         menu: &mut ContextMenu,
@@ -443,9 +389,6 @@ impl Editor {
         let mut review_rows = false;
         if let Some(b) = self.blocks.iter().find(|b| b.id == block) {
             for m in &b.marks {
-                // The clicked word span `[wstart, wend)` must overlap the mark
-                // (covers a click anywhere in the range, robust to the
-                // word-snap). Fall back to the raw click point for whitespace.
                 let overlaps = if wstart < wend {
                     wstart < m.end && m.start < wend
                 } else {
@@ -528,7 +471,6 @@ impl Editor {
         self.lifecycle.dirty = true;
     }
 
-    /// Put the caret in the reply field, or take it out.
     pub(super) fn focus_thread_reply(&mut self, focused: bool) {
         let surface = self.thread_reply.widget_mut();
         surface.set_focus(focused);
@@ -611,7 +553,6 @@ impl Editor {
         true
     }
 
-    /// Give the reply field one event and bring it up to date.
     fn route_thread_reply(&mut self, event: &WindowEvent, ctx: &mut EditorEventCtx<'_>) {
         let mut handled = *ctx.handled;
         self.thread_reply.handle_event(
@@ -626,10 +567,6 @@ impl Editor {
         self.lifecycle.dirty = true;
     }
 
-    /// Act on a tracked-change / comment review affordance (from a margin-card
-    /// button or a context-menu row): accept/reject a change, accept/reject all,
-    /// or resolve (delete) a comment. Refreshes the materialized blocks +
-    /// comments/changes so the acted-on item disappears, and flags an undo point.
     pub(super) fn dispatch_review_action(
         &mut self,
         action: ReviewAction,
@@ -657,10 +594,6 @@ impl Editor {
         };
         self.perform_verb(state, verb);
         self.refresh_blocks(state);
-        // Accepting/rejecting can change body text (an accepted deletion removes
-        // glyphs, a rejected insertion removes them); the spell cache is keyed by
-        // text so affected blocks re-check on the next draw — clear it wholesale
-        // (cheap, and these are infrequent review actions).
         self.spell_cache.clear();
         self.lifecycle.dirty = true;
     }

@@ -1,10 +1,6 @@
 //! Code's global-search projection of what only the editor knows: the symbols
 //! declared in its files and the hits of the running project search. The
 //! files themselves are the resource's own search entries.
-//!
-//! The app keeps these entries current while collaborative state changes;
-//! palette keystrokes only read them, and the framework's search source
-//! answers each query one budgeted page at a time.
 
 use ui::tilo_resource::SearchEntry;
 
@@ -22,8 +18,6 @@ pub struct FileEntry {
     pub path: String,
 }
 
-/// The declarations found in the collaborative buffers and the live project
-/// search results, each opening where it is.
 pub fn code_entries(symbols: &[SymbolRef], results: &[SearchResultRef]) -> Vec<SearchEntry> {
     let symbols = symbols.iter().map(|symbol| {
         SearchEntry::new(symbol.name.clone(), String::new())
@@ -91,7 +85,6 @@ mod tests {
     use super::*;
     use ui::search::SearchProvider;
 
-    /// The editor's search source over `symbols`, as the framework builds it.
     fn source(symbols: &[SymbolRef]) -> impl SearchProvider + use<> {
         ui::framework::testing::search_source::<crate::project::Project>(code_entries(symbols, &[]))
     }

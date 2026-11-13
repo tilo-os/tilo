@@ -9,21 +9,18 @@
 use super::bench::{Bench, deck_of};
 use super::*;
 
-/// The editor over the sample deck, presenting from its first slide.
 fn presenting() -> Bench {
     let mut bench = Bench::sample();
     bench.with(SlidesApp::enter_present);
     bench
 }
 
-/// Press a named key through the editor's key handler.
 fn press_named(app: &mut SlidesApp, key: NamedKey) -> bool {
     let mut handled = false;
     app.on_key(&Key::Named(key), None, Modifiers::default(), &mut handled);
     handled
 }
 
-/// Press a character key through the editor's key handler.
 fn press_char(app: &mut SlidesApp, ch: &str) -> bool {
     let mut handled = false;
     app.on_key(
@@ -38,7 +35,6 @@ fn press_char(app: &mut SlidesApp, ch: &str) -> bool {
 /// Centre snapping inside/outside its threshold and the presenter clock format.
 #[test]
 fn element_snapping_and_present_clock() {
-    // Case `snaps_element_center_to_slide_center`.
     {
         let mut s = Slide::new(Layout::Blank);
         let id = s.add(Element::shape(ElementKind::Rect, 0.0, 0.0, 200.0, 100.0));
@@ -56,7 +52,6 @@ fn element_snapping_and_present_clock() {
         });
     }
 
-    // Case `no_snap_when_outside_threshold`.
     {
         let mut s = Slide::new(Layout::Blank);
         let id = s.add(Element::shape(ElementKind::Rect, 0.0, 0.0, 50.0, 50.0));
@@ -68,19 +63,14 @@ fn element_snapping_and_present_clock() {
         });
     }
 
-    // Case `present_clock_formats_minutes_seconds`.
     {
-        // No presentation started → 0:00.
         let clock = Bench::sample().read(|app| app.presentation.clock());
         assert_eq!(clock, "0:00");
     }
 }
 
-/// Arrow, Space, Home/End and number keys move through the talk; Escape
-/// leaves it; B and W blank the screen until a key resumes it.
 #[test]
 fn present_mode_navigation_keys_and_blanking() {
-    // Case `present_advances_and_reverses_via_real_handler`.
     presenting().with(|app| {
         assert_eq!(app.mode, Mode::Present);
         assert_eq!(app.cur_slide, 0);
@@ -92,7 +82,6 @@ fn present_mode_navigation_keys_and_blanking() {
         assert_eq!(app.cur_slide, 1, "ArrowLeft goes back one slide");
     });
 
-    // Case `present_clamps_at_both_ends`.
     presenting().with(|app| {
         press_named(app, NamedKey::ArrowLeft);
         assert_eq!(app.cur_slide, 0, "clamped at the first slide");
@@ -106,7 +95,6 @@ fn present_mode_navigation_keys_and_blanking() {
         );
     });
 
-    // Case `present_home_and_end_jump_to_first_and_last`.
     presenting().with(|app| {
         app.cur_slide = 2;
         assert!(press_named(app, NamedKey::End));
@@ -115,7 +103,6 @@ fn present_mode_navigation_keys_and_blanking() {
         assert_eq!(app.cur_slide, 0, "Home → first slide");
     });
 
-    // Case `present_number_key_jumps_to_slide`.
     presenting().with(|app| {
         assert!(press_char(app, "3"));
         assert_eq!(app.cur_slide, 2, "'3' jumps to slide index 2");
@@ -123,27 +110,22 @@ fn present_mode_navigation_keys_and_blanking() {
         assert_eq!(app.cur_slide, 0, "'1' jumps to slide index 0");
     });
 
-    // Case `present_escape_exits_to_editor`.
     presenting().with(|app| {
         app.cur_slide = 2;
         assert!(press_named(app, NamedKey::Escape));
         assert_eq!(app.mode, Mode::Edit, "Esc leaves present mode");
-        // The editor opens where the talk stopped.
         assert_eq!(app.cur_slide, 2);
     });
 
-    // Case `blackout_and_whiteout_toggle_and_navigation_resumes`.
     presenting().with(|app| {
         assert!(press_char(app, "b"));
         assert_eq!(app.presentation.blank(), Blank::Black);
         assert!(press_char(app, "b"));
         assert_eq!(app.presentation.blank(), Blank::None);
-        // W whites out; pressing B switches to black (mutually exclusive).
         assert!(press_char(app, "w"));
         assert_eq!(app.presentation.blank(), Blank::White);
         assert!(press_char(app, "b"));
         assert_eq!(app.presentation.blank(), Blank::Black);
-        // A navigation key resumes the slide *without* advancing.
         let before = app.cur_slide;
         assert!(press_named(app, NamedKey::ArrowRight));
         assert_eq!(
@@ -160,7 +142,6 @@ fn present_mode_navigation_keys_and_blanking() {
 
 #[test]
 fn present_mode_outputs_fullscreen_and_audience_lifecycle() {
-    // Case `fullscreen_intent_tracks_present_mode`.
     Bench::sample().with(|app| {
         assert_eq!(FullscreenProvider::fullscreen_intent(app), Some(false));
         app.enter_present();
@@ -169,11 +150,8 @@ fn present_mode_outputs_fullscreen_and_audience_lifecycle() {
         assert_eq!(FullscreenProvider::fullscreen_intent(app), Some(false));
     });
 
-    // Case `present_uses_the_shared_mechanism_targeting_the_largest_output`.
     presenting().with(|app| {
         use ui::fullscreen::{FullscreenTarget, FullscreenView};
-        // Present routes through the one fullscreen mechanism the video player
-        // also uses: a distinct presentation view on the largest monitor.
         let params = FullscreenProvider::fullscreen_params(app);
         assert_eq!(
             params.target,
@@ -192,7 +170,6 @@ fn present_mode_outputs_fullscreen_and_audience_lifecycle() {
         );
     });
 
-    // Case `audience_lifecycle_keeps_dashboard_local_and_preserves_single_output_fallback`.
     presenting().with(|app| {
         use ui::fullscreen::{AudiencePresentationRequest, FullscreenTarget};
         assert_eq!(
@@ -220,9 +197,7 @@ fn present_mode_outputs_fullscreen_and_audience_lifecycle() {
         );
     });
 
-    // Case `presentation_output_resource_policy_is_local_and_selects_primary_external`.
     {
-        // The output policy is one of the editor's view effects.
         let mut bench = Bench::sample();
         bench
             .app
@@ -239,7 +214,6 @@ fn present_mode_outputs_fullscreen_and_audience_lifecycle() {
         });
     }
 
-    // Case `compositor_exit_of_fullscreen_leaves_present_mode`.
     presenting().with(|app| {
         assert_eq!(app.mode, Mode::Present);
         // A compositor-driven fullscreen exit drops out of present mode so the
@@ -262,17 +236,14 @@ fn present_mode_outputs_fullscreen_and_audience_lifecycle() {
         );
     });
 
-    // Case `presenting_wants_fullscreen`.
     presenting().with(|app| assert!(app.wants_fullscreen()));
 
-    // Case `entering_present_does_not_request_fullscreen_until_presenting`.
     let editing = Bench::sample().read(SlidesApp::wants_fullscreen);
     assert!(!editing, "editor mode is not fullscreen");
 }
 
 #[test]
 fn presenter_dashboard_timer_and_idle_frames() {
-    // Case `presenter_dashboard_toggles_with_p`.
     presenting().with(|app| {
         assert!(!app.presentation.is_presenter_view());
         assert!(press_char(app, "p"));
@@ -285,7 +256,6 @@ fn presenter_dashboard_timer_and_idle_frames() {
         assert_eq!(app.mode, Mode::Present);
     });
 
-    // Case `speaker_timer_pause_and_reset`.
     presenting().with(|app| {
         use ui::time::testing::with_monotonic_time;
         let paused = ui::time::now();
@@ -316,7 +286,6 @@ fn presenter_dashboard_timer_and_idle_frames() {
         );
     });
 
-    // Case `present_mode_rests_when_idle_and_wakes_for_a_transition`.
     presenting().with(|app| {
         for _ in 0..3 {
             app.sync_flaps(Some(&Theme::dark()));
@@ -333,7 +302,6 @@ fn presenter_dashboard_timer_and_idle_frames() {
         );
     });
 
-    // Case `reduced_motion_settles_presentation_navigation_in_one_pass`.
     presenting().with(|app| {
         app.next_slide(1);
         assert!(app.presentation.needs_animation_frame());

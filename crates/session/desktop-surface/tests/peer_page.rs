@@ -91,11 +91,11 @@ fn desk(minter: &mut IdMinter) -> (DesktopTree, TabId) {
     let tab = Tab {
         id: minter.mint(),
         title: "Browser".into(),
-        tile: ModelTile::PeerWindow {
+        tile: ModelTile::HostedWindow {
             app_id: APP.into(),
             label: "Browser".into(),
-            note: String::new(),
-            missing: None,
+            host: "ab".repeat(32),
+            host_label: "Laptop".into(),
         },
         app_title: None,
         view: String::new(),

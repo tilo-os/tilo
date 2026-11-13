@@ -2,8 +2,7 @@
 //!
 //! `vms.toml` lives in the platform config dir (`~/.config/tilo-vm/` on
 //! Linux, `~/Library/Application Support/tilo-vm/` on macOS,
-//! `%APPDATA%\tilo-vm\` on Windows); `TILO_VM_CONFIG` overrides the path.
-//! A human edits it to tell agents which VM to use:
+//! `%APPDATA%\tilo-vm\` on Windows); `TILO_VM_CONFIG` overrides the path:
 //!
 //! ```toml
 //! default = "dev"
@@ -45,29 +44,18 @@ pub struct Registry {
     pub warn_disk_gb: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_generations: Option<u32>,
-    /// In-VM build dirs gc keeps (the daemon's default is 2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_targets: Option<u32>,
-    /// Remote builders by CPU architecture: the command line of a cargo
-    /// drop-in whose `run` runs the program on a machine of that
-    /// architecture, in this worktree, passing its stdout through.
-    /// `swap --builder remote` uses the one for the machine's architecture,
-    /// and is the default for a device that has one.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub remote_builders: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub vms: BTreeMap<String, VmEntry>,
-    /// Frozen disks `vm branch` made, by id. A base is deleted once no VM
-    /// and no other base has it as its `image` ([`Registry::base_users`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub bases: BTreeMap<String, Base>,
 }
 
-/// A VM's disk as it was when `vm branch` froze it: read-only, the backing
-/// file of the VM's next disk and of each of its branches' disks.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Base {
-    /// The frozen qcow2 file.
     pub disk: String,
     /// Its own backing file: the image the VM was created from, or the
     /// base of an earlier branch.
@@ -76,9 +64,7 @@ pub struct Base {
     /// `raw` when `image` is a raw disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_format: Option<String>,
-    /// The VM whose disk it was.
     pub from: String,
-    /// When it was frozen (RFC 3339).
     pub frozen: String,
 }
 
@@ -88,24 +74,18 @@ pub struct VmEntry {
     /// `[user@]host[:port]`; when absent the adapter discovers the address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<String>,
-    /// SSH identity file; `vm create` makes one per VM in `keys/` beside
-    /// this file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     /// Remote command that serves RPC, e.g. `sudo -n tilo-vmd rpc`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daemon: Option<String>,
-    /// Published dev image the VM disk is created from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     /// `raw` when `image` is a raw disk; absent for qcow2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_format: Option<String>,
-    /// A raw ESP disk attached read-only ahead of the VM's disk, so the VM
-    /// boots its loader and UKI instead of the disk's own (libvirt, whpx).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boot_esp: Option<String>,
-    /// The VM's own disk (a copy-on-write child of `image` where supported).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -119,29 +99,18 @@ pub struct VmEntry {
     /// Windows WHPX: omit the display and USB devices for SSH-only VMs.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub headless: bool,
-    /// libvirt: virtio-gpu outputs (default one).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heads: Option<u8>,
-    /// libvirt or QEMU: virgl 3D acceleration, rendered on the host GPU through an
-    /// `egl-headless` display beside the SPICE console.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gl: bool,
-    /// libvirt or QEMU: the first output's preferred mode, `WIDTHxHEIGHT`; the others
-    /// offer the standard modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<String>,
-    /// Host port forwarded to the guest's SSH port (libvirt, qemu, whpx).
-    /// Creation records the selected port; older entries default to 2222.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_port: Option<u16>,
-    /// libvirt connection URI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uri: Option<String>,
-    /// UTM VM to clone from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
-    /// The `qemu-img` that creates the VM's disk, resolved when the VM was
-    /// created: the one beside the adapter's own tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qemu_img: Option<String>,
     /// Windows ARM64 WHPX: the QEMU binary and its matching EDK2 firmware.
@@ -156,32 +125,18 @@ pub struct VmEntry {
     /// reaches it (`vm add`, `vm status`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
-    /// A device's MAC on the network it was reached on, for `vm wake`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mac: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wake: Option<crate::reach::WakeInfo>,
-    /// A device's route over the peer network, for when it is not on this
-    /// network: what its `tilo-device-admin id` reported when last reached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer: Option<PeerRoute>,
-    /// A host-built kernel the VM boots directly instead of its disk's boot
-    /// loader (`tilo-vm swap kernel --direct` on libvirt, or a manually
-    /// prepared development bundle on WHPX). Cleared by
-    /// `tilo-vm rollback --slot vm`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direct_kernel: Option<DirectKernel>,
-    /// The hypervisor identity tilo-vm gave the VM, unique per VM and the
-    /// same at every boot: the libvirt domain UUID and SMBIOS system UUID
-    /// (the guest's `/sys/class/dmi/id/product_uuid`), or the UUID UTM
-    /// gave a clone. Absent for a VM made before tilo-vm set one, which
-    /// keeps the identity its hypervisor chose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uuid: Option<String>,
-    /// The MAC address of the VM's network interface, set with `uuid`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nic_mac: Option<String>,
-    /// The VM this one was branched from (`vm branch`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branched_from: Option<String>,
     /// The VM whose workspaces `vm branch` has not yet seen take this
@@ -193,26 +148,18 @@ pub struct VmEntry {
     pub awaits_host: Option<String>,
 }
 
-/// Where a device answers over the peer network (`tilo-vm guide devices`,
-/// "Beyond the LAN").
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerRoute {
-    /// The device id (its device key), hex: the answer must prove it.
     pub device: String,
-    /// The endpoint id its device-admin route answers on.
     pub endpoint: String,
-    /// The identity it belongs to, hex.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<String>,
-    /// A relay of the owner's own that it uses instead of the public ones.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay: Option<String>,
-    /// The public relay it was last seen on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_relay: Option<String>,
 }
 
-/// Direct kernel boot: files on the host, and the command line.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirectKernel {
     pub kernel: String,
@@ -222,7 +169,6 @@ pub struct DirectKernel {
     /// discovery to this VM disk's ESP by its GPT partition UUID instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loader_partuuid: Option<String>,
-    /// `uname -r` the kernel reports.
     #[serde(default)]
     pub kver: String,
 }
@@ -242,8 +188,6 @@ pub fn registry_path() -> PathBuf {
         .join("vms.toml")
 }
 
-/// This machine's identity as one of the owner's devices, enrolled to
-/// administer their devices over the peer network: beside the registry.
 pub fn admin_identity_root(registry: &Path) -> PathBuf {
     registry
         .parent()
@@ -263,8 +207,6 @@ impl Registry {
         }
     }
 
-    /// # Errors
-    /// Write failures.
     pub fn save(&self, path: &Path) -> Result<(), CliError> {
         let text = toml::to_string_pretty(self).map_err(|e| CliError::Config {
             path: path.display().to_string(),
@@ -273,9 +215,6 @@ impl Registry {
         let context = format!("write {}", path.display());
         #[cfg(windows)]
         {
-            // This host's NTFS rejects the native POSIX rename with ERROR_INVALID_PARAMETER.
-            // The VM registry is recoverable development state; a sibling-file
-            // rename still avoids exposing a partially written TOML document.
             std::fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))
                 .map_err(CliError::io(context.clone()))?;
             tilo_files::native::atomic::write_regenerable(path, text.as_bytes())
@@ -321,7 +260,6 @@ impl Registry {
     }
 }
 
-/// Where the VM choice came from, so `status` can explain it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum Source {
@@ -342,7 +280,6 @@ impl Source {
     }
 }
 
-/// The contents of a worktree's `.tilo-vm`: TOML with `vm = "..."`, or a bare name.
 pub fn parse_worktree_file(text: &str) -> Option<String> {
     if let Ok(table) = text.parse::<toml::Table>()
         && let Some(vm) = table.get("vm").and_then(toml::Value::as_str)
@@ -353,14 +290,12 @@ pub fn parse_worktree_file(text: &str) -> Option<String> {
     (!bare.is_empty() && !bare.contains(['=', '\n', ' '])).then(|| bare.to_owned())
 }
 
-/// The default slot a worktree file names: `slot = "<name>"`.
 pub fn parse_worktree_slot(text: &str) -> Option<String> {
     let table = text.parse::<toml::Table>().ok()?;
     let slot = table.get("slot")?.as_str()?.trim();
     (!slot.is_empty()).then(|| slot.to_owned())
 }
 
-/// The worktree file `old` with its VM set to `vm`, keeping its other keys.
 pub fn with_worktree_vm(old: &str, vm: &str) -> String {
     let mut table = old.parse::<toml::Table>().unwrap_or_default();
     table.insert("vm".into(), toml::Value::String(vm.to_owned()));
@@ -415,11 +350,8 @@ mod tests {
         .unwrap()
     }
 
-    /// Env beats the worktree file beats the default; the worktree file accepts TOML or a bare name and can
-    /// name the default slot, which vm use keeps; the registry round-trips and has defaults.
     #[test]
     fn configuration_layers_env_worktree_file_and_registry() {
-        // Phase: env_beats_worktree_beats_default.
         {
             let reg = registry();
             let path = Path::new("/cfg/vms.toml");
@@ -442,7 +374,6 @@ mod tests {
             assert!(resolve(None, None, &Registry::default(), path).is_none());
         }
 
-        // Phase: worktree_file_accepts_toml_or_a_bare_name.
         {
             assert_eq!(parse_worktree_file("vm = \"dev\"").as_deref(), Some("dev"));
             assert_eq!(parse_worktree_file("dev\n").as_deref(), Some("dev"));
@@ -450,7 +381,6 @@ mod tests {
             assert_eq!(parse_worktree_file("other = 1").as_deref(), None);
         }
 
-        // Phase: worktree_file_can_name_the_default_slot_and_vm_use_keeps_it.
         {
             let text = "vm = \"dev\"\nslot = \"ux1\"\n";
             assert_eq!(parse_worktree_slot(text).as_deref(), Some("ux1"));
@@ -463,7 +393,6 @@ mod tests {
             assert_eq!(parse_worktree_file(&bare).as_deref(), Some("shared"));
         }
 
-        // Phase: registry_round_trips_and_has_defaults.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("sub/vms.toml");

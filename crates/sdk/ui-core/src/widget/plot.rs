@@ -136,6 +136,12 @@ pub trait PlotMarks: 'static {
     fn natural_height(&self, _tr: &mut TextRenderer, _theme: &Theme, _width: f64) -> f64 {
         320.0
     }
+    /// Places what the marks read before they paint: the plot's own rect, a
+    /// legend's entries, each measured in `theme`'s own type. The layout runs
+    /// this, so a frame that is read before it is drawn — a press, a hover,
+    /// assistive technology — finds every mark where it is drawn. Defaults to
+    /// nothing for a chart kind whose marks are a pure function of the frame.
+    fn place(&mut self, _tr: &mut TextRenderer, _theme: &Theme) {}
     /// Paints the marks. Call [`Self::follow_keyboard_anchor`] once the
     /// geometry is current and before painting the inspector.
     fn paint(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme);
@@ -178,12 +184,16 @@ pub struct Plot<M: PlotMarks> {
     pub(crate) marks: M,
     activated: Option<M::Activated>,
     focused: bool,
-    /// The theme seen at layout, for measuring a filling chart.
-    theme: Option<Theme>,
+    /// The theme the frame's marks are placed in: the layout is handed none,
+    /// and a filling chart measures its height in it too.
+    theme: Theme,
 
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
     dirty: bool,
+    /// What the marks place may have moved: input or a data change that the
+    /// layout re-places before the next frame is read or drawn.
+    layout_dirty: bool,
 }
 
 impl<M: PlotMarks> Plot<M> {
@@ -193,7 +203,8 @@ impl<M: PlotMarks> Plot<M> {
             marks,
             activated: None,
             focused: false,
-            theme: None,
+            theme: Theme::default(),
+            layout_dirty: true,
         }
     }
     #[must_use]
@@ -217,9 +228,11 @@ impl<M: PlotMarks> Plot<M> {
     pub(crate) fn clear_activation(&mut self) {
         self.activated = None;
     }
-    /// Repaints once on the next frame: for a mark that changed its data.
+    /// Repaints once on the next frame: for a mark that changed its data,
+    /// whose places the layout works out again.
     pub(crate) fn mark_dirty(&mut self) {
         self.dirty = true;
+        self.layout_dirty = true;
     }
     pub fn clear_inspection(&mut self) {
         self.marks.frame_mut().inspection.clear();
@@ -243,7 +256,7 @@ impl<M: PlotMarks> Plot<M> {
     /// Shows or hides series `id`; whether that changed anything. Hiding
     /// the inspected mark's series ends the inspection.
     pub fn set_series_visible(&mut self, id: &str, visible: bool) -> bool {
-        self.dirty = true;
+        self.mark_dirty();
         if !self.marks.series().iter().any(|(series, _)| *series == id) {
             return false;
         }
@@ -327,9 +340,7 @@ impl<M: PlotMarks> Widget for Plot<M> {
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         let height = self.marks.layout_height();
-        if height.is_none() {
-            self.theme = Some(theme.clone());
-        }
+        self.theme = theme.clone();
         let style = taffy::Style {
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
@@ -350,12 +361,13 @@ impl<M: PlotMarks> Widget for Plot<M> {
             taffy::AvailableSpace::Definite(width) => width,
             _ => 320.0,
         });
-        let height = match (self.marks.layout_height(), &self.theme) {
-            (Some(height), _) => height,
-            (None, Some(theme)) => {
-                crate::num::f32_of_f64(self.marks.natural_height(text, theme, f64::from(width)))
-            }
-            (None, None) => 320.0,
+        let height = match self.marks.layout_height() {
+            Some(height) => height,
+            None => crate::num::f32_of_f64(self.marks.natural_height(
+                text,
+                &self.theme,
+                f64::from(width),
+            )),
         };
         taffy::Size {
             width,
@@ -364,12 +376,20 @@ impl<M: PlotMarks> Widget for Plot<M> {
     }
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
         self.marks.frame_mut().rect = crate::widget::layout_rect(taffy, node, origin);
+        let theme = self.theme.clone();
+        crate::text_render::with_layout_renderer(&theme, |tr| self.marks.place(tr, &theme));
     }
     fn get_rect(&self) -> Rect {
         self.marks.frame().rect
     }
     fn is_layout_dirty(&self) -> bool {
-        self.marks.frame().rect == Rect::ZERO
+        self.marks.frame().rect == Rect::ZERO || self.layout_dirty
+    }
+    fn layout_needs_measure(&self) -> bool {
+        self.is_layout_dirty()
+    }
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
     fn draw(
         &mut self,
@@ -386,6 +406,9 @@ impl<M: PlotMarks> Widget for Plot<M> {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         self.dirty = true;
         if self.marks.event(event, ctx) {
+            // A pan, a zoom or a brush moves the ticks and the legend the
+            // marks place, not only what they paint.
+            self.layout_dirty = true;
             return;
         }
         // Keys inspect the chart only while it has focus; otherwise they

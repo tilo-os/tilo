@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.canvas@ef24e3a02750c41c";
+export const SURFACE = "so.tilo.canvas@3af12d4a81695ba4";
 
 export interface Adjust {
   exposure: number | null;

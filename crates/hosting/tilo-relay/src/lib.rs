@@ -154,7 +154,10 @@ pub use compute::{
 pub use config::RelayConfig;
 #[cfg(not(target_arch = "wasm32"))]
 pub use daemon::{Relay, RelayError, RelayHandle};
-pub use home_peer::{HomePeerRegistration, home_peer_registry_path, valid_home_peer_label};
+pub use home_peer::{
+    HomePeerRegistration, checked_home_peers, home_peer_registry_path, read_home_peers,
+    valid_home_peer_label, write_home_peers,
+};
 pub use mesh::{
     ComputeAccelerator, DeviceMeshProfile, DeviceRole, PowerAvailability, ReplicationIntent,
     ReplicationResource, ServerAdvertisement, ServiceCapabilities,

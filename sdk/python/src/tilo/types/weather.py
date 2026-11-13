@@ -43,7 +43,7 @@ class PlaceDetails(TypedDict):
 
 class Locations(Resource):
     """Weather — `weather.locations`."""
-    __surface__ = "so.tilo.weather@535cae378c464679"
+    __surface__ = "so.tilo.weather@3150b872b91bc7e1"
     places: list[Place]
     default_place: str
 

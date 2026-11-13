@@ -1,12 +1,6 @@
-//! Modal colour-picker popover used by the paragraph-style inspector.
-//!
-//! The editor owns the document mutation; this component owns the popover's
-//! lifecycle, geometry, drawing, pointer tracking, and event routing.
-//!
-//! The shared picker runs in confirm mode: every edit previews live on the
-//! focused style, *Done* keeps it, and *Cancel* — or Escape, or a click
-//! outside the card — reverts the style to the colour the popover opened
-//! with.
+//! The paragraph-style inspector's colour popover, in confirm mode: an edit previews
+//! live on the focused style, Done keeps it, and Cancel or Escape reverts it. The
+//! editor owns the document mutation.
 
 use std::collections::HashMap;
 
@@ -28,15 +22,11 @@ use ui::widget::DrawChild;
 
 const WIDTH: f64 = 236.0;
 
-/// Result of routing an event through an open [`StyleColorPicker`].
 pub(super) struct PickerEvent {
     pub(super) consumed: bool,
     pub(super) changed: Option<[u8; 3]>,
 }
 
-/// The shared per-frame draw arguments for [`StyleColorPicker::draw`],
-/// bundled the same way `ui`'s widget `*DrawCtx` structs are so the method
-/// stays under clippy's argument-count limit.
 pub(super) struct DrawArgs<'a> {
     pub(super) scene: &'a mut Scene,
     pub(super) transform: Affine,
@@ -55,7 +45,6 @@ pub(super) struct EventArgs<'a> {
     pub(super) panel: Rect,
 }
 
-/// A shared [`ColorPicker`] hosted in a modal-ish floating card.
 #[derive(Default)]
 pub(super) struct StyleColorPicker {
     picker: Option<ColorPicker>,
@@ -81,7 +70,6 @@ impl StyleColorPicker {
             .map_or(0.0, |picker| picker.preferred_height(WIDTH))
     }
 
-    /// Beside the inspector it edits, kept a content gutter inside the window.
     fn anchor(host: Rect, panel: Rect, height: f64) -> Point {
         let gutter = f64::from(ui::tokens::Spacing::BASE.s6);
         let x = (panel.x0 - WIDTH - gutter).max(host.x0 + gutter);
@@ -131,9 +119,6 @@ impl StyleColorPicker {
             theme,
             presence,
         } = args;
-        // A floating panel (HIG §9.1 Panel role): the picker sits `s3` inside
-        // a panel-ground card with the panel border and elevation, instead of
-        // a bar-toned card with a declared border and a literal black shadow.
         let inset = f64::from(theme.tokens.spacing.s3);
         let rect = picker.get_rect();
         let card = rect.inflate(inset, inset);
@@ -176,9 +161,6 @@ impl StyleColorPicker {
                 button: MouseButton::Left,
                 ..
             } => true,
-            // A click outside the popover, or Escape, both cancel it the same
-            // way: the picker restores the opening colour, which the change
-            // record below hands back to the editor.
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -228,8 +210,6 @@ impl StyleColorPicker {
             .as_mut()
             .and_then(ColorPicker::take_changed)
             .map(|color| [color.r(), color.g(), color.b()]);
-        // Done keeps the previewed colour; Cancel already reported its
-        // revert through `changed`. Either way the popover closes.
         if matches!(
             self.picker.as_mut().and_then(ColorPicker::take_outcome),
             Some(ColorPickerOutcome::Confirmed(_) | ColorPickerOutcome::Cancelled)
@@ -242,8 +222,6 @@ impl StyleColorPicker {
         }
     }
 
-    /// One named part of the open picker (`color_picker.sv`,
-    /// `color_picker.done`, …), in the picker's own test-target names.
     #[cfg(test)]
     pub(super) fn part(&self, name: &str) -> Option<Rect> {
         self.picker

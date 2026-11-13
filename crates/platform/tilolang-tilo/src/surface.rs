@@ -17,7 +17,7 @@ use tilo_actions::{ActionKind, ActionParam, ParamType, Pick};
 use tilo_resource::Resource as _;
 use tilolang_runtime::meta::Ty;
 
-use crate::action::{CREATE_ACTION, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION};
+use crate::action::{CREATE_ACTION, DIRECT_EDITS};
 use tilolang_runtime::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 
 use crate::meta::{MetaExt as _, action_kind};
@@ -278,12 +278,11 @@ pub fn is_primary(action: &ActionMeta) -> bool {
 
 fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
     VerbSurface {
+        // The action as the record names it, which is what a change's claim names too
+        // ([`crate::action::DynAction::describe`]): its id, the one its words keep
+        // ([`crate::publish::action_type`]'s `label_of`), not the name the door offers it by.
         id: action.id.clone(),
-        label: if action.label.is_empty() {
-            action.name.clone()
-        } else {
-            action.label.clone()
-        },
+        label: tilolang_runtime::platform::label_of(action),
         description: (!action.doc.is_empty()).then(|| action.doc.clone()),
         kind: action_kind(action.class),
         destructive: is_destructive(action),
@@ -343,42 +342,21 @@ pub(crate) enum Merge {
     Flag,
 }
 
-fn edit_verbs(ty: &TypeMeta) -> Vec<VerbSurface> {
-    let field_param = |names: Vec<String>| ParamSurface {
-        name: "field".to_owned(),
-        required: true,
-        // The choices are the field names, so a caller reads the one it wants
-        // from the list instead of guessing at an internal id.
-        schema: json!({
-            "type": "string",
-            "description": "The name of the field to set.",
-            "enum": names,
-        }),
-        ty: FieldType::Text,
-        within: None,
-    };
-    let verb =
-        |id: &str, label: &str, value: Json, ty: FieldType, names: Vec<String>| VerbSurface {
-            id: id.to_owned(),
-            label: label.to_owned(),
-            description: Some("A bound control changes the field it shows.".to_owned()),
-            kind: ActionKind::Undoable,
-            destructive: false,
-            incoming_message: false,
-            params: vec![
-                field_param(names),
-                ParamSurface {
-                    name: "value".to_owned(),
-                    required: true,
-                    schema: value,
-                    ty,
-                    within: None,
-                },
-            ],
-            returns: None,
-            writes: vec![RECORD_UNIT.to_owned()],
-            field: None,
-        };
+/// The surface's reading of a direct edit's value: its type, and the schema a caller reads it by.
+fn direct_edit_value(ty: ParamType) -> (FieldType, Json) {
+    match ty {
+        ParamType::Text => (FieldType::Text, json!({"type": "string"})),
+        ParamType::Boolean => (FieldType::Bool, json!({"type": "boolean"})),
+        _ => (FieldType::Any, json!({})),
+    }
+}
+
+/// The verbs a bound control's edit of a field names, and the one that creates the resource:
+/// [`DIRECT_EDITS`]', with the arguments a change of it carries. A text edit names the field
+/// alone — what a person typed is the change itself — and a caller may name the value it sets,
+/// so the value is one it may give. The field is chosen by name, from the type's fields that edit
+/// sets ([`editable_field_names`]).
+fn edit_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
     // The host creates a package's root resource on its own the first time a window wants it,
     // as a committed change of its own; receivers decide that change against this verb.
     let create = VerbSurface {
@@ -393,23 +371,47 @@ fn edit_verbs(ty: &TypeMeta) -> Vec<VerbSurface> {
         writes: vec![RECORD_UNIT.to_owned()],
         field: None,
     };
-    vec![
-        create,
-        verb(
-            EDIT_TEXT_ACTION,
-            "Edit a text field",
-            json!({"type": "string"}),
-            FieldType::Text,
-            editable_field_names(ty, Merge::Text),
-        ),
-        verb(
-            EDIT_FLAG_ACTION,
-            "Set a flag field",
-            json!({"type": "boolean"}),
-            FieldType::Bool,
-            editable_field_names(ty, Merge::Flag),
-        ),
-    ]
+    let mut verbs = vec![create];
+    verbs.extend(DIRECT_EDITS.iter().map(|direct| {
+        let (ty, schema) = direct_edit_value(direct.value);
+        VerbSurface {
+            id: direct.id.to_owned(),
+            label: direct.label.to_owned(),
+            description: Some("A bound control changes the field it shows.".to_owned()),
+            kind: ActionKind::Undoable,
+            destructive: false,
+            incoming_message: false,
+            params: vec![
+                ParamSurface {
+                    name: "field".to_owned(),
+                    required: true,
+                    // The choices are the field names, so a caller reads the one it wants from
+                    // the list instead of guessing at an internal id.
+                    schema: json!({
+                        "type": "string",
+                        "description": "The name of the field to set.",
+                        "enum": editable_field_names(
+                            declared,
+                            if direct.value == ParamType::Boolean { Merge::Flag } else { Merge::Text },
+                        ),
+                    }),
+                    ty: FieldType::Text,
+                    within: None,
+                },
+                ParamSurface {
+                    name: "value".to_owned(),
+                    required: direct.names_value,
+                    schema,
+                    ty,
+                    within: None,
+                },
+            ],
+            returns: None,
+            writes: vec![RECORD_UNIT.to_owned()],
+            field: None,
+        }
+    }));
+    verbs
 }
 
 fn field_surfaces(

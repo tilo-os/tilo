@@ -24,13 +24,9 @@ use crate::scenario::drive::{self, Choices, RealPace};
 use crate::scenario::fixture::{self, Preserved, Tools};
 use crate::scenario::{Credentials, Layout, Unlock, scrub, scrub_with};
 
-/// Where `os/dev/build-custom-installer.sh` writes the medium.
 pub const DEFAULT_MEDIUM: &str = "os/output/installer/qcow2/disk.qcow2";
-/// How long a booting installer gets to answer its console.
 const INSTALLER_BOOT: Duration = Duration::from_secs(20 * 60);
-/// How long the installer gets to power the VM off after Finish.
 const POWER_OFF: Duration = Duration::from_secs(180);
-/// How long a cold-booted target gets to reach the greeter.
 const TARGET_BOOT: Duration = Duration::from_secs(15 * 60);
 /// Bound retries even when the encrypted-root prompt remains visible.
 const UNLOCK_ATTEMPTS: u32 = 2;
@@ -43,7 +39,6 @@ enum FirstBootSurface {
 fn is_identity_setup(text: &str) -> bool {
     let text = text.to_ascii_lowercase();
     text.contains("tilo identity setup")
-        // The first step (shell onboarding-intro-title / onboarding-choice-existing).
         && (text.contains("set up your tilo identity")
             || text.contains("use my existing tilo identity")
             || text.contains("create your local")
@@ -57,7 +52,6 @@ fn is_disk_unlock_prompt(text: &str) -> bool {
     text.contains("unlock tilo") && text.contains("enter your disk passphrase or recovery key")
 }
 
-// Older receipts predate these flags and used scenario-tilo plus medium defaults.
 fn check_retained_preferences(saved: &Value, current: &Value) -> Result<(), String> {
     for key in ["hostname", "keyboard_layout", "timezone", "locale"] {
         let legacy = if key == "hostname" {
@@ -74,7 +68,6 @@ fn check_retained_preferences(saved: &Value, current: &Value) -> Result<(), Stri
     Ok(())
 }
 
-/// Everything one run needs to know, settled before anything boots.
 struct Plan {
     root: PathBuf,
     medium: PathBuf,
@@ -154,9 +147,6 @@ impl Plan {
         }
     }
 
-    /// The environment every `vm.sh` call of this run shares: one named
-    /// cycle, so disk, TPM and firmware state persist from the installer
-    /// boot to the target boot and nowhere else.
     fn env(&self) -> Vec<(String, String)> {
         let env = vec![
             ("TILO_VM_CYCLE".into(), self.cycle.clone()),
@@ -194,9 +184,6 @@ impl Plan {
         for arg in args {
             line = line.arg(*arg);
         }
-        // The unsigned ARM development medium requires this VM-only channel.
-        // Attaching it does not bypass the guest's marker, virtualization or
-        // passphrase-only checks, and does not admit a physical installation.
         #[cfg(not(windows))]
         if args.first() == Some(&"boot-installer")
             && let Some(flag) = self.development_vm_proof
@@ -259,7 +246,6 @@ impl Plan {
     }
 }
 
-/// `vm.sh tool …`: host tools in the same environment `vm.sh` uses.
 struct VmTools<'a> {
     plan: &'a Plan,
 }
@@ -272,8 +258,6 @@ impl Tools for VmTools<'_> {
     }
 }
 
-/// Run `vm.sh` with `input` on stdin. Used for what must never reach argv
-/// (the unlock secret) and for tools that read a script from stdin.
 fn piped(plan: &Plan, args: &[&str], input: &str) -> Result<(), CliError> {
     let line = plan.vm(args);
     let mut child = std::process::Command::new(&line.program)
@@ -580,8 +564,6 @@ fn validate_signed_target_proof(proof: &VmInstallProof) -> Result<(), String> {
         .ok_or("VM v2 install proof has no installed update origin")?;
     let source = &selected.provenance.source_revision;
     let profile_matches = signed_target_profile_matches(selected);
-    // Board images carry private firmware and stay on the forge's private
-    // registry; every other image is public.
     let repository = if selected.hardware_profile == "lenovo-83ed" {
         "code.tilo.so/tilo/tilo"
     } else {
@@ -1031,8 +1013,6 @@ impl App {
             old_cycle.clone_into(&mut cycle);
         }
         let storage = out.join("storage");
-        // Exactly the runtime directory vm.sh derives for a named cycle;
-        // init-cycle refuses to clear any other.
         #[cfg(not(windows))]
         let runtime = tilo_paths::xdg::runtime_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
         #[cfg(windows)]
@@ -1145,7 +1125,6 @@ impl App {
         write_json(&plan.out, "scenario.json", &plan.describe())?;
         self.receipt.set("scenario", plan.describe());
         let result = self.run_install_scenario(&plan, &credentials);
-        // Whatever happened, the VM stops and the evidence is scrubbed.
         let stop = self.runner.output(&plan.vm(&["stop"]));
         #[cfg(windows)]
         let stopped_cleanly = stop.as_ref().is_ok_and(|outcome| outcome.success);
@@ -1728,8 +1707,6 @@ impl App {
                 typed = typed.saturating_add(1);
                 next_unlock = after(Duration::from_secs(15));
             }
-            // Keep observing startup while the retry delay elapses: a fast
-            // successful unlock should not incur a fixed fifteen-second wait.
             std::thread::sleep(Duration::from_secs(1));
         }
         Err(failed(
@@ -1743,7 +1720,6 @@ impl App {
     }
 }
 
-/// `limit` from now, saturating instead of overflowing.
 fn after(limit: Duration) -> Instant {
     let now = Instant::now();
     now.checked_add(limit).unwrap_or(now)
@@ -1779,9 +1755,6 @@ fn scrub_scenario_logs_with(
     secrets: &[&str],
     mut inspect: impl FnMut(&Path, &[&str]) -> std::io::Result<Vec<PathBuf>>,
 ) -> std::io::Result<Vec<PathBuf>> {
-    // Both paths are attempted even if the first fails. The caller must stop
-    // the VM before deleting a runtime directory after either failure: the
-    // pid file must survive until the stop command has used it.
     let artifacts = inspect(out, secrets);
     let runtime = if run.is_dir() {
         inspect(run, secrets)
@@ -1809,7 +1782,6 @@ fn discard_unsanitized_runtime(plan: &Plan, runner: &mut dyn Runner) -> Result<(
     std::fs::remove_dir_all(&plan.run).map_err(CliError::io("removing unsanitized VM runtime logs"))
 }
 
-/// Poll until the console answers as `app`, returning its first state.
 fn wait_for_app(console: &mut SocketConsole, app: &str, limit: Duration) -> Option<Value> {
     let deadline = after(limit);
     while Instant::now() < deadline {
@@ -1871,7 +1843,6 @@ mod tests {
         assert!(super::is_identity_setup(
             "Tilo identity setup\nCreate your local identity"
         ));
-        // Tesseract's reading of the first step on an installed target.
         assert!(super::is_identity_setup(
             "Tilo identity setup Step1of5\n\nSet up your Tilo identity\n\n\
              Use my existing Tilo identity >\n4 Create anew identity >"
@@ -2032,8 +2003,6 @@ mod tests {
                 .is_err()
         );
         payload["selected_target"]["target_digest"] = json!(target);
-        // A signed board successor can advance its own generation;
-        // zero remains invalid and neither case changes generic policy.
         payload["selected_target"]["provenance"]["generation"] = json!(2);
         assert!(
             super::parse_install_proof(format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes())
@@ -2098,7 +2067,6 @@ mod tests {
         let worker = std::thread::spawn(move || {
             super::installer_code_phase(&cycle, json!({"phase":"closed"}))
         });
-        // While the transport holds the lock, the window cannot close.
         assert!(!worker.is_finished());
         assert_eq!(
             std::fs::read_to_string(&phase).unwrap(),
@@ -2148,16 +2116,12 @@ mod tests {
         }
     }
 
-    /// Retained runtime logs are scrubbed alongside artifacts; a scrub failure still checks the runtime and
-    /// preserves the pid for stop; a runtime scrub failure preserves the pid for a stop retry; a failed stop
-    /// keeps the pid and a successful retry removes the runtime.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn runtime_scrubbing_and_stop_keep_the_pid_until_cleanup_succeeds() {
-        // Phase: retained_runtime_logs_are_scrubbed_alongside_artifacts.
         {
             let dir = tempfile::tempdir().unwrap();
             let out = dir.path().join("artifacts");
@@ -2179,7 +2143,6 @@ mod tests {
             assert!(!std::fs::read(disk).unwrap().is_empty());
         }
 
-        // Phase: scrub_failure_still_checks_runtime_and_preserves_pid_for_stop.
         {
             let dir = tempfile::tempdir().unwrap();
             let out = dir.path().join("artifacts");
@@ -2204,7 +2167,6 @@ mod tests {
             assert!(std::fs::read(run.join("serial.log")).unwrap().is_empty());
         }
 
-        // Phase: runtime_scrub_failure_preserves_pid_for_stop_retry.
         {
             let dir = tempfile::tempdir().unwrap();
             let out = dir.path().join("artifacts");
@@ -2226,7 +2188,6 @@ mod tests {
             assert!(run.join("qemu.pid").exists());
         }
 
-        // Phase: failed_stop_keeps_pid_and_successful_retry_removes_runtime.
         {
             struct StopRunner {
                 status: &'static str,
@@ -2315,11 +2276,8 @@ mod tests {
         }
     }
 
-    /// Every VM call shares one named cycle and the plan names its console; the Windows plan uses WHPX
-    /// transport and a TCP console; an external raw target is retained and passed to WHPX transport.
     #[test]
     fn scenario_plans_share_one_cycle_and_pick_the_platform_transport() {
-        // Phase: every_vm_call_shares_one_named_cycle_and_the_plan_names_its_console.
         #[cfg(unix)]
         {
             let plan = plan(Layout::GuidedAlongside);
@@ -2342,8 +2300,6 @@ mod tests {
                 described["console"],
                 "/run/user/1000/tilo-vm-scenario-install-x/console.sock"
             );
-            // The cycle directory is where vm.sh itself derives it; init-cycle
-            // refuses to clear anything else.
             assert_eq!(
                 plan.cycle_dir,
                 plan.storage.join("vm-cycles").join(&plan.cycle)
@@ -2354,7 +2310,6 @@ mod tests {
             );
         }
 
-        // Phase: windows_plan_uses_whpx_transport_and_tcp_console.
         #[cfg(windows)]
         {
             let plan = plan(Layout::Erase);
@@ -2389,7 +2344,6 @@ mod tests {
             assert!(commands.contains("tcp://127.0.0.1:30001"));
         }
 
-        // Phase: external_raw_target_is_retained_and_passed_to_whpx_transport.
         #[cfg(windows)]
         {
             let mut plan = plan(Layout::GuidedAlongside);

@@ -32,7 +32,6 @@ pub use crate::controls::{
     CLIPBOARD_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, NIGHT_LIGHT_RESOURCE,
     SESSION_RESOURCE, SessionCommand,
 };
-pub use crate::desk_migration::shell::shell_state_path;
 pub use crate::devices::RESOURCE as DEVICES_RESOURCE;
 pub use crate::engine::Person;
 pub use crate::env::SessionEnvironment;
@@ -277,7 +276,6 @@ impl Session {
             });
         let activity = crate::activity::Activity::new(
             options.state.as_deref(),
-            options.old_desk.as_deref(),
             options.person.clone(),
             records_store.clone(),
             crate::platform::records::Changes::clone(&changes),
@@ -340,15 +338,8 @@ impl Session {
         // windows a person may share from, and the sharing doors read it.
         let notes = options.launches.notes();
         // The person's arrangement: the desk this session holds, which the
-        // workspace shares as its own desk record. A device that kept its
-        // arrangement beside the desk before this build has what it holds
-        // opened on the desk, once.
-        let arrangement = crate::arrangement::open(
-            &options.person,
-            handle.clone(),
-            &activity,
-            options.state.as_deref(),
-        );
+        // workspace shares as its own desk record.
+        let arrangement = crate::arrangement::open(&options.person, handle.clone(), &activity);
         let arrangement = Rc::new(RefCell::new(arrangement));
         // Whether the person is mid-gesture or typing, as only the
         // compositor knows: what an arranging action that is not their own
@@ -361,13 +352,20 @@ impl Session {
         // The search is made further down, from what the session mounts in
         // between; it is in place before the session runs any action.
         let session_search: Rc<std::cell::OnceCell<Rc<SessionSearch>>> = Rc::default();
+        // Text typed on the canvas is asked of the same search, off the pass that places it: the
+        // sources answer on their own threads, and what they found reaches `done` on a later pass,
+        // where the place stands. A source that never answers is cut off at the canvas's own
+        // deadline with what is in, so a wedged index costs the person a place, never a frame.
         let find: crate::arrangement::Find = {
             let search = Rc::clone(&session_search);
-            Rc::new(move |needle: &str| {
-                search
-                    .get()
-                    .map(|search| search.find(needle))
-                    .unwrap_or_default()
+            Rc::new(move |needle: &str, done: crate::arrangement::FindDone| {
+                let Some(search) = search.get() else {
+                    done(Vec::new());
+                    return;
+                };
+                // What the text finds is what the arrangement places, through its own catalogue:
+                // the hits reach the door's callback, which places what a place can show.
+                search.place_soon(needle, None, crate::arrangement::canvas_find_within(), done);
             })
         };
         // The conversations this session's agents answer in, and the agents each workspace keeps,

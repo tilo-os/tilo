@@ -56,8 +56,8 @@ impl QuickFS {
             return Err(Error::Unavailable);
         }
         let workspace_id = self.restore_workspace().map_err(|_| Error::Unavailable)?;
-        // Entire immutable set (including late backfill), order, heads and
-        // revision participate. A cursor is never a live-list offset.
+        // The whole immutable set, its order, heads and revision participate; a
+        // cursor is never a live-list offset.
         let bytes = serde_json::to_vec(&(
             "tilo.history-read.v1",
             workspace_id,
@@ -86,8 +86,6 @@ impl QuickFS {
         let attributions = self.version_attributions(scope.record_id);
         snapshot.read_query(scope, current_revision, query, &attributions)
     }
-    /// Who caused each of `record_id`'s versions, when an agent did, as the
-    /// version's own device recorded it in the record's history.
     fn version_attributions(
         &self,
         record_id: fs_protocol::FileRecordId,
@@ -113,7 +111,6 @@ impl QuickFS {
         }
         self.read_file_history_preview(ino, scope, version_id)
     }
-    /// Read the verified content of one history version as a preview.
     pub fn read_file_history_preview(
         &self,
         ino: u64,
@@ -156,8 +153,8 @@ impl QuickFS {
         }
         let hash = version.content_hash.ok_or(Error::NoContent)?;
         let bytes = load(hash.0)?;
-        // Hydration releases all metadata locks. Recheck authorization and
-        // actual record after the wait, even if immutable bytes were cached.
+        // Hydration releases all metadata locks: recheck authorization and the
+        // record after the wait, even if immutable bytes were cached.
         let (current, snapshot, _) = self.history_read_snapshot(ino)?;
         if current.workspace_id != scope.workspace_id
             || current.mount_lifetime != scope.mount_lifetime
@@ -171,8 +168,8 @@ impl QuickFS {
         if bytes.len() > fs_protocol::MAX_HISTORY_PREVIEW_BYTES {
             return Err(Error::TooLarge);
         }
-        // FileVersion content_hash identifies the chunk manifest, not raw
-        // bytes. The bytes must be exactly the chunks the manifest names.
+        // A version's content hash identifies the chunk manifest, not raw bytes:
+        // the bytes must be exactly the chunks the manifest names.
         let manifest = self
             .hydrator
             .block_on(self.hydrator.local_manifest_index(Hash::from(hash.0)));

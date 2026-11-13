@@ -32,19 +32,19 @@ impl KeySource for Switch {
     }
 }
 
-fn app(id: &str) -> AppId {
-    AppId::parse(id).unwrap()
+fn app(id: &str) -> CallerId {
+    CallerId::parse(id).unwrap()
 }
 
-fn system() -> AppId {
+fn system() -> CallerId {
     app("binary:/usr/bin/chromium")
 }
 
-fn other_system() -> AppId {
+fn other_system() -> CallerId {
     app("binary:/usr/bin/1password")
 }
 
-fn local() -> AppId {
+fn local() -> CallerId {
     app("local-process:/home/me/tool")
 }
 
@@ -481,7 +481,7 @@ fn sandbox_master_secrets_are_stable_separate_and_revocable() {
         [9; 32]
     );
 
-    let id = AppId::sandbox("so.tilo.notes").unwrap();
+    let id = CallerId::sandbox("so.tilo.notes").unwrap();
     assert!(store.apps().unwrap().iter().any(|row| row.id == id));
     store.set_access(&id, Access::Revoked).unwrap();
     assert!(matches!(

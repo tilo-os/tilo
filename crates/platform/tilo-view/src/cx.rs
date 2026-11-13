@@ -246,14 +246,23 @@ impl ViewCx {
     /// in full (the place it opens, the state it sets) is kept for the runtime, by `node`'s key
     /// and the event's name, so a press runs through the same door a tilolang view's does.
     fn attach(&self, node: &Node, event: &str, effect: Effect) -> Event {
+        // A view of the toolkit's own runs an action it names, and names it as the window
+        // publishes it: that name is what the control says it does.
+        let invoked = |resource: &ResourceRef, action: &str| {
+            Some(crate::node::patch::Invocation {
+                resource: resource.id_string(),
+                action: action.to_owned(),
+                declared: action.to_owned(),
+            })
+        };
         let wire = match &effect {
             Effect::Action { action, .. } => Event {
                 toggles: None,
-                invokes: Some((self.resource.id_string(), action.clone())),
+                invokes: invoked(&self.resource, action),
             },
             Effect::On { target, action, .. } => Event {
                 toggles: None,
-                invokes: Some((target.id_string(), action.clone())),
+                invokes: invoked(target, action),
             },
             Effect::Open { .. }
             | Effect::OpenEvent { .. }
@@ -381,7 +390,11 @@ mod tests {
         let event = cx.action(&node, "press", "subscribe");
         assert_eq!(
             event.invokes,
-            Some(("tube.channel:abc".to_owned(), "subscribe".to_owned()))
+            Some(crate::node::patch::Invocation {
+                resource: "tube.channel:abc".to_owned(),
+                action: "subscribe".to_owned(),
+                declared: "subscribe".to_owned(),
+            })
         );
     }
 
@@ -425,7 +438,11 @@ mod tests {
         );
         assert_eq!(
             wired.invokes,
-            Some(("tube.channel:abc".to_owned(), "post".to_owned()))
+            Some(crate::node::patch::Invocation {
+                resource: "tube.channel:abc".to_owned(),
+                action: "post".to_owned(),
+                declared: "post".to_owned(),
+            })
         );
         let effect = cx.effect(&node.key, "submit").expect("recorded");
         assert_eq!(

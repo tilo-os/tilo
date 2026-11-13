@@ -14,7 +14,6 @@ use super::chrome::{MenuRow, post};
 use super::{Edits, MenuItem, SheetsApp};
 
 impl SheetsApp {
-    /// The window bar's slots, each carrying the command it runs.
     pub(super) fn window_bar(&self) -> WindowToolbar {
         let bar = &self.bar_commands;
         let menu = |rows: Vec<MenuRow>, icon: &str| {
@@ -32,8 +31,6 @@ impl SheetsApp {
         } else {
             crate::resource::CATALOG.t("sheets-show-formulas")
         };
-        // AutoSum, the formula view and the settings are occasional: the
-        // menu's.
         let actions = vec![
             ToolbarAction::new(
                 "file",
@@ -120,8 +117,6 @@ impl SheetsApp {
             })
     }
 
-    /// Run what the person did in the window's bar as the command it names,
-    /// then declare the bar's slots for the sheet as it is now.
     pub(super) fn apply_window_toolbar(&mut self, doc: &mut Edits<'_>) {
         for event in ui::window_toolbar::take_events() {
             if let Some(item) = self.bar_commands.pressed(&event) {

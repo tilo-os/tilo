@@ -25,8 +25,6 @@ use super::{
     block_presence_key,
 };
 
-/// The editor's part of the widget contract, which the window
-/// ([`WordProcessorWidget`](super::WordProcessorWidget)) answers with.
 impl Editor {
     pub(crate) fn primary_vertical_scroll(&self) -> ui::widget::PrimaryScrollRegion {
         if self.styles_panel_full_window() {
@@ -74,8 +72,6 @@ impl Editor {
         let (state, _) = ui::doc::document_ref(state, path);
         let caret = self.inner.caret();
         let region = self.inner.region();
-        // Body text reads only the caret block. Running-region text would
-        // materialize an entire region, so omit it from this diagnostic path.
         let caret_text = matches!(region, Region::Body).then(|| self.inner.current_text(state));
         serde_json::json!({
             "offset_y": self.scroll_y,
@@ -98,15 +94,12 @@ impl Editor {
 
     pub(crate) fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document_ref(state, root);
-        // A transient cue says so in the window's bar while it lasts.
         self.toast.expire();
         self.toast.publish();
         #[cfg(test)]
         if self.source.is_none() && self.dispatch.is_some() {
             self.source = ui::framework::testing::detached_live(state).ok();
         }
-        // A participant who may only view (or History mode's past version)
-        // keeps its caret on what is there.
         if self.read_only() {
             self.inner.bind_view_only(state, root);
         } else {
@@ -120,8 +113,6 @@ impl Editor {
             );
         }
         self.refresh_blocks(state);
-        // Other participants' views follow local and remote edits alike; a
-        // participant's own applied edit hands over its next view.
         let now = ui::time::now();
         self.participants.adopt_outcomes(state, now);
         self.adopt_local_outcome(state);
@@ -129,15 +120,9 @@ impl Editor {
         self.participants.expire(now);
         self.resolve_bound_edits(state);
         self.follow_settings();
-        // Reload the stylesheet from the doc unless a live, not-yet-persisted
-        // local edit is in progress (a guide drag, a numeric scrub, or typing
-        // into a panel field) — reloading would discard the live preview.
         if self.guide_drag.is_none() && self.editing_field.is_none() {
             self.sheet = self.inner.stylesheet(state);
         }
-        // Reload the persisted page margins (document-level page setup) unless a
-        // guide drag is mid-flight (which would clobber the live preview). Absent
-        // from the document → keep the current/default margins.
         if self.guide_drag.is_none()
             && let Some([t, r, b, l]) = self.inner.page_margins(state)
         {
@@ -158,13 +143,9 @@ impl Editor {
         }
         self.refresh_blocks(edits.doc());
         self.apply_find_replacements(edits);
-        // The editor's commands are the window bar's slots: what the person
-        // did there runs with the document in hand, then the slots follow
-        // the selection.
         self.apply_window_toolbar(edits);
     }
 
-    /// Where the window's layout placed the editor.
     pub(crate) fn place(&mut self, rect: Rect) {
         self.rect = rect;
     }
@@ -174,8 +155,6 @@ impl Editor {
     }
 
     pub(crate) fn needs_animation_frame(&self) -> bool {
-        // Only the outline and inspector drawers move, while they open or
-        // close.
         self.outline_drawer.is_animating() || self.inspector_drawer.is_animating()
     }
 
@@ -205,22 +184,13 @@ impl Editor {
         presence: &PresenceCtx,
     ) {
         self.ime_rect = None;
-        // Resolve the OS theme into this frame's chrome palette once; every
-        // chrome helper below reads `self.chrome` so the whole editor follows
-        // light/dark mode + the OS palette. (`draw_frame_chrome` resolves the
-        // spacing tokens and the measured panel metrics alongside it.)
         self.chrome = ChromeColors::for_theme(theme);
         self.paper_theme = theme.on_ground(self.chrome.paper);
         self.desk_theme = theme.clone();
-        // Document sizes are authored points, not theme text roles: apply
-        // both the text size and the UI scale before fitting the sheet, or a
-        // larger UI grows the controls while the writing stays small.
         self.text_scale = f64::from(theme.text_scale.clamp(0.75, 2.0) * theme.ui_scale);
         let full = self.rect;
-        // Each region is a part of its own, so the frame reports as damage
-        // the regions whose drawing changed: a typed character repaints its
-        // paragraph, not the window. What the canvas clips (scrolled content
-        // never paints over the bars) is clipped in each part.
+        // Each region is its own paint part, so a typed character repaints its paragraph,
+        // not the window; the parts clip the canvas, so scrolled content never paints the bars.
         let mut parts = PaintParts::new(scene);
         let fg = parts.draw_bounded(scene, "word-bars", |scene| {
             let fg = self.draw_frame_chrome(scene, transform, text_renderer, theme, full);
@@ -230,8 +200,6 @@ impl Editor {
         });
         let canvas = fg.canvas;
 
-        // Pass 1: shape + paginate every block, then resolve scroll against the
-        // resulting extent and shift `laid` into screen space.
         let PaginationResult {
             mut laid,
             cache: new_cache,
@@ -263,7 +231,6 @@ impl Editor {
                 presence,
             },
         );
-        // The page-space passes over the content, each clipped to the canvas.
         parts.draw(scene, "word-notes", canvas, |scene| {
             clipped(scene, transform, canvas, |scene| {
                 self.review.draw_pips(
@@ -281,15 +248,9 @@ impl Editor {
                     sy,
                 );
                 self.draw_empty_placeholder(scene, fg.ctf, text_renderer, laid.first());
-                // Layout-edit overlay: draggable guides + live value labels
-                // for the active mode, over the content.
                 if self.layout_mode != LayoutMode::None {
                     self.draw_layout_overlay(scene, fg.ctf, text_renderer, sheets);
                 }
-                // Header/footer edit mode: veil the body + draw the band caret
-                // (checks `self.inner.in_running_region()` itself). Drawn last
-                // so the veil covers the body but the band + its caret stay
-                // crisp on top.
                 self.draw_running_region_veil(scene, &fg, num_pages, sy);
             });
         });
@@ -307,8 +268,6 @@ impl Editor {
         });
 
         self.laid = laid;
-        // Adopt this frame's cache (dropping the pruned entries for blocks that
-        // no longer exist) so the next frame can reuse it.
         self.layout_cache = new_cache;
         self.draw_outside_page(
             &mut parts,
@@ -322,15 +281,11 @@ impl Editor {
             .record(full, parts.finish(scene, vec![full], transform, theme));
     }
 
-    // Where the caret and selection end up is what the edits bound to them
-    // are built from.
     pub(crate) fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.route_event(event, ctx);
         self.resolve_bound_edits(ctx.state.doc());
     }
 
-    /// Top-layer pass: paint the right-click context menu (when open) so it
-    /// floats above the page + chrome. Delegates to the shared [`ContextMenu`](ui::widget::context_menu::ContextMenu).
     pub(crate) fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -401,11 +356,6 @@ impl Editor {
         );
     }
 
-    /// The word processor's local accessibility semantics: the editable
-    /// `Role::Document` root. Blocks render directly, not as child widgets, so
-    /// the full subtree comes from [`Editor::accessibility_tree`]
-    /// rather than `children()`; convert the carrier into real synthetic
-    /// children so AccessKit, AT-SPI and the built-in reader all receive it.
     pub(crate) fn accessibility(&self) -> ui::a11y::AccessNode {
         let mut tree = self.accessibility_tree();
         if !self.styles_panel_full_window() {
@@ -523,8 +473,6 @@ impl Editor {
     pub(crate) fn set_focus(&mut self, focused: bool) {
         self.lifecycle.focused = focused;
         if !focused {
-            // Blur any in-progress numeric edit; the next sync reloads the
-            // persisted style values.
             self.focus_hosted(None, false);
         }
         self.lifecycle.dirty = true;
@@ -564,7 +512,6 @@ impl Editor {
     pub(crate) fn needs_redraw(&self) -> bool {
         self.lifecycle.dirty
     }
-    /// A toast wakes the document to leave.
     pub(crate) fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         self.toast.deadline()
     }
@@ -583,20 +530,14 @@ impl Editor {
         self.lifecycle.dirty = false;
         self.paint_damage.mark_drawn();
     }
-    /// One self-drawn taffy leaf filling its tile: its size follows the
-    /// parent alone, so only the first layout is a size change. Pages,
-    /// toolbars and panels are positioned inside `self.rect` by hand.
     pub(crate) fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
     }
 }
 
 impl Editor {
-    /// Outbound collaboration presence: while focused, broadcast the local caret
-    /// (or selection range) keyed to its block. Polled by the App after each event
-    /// and fanned out as `CollabEvent::RemotePresenceUpdate`. Offsets are bytes, so
-    /// the receiver feeds them straight into `RichTextLayout::caret_geometry`/
-    /// `selection_rects`.
+    /// Outbound presence while focused: the local caret or selection, keyed to its block,
+    /// in byte offsets the receiver feeds straight into the layout's geometry.
     pub(crate) fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
         if !self.lifecycle.focused {
             return None;
@@ -606,10 +547,6 @@ impl Editor {
             return None;
         }
         let key = block_presence_key(caret_block);
-        // A selection within the caret's block takes priority over the bare
-        // caret. (v1 collab presence reports the caret-block portion of a
-        // multi-block selection, mirroring how the caret block is what the
-        // peer's caret lands in.)
         if self.inner.has_selection()
             && let Some((_, s, e)) = self
                 .selection_blocks_cached()
@@ -622,8 +559,6 @@ impl Editor {
             let end = char_to_byte(&block.text, e);
             return Some((key, ui::PresencePayload::Selection { start, end }));
         }
-        // Bare caret: convert the char offset to a byte offset against the
-        // caret block's text so it maps directly through the layout geometry.
         let pos = self
             .blocks
             .iter()
@@ -634,12 +569,8 @@ impl Editor {
         Some((key, ui::PresencePayload::Caret { pos }))
     }
 
-    /// The selection for an agent, in the terms the editor's place-taking
-    /// actions read (`at`): the caret's block and character offsets in it.
-    /// A selection spanning blocks is shared as its part in the caret's
-    /// block, the same part peers see, with every block's part noted beside
-    /// it; the excerpt is exactly the caret block's text, so what the agent
-    /// reads at the place is what it will act on there.
+    /// The selection for an agent, in the terms the place-taking actions read (`at`): a
+    /// selection spanning blocks is shared as its part in the caret's block.
     pub(crate) fn shared_selection(&self) -> Option<ui::shared_selection::SharedSelection> {
         use ui::shared_selection::SharedSelection;
         if !self.lifecycle.focused {
@@ -702,8 +633,6 @@ impl ui::undo::LocalUndo for Editor {
 }
 
 impl ui::collaboration::participants::Participants for Editor {
-    /// An agent task joined: its view is placed at the document end on the
-    /// next sync (no document here) and published as presence from then on.
     fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
         let joined = self.participants.join(participant.clone(), ui::time::now());
         self.lifecycle.dirty |= joined;
@@ -722,9 +651,6 @@ impl ui::collaboration::participants::Participants for Editor {
 }
 
 impl Editor {
-    /// The passes outside the page clip, each its own part: the scroll bar,
-    /// collaborators' marks (clipped to the canvas themselves), the layout bar
-    /// and the drawers.
     fn draw_outside_page(
         &mut self,
         parts: &mut PaintParts,

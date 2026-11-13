@@ -870,6 +870,8 @@ fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> 
                 author_label(author, &message.author),
             )
             .role(ui::TextRole::Label)
+            // A long name ends in an ellipsis in a narrow window; the time beside it stays whole.
+            .truncate(true)
             .into(),
         ];
         let when = cx.key(format!("when-{}", message.id));

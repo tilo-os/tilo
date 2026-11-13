@@ -5,11 +5,8 @@ use tilo_content::ContentStore;
 
 use crate::model::{Deck, Element, ElementKind, Layout, Slide, new_id, seed_deck};
 
-/// How many slides the long sample deck has: enough that the rail and the
-/// overview overflow their viewports.
 pub const LONG_DECK_SLIDES: usize = 12;
 
-/// The sample deck repeated, with fresh ids, to [`LONG_DECK_SLIDES`] slides.
 pub fn long_deck() -> Deck {
     let mut deck = seed_deck();
     let base = deck.slides.clone();
@@ -27,8 +24,6 @@ pub fn long_deck() -> Deck {
     deck
 }
 
-/// The sample deck ending on a slide that shows the picture `src` under a
-/// title.
 pub fn picture_deck(title: &str, src: &str) -> Deck {
     let mut deck = seed_deck();
     let mut slide = Slide::new(Layout::TitleContent);
@@ -44,8 +39,6 @@ pub fn picture_deck(title: &str, src: &str) -> Deck {
     deck
 }
 
-/// A small, unmistakably photographic raster: warm rings over a cool field,
-/// clearly a picture rather than a flat UI gradient.
 pub fn photo_png() -> Vec<u8> {
     let (w, h) = (640u32, 400u32);
     let cx = w as f32 / 2.0;
@@ -67,7 +60,6 @@ pub fn photo_png() -> Vec<u8> {
     ui::png::encode_rgba8(w, h, &rgba).unwrap_or_default()
 }
 
-/// The content id [`photo_png`] is stored under, in any store.
 pub fn photo_src() -> Option<String> {
     crate::assets::store_asset(&ContentStore::memory(), &photo_png())
 }

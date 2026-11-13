@@ -213,7 +213,7 @@ impl Workspaces {
         let members = governed
             .peer()
             .admitted_workspace()
-            .and_then(tilo_desktop_model::projection::workspace_members);
+            .and_then(tilo_peer_state::members::people);
         let allows = |act: &tilo_desktop_model::ownership::Touched| {
             member.allows(&act_node(&identity, act), ActionKind::Undoable, now)
         };

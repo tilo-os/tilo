@@ -100,13 +100,25 @@ pub fn workspace_root() -> Option<PathBuf> {
 }
 
 /// Where the language packs a person installed live
-/// (`$XDG_DATA_HOME/tilo/language-packs`, one directory per locale): the
+/// (`$XDG_DATA_HOME/tilo/language-packs`, one directory per language): the
 /// installer service writes them there, on the path it installs runtimes
 /// on, and the runtime reads them before the packs the OS image carries.
 /// `None` without a home.
 #[must_use]
 pub fn language_packs_dir() -> Option<PathBuf> {
     xdg::data_home().map(|data| data.join("tilo").join("language-packs"))
+}
+
+/// The language a tag names, as a language pack is named: its language
+/// subtag, lower case (`de` of `de`, `de-DE` and `de_DE`). One pack holds a
+/// language's catalogues whatever region a tag adds, so a choice, the pack's
+/// directory and its package id meet at this one name.
+#[must_use]
+pub fn language_of(tag: &str) -> String {
+    tag.split(['-', '_'])
+        .next()
+        .unwrap_or(tag)
+        .to_ascii_lowercase()
 }
 
 #[cfg(windows)]

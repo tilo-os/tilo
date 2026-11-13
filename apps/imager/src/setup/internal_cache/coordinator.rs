@@ -1,6 +1,5 @@
 //! Private retained download worker. No staging, UI, or support route is enabled.
-//! Selection authority and all leased handles stay on this worker. Only bounded,
-//! owned descriptions cross the control boundary; Ready is deliberately private.
+
 use super::HeldReadSeek;
 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
 use super::Session;
@@ -35,16 +34,12 @@ fn next_operation(counter: &AtomicU64) -> Result<u64, String> {
         .map_err(|_| "Operation identifier exhausted".into())
 }
 
-/// Read-only cooperative stop view for a scoped consumer. The transfer latch
-/// cannot be reset or retained beyond the borrowed consumption scope.
 #[allow(
     dead_code,
     reason = "the live download flow does not consume verified cache entries yet"
 )]
 pub(in crate::setup) struct Cancellation<'a>(&'a AtomicBool);
 impl Cancellation<'_> {
-    /// Borrow the same owned worker cancellation flag for blocking native I/O.
-    /// The flag remains read-only and cannot outlive this consumption scope.
     pub(in crate::setup) fn signal(&self) -> &AtomicBool {
         self.0
     }
@@ -82,7 +77,6 @@ pub(in crate::setup) enum Phase {
 pub(in crate::setup) struct Status {
     pub token: Token,
     pub phase: Phase,
-    /// Last positively acknowledged prefix per role (not bytes merely received).
     pub committed: [u64; 2],
     pub progress: Option<Progress>,
     pub finals: [bool; 2],
@@ -139,13 +133,6 @@ struct Shared {
     wake: Condvar,
 }
 
-/// One latest request, one Ready action and one coalesced status. Replacing a
-/// request cancels the old operation out of band, even during blocked transport.
-/// Dropping the only controller requests cancellation and joins the worker.
-/// Network operations are bounded by transport timeouts; filesystem operations
-/// and the scoped consumer remain cooperative and must return. Consumers receive
-/// the cancellation latch and must check it during their own bounded work. The
-/// callback grants read access only; it is not permission to stage or install.
 pub(in crate::setup) struct Worker {
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
@@ -192,8 +179,6 @@ impl Worker {
     pub(in crate::setup) fn start(&self, release: InternalRelease) -> Result<Token, String> {
         self.submit(release, None)
     }
-    /// A new authenticated cleanup operation and a NEW cancellation flag. The
-    /// transfer's cancellation latch is never cleared. Verified finals remain.
     pub(in crate::setup) fn discard(
         &self,
         target: &Token,
@@ -371,7 +356,6 @@ fn worker_loop(
             m.pending.take().unwrap()
         };
         let mut status = Status::new(request.token.clone());
-        // selected is external to every borrowed handle/Ready, on this stack.
         let result = (|| {
             stop(&request.flags)?;
             let selected = transport.fetch_manifest(&request.release, &request.flags.cancel)?;
@@ -402,12 +386,9 @@ fn worker_loop(
         if let Err(error) = result {
             status.error.get_or_insert(error);
         }
-        // Scope has ended: no Session, component, Ready or root lease is live.
         let mut m = shared.mailbox.lock_recover();
         if let Some((token, flags)) = &m.active {
             if *token == status.token {
-                // Same lock as stop admission: an accepted cancel wins even in
-                // the last interval between scoped completion and publication.
                 if flags.cancel.load(Ordering::Acquire) {
                     status.phase = Phase::Cancelled;
                 }
@@ -458,7 +439,6 @@ fn run_selected(
         &mut dyn HeldReadSeek,
     ) -> Result<(), String>,
 ) -> Result<(), String> {
-    // Fail closed even if an internal caller bypasses spawn's preflight.
     imager_backend::cache::unsupported()
 }
 
@@ -480,8 +460,6 @@ fn run_selected<'s>(
     status.phase = Phase::Acquiring;
     report(shared, status);
     stop(flags)?;
-    // Bootstrap owns the one cooperative root lock and creation settlement.
-    // An acquisition error can retain residue, even without a returned handle.
     status.residue = true;
     let components = platform::CacheRoot::acquire(selected)?
         .bootstrap(selected, &flags.cancel)
@@ -512,8 +490,6 @@ fn run_selected<'s>(
     let (mut b, mut bf) = split(second);
     status.phase = Phase::Preparing;
     report(shared, status);
-    // Distinct locals keep both Sessions/prepared prefixes alive before either
-    // transfer. Never carry a preparation receipt across pause/reacquisition.
     let (ap, ax) = a.as_mut().map(|p| (&mut p.provider, &mut p.file)).unzip();
     let (bp, bx) = b.as_mut().map(|p| (&mut p.provider, &mut p.file)).unzip();
     let mut sa = ap
@@ -525,8 +501,6 @@ fn run_selected<'s>(
     let pa = match (&mut sa, ax) {
         (Some(s), Some(file)) => Some(
             s.prepare(selected, file, &flags.cancel)
-                // Preparation may normalize journals or trim/sync a tail before
-                // failing. A string error cannot prove that nothing changed.
                 .inspect_err(|_| status.uncertain = true)?,
         ),
         _ => None,
@@ -537,8 +511,6 @@ fn run_selected<'s>(
     let pb = match (&mut sb, bx) {
         (Some(s), Some(file)) => Some(
             s.prepare(selected, file, &flags.cancel)
-                // Preparation may normalize journals or trim/sync a tail before
-                // failing. A string error cannot prove that nothing changed.
                 .inspect_err(|_| status.uncertain = true)?,
         ),
         _ => None,
@@ -612,8 +584,6 @@ fn run_selected<'s>(
                 result
             });
             if let Err(error) = consumed {
-                // Verification, cursor restoration and native guards can fail
-                // alongside cancellation. Conservatively retain that uncertainty.
                 status.uncertain = true;
                 if let Some(callback_error) = &mut status.error {
                     if *callback_error != error {

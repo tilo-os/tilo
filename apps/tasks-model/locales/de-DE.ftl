@@ -14,6 +14,7 @@ tasks-tracker-issues-noun = { $count ->
    *[other] Aufgaben
 }
 tasks-tracker-create = Neue Aufgabe
+tasks-tracker-rename = Aufgabe umbenennen
 tasks-tracker-create-area = Neues Projekt oder neuer Bereich
 tasks-tracker-rename-area = Projekt oder Bereich umbenennen
 tasks-tracker-set-kind = Art des Projekts festlegen

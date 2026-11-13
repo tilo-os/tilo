@@ -1,16 +1,12 @@
 //! Change notification for the settings and the directories beside them.
 //!
-//! The settings themselves ring their source's change signal ([`watch_settings`]). The
-//! identity and dictionary directories are watched as directories: their writers replace
-//! files by rename, so a watch on a file would follow the old inode.
-//!
-//! The directory watches are change-only ([`tilo_files::native::watch_changes`]): reading a file in a
-//! watched directory does not wake them. The identity directory is read whenever the desktop
-//! checks who is signed in, and an idle desktop woke a watcher for each of those reads.
+//! The settings ring their source's change signal ([`watch_settings`]). The identity and dictionary
+//! directories are watched as directories, because their writers replace files by rename and a
+//! watch on a file would follow the old inode. The directory watches are change-only: reading a
+//! file in a watched directory does not wake them.
 
 use std::path::Path;
 
-/// A live watch; dropping it stops notifications.
 pub struct SettingsWatch {
     _directory: Option<tilo_files::native::ChangeWatch>,
     _listener: Option<std::sync::Arc<crate::Listener>>,
@@ -54,8 +50,6 @@ pub fn watch_file_at(
     )
 }
 
-/// Watch the existing identity directory for selector and identity-record changes.
-/// Re-read the verified active owner after each notification.
 pub fn watch_identity_at(
     directory: &Path,
     on_change: impl Fn() + Send + 'static,
@@ -63,8 +57,6 @@ pub fn watch_identity_at(
     watch_directory(directory, identity_entry(directory.to_owned()), on_change)
 }
 
-/// Whether a changed path is the identity selector or an identity record
-/// directly in `root`.
 fn identity_entry(root: std::path::PathBuf) -> impl Fn(&Path) -> bool + Send + 'static {
     move |path| {
         path.parent() == Some(root.as_path())
@@ -100,8 +92,6 @@ pub(crate) fn watch_dictionary_at(
     )
 }
 
-/// Call `on_change` when an entry of `directory` that `names` accepts (given its full path)
-/// changes, and when changes may have been missed.
 fn watch_directory(
     directory: &Path,
     names: impl Fn(&Path) -> bool + Send + 'static,
@@ -120,7 +110,6 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
 
-    /// A watch whose every notification says what `look` saw when it ran.
     fn watch_seeing<T: Send + 'static>(
         start: impl FnOnce(Box<dyn Fn() + Send>) -> std::io::Result<SettingsWatch>,
         look: impl Fn() -> T + Send + 'static,
@@ -133,7 +122,6 @@ mod tests {
         (watch, seen)
     }
 
-    /// Waits for a notification that ran once `seen` holds.
     fn notified_after<T>(what: &str, seen: &mpsc::Receiver<T>, holds: impl Fn(&T) -> bool) {
         while !holds(&tilo_test_env::recv(what, seen)) {}
     }

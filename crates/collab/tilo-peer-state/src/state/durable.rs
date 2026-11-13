@@ -1,19 +1,90 @@
 //! The durable record of a replica, and restoring one from it.
 
-#[cfg(test)]
-use super::DurableDocument;
-#[cfg(test)]
-use super::durable_before_owner::Durable;
+use std::collections::{BTreeMap, VecDeque};
+
+use serde::{Deserialize, Serialize};
+
 use super::{
-    AcceptedCheckpoint, CachedDocument, ChannelState, DURABLE_BASE_VERSION, DecodedCheckpoint,
-    DeviceCert, Document, DurableV4, DurableV5, DurableV6, Ed25519PublicKey, ExactAdmissions,
-    GOVERNANCE_LAYOUT_BEFORE, PeerCore, RevocationList, Route, Serialize, Shared, StatePeer,
-    SystemTime, backend, check_governed_snapshot, durable_base_version, durable_before_owner, err,
-    held, now_ns, process_default, workspace,
+    AcceptedCheckpoint, CachedDocument, ChannelState, DecodedCheckpoint, DeviceCert, Document,
+    Ed25519PublicKey, ExactAdmissions, PeerCore, RevocationList, Route, Shared, StatePeer,
+    SystemTime, backend, check_governed_snapshot, err, held, now_ns, process_default, workspace,
 };
+use super::{DurableDocument, SealedHistory};
+use crate::NeighbourMsg;
 
 #[cfg(test)]
 use automerge::{ReadDoc as _, transaction::Transactable as _};
+
+/// The base whose governance holds device rows as JSON and each receipt
+/// with its whole invitation: the same fields as [`DURABLE_BASE_VERSION`],
+/// its governance brought up as it is read ([`crate::workspace::layout`]).
+pub const GOVERNANCE_LAYOUT_BEFORE: u32 = 4;
+
+/// The durable base layout. Version 5 keeps the governance's device rows
+/// and receipts compact ([`crate::workspace::layout`]); version 4 is the same
+/// base around the earlier governance layout.
+pub const DURABLE_BASE_VERSION: u32 = 5;
+
+#[derive(Serialize, Deserialize)]
+pub struct Durable {
+    pub(super) version: u32,
+    pub(super) workspace: String,
+    pub(super) owner: [u8; 32],
+    pub(super) workspace_bytes: Option<Vec<u8>>,
+    pub(super) documents: Vec<DurableDocument>,
+    pub(super) receipts: BTreeMap<String, Vec<u8>>,
+    pub(super) certificates: Vec<DeviceCert>,
+    pub(super) revocations: Vec<tilo_user_identity::RevocationEntry>,
+}
+#[derive(Serialize, Deserialize)]
+pub struct DurableV4 {
+    pub(super) version: u32,
+    pub(super) base: Durable,
+    pub(super) pending: VecDeque<([u8; 32], NeighbourMsg, bool)>,
+    pub(super) pending_bytes: usize,
+}
+
+// The v4 shape stays frozen. Exact evidence is an explicitly selected addition.
+#[derive(Serialize, Deserialize)]
+pub struct DurableV5<'a> {
+    pub(super) version: u32,
+    pub(super) base: DurableV4,
+    #[serde(borrow)]
+    pub(super) exact: &'a [u8],
+}
+
+/// V5 and the sealed history of each encrypted record. Written only while a
+/// record holds sealed writes, so every other state keeps its v5 bytes.
+#[derive(Serialize, Deserialize)]
+pub struct DurableV6<'a> {
+    pub(super) version: u32,
+    pub(super) base: DurableV4,
+    #[serde(borrow)]
+    pub(super) exact: &'a [u8],
+    pub(super) sealed: SealedHistory,
+}
+
+/// The version of a durable state's base, read from the versions that lead
+/// the bytes, never by decoding a layout and retrying another.
+///
+/// How many versions lead the base's depends on the envelope: version 4
+/// names its base's version second, and versions 5 and 6 wrap a version 4
+/// envelope, which names it after its own.
+pub fn durable_base_version(bytes: &[u8]) -> Result<u32, String> {
+    let (envelope, rest) = version(bytes)?;
+    let rest = match envelope {
+        4 => rest,
+        5 | 6 => version(rest)?.1,
+        _ => return Err("unsupported durable admission version".into()),
+    };
+    Ok(version(rest)?.0)
+}
+
+/// The version of a durable state's base, read from the versions that lead
+/// it.
+fn version(bytes: &[u8]) -> Result<(u32, &[u8]), String> {
+    postcard::take_from_bytes::<u32>(bytes).map_err(|error| error.to_string())
+}
 
 /// The digests of a replica's durable parts, each kept with its part: the
 /// part's allocation is alive while it is kept, so its address names it.
@@ -426,63 +497,53 @@ impl StatePeer {
         // Which base layout: the three integers both begin with, read before
         // anything that differs. Never decode one and retry another.
         let base = durable_base_version(bytes)?;
-        let base_before_owner = base == durable_before_owner::BASE_BEFORE_OWNER;
-        if base != DURABLE_BASE_VERSION && base != GOVERNANCE_LAYOUT_BEFORE && !base_before_owner {
+        if base != DURABLE_BASE_VERSION && base != GOVERNANCE_LAYOUT_BEFORE {
             return Err(format!("unsupported durable base version {base}"));
         }
-        let (durable, pending, pending_bytes, exact, sealed) = if base_before_owner {
-            match version {
-                4 => durable_before_owner::v4(bytes)?,
-                5 => durable_before_owner::v5(bytes)?,
-                6 => durable_before_owner::v6(bytes)?,
-                _ => return Err("unsupported durable admission version".into()),
+        let (durable, pending, pending_bytes, exact, sealed) = match version {
+            4 => {
+                let value: DurableV4 = postcard::from_bytes(bytes).map_err(err)?;
+                (
+                    value.base,
+                    value.pending,
+                    value.pending_bytes,
+                    ExactAdmissions::default(),
+                    Vec::new(),
+                )
             }
-        } else {
-            match version {
-                4 => {
-                    let value: DurableV4 = postcard::from_bytes(bytes).map_err(err)?;
-                    (
-                        value.base,
-                        value.pending,
-                        value.pending_bytes,
-                        ExactAdmissions::default(),
-                        Vec::new(),
-                    )
+            5 => {
+                let (value, tail): (DurableV5<'_>, _) =
+                    postcard::take_from_bytes(bytes).map_err(err)?;
+                if !tail.is_empty() || value.version != 5 || value.base.version != 4 {
+                    return Err("invalid native v5 durable envelope".into());
                 }
-                5 => {
-                    let (value, tail): (DurableV5<'_>, _) =
-                        postcard::take_from_bytes(bytes).map_err(err)?;
-                    if !tail.is_empty() || value.version != 5 || value.base.version != 4 {
-                        return Err("invalid native v5 durable envelope".into());
-                    }
-                    (
-                        value.base.base,
-                        value.base.pending,
-                        value.base.pending_bytes,
-                        ExactAdmissions::decode(value.exact).map_err(err)?,
-                        Vec::new(),
-                    )
-                }
-                6 => {
-                    let (value, tail): (DurableV6<'_>, _) =
-                        postcard::take_from_bytes(bytes).map_err(err)?;
-                    if !tail.is_empty()
-                        || value.version != 6
-                        || value.base.version != 4
-                        || value.sealed.is_empty()
-                    {
-                        return Err("invalid native v6 durable envelope".into());
-                    }
-                    (
-                        value.base.base,
-                        value.base.pending,
-                        value.base.pending_bytes,
-                        ExactAdmissions::decode(value.exact).map_err(err)?,
-                        value.sealed,
-                    )
-                }
-                _ => return Err("unsupported durable admission version".into()),
+                (
+                    value.base.base,
+                    value.base.pending,
+                    value.base.pending_bytes,
+                    ExactAdmissions::decode(value.exact).map_err(err)?,
+                    Vec::new(),
+                )
             }
+            6 => {
+                let (value, tail): (DurableV6<'_>, _) =
+                    postcard::take_from_bytes(bytes).map_err(err)?;
+                if !tail.is_empty()
+                    || value.version != 6
+                    || value.base.version != 4
+                    || value.sealed.is_empty()
+                {
+                    return Err("invalid native v6 durable envelope".into());
+                }
+                (
+                    value.base.base,
+                    value.base.pending,
+                    value.base.pending_bytes,
+                    ExactAdmissions::decode(value.exact).map_err(err)?,
+                    value.sealed,
+                )
+            }
+            _ => return Err("unsupported durable admission version".into()),
         };
         exact_admissions = exact;
         if (durable.version != DURABLE_BASE_VERSION && durable.version != GOVERNANCE_LAYOUT_BEFORE)

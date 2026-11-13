@@ -1,19 +1,4 @@
 //! The calendar's verbs, what it publishes, and the app.
-//!
-//! The record is [`Calendar`]: its events, tasks and projects are keyed
-//! items whose fields change through field edits at their paths
-//! (`Calendar::paths().events.item(&key(id)).title.set(..)`), and each
-//! one's notes are rich text under the item's id. The methods below are
-//! what is more than setting a field: making an item with its notes,
-//! deleting one with what hangs off it, moving an event in time or to
-//! another calendar, inviting, importing, and recording what a `CalDAV`
-//! server sent or confirmed.
-//!
-//! A server learns of a change whoever made it — a click, the palette, an
-//! agent, a collaborator, an undo: after every change the calendar queues
-//! the upload or delete of what differs from what each server last
-//! confirmed ([`Calendar::remote`]) in its outboxes, which the device
-//! holding the account carries out (`crate::outbox`).
 
 use chrono::NaiveDateTime;
 use tilo_document::{RichText, RichTextAction};
@@ -34,19 +19,14 @@ use crate::model::{
 
 ui::embedded_catalog!(pub(crate) fn, ["de-DE", "en-US"]);
 
-/// The most items one import or one task delete takes.
 pub(crate) const MAX_ITEMS_PER_ACTION: usize = 4096;
 
-/// Where a `CalDAV` server keeps an item, as a pull or an upload reports it.
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema,
 )]
 pub struct RemoteAt {
-    /// The remote calendar's id
     pub calendar: String,
-    /// The item's address on the server; empty for a sample server's item
     pub href: String,
-    /// The version the server reported (its `ETag`)
     pub etag: Option<String>,
 }
 
@@ -73,15 +53,12 @@ impl RemoteAt {
     }
 }
 
-/// The item a verb names by its id.
 fn uuid(id: &Id) -> Result<Uuid, Refusal> {
     id.as_str()
         .parse()
         .map_err(|_| Refusal::new(format!("`{id}` names nothing in this calendar")))
 }
 
-/// What the server holding `event` holds once it took this version: a
-/// fingerprint of the iCalendar it is uploaded as.
 pub(crate) fn fingerprint(event: &Event) -> String {
     use std::hash::Hasher as _;
     let mut hasher = fnv::FnvHasher::default();
@@ -100,11 +77,6 @@ pub(crate) fn fingerprint(event: &Event) -> String {
     queue = Calendar::queue,
 )]
 impl Calendar {
-    /// New event
-    ///
-    /// Adds an event, on the local calendar unless it names a remote one.
-    /// One on the local calendar stays in the record; one on a remote
-    /// calendar is queued for its server.
     #[action(local = calendar::NewEvent::stays_local)]
     pub fn new_event(
         &mut self,
@@ -127,9 +99,6 @@ impl Calendar {
         Ok(())
     }
 
-    /// New task
-    ///
-    /// Adds a task.
     #[action]
     pub fn new_task(
         &mut self,
@@ -163,9 +132,6 @@ impl Calendar {
         Ok(())
     }
 
-    /// New task project
-    ///
-    /// Adds a project to file tasks and events under.
     #[action]
     pub fn new_project(&mut self, cx: &mut ActionCx, #[param("Its name")] name: NonBlank) {
         let order = self
@@ -183,9 +149,6 @@ impl Calendar {
         });
     }
 
-    /// Delete event
-    ///
-    /// Deletes an event and its notes; a server holding it deletes it too.
     #[action(item = events)]
     pub fn delete_event(&mut self, event: &Id) -> Result<(), Refusal> {
         let id = uuid(event)?;
@@ -196,9 +159,6 @@ impl Calendar {
         Ok(())
     }
 
-    /// Reschedule
-    ///
-    /// Moves an event to another start and end.
     #[action(item = events)]
     pub fn reschedule(
         &mut self,
@@ -240,9 +200,6 @@ impl Calendar {
         Ok(())
     }
 
-    /// Move to calendar
-    ///
-    /// Files an event on another calendar, in that calendar's colour.
     #[action(item = events)]
     pub fn move_to_calendar(
         &mut self,
@@ -267,9 +224,6 @@ impl Calendar {
         Ok(())
     }
 
-    /// Invite
-    ///
-    /// Adds someone to an event's attendees, awaiting their answer.
     #[action(item = events)]
     pub fn invite(
         &mut self,
@@ -301,9 +255,6 @@ impl Calendar {
         Ok(())
     }
 
-    /// Delete task
-    ///
-    /// Deletes a task with its steps and their notes.
     #[action(item = tasks)]
     pub fn delete_task(&mut self, task: &Id) -> Result<(), Refusal> {
         let id = uuid(task)?;
@@ -333,9 +284,6 @@ impl Calendar {
         Ok(())
     }
 
-    /// Delete project
-    ///
-    /// Deletes a project; the events and tasks filed under it stay, unfiled.
     #[action(item = projects, destructive)]
     pub fn delete_project(&mut self, project: &Id) -> Result<(), Refusal> {
         let id = uuid(project)?;
@@ -359,10 +307,6 @@ impl Calendar {
         Ok(())
     }
 
-    /// Import calendar items
-    ///
-    /// Adds the events and tasks of a calendar file, leaving out what the
-    /// calendar already holds.
     #[action(id = "import-items", audience = "agents")]
     pub fn import_items(
         &mut self,
@@ -394,10 +338,6 @@ impl Calendar {
                 Ok(task)
             })
             .collect::<Result<Vec<_>, Refusal>>()?;
-        // What the calendar already holds is not imported twice: an event is
-        // the same source identity even after local edits, or the same title
-        // at the same start under another id. A task is the same title and
-        // due date under another id.
         for event in events {
             if self.events.iter().any(|held| {
                 held.id == event.id || (held.title == event.title && held.start == event.start)
@@ -427,10 +367,6 @@ impl Calendar {
         Ok(())
     }
 
-    /// Adopt a server's event
-    ///
-    /// Writes an event as its server holds it, which therefore needs no
-    /// upload.
     #[action(external, audience = "agents")]
     pub fn adopt_remote_event(
         &mut self,
@@ -452,9 +388,6 @@ impl Calendar {
         Ok(())
     }
 
-    /// Adopt a server's task
-    ///
-    /// Writes a task as its server holds it.
     #[action(external, audience = "agents")]
     pub fn adopt_remote_task(
         &mut self,
@@ -475,9 +408,6 @@ impl Calendar {
         Ok(())
     }
 
-    /// Drop what a server removed
-    ///
-    /// Removes an item its server no longer holds.
     #[action(external, audience = "agents")]
     pub fn drop_remote_item(&mut self, #[param("The event or task")] item: Uuid) {
         let id = key(item);
@@ -487,9 +417,6 @@ impl Calendar {
         self.remote.remove(id.as_str());
     }
 
-    /// Record an upload
-    ///
-    /// Records that a server took the version of an event it was sent.
     #[action(external, audience = "agents")]
     pub fn server_applied(
         &mut self,
@@ -502,17 +429,11 @@ impl Calendar {
         Ok(())
     }
 
-    /// Record a server delete
-    ///
-    /// Records that a server deleted an item it was told to.
     #[action(external, audience = "agents")]
     pub fn server_removed(&mut self, #[param("The event")] item: Uuid) {
         self.remote.remove(&item.to_string());
     }
 
-    /// Record a pull
-    ///
-    /// Remembers where a remote calendar's last pull ended.
     #[action(external, audience = "agents")]
     pub fn pulled(
         &mut self,
@@ -527,18 +448,11 @@ impl Calendar {
     }
 }
 
-/// How many settled uploads and deletes the calendar keeps.
 const SETTLED_KEPT: usize = 64;
 
-/// The most events and tasks one read lists.
 const MOST_READ_ITEMS: usize = 500;
 
 impl Calendar {
-    /// Whether the published child `id` is one [`Self::read_items`]
-    /// answers: an event, one of its attendees, a task or a project of the
-    /// calendar. Each is
-    /// document state, disclosed by its document read, where its `open`
-    /// would move the person's window.
     fn reads_child(&self, id: &str) -> bool {
         let Some(rest) = id
             .strip_prefix(<Self as tilo_resource::Resource>::KIND)
@@ -570,8 +484,6 @@ impl Calendar {
         }
     }
 
-    /// The attendee the published id `item` names: who they are and
-    /// whether they come.
     fn read_attendee(&self, item: &str) -> Result<serde_json::Value, String> {
         let unlisted = || format!("`{item}` is no attendee of an event this calendar lists");
         let (event, attendee) = item.split_once("/attendees/").ok_or_else(unlisted)?;
@@ -597,11 +509,6 @@ impl Calendar {
         }))
     }
 
-    /// What the calendar holds, for a caller with no screen. With no item,
-    /// its events by start (the next first, then the past) and its tasks;
-    /// with an event's or task's id, that one in full: who is invited and
-    /// its notes; with an attendee's, who they are and whether they come;
-    /// with a project's, its name and its tasks.
     fn read_items(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let event_line = |event: &Event| {
             serde_json::json!({
@@ -626,7 +533,6 @@ impl Calendar {
         let Some(item) = item else {
             let now = chrono::Local::now().naive_local();
             let mut events: Vec<&Event> = self.events.iter().collect();
-            // The next events first, soonest first; then the past, latest first.
             events.sort_by_key(|event| {
                 let past = event.end < now;
                 (
@@ -704,11 +610,6 @@ impl Calendar {
 }
 
 impl Calendar {
-    /// After every change, whoever made it: queue the upload of each remote
-    /// event whose server does not hold it as it is now, and the delete of
-    /// each copy a server holds of an event gone from that calendar here;
-    /// forget what no longer needs doing (an event deleted before its
-    /// upload ran, a delete an undo took back).
     fn queue(&mut self, _before: &Self, cx: &mut ActionCx) {
         let wanted_uploads: Vec<Upload> = self
             .events
@@ -716,7 +617,6 @@ impl Calendar {
             .filter_map(|event| {
                 let calendar = event.calendar_id.clone()?;
                 match self.remote.get(&event.id.to_string()) {
-                    // Still on the calendar it left: deleted there first.
                     Some(copy) if copy.calendar != calendar => None,
                     Some(copy) if copy.holds == fingerprint(event) => None,
                     _ => Some(Upload {
@@ -784,7 +684,6 @@ impl Calendar {
         self.deletes.prune(SETTLED_KEPT);
     }
 
-    /// Refuse a project the calendar does not hold.
     fn project_exists(&self, project: Option<crate::model::Id>) -> Result<(), Refusal> {
         match project {
             Some(project) if self.project(project).is_none() => {
@@ -794,9 +693,6 @@ impl Calendar {
         }
     }
 
-    /// Every item's notes read whole: notes are short, and the editor's
-    /// pristine check, search and the history read each as one string.
-    /// Runs after every read and refresh.
     fn load_notes(&mut self, doc: &Doc, _demand: &Demand) -> Result<(), ModelError> {
         let whole = Demand::range(0..usize::MAX);
         for notes in self.notes.values_mut() {
@@ -805,19 +701,12 @@ impl Calendar {
         Ok(())
     }
 
-    /// The calendar `doc` holds, its notes read whole.
-    ///
-    /// # Errors
-    /// Returns [`ModelError`] when `doc` holds no calendar.
     pub fn read_whole(doc: &Doc) -> Result<Self, ModelError> {
         let mut calendar = <Self as tilo_resource::Resource>::read(doc)?;
         calendar.load_notes(doc, &Demand::none())?;
         Ok(calendar)
     }
 
-    /// The published id of the item `item` names — an event, one of its
-    /// occurrences (`<event>/occurrences/<date>`), a task or a project — when
-    /// the calendar holds it.
     fn item_resource(&self, item: &Id) -> Option<String> {
         let (id, occurrence) = match item.as_str().split_once("/occurrences/") {
             Some((id, date)) => (id, Some(date)),
@@ -843,8 +732,6 @@ impl Calendar {
             .map(|_| crate::actions::project_resource_id(id))
     }
 
-    /// Search narrows to the events, to the tasks, or to one project's
-    /// tasks; a project's scope nests under the tasks'.
     fn scopes(&self) -> Vec<ScopeDecl> {
         let mut scopes = vec![
             ScopeDecl::new(EVENTS_SCOPE, "Events"),
@@ -858,8 +745,6 @@ impl Calendar {
         scopes
     }
 
-    /// Every event, task and project, found by its title, place or notes;
-    /// choosing one opens it.
     fn search_entries(&self) -> Vec<SearchEntry> {
         let events = self.events.iter().map(|event| SearchEntry {
             within: Some(EVENTS_SCOPE.into()),
@@ -890,19 +775,14 @@ impl Calendar {
     }
 }
 
-/// The notes of the event or task `id`, as a path.
 pub(crate) fn notes_path(id: crate::model::Id) -> tilo_resource::Path<Calendar, RichText> {
     Calendar::paths().notes.key(id.to_string())
 }
 
-/// The resource the notes of the event or task `id` are published as, beside
-/// the calendar.
 pub(crate) fn notes_resource_id(id: &crate::model::Id) -> String {
     tilo_resource::child_resource_id::<Calendar>(&format!("notes:{id}"))
 }
 
-/// The dispatcher of the notes of the event or task `id`: each edit of
-/// them is the calendar's field edit at their path.
 pub(crate) fn notes_dispatcher(
     calendar: &Dispatcher<Calendar>,
     id: crate::model::Id,
@@ -916,9 +796,6 @@ pub(crate) fn notes_dispatcher(
     })
 }
 
-/// The calendar's work outside its document: talking to the servers of the
-/// accounts on this device, files, Mail, and how this person shows each
-/// calendar.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "calendar.effects")]
 pub enum CalendarEffect {
@@ -1053,12 +930,8 @@ pub enum CalendarEffect {
     },
 }
 
-/// Framework app: the calendar widget is the surface over [`Calendar`].
 pub struct CalendarShell;
 
-/// Every screenshot scenario: the five views with the editor closed, the
-/// event editor and each of its popovers, the task detail and its pickers,
-/// the empty and transport states, and the two narrow presentations.
 const SCENARIOS: &[&str] = &[
     "month",
     "week",
@@ -1089,32 +962,26 @@ const SCENARIOS: &[&str] = &[
     "narrow_editor",
 ];
 
-/// Whether `scenario` shows a first run: no events, tasks or accounts.
 fn is_empty_scenario(scenario: Option<&str>) -> bool {
     scenario.is_some_and(|name| name.starts_with("empty"))
 }
 
-/// What a capture shows in place of the person's `CalDAV` accounts: sample
-/// accounts whose servers answer from bundled sample calendars, never the
-/// network.
+/// What a capture shows in place of the person's `CalDAV` accounts: sample accounts whose servers
+/// answer from bundled sample calendars, never the network.
 pub(crate) struct SampleAccounts(pub(crate) crate::AccountStore);
 
 /// The moment a capture shows as now: the same day and time on every run,
 /// so the sample calendar, today's highlight and the now line never move.
 pub(crate) struct ShotNow(pub(crate) chrono::NaiveDateTime);
 
-/// The zone every capture is viewed from.
 pub(crate) const SHOT_ZONE: &str = "Europe/Berlin";
 
-/// The day and time every capture is taken at: a Tuesday morning.
 pub(crate) fn shot_now() -> chrono::NaiveDateTime {
     chrono::NaiveDate::from_ymd_opt(2026, 6, 30)
         .and_then(|day| day.and_hms_opt(10, 30, 0))
         .unwrap_or_default()
 }
 
-/// The curated notes the sample calendar opens with, by the title their event
-/// starts with.
 const SAMPLE_NOTES: [(&str, &str); 2] = [
     (
         "Design review",
@@ -1128,8 +995,6 @@ const SAMPLE_NOTES: [(&str, &str); 2] = [
     ),
 ];
 
-/// What fills an empty calendar with `sample`: its projects, then its
-/// events and tasks, then the curated notes of the sample events.
 pub(crate) fn sample_invocations(sample: &Calendar) -> Vec<Invoke<Calendar>> {
     let paths = Calendar::paths();
     let projects = sample
@@ -1141,7 +1006,6 @@ pub(crate) fn sample_invocations(sample: &Calendar) -> Vec<Invoke<Calendar>> {
             event: EventData::from_event(event),
         })
     });
-    // A step after the task it is a step of.
     let depth = |task: &crate::model::Task| {
         std::iter::successors(task.parent, |parent| sample.task(*parent)?.parent)
             .take(sample.tasks.len())
@@ -1169,8 +1033,6 @@ pub(crate) fn sample_invocations(sample: &Calendar) -> Vec<Invoke<Calendar>> {
     projects.chain(events).chain(tasks).chain(notes).collect()
 }
 
-/// The `ICS` text a launch hands the calendar: the file a host handed over,
-/// else the local file its argument names.
 fn launched_ics(input: &LaunchInput<'_>) -> Result<Option<String>, String> {
     const LIMIT: usize = 8 * 1024 * 1024;
     let bytes = if let Some(file) = input.file() {
@@ -1192,8 +1054,6 @@ fn launched_ics(input: &LaunchInput<'_>) -> Result<Option<String>, String> {
         .map_err(|_| "a calendar file to import is UTF-8 text".into())
 }
 
-/// The local path a launch argument names: a path, or a `file:` URL on this
-/// machine.
 fn local_path(target: &str) -> Result<std::path::PathBuf, String> {
     if target.to_ascii_lowercase().starts_with("file:") {
         let url = url::Url::parse(target).map_err(|error| format!("invalid file URL: {error}"))?;
@@ -1211,14 +1071,10 @@ fn local_path(target: &str) -> Result<std::path::PathBuf, String> {
     }
 }
 
-/// Importing the events and tasks of the iCalendar `source`, or `None` when
-/// it holds neither.
 pub(crate) fn import(source: &str) -> Option<Invoke<Calendar>> {
     import_reporting(source).map(|(import, _)| import)
 }
 
-/// [`import`], with the TZIDs in `source` that name no zone the calendar
-/// knows: their events keep the times as written.
 pub(crate) fn import_reporting(source: &str) -> Option<(Invoke<Calendar>, Vec<String>)> {
     let parsed = crate::ics::parse_calendar(source);
     let (events, tasks) = crate::actions::import_parsed(&parsed)?;
@@ -1228,8 +1084,6 @@ pub(crate) fn import_reporting(source: &str) -> Option<(Invoke<Calendar>, Vec<St
     ))
 }
 
-/// What an import says once it is done: which file, and, when a time zone
-/// it names is unknown, that its times stay as written.
 pub(crate) fn imported_status(file: &str, unknown_zones: &[String]) -> String {
     match unknown_zones {
         [] => format!("Imported calendar items from {file}"),
@@ -1242,24 +1096,13 @@ pub(crate) fn imported_status(file: &str, unknown_zones: &[String]) -> String {
     }
 }
 
-/// The search scope holding every event.
 const EVENTS_SCOPE: &str = "calendar.events";
-/// The search scope holding every task.
 const TASKS_SCOPE: &str = "calendar.tasks";
 
-/// The search scope of one project's tasks, inside the tasks' scope.
 fn project_scope(id: crate::model::Id) -> String {
     format!("{TASKS_SCOPE}/{}", crate::actions::project_resource_id(id))
 }
 
-/// What the binary runs instead of opening a window.
-///
-/// `--probe-timezone-engine VALUE` and `--probe-contact-directory-engine
-/// VALUE` (the value is ignored) run the self-checks of the time-zone
-/// database and of the contact directory. They need `runtime-engine`, the
-/// release build, where that code is in `libtilo_timezone_engine.so` and
-/// `libtilo_contact_directory_engine.so`; the checks prove Calendar loads
-/// those libraries and runs them.
 const COMMANDS: &[ui::framework::Command] = &[
     ui::framework::Command {
         option: "--probe-timezone-engine",
@@ -1304,9 +1147,6 @@ impl ResourceApp for CalendarShell {
     const OPENS: &'static [&'static str] = &["text/calendar"];
     const ARGUMENTS: usize = 1;
 
-    /// The person's accounts, kept by Settings, and the directory of their
-    /// identities, kept by Contacts: both theirs, read here for the
-    /// calendars and the attendees they name.
     const PERSON_RECORDS: &'static [ui::framework::PersonKind] = &[
         ui::framework::PersonKind::shared::<accounts::person::PersonAccounts>(),
         ui::framework::PersonKind::shared::<tilo_contact_directory::ContactDirectory>(),
@@ -1317,7 +1157,6 @@ impl ResourceApp for CalendarShell {
     }
 
     fn view(cx: &mut ViewCx<Calendar>) -> Element {
-        // A search hit or an agent's `open` shows the item it names.
         let app = CalendarApp::new();
         let store = app.shared();
         let live = cx.live().clone();
@@ -1330,9 +1169,6 @@ impl ResourceApp for CalendarShell {
             store.borrow_mut().ask(crate::app::Ask::OpenItem(resource));
             Ok(())
         });
-        // The shell keeps the sidebar (the lists, the calendars and the
-        // month), its width, its drawer in a narrow window and its keys;
-        // the calendar is the window's point, so the drawer floats over it.
         let places = ui::widget::NavFeed::new();
         let month = ui::widget::DateFeed::new();
         let shell = ui::widget::NavShell::new()
@@ -1355,8 +1191,6 @@ impl ResourceApp for CalendarShell {
         crate::import_inbox::import(context)
     }
 
-    /// A calendar file the calendar is opened with is imported into it: the
-    /// events and tasks it holds that the calendar does not, as one step.
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Calendar>> {
         let source = match launched_ics(input) {
             Ok(Some(source)) => source,
@@ -1392,8 +1226,6 @@ impl ResourceApp for CalendarShell {
         }
     }
 
-    /// The sample calendar around the capture's day, unless the scenario is
-    /// a first run.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Calendar>> {
         if is_empty_scenario(name) {
             return Vec::new();
@@ -1402,14 +1234,11 @@ impl ResourceApp for CalendarShell {
     }
 }
 
-/// The calendar `doc` holds, as a test reads it.
 #[cfg(test)]
 pub(crate) fn read_doc(doc: &Doc) -> Calendar {
     Calendar::read_whole(doc).expect("a calendar document")
 }
 
-/// An event on the local calendar at `start`, an hour long, as a test makes
-/// one.
 #[cfg(test)]
 pub(crate) fn event_at(title: &str, start: NaiveDateTime) -> Event {
     Event {
@@ -1423,15 +1252,12 @@ pub(crate) fn event_at(title: &str, start: NaiveDateTime) -> Event {
     }
 }
 
-/// `date` at `hour`:`minute`, as a test names a time.
 #[cfg(test)]
 pub(crate) fn at(date: chrono::NaiveDate, hour: u32, minute: u32) -> NaiveDateTime {
     date.and_hms_opt(hour, minute, 0).expect("a time of day")
 }
 
 impl calendar::NewEvent {
-    /// Whether the event goes on the local calendar, so nothing is queued
-    /// for a server: [`Calendar::new_event`]'s kind for this invocation.
     #[must_use]
     pub fn stays_local(&self) -> bool {
         self.event.calendar_id.is_empty()

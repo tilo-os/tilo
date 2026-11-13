@@ -1,19 +1,9 @@
 //! `vm branch`: new VMs that start as copies of a stopped one.
 //!
-//! The person sets one box up once (keys, tokens, logins) and branches any
-//! number of VMs off it. On libvirt and WHPX the source's disk is frozen as a
-//! read-only base in a `bases/` directory beside it, recorded in the
-//! registry; the source and every branch then get a copy-on-write qcow2 child
-//! of it, so nothing is copied and no VM sees another's writes. A base is
-//! deleted once no VM and no other base has it as its backing file
-//! ([`release_bases`]), so `vm rm` of the source or of any branch never
-//! breaks the others. On UTM each branch is a clone of the source, which UTM
-//! makes as an APFS clone of the VM bundle: copy-on-write as well, with no
-//! base to keep.
-//!
-//! Every branch gets its own name, UUID, MAC and SSH port. The UUID is the
-//! guest's SMBIOS system UUID (`/sys/class/dmi/id/product_uuid`): the guest
-//! sees that it changed and gives itself a new device identity on first boot.
+//! On libvirt and WHPX the source's disk is a read-only base with a
+//! copy-on-write qcow2 child per VM, so no VM sees another's writes; on UTM each
+//! branch is an APFS clone of the source's bundle. Every branch gets its own
+//! name, UUID, MAC and SSH port.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -33,7 +23,6 @@ use crate::{forwarded_port, remote, sshkey};
 /// after its guest shut down.
 const STOP_WAIT: Duration = Duration::from_secs(60);
 
-/// A source disk frozen by [`App::freeze`], and what undoes it.
 struct Frozen {
     id: String,
     base: String,
@@ -43,7 +32,6 @@ struct Frozen {
     permissions: std::fs::Permissions,
 }
 
-/// One new VM, made.
 struct Child {
     name: String,
     entry: VmEntry,
@@ -66,7 +54,6 @@ impl App {
         self.branch_with(&mut runner, &mut guests, args)
     }
 
-    /// An `App` for the same registry, which reads guests while this one drives the branch.
     fn sibling(&self) -> App {
         App {
             json: self.json,
@@ -82,8 +69,6 @@ impl App {
         }
     }
 
-    /// `--stop`: shut the source down the way `vm stop` does, then wait
-    /// until its hypervisor reports it off.
     fn stop_for_branch(&mut self, runner: &mut dyn Runner, source: &str) -> Result<(), CliError> {
         let vm = self.resolve_vm(Some(source))?;
         let adapter = Self::adapter(&vm)?;
@@ -101,9 +86,6 @@ impl App {
         Ok(())
     }
 
-    /// Branch `args.source` into `args.names` with `runner` running the
-    /// hypervisor's commands. Names already registered as branches of the
-    /// source are skipped, so a rerun after a failure makes only the rest.
     pub(super) fn branch_with(
         &self,
         runner: &mut dyn Runner,
@@ -190,7 +172,6 @@ impl App {
         self.admit_made(runner, guests, (src, &rerun), &names, timeout, outcome)
     }
 
-    /// Have the branches just made, `names`, taken in, and say so in `outcome`.
     fn admit_made(
         &self,
         runner: &mut dyn Runner,
@@ -258,8 +239,6 @@ impl App {
         Ok(())
     }
 
-    /// Make and register each of `todo`. When one fails, the ones made before it stay, and when
-    /// none was made the source gets its disk back.
     fn make_all(
         &self,
         runner: &mut dyn Runner,
@@ -303,7 +282,6 @@ impl App {
         Ok(created)
     }
 
-    /// The source's adapter, when it can branch and tilo-vm made the VM.
     fn branchable(&self, src: &str, source: &VmEntry) -> Result<Box<dyn Hypervisor>, CliError> {
         let adapter = hypervisor::adapter(&source.hypervisor)?;
         let kind = adapter.branching();
@@ -323,9 +301,6 @@ impl App {
         Ok(adapter)
     }
 
-    /// What a source needs before its branches are made: on libvirt and
-    /// WHPX its disk frozen into a base (each branch's disk path free
-    /// first), on UTM the UUID a clone must not have.
     fn prepare(
         &self,
         runner: &mut dyn Runner,
@@ -386,7 +361,6 @@ impl App {
         Ok((frozen, source_uuid))
     }
 
-    /// The names to make and those that already are branches of `src`.
     fn new_names(
         registry: &Registry,
         src: &str,
@@ -427,9 +401,6 @@ impl App {
         Ok((todo, skipped))
     }
 
-    /// Freeze `src`'s disk as a read-only base and give `src` a fresh
-    /// child of it at the same path, so its hypervisor definition is
-    /// unchanged. On failure everything is put back.
     fn freeze(
         &self,
         runner: &mut dyn Runner,
@@ -498,7 +469,6 @@ impl App {
         }
     }
 
-    /// Undo [`Self::freeze`]: the base becomes `src`'s writable disk again.
     fn unfreeze(
         &self,
         registry: &mut Registry,
@@ -523,7 +493,6 @@ impl App {
         registry.save(&self.registry_path)
     }
 
-    /// Make and register one branch. On failure what it made is removed.
     fn branch_one(
         &self,
         runner: &mut dyn Runner,
@@ -577,7 +546,6 @@ impl App {
             remove_child(&entry, &key);
             return Err(error);
         }
-        // From here the hypervisor has the VM: undo with its destroy.
         let identity = adapter.assign_identity(&vm);
         let mut ran: Vec<String> = commands
             .iter()
@@ -780,8 +748,6 @@ fn copy_key(from: &Path, to: &Path) -> Result<(), CliError> {
     .map(|_| ())
 }
 
-/// Remove what a branch that failed left: its disk and the files beside
-/// it, and its key.
 fn remove_child(entry: &VmEntry, key: &Path) {
     let mut files: Vec<PathBuf> = entry
         .disk
@@ -797,8 +763,6 @@ fn remove_child(entry: &VmEntry, key: &Path) {
         PathBuf::from(remote::known_hosts_path(&key.display().to_string())),
     ]);
     for file in files {
-        // Cleanup after the failure being reported; a file that stays is
-        // named by vm create's DiskExists if it is in the way of a retry.
         let _ = remove_if_present(&file);
     }
 }
@@ -807,7 +771,6 @@ fn refuse(what: String, fix: String) -> CliError {
     CliError::Branch { what, fix }
 }
 
-/// `step` failed after `created` were made: what still holds, and the rerun.
 fn failed(src: &str, step: &str, error: &CliError, rerun: &str, created: &[String]) -> CliError {
     let state = if created.is_empty() {
         format!("nothing was changed: {src} is as it was")

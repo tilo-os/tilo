@@ -1,8 +1,5 @@
-//! What the word processor does that is not an edit of its document: reading
-//! and writing files, what the window shows, and where each participant's
-//! caret and selection are. Every one is published on the document, so a
-//! button, the palette, an agent and a script reach the same handler (the
-//! editor's `ResourceSurface::effect`).
+//! What the word processor does that is not an edit of its document: reading and
+//! writing files, what the window shows, and each participant's caret and selection.
 
 use ui::tilo_resource::{self, Effect, Place};
 
@@ -11,47 +8,35 @@ use crate::actions::editing::{
 };
 use crate::actions::participant::ParticipantView;
 
-/// The word processor's effect vocabulary. Block ids are the document's
-/// stable paragraph ids; offsets count characters.
+/// The word processor's effects. Block ids are the document's stable paragraph ids;
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "word-processor.effects")]
 pub enum WordProcessorEffect {
     /// Share image
-    ///
-    /// The picture at the caret, else the document's only picture, as
-    /// content another app's operation takes (a photo editor opening it).
+    /// The picture at the caret, else the document's only one, as content.
     #[effect(content, kind = "read")]
     ShareImage,
     /// Open document.
-    ///
-    /// Replaces the document with a file's content; Undo takes it back.
     #[effect(job, destructive)]
     OpenDocument {
         #[param("Absolute filesystem path; omit to choose one")]
         path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Save document.
-    ///
-    /// Writes the document to its file, or to the one given.
     #[effect(job, destructive)]
     Save {
         #[param("Absolute filesystem path; omit to save to the document's file")]
         path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Save document as.
-    ///
-    /// Writes the document to a file, in the format its name says.
     #[effect(job, destructive)]
     SaveAs {
         #[param("Absolute filesystem path; omit to choose one")]
         path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Read a file.
-    ///
-    /// Answers with what a document file says, as Markdown: Word,
-    /// `OpenDocument`, RTF, HTML, EPUB or Markdown (a text file as itself),
-    /// without opening it; the document here stays as it is. A long file
-    /// answers in parts: read on from the `next` an answer gives.
+    /// What a document file says, as Markdown: Word, `OpenDocument`, RTF, HTML, EPUB,
+    /// Markdown; the document stays as it is. A long file answers in parts: read on from `next`.
     #[effect(kind = "read", returns = crate::file_convert::ReadDocument, idempotent, audience = "agents")]
     ReadFile {
         #[param("Absolute path of the file")]
@@ -60,13 +45,8 @@ pub enum WordProcessorEffect {
         from: Option<usize>,
     },
     /// Read a document kept as content.
-    ///
-    /// Answers with what a document kept as content says (an attachment, a
-    /// shared file), as Markdown, as `read-file` reads a file: its format is
-    /// read from its contents, its name telling only text kinds apart. A
-    /// long one answers in parts: read on from the `next` an answer gives. A
-    /// picture (a scan, a photo) has no text: it answers with `format`
-    /// `picture`, its type and size, and an agent whose model sees is shown
+    /// As `read-file`, for content the workspace holds; the format is read from its
+    /// contents. A picture has no text: it answers with its type and size.
     /// it.
     #[effect(kind = "read", returns = crate::file_convert::ReadDocument, idempotent, audience = "agents")]
     ReadContent {
@@ -78,11 +58,8 @@ pub enum WordProcessorEffect {
         from: Option<usize>,
     },
     /// Import a document kept as content.
-    ///
-    /// Replaces this document's body with a Word file (or `OpenDocument`,
-    /// HTML, RTF, Markdown, by its contents) the workspace holds as content, while
-    /// the document is empty; a document someone wrote is never replaced.
-    /// Undo takes it back.
+    /// Replaces the body with a Word file (or `OpenDocument`, HTML, RTF, Markdown) from
+    /// content while the document is empty; a document someone wrote is never replaced.
     #[effect(returns, kind = "undoable", audience = "agents")]
     ImportDocxContent {
         #[param(content, "The document's content address, `tilo.content:<hash>`")]
@@ -91,21 +68,15 @@ pub enum WordProcessorEffect {
         name: Option<String>,
     },
     /// Export document as content.
-    ///
-    /// Keeps the document as a file in the content store, with no file to
-    /// write: Word unless `format` names another. The caller reads, attaches
-    /// or sends it by the content address it answers.
+    /// Keeps the document as a file in the content store, Word unless `format` names another.
     #[effect(content, kind = "read", idempotent)]
     ExportContent {
         #[param("docx (default), odt, md, html, rtf, txt or pdf")]
         format: Option<String>,
     },
     /// Convert a file.
-    ///
-    /// Writes a document or text file again in another format beside it,
-    /// under a free name: PDF, Word, `OpenDocument`, Markdown, HTML, RTF or
-    /// plain text. The original and the document here stay as they are.
-    /// Answers with the new file's path.
+    /// Writes a file again in another format beside it (PDF, Word, `OpenDocument`, Markdown,
+    /// HTML, RTF, plain text) and answers with the new file's path.
     #[effect(returns)]
     ConvertFile {
         #[param("Absolute path of the file")]
@@ -144,9 +115,6 @@ pub enum WordProcessorEffect {
     #[effect(view)]
     Outline,
     /// Move caret.
-    ///
-    /// Moves your caret (collapsing your selection) to a point, or the
-    /// document start, document end or end of the current paragraph.
     #[effect(view, participant, idempotent, audience = "agents")]
     MoveCaret {
         #[param(
@@ -160,9 +128,6 @@ pub enum WordProcessorEffect {
         offset: Option<usize>,
     },
     /// Select range.
-    ///
-    /// Selects from (`start_block`, `start`) to (`end_block`, `end`); your caret
-    /// ends at the end.
     #[effect(view, participant, idempotent, audience = "agents")]
     SelectRange {
         #[param("Block where the selection starts")]
@@ -175,32 +140,23 @@ pub enum WordProcessorEffect {
         end: usize,
     },
     /// Select paragraph.
-    ///
-    /// Selects one whole paragraph (block).
     #[effect(view, participant, idempotent, audience = "agents")]
     SelectBlock {
         #[param("Block id to select")]
         block: String,
     },
     /// Select all.
-    ///
-    /// Selects the whole document (or the header or footer you are editing).
     #[effect(view, participant, idempotent)]
     #[effect(label = "menu-select-all")]
     SelectAll,
     /// Find text.
-    ///
-    /// Finds text (case-insensitive) and selects the first match; the
-    /// results appear as search-hit resources.
+    /// Case-insensitive; the results appear as search-hit resources.
     #[effect(view, participant, idempotent, audience = "agents")]
     FindText {
         #[param("Text to find (empty clears Find)")]
         query: String,
     },
     /// Type text.
-    ///
-    /// Types at your caret like the keyboard: it replaces your selection,
-    /// and your caret moves past it. Repeat to keep typing.
     #[effect(edit, participant, audience = "agents")]
     TypeText {
         #[param(
@@ -214,14 +170,9 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// New paragraph.
-    ///
-    /// Presses Enter at your caret: splits the paragraph (an empty list item
-    /// becomes a paragraph).
     #[effect(edit, participant, audience = "agents")]
     NewParagraph,
     /// Erase text.
-    ///
-    /// Backspace or Delete at your caret, or erases your selection.
     #[effect(edit, participant, audience = "agents")]
     EraseText {
         #[param(
@@ -233,9 +184,7 @@ pub enum WordProcessorEffect {
         count: Option<usize>,
     },
     /// Toggle formatting.
-    ///
-    /// Flips bold, italic, underline or strike on your selection, off where
-    /// it covers all of it (super and sub also the caret paragraph).
+    /// Off where the selection covers all of it (super and sub also the caret paragraph).
     #[effect(edit, participant)]
     ToggleMark {
         #[param("The inline mark to toggle", choices = TOGGLED_MARKS)]
@@ -247,9 +196,6 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// Set text format.
-    ///
-    /// Sets formatting on your selection whatever it has now: bold, italic,
-    /// underline or strike on or off, or font, size, colour or highlight.
     #[effect(edit, participant)]
     SetFormat {
         #[param("The inline mark", choices = FORMATS)]
@@ -265,8 +211,6 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// Clear text format.
-    ///
-    /// Removes one inline format from your selection, or the caret paragraph.
     #[effect(edit, participant)]
     ClearFormat {
         #[param("The inline mark to remove", choices = FORMATS)]
@@ -278,9 +222,6 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// Set paragraph style.
-    ///
-    /// Makes your selected paragraphs (or the caret paragraph) a heading, a
-    /// list or a body paragraph.
     #[effect(edit, participant, job, returns)]
     SetParagraphStyle {
         #[param(
@@ -299,9 +240,7 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// Apply style.
-    ///
-    /// Applies a named style (body, heading1-3, quote, list, or a custom
-    /// style) to your selected paragraphs, or the caret paragraph.
+    /// `body`, `heading1` to `heading3`, `quote`, `list`, or a custom style's name.
     #[effect(edit, participant)]
     ApplyNamedStyle {
         #[param("Named style id")]
@@ -313,9 +252,7 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// Paste.
-    ///
-    /// Pastes text or Markdown (headings, lists, pipe tables) at your caret,
-    /// replacing your selection.
+    /// Text or Markdown (headings, lists, pipe tables).
     #[effect(edit, participant, job, returns, audience = "agents")]
     #[effect(label = "menu-paste")]
     Paste {
@@ -341,8 +278,6 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// Insert table here.
-    ///
-    /// An empty table after the caret paragraph.
     #[effect(edit, participant)]
     InsertTableHere {
         #[param("Rows (default 2)")]
@@ -365,16 +300,12 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// Add or change hyperlink.
-    ///
-    /// Links your selected text.
     #[effect(edit, participant)]
     SetHyperlink {
         #[param("A web address (https://…), a mail address (mailto:…) or a #bookmark")]
         target: String,
     },
     /// Replace selection.
-    ///
-    /// Replaces your selection with the text (empty deletes it).
     #[effect(edit, participant, audience = "agents")]
     ReplaceSelection {
         #[param("Text that replaces the current selection (empty deletes it)")]
@@ -386,8 +317,6 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// Comment on selection.
-    ///
-    /// Adds a comment about your selected text.
     #[effect(edit, participant)]
     CommentSelection {
         #[param("The comment")]
@@ -399,10 +328,8 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// Place image.
-    ///
-    /// Places an image another action produced at your caret, at `at`, or
-    /// after the heading `after` names by its text. Answers with the blocks
-    /// it changed, the image's among them.
+    /// Places at your caret, at `at`, or after the heading `after` names, the content
+    /// another action produced. Answers with the blocks it changed.
     #[effect(edit, participant, job, returns, audience = "agents")]
     PlaceImage {
         #[param(
@@ -421,8 +348,6 @@ pub enum WordProcessorEffect {
         after: Option<String>,
     },
     /// Go to.
-    ///
-    /// Selects one exact range: a search result, a table cell.
     #[effect(view, row, participant, idempotent)]
     GoTo {
         #[param("Block id")]
@@ -444,9 +369,7 @@ pub enum WordProcessorEffect {
     },
 }
 
-/// The marks a toggle flips.
 const TOGGLED_MARKS: [&str; 6] = ["strong", "em", "underline", "strike", "super", "sub"];
-/// Every inline format by name: the toggled marks and the valued ones.
 const FORMATS: [&str; 10] = [
     "strong",
     "em",
@@ -461,8 +384,6 @@ const FORMATS: [&str; 10] = [
 ];
 
 impl WordProcessorEffect {
-    /// The view operation this effect is, for the effects that move a
-    /// participant's caret, selection or Find.
     pub(crate) fn view_operation(&self) -> Result<Option<ViewMove>, String> {
         use crate::actions::editing::CaretTarget;
         use crate::actions::view_ops::ViewOperation;
@@ -524,10 +445,8 @@ impl WordProcessorEffect {
 }
 
 impl WordProcessorEffect {
-    /// The edit this effect makes at `view`'s caret in `doc`, for the
-    /// effects that edit the document (`None` for the others). Images are
-    /// read from `content`. Built by the same primitives the keyboard uses;
-    /// a selection too large to replace in one step is refused.
+    /// The edit this effect makes at `view`'s caret, `None` for the others. Images are
+    /// read from `content`; a selection too large to replace in one step is refused.
     #[expect(
         clippy::too_many_lines,
         reason = "one arm per edit effect, each validating its own arguments"
@@ -608,8 +527,7 @@ impl WordProcessorEffect {
                 level,
                 ordered, ..
             } => {
-                // A list named as a reader of the page sees it: a bullet or a
-                // numbered item is a list item of that kind.
+                // A list as the reader sees it: a bullet or numbered item is that kind of list.
                 let (kind, ordered) = match kind.as_str() {
                     "bullet" => ("list_item", Some(false)),
                     "numbered" => ("list_item", Some(true)),
@@ -676,7 +594,6 @@ impl WordProcessorEffect {
     }
 }
 
-/// Where a view effect moves its invoker.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ViewMove {
     Operation(crate::actions::view_ops::ViewOperation),
@@ -687,14 +604,11 @@ pub(crate) enum ViewMove {
     },
 }
 
-/// The effects as the document publishes them, by id, for a peer that
-/// serves a Writer document the way its framework app does.
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn specs() -> Vec<tilo_actions::ActionSpec> {
     <WordProcessorEffect as tilo_resource::Effect>::specs()
 }
 
-/// The effect an invocation `encoded` names, as its handler receives it.
 #[cfg(test)]
 pub(crate) fn decode(encoded: &tilo_actions::EncodedAction) -> Option<WordProcessorEffect> {
     #[derive(serde::Deserialize)]

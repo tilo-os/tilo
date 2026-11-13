@@ -7,7 +7,6 @@ use ui::prelude::*;
 use super::caption;
 use crate::tools::Tool;
 
-/// One shortcut: the keys as a person presses them and what they do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Shortcut {
     /// The keys, `+`-joined: `Ctrl+Shift+G`, `Shift+1`, `Space+drag`.
@@ -17,7 +16,6 @@ pub struct Shortcut {
 }
 
 pub struct Group {
-    /// The Fluent id of the heading.
     pub heading: &'static str,
     pub shortcuts: &'static [Shortcut],
 }

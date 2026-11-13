@@ -1,7 +1,3 @@
-//! Music's playback across a continuation or media handoff: known tracks
-//! restore locally, real audio plays past its catalogue duration, and a
-//! handoff waits for the decoder while keeping a paused preroll.
-
 use super::*;
 
 #[test]
@@ -10,7 +6,6 @@ use super::*;
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn continuation_and_media_handoff_restore_known_tracks_locally() {
-    // Phase `continuation_round_trip_reopens_a_known_track_paused_at_its_position`.
     {
         let (mut sender, source) = app_with_doc();
         sender.pb.current = Some("tk_g1".into());
@@ -34,7 +29,6 @@ fn continuation_and_media_handoff_restore_known_tracks_locally() {
         );
     }
 
-    // Phase `media_handoff_resolves_synced_track_and_restores_transport`.
     {
         let (mut app, mut doc) = app_with_doc();
         let arguments = [crate::search_type::SearchHit::track_link("tk_g1")];
@@ -73,7 +67,6 @@ fn continuation_and_media_handoff_restore_known_tracks_locally() {
         assert!(app.pending_media_handoff.is_none());
     }
 
-    // Phase `media_handoff_waits_for_its_synced_resource`.
     {
         let mut app = Music::without_profile();
         let arguments = [crate::search_type::SearchHit::track_link(
@@ -96,7 +89,6 @@ fn continuation_and_media_handoff_restore_known_tracks_locally() {
         assert!(app.pending_media_handoff.is_some());
     }
 
-    // Phase `shared_library_sync_never_adopts_remote_playback`.
     {
         let (mut app, mut doc) = app_with_doc();
         app.sync(&doc, &automerge::ROOT);
@@ -134,8 +126,6 @@ fn metadata_duration_does_not_cut_off_real_audio_before_eos() {
     app.pb.current = Some("tk_g1".into());
     app.pb.playing = true;
 
-    // The real two-second PCM source outlasts its one-second catalogue entry.
-    // Unit-test output captures decoded PCM without opening a sound device.
     let scratch = tempfile::tempdir().unwrap();
     let path = scratch.path().join("longer-than-metadata.wav");
     let mut wav = Vec::new();
@@ -160,9 +150,6 @@ fn metadata_duration_does_not_cut_off_real_audio_before_eos() {
     let deadline = tilo_test_env::hang_deadline();
     let mut furthest_position = 0.0_f64;
     while app.pb.playing {
-        // Read the decoder right before the tick that may find its EOS and tear
-        // it down: the playhead a tick leaves is as old as the gap between
-        // ticks, which a loaded machine stretches past the end of the source.
         if let Some(position) = app.audio.position_ms() {
             furthest_position = furthest_position.max(ui::num::f64_of_u64(position));
         }
@@ -198,7 +185,6 @@ fn media_handoff_waits_for_decoder_but_preserves_paused_preroll() {
     app.pb.current = Some("tk_g1".into());
     app.pb.playing = false;
     app.pb.volume = 50;
-    // A real, silent PCM file avoids both network access and audible noise.
     let scratch = tempfile::tempdir().unwrap();
     let path = scratch.path().join("paused.wav");
     let mut wav = Vec::new();

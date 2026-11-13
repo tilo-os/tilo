@@ -1,8 +1,4 @@
 //! Portable prepared-media contracts and owned authenticated ciphertext custody.
-//!
-//! Public metadata is an expectation, never authority to adopt an identity,
-//! mount a volume or import accounts. The backend opens and authenticates the
-//! package itself before privately retaining its descriptor in an opaque handle.
 use serde::{Deserialize, Serialize};
 pub mod filesystem;
 #[cfg(target_os = "linux")]
@@ -37,7 +33,6 @@ impl IdentityKind {
 pub struct PortableHomePlan {
     pub schema: u32,
     pub selection: PortableHomeSelection,
-    /// Separate activation consent; raw Home bytes are retained either way.
     #[serde(default)]
     pub applications: bool,
 }
@@ -47,13 +42,10 @@ pub enum PortableHomeSelection {
     FullHome,
 }
 
-/// Validate public binding syntax on every platform. Successful validation is
-/// not authentication: native review must still verify the encrypted manifest.
-///
-/// # Errors
-/// Returns an error for unsupported schema or custody protocol versions, empty,
-/// overlong or control-containing bindings and account IDs, duplicate IDs, more
-/// than 64 accounts, or a custody protocol supplied without accounts.
+/// Syntax only on every platform: successful validation is not authentication, and native review
+/// still verifies the encrypted manifest. Refuses an unsupported schema or protocol version, empty,
+/// overlong or control-containing bindings, duplicate ids, more than 64 accounts, or a protocol
+/// supplied without accounts.
 pub fn validate_manifest_binding(
     schema: u32,
     setup_binding: &str,
@@ -86,7 +78,6 @@ pub struct DeliveryReceipt {
     pub ciphertext_sha256: String,
 }
 impl DeliveryReceipt {
-    /// Binds bytes only; this receipt never authorizes adoption.
     pub fn expectation(&self) -> serde_json::Value {
         serde_json::json!({"schema": 1, "sealed_bytes": self.sealed_bytes,
             "ciphertext_sha256": self.ciphertext_sha256})
@@ -156,24 +147,22 @@ fn check_cancel(cancel: &AtomicBool) -> io::Result<()> {
     Ok(())
 }
 
-/// Opaque, nonserializable ownership of password-authenticated ciphertext.
-/// Construction and descriptors are private to the backend. This grants no
-/// identity adoption, account import, extraction or installation authority.
+/// Opaque ownership of password-authenticated ciphertext. Construction and descriptors are private
+/// to the backend, and it grants no adoption, import, extraction or install authority.
 pub struct PreparedMediaHandle {
     info: CiphertextInfo,
     #[cfg(target_os = "linux")]
     custody: native::Custody,
 }
 impl PreparedMediaHandle {
-    /// Authenticate the complete bounded prepared-setup stream before admitting
-    /// custody. No password, plaintext or decryption key survives admission.
-    /// Archive content policy remains a separate prerequisite for adoption.
+    /// Authenticates the complete bounded stream before admitting custody: no password, plaintext or
+    /// key survives admission. Archive content policy stays a separate prerequisite for adoption.
     ///
     /// # Errors
-    /// Returns [`PreparedMediaError::Unsupported`] outside Linux. On Linux,
-    /// returns a native error for cancellation, unsafe paths, file I/O failures,
-    /// invalid size or framing, failed password authentication, a different
-    /// package purpose, out-of-bounds footer metadata, or changed ciphertext.
+    ///
+    /// Returns [`PreparedMediaError::Unsupported`] outside Linux, else a native error for
+    /// cancellation, unsafe paths, I/O, invalid size or framing, failed password, another package
+    /// purpose, out-of-bounds footer metadata or changed ciphertext.
     pub fn review(
         package: &std::path::Path,
         password: &[u8],
@@ -195,11 +184,12 @@ impl PreparedMediaHandle {
     pub fn ciphertext_digest(&self) -> [u8; 32] {
         self.info.ciphertext_sha256
     }
-    /// Recheck the held file's length and digest against authenticated review.
+    /// Rechecks the held file's length and digest against the authenticated review.
     ///
     /// # Errors
-    /// Returns [`PreparedMediaError::Unsupported`] outside Linux, or a native
-    /// error for cancellation, file I/O failures or changed ciphertext.
+    ///
+    /// Returns [`PreparedMediaError::Unsupported`] outside Linux, else a native error for
+    /// cancellation, I/O or changed ciphertext.
     pub fn verify_held_ciphertext(
         &mut self,
         cancel: &AtomicBool,
@@ -216,11 +206,7 @@ impl PreparedMediaHandle {
             Err(PreparedMediaError::Unsupported)
         }
     }
-    /// Copy authenticated ciphertext, verifying held custody before and after.
-    ///
-    /// # Errors
-    /// Returns the same errors as [`Self::copy_ciphertext_reporting`], without
-    /// observer errors. Output may be partially written on failure.
+    /// Verifies held custody before and after the copy. Output may be partially written on failure.
     pub fn copy_ciphertext(
         &mut self,
         output: &mut std::fs::File,
@@ -228,13 +214,8 @@ impl PreparedMediaHandle {
     ) -> Result<[u8; 32], PreparedMediaError> {
         self.copy_ciphertext_reporting(output, cancel, &mut |_| Ok(()))
     }
-    /// Copy ciphertext while reporting progress and rechecking held custody.
-    ///
-    /// # Errors
-    /// Returns [`PreparedMediaError::Unsupported`] outside Linux, or a native
-    /// error for cancellation, source/output I/O failures, an output alias of
-    /// the source, changed ciphertext, or an observer error. Output may be
-    /// partially written on failure.
+    /// Copies while reporting progress and rechecking held custody. Output may be partially written
+    /// on failure.
     pub fn copy_ciphertext_reporting(
         &mut self,
         output: &mut std::fs::File,

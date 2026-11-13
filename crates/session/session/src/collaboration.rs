@@ -28,6 +28,16 @@ impl Session {
         // channel's roster on the pass it happened on.
         if let Some(plane) = &self.action_plane {
             plane.follow_calls(sync);
+            // Where everyone else here types, in this device's windows on the same record.
+            let workspaces = self.shared.handle.read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .map(tilo_desktop_model::Workspace::id)
+                    .filter(|id| !id.is_nil())
+                    .map(|id| id.to_string())
+                    .collect()
+            });
+            plane.carets.follow(sync, workspaces);
         }
         // Whose view this device follows: their window here comes forward each time the place they
         // work in moves, and their app where no window here shows it.
@@ -69,6 +79,8 @@ impl Session {
         let own = sync.own();
         let (label, identity) = crate::people::own_face(&own, &self.shared.person);
         let (r, g, b) = crate::people::own_rgb(&identity);
+        let carets = self.action_plane.as_ref().map(|plane| &plane.carets);
+        let said = |app: &str| carets.and_then(|carets| carets.said_in(app));
         let shell = self.shared.handle.read(|tree| {
             shell(
                 tree,
@@ -80,6 +92,7 @@ impl Session {
                     focused,
                     label: label.clone(),
                     colour: format!("#{r:02x}{g:02x}{b:02x}"),
+                    said: &said,
                 },
             )
         });
@@ -113,12 +126,12 @@ impl Session {
                         }
                         None => (lines::waiting(), None),
                     };
-                    // The colour the agent wears wherever it shows: the one its name gives it, never
-                    // the run it works in, and clear of the colour of the person it works for — the
-                    // one rule every surface asks, so its face here is the face its changes wear in
-                    // History, on its card and on its marks.
+                    // The colour the agent wears wherever it shows: the one what it was admitted as
+                    // gives it, never the run it works in, and clear of the colour of the person it
+                    // works for — the one rule and the one key every surface asks (the workspace's
+                    // member list keys it so for its card in a window and its marks).
                     let (r, g, b) = ui::presence::participant_color(
-                        &seated.name,
+                        &seated.agent,
                         true,
                         Some(&self.shared.person),
                     );
@@ -165,7 +178,7 @@ fn app_window(
 }
 
 /// What the shell says about the person and the screen it is of, beside the desk itself.
-struct Focus {
+struct Focus<'a> {
     /// The strip they work in, as the workspace names it.
     place: Option<String>,
     /// The window in front, when a window is.
@@ -174,6 +187,8 @@ struct Focus {
     label: String,
     /// Their colour here, as `#rrggbb`.
     colour: String,
+    /// Where they type in a window of the app named, as their presence says it.
+    said: &'a dyn Fn(&str) -> Option<collab_types::presence::ShellSelection>,
 }
 
 /// Where this person is on this desk, as presence says it to the others: their screen's size and
@@ -185,7 +200,7 @@ fn shell(
     notes: &crate::continuations::Continuations,
     shown: &[(tilo_desktop_model::TabId, ui::kurbo::Rect)],
     area: Option<ui::kurbo::Rect>,
-    focus: &Focus,
+    focus: &Focus<'_>,
 ) -> Option<Box<ShellPresence>> {
     let records = notes.records();
     let layout = crate::sync::layout::placed(
@@ -218,7 +233,12 @@ fn shell(
                 focused: window.focused,
             })
             .collect(),
-        selection: None,
+        // Where they type, in the window they work in.
+        selection: layout
+            .windows
+            .iter()
+            .find(|window| window.focused)
+            .and_then(|window| (focus.said)(&window.app)),
         chat: None,
         reaction: None,
     }))
@@ -321,6 +341,7 @@ mod tests {
                 focused: Some(NOTES),
                 label: "Quinten".to_owned(),
                 colour: "#3b82f6".to_owned(),
+                said: &|_| None,
             },
         )
         .expect("the desk has a screen to place its windows on")

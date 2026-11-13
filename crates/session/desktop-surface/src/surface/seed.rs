@@ -25,7 +25,9 @@ pub fn seed_tree_in(
     // A workspace keeps one identity on every device: the one the person starts from is opened
     // again by the id derived from it, not by an id only this desk knows.
     workspace.slot = WorkspaceSlot::of_workspace(workspace.id());
-    let mut strip = tilo_desktop_model::Strip::new(StripId(minter.mint()), "Main");
+    // A strip no one has named keeps no name: the desk names it by its place, in the language of
+    // whoever reads it.
+    let mut strip = tilo_desktop_model::Strip::new(StripId(minter.mint()), "");
     strip.window_groups = tabs
         .into_iter()
         .map(|tab| tilo_desktop_model::WindowGroup {
@@ -53,4 +55,25 @@ pub fn seed_tree_in(
     }
     tree.workspaces = vec![workspace];
     tree
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::names;
+
+    /// The desk a host starts from keeps no name of its own: what nobody named is the desk's word
+    /// to say, in the language of whoever reads it, so the record holds the same nothing on every
+    /// device.
+    #[test]
+    fn a_fresh_desk_stores_no_name_beside_its_workspace_and_strip() {
+        crate::i18n::ensure();
+        let mut minter = IdMinter::default();
+        let tree = seed_tree(&mut minter, "", Vec::new());
+        let workspace = &tree.workspaces[0];
+        assert_eq!(workspace.name, "");
+        assert_eq!(workspace.strips[0].name, "");
+        assert_eq!(names::workspace(&workspace.name), "Workspace");
+        assert_eq!(names::strip_named(&workspace.strips[0].name, 0), "Strip 1");
+    }
 }

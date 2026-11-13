@@ -1,5 +1,5 @@
-//! Fresh, nonrecursive detached copies of already authenticated held roots.
-//! Neither caller paths nor serialized records can construct this custody.
+//! Fresh, nonrecursive detached copies of already authenticated held roots. Neither
+//! caller paths nor serialized records can construct this custody.
 use super::{
     AsRawFd, Component, File, FromRawFd, Inputs, MetadataExt, OpenOptionsExt, OsStrExt, Path,
     PathBuf, Projection, RawFd, check_input, identity, io, refused, root, validate,
@@ -31,8 +31,7 @@ impl Inputs {
                 return Err(refused("Approved root changed before detached copy"));
             }
             let topology = Topology::capture(source)?;
-            // SAFETY: empty lookup refers exclusively to the held authenticated
-            // descriptor. No AT_RECURSIVE: descendant mounts are not delegated.
+            // SAFETY: empty lookup refers exclusively to the held authenticated descriptor.
             let raw = unsafe {
                 libc::syscall(
                     libc::SYS_open_tree,

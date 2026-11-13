@@ -1,13 +1,8 @@
-//! Live target enumeration: turn `lsblk -J -b` into a list of
-//! [`TargetDrive`]s.
+//! Live target enumeration: turns `lsblk -J -b` into [`TargetDrive`]s.
 //!
-//! Best-effort and side-effect free — if the platform probe is missing or
-//! returns nonsense we degrade to `None`, letting the caller retain its last
-//! trustworthy snapshot. A successful probe with no usable drives is
-//! deliberately `Some(Vec::new())`: that distinction lets Rescan remove an
-//! unplugged drive instead of leaving a stale destructive target selected.
-//! This module is only exercised in the live binary; `--shots` never calls it,
-//! so the screenshot stays deterministic offline.
+//! Degrades to `None` when the platform probe is missing or malformed, so the caller keeps its last
+//! snapshot; a successful probe with no drives is `Some(Vec::new())`, which lets Rescan drop an
+//! unplugged drive.
 
 use std::path::Path;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -24,14 +19,12 @@ use crate::media_model::{
 const PROBE_OUTPUT_LIMIT: usize = 1024 * 1024;
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// Enumerate candidate write targets. Returns `None` when the platform probe
-/// is unavailable or malformed, and `Some(Vec::new())` when it succeeded but
-/// found no usable disks.
+/// `None` when the probe is unavailable or malformed; `Some(Vec::new())` when it found no usable
+/// disks.
 pub fn probe() -> Option<Vec<TargetDrive>> {
     probe_platform()
 }
 
-/// Exactly the columns [`parse_lsblk`] reads.
 #[cfg(target_os = "linux")]
 const LSBLK_COLUMNS: &str = "NAME,MODEL,SERIAL,WWN,SIZE,TYPE,ROTA,TRAN,RM,FSTYPE,LABEL,MOUNTPOINT";
 
@@ -49,10 +42,8 @@ fn probe_platform() -> Option<Vec<TargetDrive>> {
     Some(drives)
 }
 
-/// Reconcile the sandbox-visible sysfs inventory with the host's `UDisks2`
-/// view. Mountpoints in a Flatpak's own namespace cannot prove that a USB disk
-/// is not the host's root disk, so failure to obtain the host-side safety
-/// properties fails closed and hides that candidate.
+/// Mountpoints in a Flatpak's namespace cannot prove that a USB disk is not the host's root disk,
+/// so a missing host-side fact hides the candidate.
 #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
 fn harden_flatpak_inventory(drives: Vec<TargetDrive>) -> Option<Vec<TargetDrive>> {
     let udisks = block_devices::udisks::Udisks::system().ok()?;
@@ -125,9 +116,8 @@ fn host_mount_is_system(bytes: &[u8]) -> bool {
     matches!(mount, b"/" | b"/boot" | b"/boot/efi") || mount.starts_with(b"/var")
 }
 
-/// Return the host's system-disk classification only when every safety fact
-/// was obtained. Any missing property, partition-query error, read-only
-/// target, or cross-namespace size disagreement rejects the candidate.
+/// Any missing property, partition-query error, read-only target or cross-namespace size
+/// disagreement rejects the candidate.
 #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
 fn reconcile_flatpak_host_safety(
     expected_size: u64,
@@ -143,9 +133,8 @@ fn reconcile_flatpak_host_safety(
     (!read_only && host_size == expected_size).then_some(hint_system || system_mount)
 }
 
-/// macOS: enumerate external physical media only. Internal disks are omitted
-/// because raw imaging the running APFS container is never a valid media-
-/// creation operation; the live Tilo installer handles internal installation.
+/// Internal disks are omitted: raw imaging the running APFS container is never media creation, and
+/// the live installer handles internal installation.
 #[cfg(target_os = "macos")]
 fn probe_platform() -> Option<Vec<TargetDrive>> {
     let plist = bounded_command::run(
@@ -176,7 +165,6 @@ fn plist_to_json(plist: &[u8]) -> Option<Value> {
         .flatten()
 }
 
-/// Parse the JSON form of `diskutil list -plist external physical`.
 pub fn parse_diskutil(json: &Value) -> Option<Vec<TargetDrive>> {
     let disks = json.get("AllDisksAndPartitions")?.as_array()?;
     let drives = disks
@@ -223,10 +211,8 @@ pub fn parse_diskutil(json: &Value) -> Option<Vec<TargetDrive>> {
 
 #[cfg(target_os = "windows")]
 fn probe_platform() -> Option<Vec<TargetDrive>> {
-    // Keep disk identity and safety fields in the same snapshot as the volume
-    // details shown on the destructive review screen. A partition without a
-    // mountable volume still appears by number and size instead of making a
-    // populated drive look empty.
+    // A partition without a mountable volume still appears by number and size, so a populated
+    // drive never looks empty.
     let script = r#"$disks = @(Get-Disk | ForEach-Object {
   $disk = $_
   $partitions = @(Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue | ForEach-Object {
@@ -253,7 +239,6 @@ $disks | ConvertTo-Json -Compress -Depth 4"#;
     parse_windows_disks(&json)
 }
 
-/// Parse PowerShell `Get-Disk` JSON. Kept platform-neutral for fixture tests.
 pub fn parse_windows_disks(json: &Value) -> Option<Vec<TargetDrive>> {
     let one;
     let (disks, inventory_is_array) = if let Some(items) = json.as_array() {
@@ -295,10 +280,8 @@ pub fn parse_windows_disks(json: &Value) -> Option<Vec<TargetDrive>> {
             })
         })
         .collect::<Vec<_>>();
-    // `Get-Disk | ConvertTo-Json` emits `[]` when the inventory is
-    // authoritatively empty. A singleton object remains accepted for older
-    // PowerShell producers, but a malformed singleton must still be a probe
-    // failure rather than an empty snapshot.
+    // `Get-Disk | ConvertTo-Json` emits `[]` when the inventory is empty. A singleton object is
+    // still accepted, but a malformed one is a probe failure rather than an empty snapshot.
     (inventory_is_array || !drives.is_empty()).then_some(drives)
 }
 
@@ -321,8 +304,6 @@ fn windows_partitions(disk: &Value) -> Vec<TargetPartition> {
     if let Some(items) = value.as_array() {
         items.iter().for_each(&mut push);
     } else if value.is_object() {
-        // Accept singleton objects too, so fixtures and older PowerShell JSON
-        // producers do not need to preserve a one-element array wrapper.
         push(value);
     }
     partitions
@@ -333,9 +314,7 @@ fn probe_platform() -> Option<Vec<TargetDrive>> {
     None
 }
 
-/// Parse the `lsblk -J` JSON document into target drives. Split out from
-/// [`probe`] so it can be unit-tested against a fixture without a real
-/// `lsblk`.
+/// Split out from [`probe`], so it can be unit-tested against a fixture without a real `lsblk`.
 pub fn parse_lsblk(json: &Value) -> Option<Vec<TargetDrive>> {
     Some(targets_from(&block_devices::lsblk::parse(json)?))
 }
@@ -373,9 +352,7 @@ fn targets_from(devices: &[BlockDevice]) -> Vec<TargetDrive> {
     drives
 }
 
-/// Flatten partitions; flag the drive as the system disk if any child is
-/// mounted at `/`, `/boot` or `/boot/efi` (writing there destroys the
-/// running OS).
+/// Flags the drive as the system disk if any child is mounted at `/`, `/boot` or `/boot/efi`.
 fn collect_parts(children: &[BlockDevice], out: &mut Vec<TargetPartition>, is_system: &mut bool) {
     for c in children {
         if let Some(mp) = c.mountpoint.as_deref()
@@ -395,22 +372,15 @@ fn collect_parts(children: &[BlockDevice], out: &mut Vec<TargetPartition>, is_sy
     }
 }
 
-// ---------------------------------------------------------------------------
-// Source inspection — turn a picked file path into a populated `Source`.
-// ---------------------------------------------------------------------------
-
-/// Inspect a local image file the user picked (via the portal) and build a
-/// [`Source`] from one opened file: its on-disk size, identity and, for an
-/// ISO, the ISO-9660 volume label read straight from the file. Returns `None`
-/// if the path does not exist or cannot be read.
+/// One opened file: its on-disk size, identity and, for an ISO, the volume label read from the
+/// file. `None` if the path does not exist or cannot be read.
 pub fn inspect_source(path: &Path) -> Option<Source> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        // A selected path may be a FIFO (or replaced with one). Reach the
-        // held-file type check without waiting for a writer to open it.
+        // The path may be a FIFO: reach the held-file type check without waiting for a writer.
         options.custom_flags(libc::O_NONBLOCK);
     }
     let mut file = options.open(path).ok()?;
@@ -430,7 +400,6 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
         .unwrap_or("")
         .to_ascii_lowercase();
 
-    // A real volume label beats the file name when we can read one.
     let label = read_iso_label_file(&mut file)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
@@ -440,8 +409,7 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
                 .to_string()
         });
 
-    // Local files have no authenticated release-catalog provenance. Even a
-    // Tilo-looking filename or volume label is therefore write-only.
+    // Local files have no release-catalog provenance, so even a Tilo-looking name is write-only.
     let looks_like_image = matches!(ext.as_str(), "iso" | "img" | "raw" | "bin" | "dd");
     if !looks_like_image {
         return None;
@@ -459,11 +427,8 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
     })
 }
 
-/// Read the ISO-9660 Primary Volume Descriptor's volume identifier. The PVD
-/// lives at byte 0x8000 (logical sector 16); its 5-byte standard identifier is
-/// `CD001` at offset 1, and the 32-byte, space-padded volume id sits at offset
-/// 40 (file offset 0x8028). Best-effort: any short/mismatched file yields
-/// `None` and the caller falls back to the file name.
+/// Reads the ISO-9660 Primary Volume Descriptor's volume id: `CD001` at offset 1 of logical
+/// sector 16, the 32-byte space-padded id at offset 40. A short or mismatched file yields `None`.
 pub fn read_iso_label(path: &Path) -> Option<String> {
     let mut file = std::fs::File::open(path).ok()?;
     read_iso_label_file(&mut file)
@@ -474,7 +439,6 @@ fn read_iso_label_file(f: &mut std::fs::File) -> Option<String> {
     f.seek(SeekFrom::Start(0x8000)).ok()?;
     let mut hdr = [0u8; 72];
     f.read_exact(&mut hdr).ok()?;
-    // Bytes 1..6 must be the "CD001" magic for a valid PVD.
     if &hdr[1..6] != b"CD001" {
         return None;
     }
@@ -590,7 +554,6 @@ mod tests {
     )]
     fn linux_lsblk_inventory_parses_and_may_authoritatively_be_empty() {
         {
-            // A trimmed `lsblk -J -b` document: one USB stick + one NVMe.
             let json: Value = serde_json::from_str(
                 r#"{
                   "blockdevices": [
@@ -613,13 +576,10 @@ mod tests {
             assert!(drives[0].removable);
             assert!(!drives[0].is_system);
             assert_eq!(drives[1].kind, TargetKind::Nvme);
-            // The NVMe is mounted at / and /boot/efi → flagged as the system disk.
             assert!(drives[1].is_system);
         }
 
         {
-            // Real `lsblk` output for exactly the Linux probe's columns, and the
-            // targets this module derived from it before the shared parser existed.
             let input: Value = serde_json::from_str(include_str!(
                 "../../../system/block-devices/tests/fixtures/imager.json"
             ))
@@ -692,15 +652,13 @@ mod tests {
         assert_eq!(drives[0].stable_id.as_deref(), Some("serial-only"));
     }
 
-    /// Build a file whose ISO-9660 PVD carries `label`, so the real reader
-    /// parses a real (if minimal) volume descriptor — no external ISO needed.
+    /// Builds a file whose ISO-9660 PVD carries `label`, so the reader parses a real volume
+    /// descriptor.
     fn iso_with_label(label: &str) -> tempfile::NamedTempFile {
         use std::io::{Seek, SeekFrom, Write};
         let mut f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
-        // Pad up to the PVD sector, then write the real ISO-9660 header layout:
-        // type(1) + "CD001"(5) + version(1) + unused(1) + system id(32) +
-        // volume id(32). The volume id must land at PVD offset 40 (file
-        // offset 0x8028) for `read_iso_label` to find it.
+        // Pad to the PVD sector, then the real header layout: type(1), "CD001"(5), version(1),
+        // unused(1), system id(32), volume id(32) at offset 40 (file offset 0x8028).
         f.seek(SeekFrom::Start(0x8000)).unwrap();
         let mut pvd = vec![0x01u8]; // offset 0: descriptor type
         pvd.extend_from_slice(b"CD001"); // offset 1..6: standard identifier
@@ -716,10 +674,8 @@ mod tests {
         f
     }
 
-    /// Source inspection of ISO labels, foreign and non-image files.
     #[test]
     fn inspect_source_classifies_local_images_without_trusting_names() {
-        // Phase `reads_real_iso9660_volume_label`.
         {
             let iso = iso_with_label("TILO_1_0_X86_64");
             assert_eq!(
@@ -744,8 +700,6 @@ mod tests {
         }
 
         {
-            // No CD001 magic, but a `.iso` extension → still a valid image source,
-            // just not installable, and it falls back to the file stem for a label.
             let f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
             let src = inspect_source(f.path()).expect("inspect");
             assert_eq!(src.kind, SourceKind::IsoFile);
@@ -785,8 +739,8 @@ mod tests {
         // SAFETY: the path is NUL-terminated and remains live through the call.
         assert_eq!(unsafe { libc::mkfifo(native.as_ptr(), 0o600) }, 0);
 
-        // Isolate a regressed blocking open in a test subprocess, so timeout
-        // cleanup can always kill and reap it before removing the private FIFO.
+        // Isolate a blocking open in a subprocess, so a timeout can kill and reap it before the
+        // FIFO is removed.
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -807,14 +761,13 @@ mod tests {
             "FIFO inspection must reject the source"
         );
         let stdout = std::fs::read_to_string(root.path().join("child.stdout")).unwrap();
-        // libtest exits 0 when `--exact` selects nothing; require the child ran.
+        // libtest exits 0 when `--exact` selects nothing, so require that the child ran.
         assert!(
             stdout.contains("test result: ok. 1 passed"),
             "the child ran no test: {stdout}"
         );
     }
 
-    /// diskutil and Get-Disk parsing.
     #[test]
     #[allow(
         clippy::too_many_lines,

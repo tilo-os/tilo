@@ -18,19 +18,37 @@ from typing import Any, Literal, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
+    "AuthMethod",
+    "Connection",
+    "ConnectionKind",
     "ConnectionList",
 ]
 
+AuthMethod = Literal["password", "public_key", "device_identity"]
+
+class Connection(TypedDict):
+    name: str
+    host: str
+    port: int
+    user: str
+    kind: ConnectionKind
+    auth: AuthMethod
+    last_used_ms: int | None
+    group: str
+    favorite: bool
+
+ConnectionKind = Literal["ssh", "vnc", "rdp", "tilo"]
+
 class ConnectionList(Resource):
     """Remote connections — `remote.connection-list`."""
-    __surface__ = "so.tilo.remote@b0d002f1b14979cb"
-    connections: Any
+    __surface__ = "so.tilo.remote@2d98f6509ef35270"
+    connections: list[Connection]
 
     def add_connection(self,
         *,
         name: str,
         host: str,
-        kind: Any,
+        kind: ConnectionKind,
         port: int | None = None,
         user: str | None = None,
     ) -> Run | None:

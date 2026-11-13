@@ -43,12 +43,19 @@ impl Shared {
             .sync
             .as_ref()
             .map_or_else(String::new, |sync| sync.publisher().to_string());
+        #[cfg(target_os = "linux")]
+        let before = tree.clone();
         if self.desktops.follow(engine, &device, &mut tree) {
             // The tree this device drew is the tree it shows: what the record holds is already
             // placed, and swapping it in whole keeps the windows this device shows where its own
             // view left them.
             self.handle.replace_tree(tree.clone());
             self.handle.set_opened_by(self.desktops.opened_by());
+            // A window someone else opened in the workspace is one this device shows through its
+            // own instance of the app, on the same record: the app is asked for it as a window
+            // this device left open is.
+            #[cfg(target_os = "linux")]
+            self.restore.borrow_mut().arrived(&before, &tree);
         }
     }
 
@@ -302,11 +309,17 @@ impl Shared {
         if let Some(engine) = &self.engine {
             self.session_doors.keep_awaiting(&self.handle, engine);
         }
+        // What a place can show, as a find's answer holds it: the borrow ends here, since an
+        // answer is heard on a later pass, off the pass that asked.
+        let shows: std::rc::Rc<dyn Fn(&str) -> bool> = {
+            let catalog = std::rc::Rc::clone(&catalog);
+            std::rc::Rc::new(move |resource| catalog.borrow().get(resource).is_some())
+        };
         self.session_doors.answer(
             &self.doors,
             &self.services,
             &self.search,
-            &|resource| catalog.borrow().get(resource).is_some(),
+            std::rc::Rc::clone(&shows),
             look,
         );
         // A service's `open` changes nothing of its record: opening is the session's arranging
@@ -315,6 +328,9 @@ impl Shared {
         // (`docs/designs/app-language/one-app-model.md` §3; shell.md §8, "The canvas composes
         // views; it opens nothing").
         self.open_asked_by_services();
+        // The finds the door asked on an earlier pass whose sources answered since: answered here,
+        // where the catalogue a place reads is, and never by the pass that asked them.
+        self.search.poll_finds();
         if let Some(power) = &self.power {
             for effect in power.take_asked() {
                 power.presentation().close();

@@ -1,8 +1,5 @@
-// One test binary instead of one per file: each tests/*.rs linked this whole
-// crate separately. #[path] keeps the files where they are, and nextest runs
-// each test in its own process, so the isolation separate binaries gave them
-// stays. The content plane's filesystem half is what every one of them drives,
-// so the one target carries the feature they were gated on.
+// One test binary: each tests/*.rs file linked the whole crate before. nextest
+// runs each test in its own process, so #[path] keeps the files' isolation.
 
 #[path = "cloud_mount.rs"]
 mod cloud_mount;

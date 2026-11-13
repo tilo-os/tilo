@@ -148,9 +148,9 @@ fn provenance_and_author_pill_presentation() {
             // Quiet chip (the second filter chip, not the active first one):
             // its top edge — the straight run of the capsule, where the 1 px
             // stroke covers the whole pixel row — against its own fill just
-            // under it, above the label's line box. `chip_rects` holds the
+            // under it, above the label's line box. The accessor answers the
             // pointer target, so recover the painted capsule from the strip.
-            let (_, hit) = t.chip_rects.get(1).copied().expect("a second filter chip");
+            let hit = t.chip_rect(ChipKind::Edits).expect("a second filter chip");
             let strip = t.filter_strip_rect();
             let chip_h = (strip.height() - 8.0).max(20.0);
             let chip_top = strip.center().y - chip_h / 2.0;
@@ -831,51 +831,75 @@ fn filters_narrow_by_entry_kind_and_author_and_clear() {
         assert_eq!(t.visible_len(), 2);
     }
 
-    fn chip_strip_click_toggles_active_chip() {
-        // No real paint pass, so seed chip_rects directly: five 60x24 chips
-        // packed horizontally, matching what draw_filter_strip would produce.
+    fn every_strip_chip_takes_a_press_before_anything_paints() {
+        // Nothing here draws: the layout places each chip, and a press on one
+        // filters the pane. A chip whose place only a paint worked out is
+        // nowhere to press.
         let entries = vec![
             entry(EntryKind::Text, "Alice", 1, 1),
             entry(EntryKind::Comment, "Bob", 2, 2),
             entry(EntryKind::Access, "Carol", 3, 3),
         ];
         let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
+        lay_out(&mut t, &Theme::dark());
 
-        // Synthesize chip rects (paint normally populates these).
-        let mut x = PADDING;
-        let cy = PADDING + FILTER_STRIP_HEIGHT / 2.0;
         for chip in ChipKind::ALL {
-            let rect = Rect::new(x, cy - 12.0, x + 60.0, cy + 12.0);
-            t.chip_rects.push((chip, rect));
-            x += 66.0;
+            let hit = t
+                .chip_rect(chip)
+                .unwrap_or_else(|| panic!("the layout placed the {chip:?} chip"));
+            click(&mut t, hit.center());
+            assert_eq!(
+                t.active_chip(),
+                chip,
+                "a press on the {chip:?} chip activates it",
+            );
+            let kinds = chip.entry_kinds();
+            for row in 0..t.visible_len() {
+                let shown = t.visible_entry(row).expect("a visible row").entry_kind;
+                assert!(
+                    kinds.is_empty() || kinds.contains(&shown),
+                    "the {chip:?} chip shows only the changes of its kind",
+                );
+            }
+            // The host lays out again whenever the pane says what it places
+            // may have moved; the chosen chip and the rows changed.
+            lay_out(&mut t, &Theme::dark());
         }
 
-        // ChipKind::ALL order: All, Edits, Comments, ... — click "Comments"
-        // (index 2, x range 132..192).
-        dispatch(&mut t, &cursor_moved(162.0, cy));
-        dispatch(&mut t, &mouse_press());
-        assert_eq!(
-            t.active_chip(),
-            ChipKind::Comments,
-            "clicking the Comments chip should activate it",
+        // A press between two chips filters nothing.
+        let (a, b) = (ChipKind::ALL[0], ChipKind::ALL[1]);
+        let (a, b) = (
+            t.chip_rect(a).expect("chip a"),
+            t.chip_rect(b).expect("chip b"),
         );
-        assert_eq!(t.visible_len(), 1, "narrowed to the one Comment row");
+        if b.x0 - a.x1 > 1.0 {
+            let was = t.active_chip();
+            click(&mut t, Point::new(f64::midpoint(a.x1, b.x0), a.center().y));
+            assert_eq!(t.active_chip(), was, "a press between chips does nothing");
+        }
+    }
 
-        // "All" chip — index 0, x range 0..60.
-        dispatch(&mut t, &cursor_moved(30.0, cy));
-        dispatch(&mut t, &mouse_press());
-        assert_eq!(t.active_chip(), ChipKind::All);
-        assert_eq!(t.visible_len(), 3, "All restores every row");
+    fn people_chips_take_a_press_before_anything_paints() {
+        let entries = vec![
+            entry(EntryKind::Text, "Alice", 1, 1),
+            entry(EntryKind::Comment, "Bob", 2, 2),
+        ];
+        let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
+        t.set_filters_people(true);
+        lay_out(&mut t, &Theme::dark());
 
-        // Click inside the strip but between chips (gap at x=62..66) —
-        // active_chip stays put.
-        dispatch(&mut t, &cursor_moved(63.0, cy));
-        dispatch(&mut t, &mouse_press());
-        assert_eq!(
-            t.active_chip(),
-            ChipKind::All,
-            "click in the gap between chips is a no-op",
-        );
+        for who in [Some("Bob"), Some("Alice"), None] {
+            let hit = t
+                .people_chip_rect(who)
+                .unwrap_or_else(|| panic!("the layout placed the {who:?} chip"));
+            click(&mut t, hit.center());
+            assert_eq!(
+                t.filter().authors.first().map(String::as_str),
+                who,
+                "a press on the {who:?} chip filters the pane to them",
+            );
+            lay_out(&mut t, &Theme::dark());
+        }
     }
 
     fn clear_filters_resets_the_widget_and_tells_the_host() {
@@ -964,7 +988,8 @@ fn filters_narrow_by_entry_kind_and_author_and_clear() {
 
     filter_by_entry_kind_hides_other_rows();
     chip_strip_active_state_round_trips();
-    chip_strip_click_toggles_active_chip();
+    every_strip_chip_takes_a_press_before_anything_paints();
+    people_chips_take_a_press_before_anything_paints();
     clear_filters_resets_the_widget_and_tells_the_host();
     filter_by_author_typeahead_narrows_list();
     typing_narrows_by_author_and_escape_or_backspace_widens_again();

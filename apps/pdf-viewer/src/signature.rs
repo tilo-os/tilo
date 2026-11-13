@@ -1,11 +1,9 @@
-//! The signature a person signs with: the name they sign as and the strokes
-//! they drew, composed once and reused on every document: a record of the
-//! viewer's beside the document, kept in the workspace it is open in and
-//! never part of the document.
+//! The signature a person signs with: the name they sign as and the strokes they drew,
+//! composed once and reused on every document. It is the person's own record, never part
+//! of the document.
 
 use ui::tilo_resource::{self, Model, ModelError, Refusal, resource};
 
-/// The person's signature: whom they sign as and what they drew.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 #[model(check = SignatureProfile::valid)]
 pub struct SignatureProfile {
@@ -17,9 +15,8 @@ pub struct SignatureProfile {
     pub strokes: Vec<Stroke>,
 }
 
-/// One polyline of a drawn signature: its points as `x, y` pairs in one flat
-/// list (`x₀, y₀, x₁, y₁, …`), so a stroke of hundreds of points is one list
-/// of numbers rather than one object per point.
+/// One polyline of a drawn signature: its points as `x, y` pairs in one flat list, so
+/// a stroke of hundreds of points is one list rather than one object per point.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Stroke {
     pub xy: Vec<f64>,
@@ -47,8 +44,7 @@ impl Stroke {
     }
 }
 
-/// Bring a signature of version 1 up to this one: its strokes were one JSON
-/// string of point lists, and are strokes of flat coordinates now.
+/// Bring a signature of an older version up to this one.
 fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
     use ui::automerge::ROOT;
     if from != 1 {
@@ -70,13 +66,11 @@ fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
     tilo_resource::write_key(doc, &ROOT, "strokes", &strokes)
 }
 
-/// The strokes of `profile` as point lists, as the pad draws them.
 #[must_use]
 pub fn point_lists(profile: &SignatureProfile) -> Vec<Vec<(f64, f64)>> {
     profile.strokes.iter().map(Stroke::points).collect()
 }
 
-/// The most points one drawn signature keeps.
 const MAX_POINTS: usize = 20_000;
 
 impl SignatureProfile {
@@ -173,8 +167,6 @@ mod tests {
         );
     }
 
-    /// A signature from before strokes were stored values: one JSON string
-    /// of point lists. Opened now, it draws the same strokes.
     #[test]
     fn a_signature_kept_as_a_json_string_migrates_to_its_strokes() {
         use ui::tilo_resource::evolution;

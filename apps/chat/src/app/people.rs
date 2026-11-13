@@ -160,9 +160,9 @@ impl ChatApp {
     }
 
     /// The presence hue `id` wears: an agent's is the one its own record gives it (its keeper's
-    /// choice, else its identity's), a person's the one the workspace announced for them, else
-    /// the one their identity derives — so a face, a chip and a byline are one colour, here as
-    /// in every app of the workspace.
+    /// choice, else the one rule's), a person's the one the workspace announced for them, else
+    /// the one rule every surface draws a participant by ([`ui::presence::participant_hue`]) —
+    /// so a face, a chip and a byline are one colour, here as in every app of the workspace.
     pub(crate) fn participant_hue(&self, id: &str) -> ui::tokens::PresenceHue {
         id.strip_prefix("agent:")
             .and_then(|agent| self.workspace_agent_colours.get(agent))
@@ -174,7 +174,7 @@ impl ChatApp {
                         ui::tokens::PresenceHue::nearest_to_srgb(*red, *green, *blue)
                     })
             })
-            .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(id))
+            .unwrap_or_else(|| ui::presence::participant_hue(id, crate::views::is_agent(id), None))
     }
 
     /// The participant's own colour, in the shared presence vocabulary: the workspace's assignment

@@ -564,6 +564,7 @@ impl Checker<'_> {
                 ty,
                 default: None,
                 place: false,
+                label: None,
                 entry: false,
             });
             args.push(arg);

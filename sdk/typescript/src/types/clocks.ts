@@ -20,14 +20,44 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.clocks@d3069d6f03debbee";
+export const SURFACE = "so.tilo.clocks@de9ae8048fcfe612";
+
+export interface Alarm {
+  label: string;
+  hour: number;
+  minute: number;
+  repeat: number;
+  enabled: boolean;
+  enabled_at_ms: number;
+}
+
+export interface Stopwatch {
+  accumulated_ms: number;
+  started_at_ms: number | null;
+  laps_ms: number[];
+}
+
+export interface Timer {
+  label: string;
+  duration_ms: number;
+  ends_at_ms: number | null;
+  paused_remaining_ms: number | null;
+}
+
+/** One of "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun". */
+export type WeekdayKey = "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun";
+
+export interface WorldClock {
+  city: string;
+  timezone: string;
+}
 
 /** Clocks — `clocks.collection`. */
 export interface Collection extends tilo.Resource {
-  world_clocks: unknown;
-  alarms: unknown;
-  timers: unknown;
-  readonly stopwatch: unknown;
+  world_clocks: WorldClock[];
+  alarms: Alarm[];
+  timers: Timer[];
+  readonly stopwatch: Stopwatch;
   addWorldClock(args: {
     city: string;
     timezone: string;
@@ -39,7 +69,7 @@ export interface Collection extends tilo.Resource {
     label: string;
     hour: number;
     minute: number;
-    weekdays: string[];
+    weekdays: WeekdayKey[];
   }): Promise<tilo.Run | void>;
   setAlarmEnabled(args: {
     alarm: string;
@@ -50,7 +80,7 @@ export interface Collection extends tilo.Resource {
     label: string;
     hour: number;
     minute: number;
-    weekdays: string[];
+    weekdays: WeekdayKey[];
   }): Promise<tilo.Run | void>;
   removeAlarm(args: {
     alarm: string;
@@ -84,7 +114,7 @@ export function collection(ws: tilo.Workspace, path: string): Collection {
 
 /** Clocks on each device — `clocks.on-devices`. */
 export interface OnDevices extends tilo.Resource {
-  devices: unknown;
+  devices: Record<string, unknown>;
   keep(args: {
     device: string;
     kept: unknown;

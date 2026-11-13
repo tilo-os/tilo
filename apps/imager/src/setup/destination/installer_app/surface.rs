@@ -1,12 +1,5 @@
-//! The installer's published effects — what each one is offered as right
-//! now, the items some are bound to, the tree its console enumerates — and
-//! [`InstallerApp::apply`], the one function every door ends in.
-//!
-//! Availability mirrors the wizard: an effect is available exactly when its
-//! control is live on screen, and otherwise carries the reason a person
-//! would be told. Nothing is hidden to make the surface look smaller; a
-//! caller that cannot see the screen learns the whole wizard from one
-//! enumeration and why each part is or is not reachable now.
+//! The installer's published effects: what each one is offered on, and why one
+//! cannot run now.
 
 use serde_json::{Map, Value};
 use ui::framework::{EffectStatus, LiveRow};
@@ -34,12 +27,8 @@ use imager_backend::destination::layouts;
 /// into a password manager. Rebooting or powering off clears it sooner.
 const RECOVERY_KEY_ON_CLIPBOARD_FOR: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// A reason an effect cannot run now: a stable code and the sentence the
-/// wizard would show.
 type Blocked = Option<(&'static str, String)>;
 
-/// What one of the installer's own effects is offered as now: why it cannot
-/// run, and the label it carries when that is not its declared one.
 struct Gate {
     id: &'static str,
     blocked: Blocked,
@@ -60,7 +49,6 @@ impl Gate {
         self
     }
 
-    /// `spec` as this gate says it is offered now.
     fn overlay(&self, mut spec: ActionSpec) -> ActionSpec {
         if let Some(label) = &self.label {
             spec.type_mut().label.clone_from(label);
@@ -72,8 +60,6 @@ impl Gate {
     }
 }
 
-/// One item an effect is bound to: a disk, a free region, the capacity
-/// choice, the review, a visible network.
 struct Item {
     id: String,
     kind: &'static str,
@@ -89,7 +75,6 @@ fn gated(spec: ActionSpec, blocked: Blocked) -> ActionSpec {
     }
 }
 
-/// Longest prefix of `text` within `limit` bytes, on a character boundary.
 fn bounded(text: &str, limit: usize) -> String {
     let mut end = text.len().min(limit);
     while !text.is_char_boundary(end) {
@@ -103,7 +88,6 @@ pub(super) fn step_name(step: Step) -> String {
     t(STEP_KEYS[index])
 }
 
-/// Keep guidance within publication limits without silently dropping it.
 fn with_guidance(mut resource: ResourceSpec, id: &str, guidance: &str) -> ResourceSpec {
     for (index, sentence) in guidance.split(". ").enumerate() {
         resource = resource.with_child(
@@ -121,12 +105,9 @@ fn with_guidance(mut resource: ResourceSpec, id: &str, guidance: &str) -> Resour
     resource
 }
 
-/// Everything an effect handler can report back to its caller.
 pub(super) type Applied = Result<ActionOutput, String>;
 
 impl InstallerApp {
-    /// `Some` when the wizard is not on `step`: the control for this effect
-    /// is not on screen, so the effect is not available either.
     fn off_step(&self, step: Step) -> Blocked {
         (self.step != step).then(|| {
             (
@@ -154,8 +135,6 @@ impl InstallerApp {
         )
     }
 
-    /// The install state as the headless console reports it: a machine word a
-    /// script reads, not the sentence the badge shows.
     pub(super) fn install_state_name(&self) -> &'static str {
         match self.install_state {
             InstallState::Idle => "idle",
@@ -165,7 +144,6 @@ impl InstallerApp {
         }
     }
 
-    /// What the published badge calls the install state.
     pub(super) fn install_state_key(&self) -> &'static str {
         match self.install_state {
             InstallState::Idle => "installer-state-idle",
@@ -175,7 +153,6 @@ impl InstallerApp {
         }
     }
 
-    /// What each of the installer's own (unbound) effects is offered as now.
     fn gates(&self) -> Vec<Gate> {
         let account = self.off_step(Step::Account);
         let options = self.off_step(Step::Options);
@@ -212,8 +189,6 @@ impl InstallerApp {
         gates
     }
 
-    /// Why `effect` cannot run now, as its gate or the item it is bound to
-    /// says.
     pub(super) fn blocked(&self, effect: &DestinationEffect) -> Blocked {
         let id = effect.id();
         if let Some(gate) = self.gates().into_iter().find(|gate| gate.id == id) {
@@ -241,7 +216,6 @@ impl InstallerApp {
         }
     }
 
-    /// What the framework's door offers each effect as now.
     pub(super) fn effect_statuses(&self) -> Vec<EffectStatus> {
         self.gates()
             .into_iter()
@@ -261,7 +235,6 @@ impl InstallerApp {
             .collect()
     }
 
-    /// The items effects are bound to, as live rows beneath the installer.
     pub(super) fn published_rows(&self) -> Vec<LiveRow> {
         self.items()
             .into_iter()
@@ -276,10 +249,6 @@ impl InstallerApp {
             .collect()
     }
 
-    /// The tree the console enumerates and admits against: the installer
-    /// with its effects as offered now, and the items some are bound to.
-    /// Recomputed on every call; an address that stopped naming anything is
-    /// refused instead of reaching a stale handler.
     pub fn published(&self) -> Vec<ResourceSpec> {
         let gates = self.gates();
         let mut root = ResourceSpec::new(
@@ -364,8 +333,6 @@ impl InstallerApp {
         }
     }
 
-    /// Staged installs only: the way back to the retained operating system,
-    /// offered on every screen except while installing or once done.
     fn return_to_host_gate(&self) -> Gate {
         let Some(host) = self.internal_host() else {
             return Gate::new(
@@ -495,8 +462,6 @@ impl InstallerApp {
         })
     }
 
-    /// The disks, the free regions, the capacity choice, the visible
-    /// networks and the review, each with the effect bound to it.
     fn items(&self) -> Vec<Item> {
         let mut items = Vec::new();
         for network in self.network.snapshot.networks.iter().take(5) {
@@ -607,8 +572,6 @@ impl InstallerApp {
         items
     }
 
-    /// The capacity choice of the selected free extent, bound to the disk
-    /// and extent it divides: `None` where there is none to make.
     pub(super) fn capacity_effect(&self) -> Option<DestinationEffect> {
         let extent = self.selected_full_guided_plan()?;
         let disk = self
@@ -620,7 +583,6 @@ impl InstallerApp {
         })
     }
 
-    /// The destructive `begin`, bound to the target and plan reviewed now.
     pub(super) fn begin_effect(&self) -> DestinationEffect {
         DestinationEffect::Begin {
             target: self.destructive_confirmation_target().unwrap_or_default(),
@@ -628,8 +590,6 @@ impl InstallerApp {
         }
     }
 
-    /// What stands between the Review step and a launch, in the order the
-    /// wizard would say it.
     fn begin_blocked(&self) -> Blocked {
         self.off_step(Step::Review)
             .or_else(|| {
@@ -719,10 +679,6 @@ impl InstallerApp {
         Ok(ActionOutput::default())
     }
 
-    /// Run a wizard control's effect through the same rules the console's
-    /// door applies: refused with the published reason while unavailable,
-    /// and the destructive one only when `phrase` names what it formats. A
-    /// refusal shows the sentence an external caller receives.
     pub(super) fn invoke_control(&mut self, effect: DestinationEffect, phrase: Option<&str>) {
         if let Some((_, reason)) = self.blocked(&effect) {
             self.set_status(&reason);
@@ -737,16 +693,9 @@ impl InstallerApp {
             ));
             return;
         }
-        // Handlers set the status or notice the wizard shows; the returned
-        // error only matters to a caller that cannot see it.
         let _ = self.apply(effect);
     }
 
-    /// Invoke one published effect exactly as the console door does:
-    /// resolve it in the current tree, refuse it when unavailable, enforce
-    /// its confirmation contract, bind its arguments strictly, then apply it.
-    /// The unattended driver and host-side tests use this instead of a second
-    /// path.
     pub fn invoke_published(
         &mut self,
         id: &str,
@@ -761,10 +710,6 @@ impl InstallerApp {
         self.apply(effect)
     }
 
-    /// Apply one effect. Every door ends here, after availability,
-    /// confirmation and binding; the handlers still re-check the wizard's own
-    /// preconditions, so a caller that reached this function some other way
-    /// cannot skip a step.
     #[allow(
         clippy::too_many_lines,
         reason = "one match arm per effect keeps each handler next to its siblings"
@@ -860,8 +805,6 @@ impl InstallerApp {
                     other => return Err(format!("Unknown install method {other:?}")),
                 };
                 if method == InstallMethod::Erase && self.selected_disk_hosts_installer() {
-                    // The backend refuses it too: this disk holds the running
-                    // installer and the operating system it was staged from.
                     return Err(
                         "This disk holds the running installer and your existing system; Tilo can only be installed alongside it"
                             .into(),
@@ -1182,8 +1125,6 @@ impl InstallerApp {
                             .into(),
                     );
                 }
-                // The door verified the typed phrase. Reflect it into the
-                // Review field so the screen and the launch agree.
                 self.set_erase_confirmation(target);
                 self.begin_install();
                 if self.install_launched {

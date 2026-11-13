@@ -859,10 +859,8 @@ impl Tiles {
     /// The app `tab` shows once it can be built here, or the line the
     /// window shows instead.
     fn ready_app<'t>(&self, tab: &'t Tab) -> Result<&'t str, Unready> {
-        if let TileContent::PeerWindow { label, .. } | TileContent::HostedWindow { label, .. } =
-            &tab.tile
-        {
-            // Another device's window: drawn there, not in a browser.
+        if let TileContent::HostedWindow { label, .. } = &tab.tile {
+            // A window that runs on another device: drawn there, not in a browser.
             let label = if label.is_empty() { &tab.title } else { label };
             return Err(Unready::Notice(format!(
                 "{label} is not shown in a browser"
@@ -1826,10 +1824,12 @@ pub(crate) fn mount(
             .into_iter()
             .map(|(app, title)| app_tab(minter.mint(), app, title))
             .collect();
+        // A workspace nobody named is kept with no name: the desk names it in the language of
+        // whoever reads it.
         let name = workspace_name
             .map(str::trim)
             .filter(|name| !name.is_empty())
-            .unwrap_or("Workspace");
+            .unwrap_or_default();
         // In a workspace the desk is that workspace's, by its id: the one its records are kept by.
         match tilo_desktop_model::WorkspaceId::parse(&inputs.workspace) {
             Some(identity) => tilo_desktop_surface::seed_tree_in(&mut minter, identity, name, tabs),

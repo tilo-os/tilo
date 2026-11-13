@@ -1,10 +1,8 @@
-//! The open project as search entries: every marker, track, clip, effect
-//! and bin source is a findable place, and choosing one reveals it.
+//! The open project as search entries: every marker, track, clip, effect and bin source is a
+//! findable place, and choosing one reveals it.
 //!
-//! Timeline data is a durable namespace, not a viewport: a marker near the
-//! end of a large collaborative project must be as discoverable as the first
-//! one, so nothing here is truncated. Searchable text is not display-trimmed
-//! either: a word late in a caption or a marker note remains findable.
+//! Timeline data is a durable namespace rather than a viewport, so nothing here is truncated
+//! and searchable text is not display-trimmed.
 
 use std::collections::HashMap;
 
@@ -42,9 +40,8 @@ pub fn project_entries(project: &Project) -> Vec<SearchEntry> {
         entries.push(track_entry(track));
     }
     for clip in &project.clips {
-        // A dangling placement cannot be revealed coherently, so never
-        // publish an action for it. The action tree makes the same refusal
-        // after a concurrent delete.
+        // A dangling placement cannot be revealed coherently, so publish no action for it. The
+        // action tree makes the same refusal after a concurrent delete.
         let (Some(item), Some(track)) = (media.get(&clip.media), tracks.get(&clip.track)) else {
             continue;
         };
@@ -397,9 +394,8 @@ mod tests {
                 );
             }
 
-            // The provider may outlive the edit while a palette is open. The
-            // current project is the authority and refuses the stale anchor
-            // rather than revealing something else.
+            // The provider may outlive the edit while a palette is open: the current project is
+            // the authority and refuses the stale anchor.
             project.clips.clear();
             project.media.clear();
             assert!(

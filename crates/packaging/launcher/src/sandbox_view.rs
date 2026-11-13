@@ -1,46 +1,6 @@
 //! The system read profile as one pre-built, read-only view.
 //!
-//! Every sandbox mounts the same fixed host paths read-only
-//! ([`crate::profile`]). Bound one by one that is ~40 bubblewrap operations
-//! per launch, each a mount, a remount and a reread of the mount table: about
-//! half of bubblewrap's setup time. The paths are the same for every app and
-//! every person, so they are assembled once, as a tree of read-only bind
-//! mounts laid out exactly as the app sees them, and a launch binds the tree's
-//! top-level directories (`/usr`, `/etc`, `/lib`, `/lib64`) instead.
-//!
-//! Nothing is copied: every leaf of the view is a bind of the same live host
-//! path the per-path bind would have mounted, so a file's bytes, and the
-//! composefs verification of the image's `/usr`, are exactly the host's. A
-//! composefs image of its own would need copies of those bytes in a verity
-//! object store (`/usr/lib` alone is gigabytes), or a further overlay over the
-//! merged `/usr`, which is already at overlayfs's stacking limit.
-//!
-//! **Who builds it.** `tilo-launcher sandbox-view build`, run as root by
-//! `tilo-sandbox-view.service` at boot, after an extension merge replaces
-//! `/usr`, and whenever a bound path under `/etc` is replaced
-//! (`tilo-sandbox-view.path`). It mounts under [`DEFAULT_ROOT`] in the host
-//! namespace, which is why it needs root; a launch needs nothing new.
-//!
-//! **Layout.** `<root>/current` names the current generation `g<id>`. A
-//! generation holds one view per network shape, `plain/` and `net/`, because
-//! the profile varies only there (the resolver files of
-//! [`crate::profile::NETWORK_READ_PATHS`]), and a `manifest` of the identity
-//! (device, inode) of every bound object.
-//!
-//! **What a launch sees.** The same paths, types, modes and contents, with
-//! one difference: the directories bubblewrap creates as parents of the
-//! binds (`/usr`, `/usr/share`, `/etc`, ...) are, per path, owned by the app
-//! in bubblewrap's writable root tmpfs; in the view they are root-owned,
-//! `0755` and read-only. The app reads and traverses them as before and can
-//! no longer create entries in them. `tests/system_view.rs` lists the visible
-//! filesystem both ways and allows exactly that.
-//!
-//! **Never stale, never partial.** A generation is complete and read-only
-//! before `current` is renamed onto it. A launch holds a shared lock on the
-//! generation it uses until its sandbox exits; a superseded generation is
-//! unmounted once no launch holds it ([`retire`]). A launch whose host paths
-//! no longer have the identities the manifest recorded, or whose mounts the
-//! view cannot carry unchanged, binds per path as before ([`attach`]).
+//! Every sandbox mounts the same fixed host paths read-only ([`crate::profile`]).
 
 use std::ffi::{CString, OsStr};
 use std::fmt::Write as _;
@@ -64,16 +24,14 @@ const MANIFEST: &str = "manifest";
 /// First manifest line, before the profile digest.
 const FORMAT: &str = "tilo-sandbox-view 1";
 
-/// Profile entries the kernel keeps live: `/sys` gains and loses submounts
-/// at runtime, so it is bound per launch, as before.
+/// Profile entries the kernel keeps live: `/sys` gains and loses submounts at runtime, so it is bound
+/// per launch, as before.
 const LIVE_READ_PATHS: &[&str] = &["/sys"];
 
-/// Files every launch mounts its own content over (the synthetic account
-/// database). The view carries only an empty mount point there.
+/// Files every launch mounts its own content over (the synthetic account database).
 const LAUNCH_FILES: &[&str] = &["/etc/passwd"];
 
-/// Which view a launch uses: the profile differs only by whether the launch
-/// shares the host network.
+/// Which view a launch uses: the profile differs only by whether the launch shares the host network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
     Plain,
@@ -91,9 +49,8 @@ impl Variant {
         }
     }
 
-    /// Paths where a launch of this shape mounts a file of its own, fresh
-    /// for each launch: the account database, and the resolver files a
-    /// network change rewrites.
+    /// Paths where a launch of this shape mounts a file of its own, fresh for each launch: the account
+    /// database, and the resolver files a network change rewrites.
     pub fn launch_files(self) -> impl Iterator<Item = &'static str> {
         let network: &[&str] = match self {
             Self::Plain => &[],
@@ -111,8 +68,7 @@ pub fn view_read_paths() -> impl Iterator<Item = &'static str> + Clone {
         .filter(|path| !LIVE_READ_PATHS.contains(path))
 }
 
-/// Digest of everything that decides a view's shape. A launcher built with a
-/// different profile than the builder's never uses the builder's view.
+/// Digest of everything that decides a view's shape.
 fn profile_digest() -> String {
     let mut hasher = blake3::Hasher::new();
     for list in [
@@ -132,8 +88,8 @@ fn profile_digest() -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-/// A bound object's device and inode, or `None` when the path does not
-/// exist (and `--ro-bind-try` would have skipped it).
+/// A bound object's device and inode, or `None` when the path does not exist (and `--ro-bind-try` would
+/// have skipped it).
 type Identity = Option<(u64, u64)>;
 
 /// What `stat` reports for `path`, following symlinks as a bind does.
@@ -186,8 +142,8 @@ fn owned(fd: libc::c_long) -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
-/// A detached recursive copy of the mount tree at `source` (symlinks
-/// followed, as a bind follows them), or `None` when `source` is absent.
+/// A detached recursive copy of the mount tree at `source` (symlinks followed, as a bind follows them),
+/// or `None` when `source` is absent.
 fn clone_tree(source: &str) -> io::Result<Option<OwnedFd>> {
     let path = cpath(Path::new(source))?;
     // SAFETY: a live C string; open_tree returns a new descriptor or -1.
@@ -206,9 +162,8 @@ fn clone_tree(source: &str) -> io::Result<Option<OwnedFd>> {
     }
 }
 
-/// Make every mount at and below `fd` (or `dir_fd`/`path`) read-only,
-/// `nosuid`, `nodev` and private: the flags a `--ro-bind` gives, with no
-/// propagation back to the host.
+/// Make every mount at and below `fd` (or `dir_fd`/`path`) read-only, `nosuid`, `nodev` and private:
+/// the flags a `--ro-bind` gives, with no propagation back to the host.
 fn seal(dir_fd: RawFd, path: &CString, flags: libc::c_uint) -> io::Result<()> {
     let attr = MountAttr {
         attr_set: MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV,
@@ -216,8 +171,8 @@ fn seal(dir_fd: RawFd, path: &CString, flags: libc::c_uint) -> io::Result<()> {
         propagation: libc::MS_PRIVATE,
         userns_fd: 0,
     };
-    // SAFETY: valid descriptor and C string; `attr` outlives the call and its
-    // size is passed alongside.
+    // SAFETY: valid descriptor and C string; `attr` outlives the call and its size is passed
+    // alongside.
     let result = unsafe {
         libc::syscall(
             libc::SYS_mount_setattr,
@@ -293,10 +248,8 @@ fn components(path: &str) -> io::Result<Vec<&OsStr>> {
         .collect()
 }
 
-/// Create the mount point for `path` under the view root `root`, parents
-/// first (`0755`), the way bubblewrap creates a bind's destination, and
-/// return a handle on it. Never follows a symlink: every component is a
-/// directory this build made or a directory of a bind already in place.
+/// Create the mount point for `path` under the view root `root`, parents first (`0755`), the way
+/// bubblewrap creates a bind's destination, and return a handle on it.
 fn mount_point(root: &OwnedFd, path: &str, directory: bool) -> io::Result<OwnedFd> {
     let parts = components(path)?;
     let (name, parents) = parts
@@ -356,13 +309,10 @@ fn make_dir(dir: &OwnedFd, name: &OsStr) -> io::Result<()> {
     // SAFETY: live dirfd and C string.
     check(unsafe { libc::mkdirat(dir.as_raw_fd(), cname.as_ptr(), 0o755) })?;
     // The mode a parent gets is not the builder's umask's to decide.
-    // SAFETY: as above; the directory was just created by us.
     check(unsafe { libc::fchmodat(dir.as_raw_fd(), cname.as_ptr(), 0o755, 0) })
 }
 
-/// Bind every present view entry, then the launch-file mount points, into the
-/// empty view root `root`. Returns each entry's identity, taken from the very
-/// object bound.
+/// Bind every present view entry, then the launch-file mount points, into the empty view root `root`.
 fn assemble(root: &OwnedFd, variant: Variant) -> io::Result<Vec<(&'static str, Identity)>> {
     let mut identities = Vec::new();
     for path in view_read_paths() {
@@ -409,18 +359,11 @@ fn generation_name(name: &OsStr) -> Option<&str> {
 pub struct Built {
     /// The generation `current` now names.
     pub generation: String,
-    /// Superseded generations still held by a running sandbox. Each goes
-    /// away through [`retire`], which waits for the last of them.
+    /// Superseded generations still held by a running sandbox.
     pub busy: Vec<String>,
 }
 
-/// Build a new generation under `root`, make it current and unmount the
-/// superseded ones nothing holds. Needs `CAP_SYS_ADMIN` over the mount
-/// namespace (root, for the host's).
-///
-/// # Errors
-/// An untrusted `root`, or any mount the view needs failing; nothing is made
-/// current then, and the partial generation is removed.
+/// Build a new generation under `root`, make it current and unmount the superseded ones nothing holds.
 pub fn build(root: &Path) -> io::Result<Built> {
     let euid = rustix::process::geteuid().as_raw();
     match std::fs::DirBuilder::new().mode(0o755).create(root) {
@@ -474,7 +417,7 @@ fn populate(path: &Path) -> io::Result<()> {
             c"mode=0755,size=1m,nr_inodes=4096".as_ptr().cast(),
         )
     })?;
-    // SAFETY: as above. Private before anything is bound below it.
+    // SAFETY: as above.
     check(unsafe {
         libc::mount(
             std::ptr::null(),
@@ -545,8 +488,7 @@ fn discard(path: &Path) {
     let _ = std::fs::remove_dir(path);
 }
 
-/// Unmount and remove a superseded generation once no launch holds it,
-/// waiting for the last one.
+/// Unmount and remove a superseded generation once no launch holds it, waiting for the last one.
 pub fn retire(root: &Path, generation: &str) -> io::Result<()> {
     retire_generation(root, generation, true).map(drop)
 }
@@ -572,7 +514,7 @@ fn retire_generation(root: &Path, generation: &str, wait: bool) -> io::Result<bo
         }
     };
     let target = cpath(&path)?;
-    // SAFETY: a live C string. EINVAL: nothing mounted there any more.
+    // SAFETY: a live C string.
     if unsafe { libc::umount2(target.as_ptr(), libc::MNT_DETACH) } < 0 {
         let error = io::Error::last_os_error();
         if error.raw_os_error() != Some(libc::EINVAL) {
@@ -596,8 +538,6 @@ pub struct SystemView {
 
 impl SystemView {
     /// The current generation under `root`, if there is a trustworthy one.
-    /// Directories must belong to `owner` (root) and be writable by nobody
-    /// else.
     pub fn open(root: &Path, owner: u32) -> io::Result<Option<Self>> {
         let meta = match std::fs::symlink_metadata(root) {
             Ok(meta) => meta,
@@ -608,8 +548,8 @@ impl SystemView {
             return Ok(None);
         }
         let current = root.join(CURRENT);
-        // Each pass that goes round again does so because a builder made a
-        // newer generation current meanwhile.
+        // Each pass that goes round again does so because a builder made a newer generation current
+        // meanwhile.
         loop {
             let name = match std::fs::read_link(&current) {
                 Ok(name) => name,
@@ -659,9 +599,7 @@ impl SystemView {
         self.generation.join(variant.dir())
     }
 
-    /// Whether every bound object is still what the host path names. A
-    /// replaced file (`ldconfig`, a time zone change) or a remerged `/usr`
-    /// fails this until the view is rebuilt.
+    /// Whether every bound object is still what the host path names.
     fn is_fresh(&self) -> bool {
         self.identities
             .iter()
@@ -674,8 +612,7 @@ impl SystemView {
             .any(|(entry, identity)| identity.is_some() && path.starts_with(entry))
     }
 
-    /// Whether `dest` exists in the `variant` view, resolved without
-    /// following any symlink.
+    /// Whether `dest` exists in the `variant` view, resolved without following any symlink.
     fn holds(&self, variant: Variant, dest: &str) -> bool {
         let Ok(parts) = components(dest) else {
             return false;
@@ -707,11 +644,8 @@ impl SystemView {
         Ok(tops)
     }
 
-    /// Replace `argv`'s per-path system profile with this view, or leave
-    /// `argv` untouched and say why not.
-    ///
-    /// # Errors
-    /// The reason the launch keeps its per-path binds.
+    /// Replace `argv`'s per-path system profile with this view, or leave `argv` untouched and say why
+    /// not.
     pub fn compose(&self, argv: &mut Vec<String>) -> Result<(), &'static str> {
         if !self.is_fresh() {
             return Err("a bound host path changed since the view was built");
@@ -749,8 +683,8 @@ impl SystemView {
         Ok(())
     }
 
-    /// Check every mount of the launch against the view; return the
-    /// operations that must move on top of it (the account file).
+    /// Check every mount of the launch against the view; return the operations that must move on top of
+    /// it (the account file).
     fn check_ops(
         &self,
         ops: &[Op],
@@ -767,9 +701,8 @@ impl SystemView {
                 continue;
             }
             if op.end <= block.start {
-                // Per path, a later profile bind hides this mount; in the
-                // view the top-level bind hides it. Same result, but only
-                // where a present profile entry covers it.
+                // Per path, a later profile bind hides this mount; in the view the top-level bind
+                // hides it.
                 if self.present(Path::new(dest)) {
                     continue;
                 }
@@ -805,8 +738,8 @@ impl SystemView {
                 }
             }
         }
-        // The view has only an empty mount point at each launch file; one the
-        // launch does not mount over would show where per path nothing is.
+        // The view has only an empty mount point at each launch file; one the launch does not mount
+        // over would show where per path nothing is.
         for file in variant.launch_files() {
             let mounted = if LAUNCH_FILES.contains(&file) {
                 ops.iter().any(|op| {
@@ -825,9 +758,7 @@ impl SystemView {
         Ok(moved)
     }
 
-    /// The view's binds, then what stays per launch: live `/sys` and the
-    /// resolver files. GPU device nodes are not the profile's: a `gpu` app's
-    /// are bound outside the profile block and survive the replacement.
+    /// The view's binds, then what stays per launch: live `/sys` and the resolver files.
     fn replacement(&self, variant: Variant, tops: &[String]) -> Vec<String> {
         let mut replacement = Vec::new();
         let root = self.variant_root(variant);
@@ -918,8 +849,8 @@ enum OpKind {
     Data,
     /// A fresh filesystem or a remount on DEST.
     Mount,
-    /// Creates or changes DEST itself: `--dir`, `--file`, `--symlink`,
-    /// `--chmod`, `--lock-file`, overlays.
+    /// Creates or changes DEST itself: `--dir`, `--file`, `--symlink`, `--chmod`, `--lock-file`,
+    /// overlays.
     Create,
     /// `--perms`, `--size`: applies to the next operation.
     Modifier,
@@ -937,8 +868,7 @@ struct Op {
     dest: Option<String>,
 }
 
-/// Split a bubblewrap argv into its options, up to the command. `None` for an
-/// option this does not know (or `--args`, which hides more of them).
+/// Split a bubblewrap argv into its options, up to the command.
 fn parse_ops(argv: &[String]) -> Option<(Vec<Op>, usize)> {
     let mut ops = Vec::new();
     let mut index = 0usize;
@@ -1015,9 +945,8 @@ fn parse_ops(argv: &[String]) -> Option<(Vec<Op>, usize)> {
     Some((ops, index))
 }
 
-/// Swap `argv`'s per-path system profile for the host's current view when
-/// there is one that carries this launch unchanged. Keep the returned
-/// handle until the sandbox exits: it keeps the view from being retired.
+/// Swap `argv`'s per-path system profile for the host's current view when there is one that carries
+/// this launch unchanged.
 pub fn attach(argv: &mut Vec<String>) -> Option<SystemView> {
     let view = match SystemView::open(Path::new(DEFAULT_ROOT), 0) {
         Ok(Some(view)) => view,
@@ -1043,8 +972,8 @@ pub fn attach(argv: &mut Vec<String>) -> Option<SystemView> {
 mod tests {
     use super::*;
 
-    /// A view shaped like a built one, without mounts: the profile entries
-    /// that exist on this host as empty directories or files.
+    /// A view shaped like a built one, without mounts: the profile entries that exist on this host as
+    /// empty directories or files.
     fn fake_view(dir: &Path) -> SystemView {
         let generation = dir.join("g1");
         for variant in Variant::ALL {
@@ -1142,8 +1071,8 @@ mod tests {
             })
             .unwrap();
         assert!(sys < hidden, "{argv:?}");
-        // No GPU node: the default profile has none, and the view adds none
-        // (a `gpu` app's nodes are bound outside the profile block).
+        // No GPU node: the default profile has none, and the view adds none (a `gpu` app's nodes are
+        // bound outside the profile block).
         for device in GPU_DEVICE_PATHS {
             assert!(
                 !argv
@@ -1176,8 +1105,8 @@ mod tests {
             .iter()
             .all(|path| Path::new(path).exists())
         {
-            // The resolver files are this host's; without them the network
-            // view must refuse, which the next assertion block covers.
+            // The resolver files are this host's; without them the network view must refuse, which the
+            // next assertion block covers.
             let dir = tempfile::tempdir().unwrap();
             let view = fake_view(dir.path());
             let mut argv = launch(true, &[]);
@@ -1223,8 +1152,8 @@ mod tests {
         // An option this module does not know, or arguments it cannot see.
         assert!(refused(&mut launch(false, &["--args", "9"])));
         assert!(refused(&mut launch(false, &["--some-new-option"])));
-        // A mount before the profile that no profile entry hides: per path it
-        // stays visible, under the view it would vanish.
+        // A mount before the profile that no profile entry hides: per path it stays visible, under the
+        // view it would vanish.
         let mut argv = launch(false, &[]);
         argv.splice(
             0..0,
@@ -1273,8 +1202,7 @@ mod tests {
             &["--ro-bind", "/srv/one.ttf", "/usr/share/fonts/one.ttf"],
         );
         view.compose(&mut argv).unwrap();
-        // A -try bind whose source is missing is skipped by bubblewrap, so it
-        // needs no mount point.
+        // A -try bind whose source is missing is skipped by bubblewrap, so it needs no mount point.
         let mut argv = launch(
             false,
             &[
@@ -1291,11 +1219,8 @@ mod tests {
 
     #[test]
     fn the_rebuild_triggers_watch_every_replaceable_view_path() {
-        // The launch-side identity check keeps a stale view from being used;
-        // the path unit is what makes a fresh one again. Every /etc entry can
-        // be replaced on a running system (ldconfig, a time zone change, an
-        // admin), so each is watched. /usr changes only with an extension
-        // merge, which restarts the build itself.
+        // The launch-side identity check keeps a stale view from being used; the path unit is what
+        // makes a fresh one again.
         let unit = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../os/usr/lib/systemd/system/tilo-sandbox-view.path");
         let text = std::fs::read_to_string(&unit).unwrap();

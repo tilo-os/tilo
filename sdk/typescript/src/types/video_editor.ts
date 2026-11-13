@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.video-editor@8b08f2c24cffb89e";
+export const SURFACE = "so.tilo.video-editor@c1e632de27d6ebcf";
 
 export interface ChromaKey {
   enabled: boolean;

@@ -1319,6 +1319,44 @@ impl I18nManager {
     /// Only the toolkit's own widgets call it, for the reason
     /// [`Self::lookup_plain`] gives: an app builds its sentences through
     /// `CATALOG.t_args`.
+    /// [`Self::lookup`], but `None` where every catalogue that holds `key`
+    /// leaves a variable it names unfilled: the words a caller that can say
+    /// nothing of what a step carried may still say.
+    ///
+    /// A message only a value completes is not a broken one — the history
+    /// sentence says it with that value (`sheets-workbook-title`). A caller
+    /// saying the step without it asks here, gets nothing, and leaves the
+    /// words to the framework's own (`ui::history_source::step_title`).
+    #[must_use]
+    pub fn lookup_complete(key: &str, args: Option<&FluentArgs>) -> Option<String> {
+        let mut resolution = Resolution {
+            key,
+            args,
+            partial: None,
+        };
+        let (resolved, pseudo_language) = MANAGER.with(|m| {
+            let manager = m.borrow();
+            match manager.as_ref() {
+                Some(manager) => {
+                    let pseudo_language =
+                        manager.current_locale.language.as_str() == PSEUDO_LANGUAGE;
+                    (manager.resolve(&mut resolution), pseudo_language)
+                }
+                None => (None, false),
+            }
+        });
+        let resolved = resolved.or_else(|| {
+            TOOLKIT_SOURCE.with(|source| {
+                source
+                    .as_ref()
+                    .ok()
+                    .and_then(|bundle| resolution.attempt(bundle))
+            })
+        })?;
+        Some(apply_pseudo_locale(resolved, args, pseudo_language))
+    }
+
+    #[must_use]
     pub(crate) fn format(key: &str, args: &[(&str, ArgValue)]) -> String {
         if args.is_empty() {
             return Self::lookup(key, None);
@@ -1497,15 +1535,10 @@ impl LanguagePack {
     }
 }
 
-/// The language `tag` names, lower case: `de` of `de-DE`. One language
-/// pack serves a language, whatever region a tag adds.
-#[must_use]
-pub fn language_of(tag: &str) -> String {
-    tag.split(['-', '_'])
-        .next()
-        .unwrap_or(tag)
-        .to_ascii_lowercase()
-}
+/// The language `tag` names, as its language pack is named
+/// ([`tilo_paths::language_of`]): `de` of `de-DE`. One pack serves a
+/// language, whatever region a tag adds.
+pub use tilo_paths::language_of;
 
 /// `tag`'s language in its own words, as a language picker offers it: a
 /// person looking for their language reads it in that language, once,
@@ -1580,7 +1613,11 @@ impl EmbeddedCatalog {
             .collect();
         if let Some(pack) = &self.pack {
             for locale in pack.installed_locales() {
-                if sources.iter().any(|(held, _)| *held == locale) {
+                let language = language_of(locale);
+                if sources
+                    .iter()
+                    .any(|(held, _)| language_of(held) == language)
+                {
                     continue;
                 }
                 if let Some(source) = pack.read(locale) {
@@ -1643,24 +1680,17 @@ impl EmbeddedCatalog {
         words
     }
 
-    /// The languages this catalogue can show, each once: the embedded ones
-    /// and those with an installed pack, in the order the catalogue names
-    /// them. A language installed under two tags (`de` and `de-DE`) is named
-    /// by the one without a region, the pack's.
+    /// The languages this catalogue can show, each tag once: the embedded ones
+    /// and those with an installed pack, in the order the catalogue names them.
+    /// A tag and a pack of one language are that language ([`language_of`]).
     #[must_use]
     pub fn languages(&self) -> Vec<&'static str> {
         let mut languages: Vec<&'static str> =
             self.catalogs.iter().map(|(locale, _)| *locale).collect();
         if let Some(pack) = &self.pack {
             for locale in pack.installed_locales() {
-                let language = language_of(locale);
-                match languages
-                    .iter_mut()
-                    .find(|known| language_of(known) == language)
-                {
-                    Some(known) if locale.len() < known.len() => *known = locale,
-                    Some(_) => {}
-                    None => languages.push(locale),
+                if !languages.contains(&locale) {
+                    languages.push(locale);
                 }
             }
         }
@@ -2116,6 +2146,38 @@ mod tests {
     fn install_plain(source: &str, locale: &str, catalogs: &[(&str, &str)]) {
         I18nManager::install(source, locale, catalogs).unwrap();
         I18nManager::set_pseudo_locale(PseudoLocale::Off);
+    }
+
+    /// A message a value completes is said with it, and is not said at all
+    /// where the caller has none: the words a step title can stand on.
+    #[test]
+    fn a_message_only_a_value_completes_is_not_said_without_one() {
+        let _restore = RestoreLookupState::capture();
+        install_plain(
+            "en-US",
+            "en-US",
+            &[(
+                "en-US",
+                "sheets-workbook-title = Named the workbook { $new }\nbare = Post a message\n",
+            )],
+        );
+        assert_eq!(
+            I18nManager::lookup_complete("sheets-workbook-title", None),
+            None,
+            "a placeable left unfilled is no sentence"
+        );
+        let mut args = FluentArgs::new();
+        args.set("new", "Q3");
+        assert_eq!(
+            I18nManager::lookup_complete("sheets-workbook-title", Some(&args)).as_deref(),
+            Some("Named the workbook Q3")
+        );
+        assert_eq!(
+            I18nManager::lookup_complete("bare", None).as_deref(),
+            Some("Post a message"),
+            "a message that names no variable is said as it stands"
+        );
+        assert_eq!(I18nManager::lookup_complete("no-such-message", None), None);
     }
 
     /// A plain lookup is resolved once per catalogue, locale and

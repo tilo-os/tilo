@@ -24,12 +24,12 @@ __all__ = [
 
 class DiskUsage(Resource):
     """Disk Usage Analyzer — `disk-usage`."""
-    __surface__ = "so.tilo.disk-usage@201da2e058d30dcf"
+    __surface__ = "so.tilo.disk-usage@142cf5e7136a5290"
 
 class RecentFolders(Resource):
     """Recent folders — `disk-usage.recent-folders`."""
-    __surface__ = "so.tilo.disk-usage@201da2e058d30dcf"
-    devices: Any
+    __surface__ = "so.tilo.disk-usage@142cf5e7136a5290"
+    devices: dict[str, Any]
 
     def remember(self,
         *,

@@ -10,17 +10,10 @@ use crate::pixels;
 use crate::strings::tr;
 use tilo_content::ContentStore;
 
-/// Maximum text retained from an OCR engine.  This is deliberately below the
-/// CRDT's practical change budget and prevents a pathological scan becoming a
-/// collaborative denial-of-service payload.
+/// Maximum text retained from an OCR engine. This is deliberately below the CRDT's practical change
+/// budget and prevents a pathological scan becoming a collaborative denial-of-service payload.
 pub const MAX_OCR_CHARS: usize = 32 * 1024;
 
-/// Run the shared Tilo OCR pipeline on a locally available photograph.
-///
-/// # Errors
-/// Returns a stable, non-sensitive error when the bytes are unavailable, not
-/// decodable, or OCR cannot run. Engine diagnostics and source paths never
-/// cross this boundary.
 pub fn recognize_text(
     open: &OpenImage,
     language: &str,
@@ -45,8 +38,6 @@ pub fn recognize_text(
         model_revision: String::new(),
         language: language.to_owned(),
         content: open.hash(),
-        // This return value is intentionally local. `SetImageAnalysis`
-        // changes it to shared only at the collaborative consent boundary.
         scope: "local".to_owned(),
     };
     Ok(ImageAnalysis {
@@ -57,11 +48,6 @@ pub fn recognize_text(
     })
 }
 
-/// Run the fixed-schema local vision capability on locally available bytes.
-///
-/// This deliberately has no remote fallback. The caller must have discovered
-/// a signed, loopback capability and chosen this operation explicitly; only
-/// the compact result is returned for the caller to decide whether to share.
 pub fn analyze_image(
     open: &OpenImage,
     capability: &tilo_vision::LocalVisionCapability,
@@ -79,17 +65,6 @@ pub fn analyze_image(
     Ok(image_analysis_from_vision_result(open, capability, result))
 }
 
-/// Detect and cluster faces for one bounded, explicitly selected library
-/// batch.  Decoding and preview creation happen on the Photos worker; the
-/// model receives only JPEG previews and stable photo ids.  The returned
-/// memberships remain local and must be reviewed before any person label is
-/// shared.
-///
-/// # Errors
-///
-/// Returns a user-facing message when the batch is empty or larger than
-/// [`tilo_vision::MAX_FACE_BATCH`], when a photograph's bytes are not yet
-/// available locally or cannot be decoded, or when face clustering fails.
 pub fn detect_people(
     images: Vec<(String, OpenImage)>,
     capability: &tilo_vision::LocalFaceCapability,
@@ -120,9 +95,6 @@ pub fn detect_people(
             .clusters
             .into_iter()
             .map(|cluster| VerifiedFaceCluster {
-                // The model's opaque id is only scoped to one request. Make
-                // it stable across redraws yet collision-free across bounded
-                // library batches before it enters the local review store.
                 id: format!(
                     "face:{}",
                     tilo_content::hash_bytes(
@@ -160,8 +132,6 @@ fn image_analysis_from_vision_result(
     ImageAnalysis {
         ocr_text: result.ocr,
         description: result.description,
-        // The fixed schema keeps generic objects and explicitly visible pets
-        // separate. Neither result is ever upgraded into a person identity.
         objects: result.labels,
         pets: result.pets,
         provenance: provenance.clone(),

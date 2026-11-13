@@ -20,11 +20,17 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.typst-editor@44e128454ed53c59";
+export const SURFACE = "so.tilo.typst-editor@f31407ab794a3630";
+
+export interface TypstFile {
+  name: string;
+  path: string | null;
+  source: string;
+}
 
 /** Typst workspace — `typst-editor.workspace`. */
 export interface Workspace extends tilo.Resource {
-  files: unknown;
+  files: TypstFile[];
   newFile(args: {
     name: string;
     path?: string;

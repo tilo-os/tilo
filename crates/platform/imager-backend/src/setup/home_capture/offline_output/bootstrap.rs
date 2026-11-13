@@ -1,5 +1,5 @@
-//! Canonical root-session completion of an authenticated pending original migration.
-//! A verified Home receipt alone never reports completed setup.
+//! Canonical root-session completion of an authenticated pending original migration; a verified Home
+//! receipt alone never reports completed setup.
 use super::*;
 use crate::{
     imager_model::TargetDrive,
@@ -10,8 +10,8 @@ use crate::{
 use std::{thread, time::Duration};
 use zeroize::Zeroizing;
 
-/// The same authenticated read helper keeps observing peer/cancel retirement
-/// while its owned worker retains raw/media/source custody through final cleanup.
+/// The authenticated read helper keeps observing peer and cancel retirement while its worker
+/// retains raw, media and source custody through final cleanup.
 pub fn complete_pending_boot(
     target: &TargetDrive,
     raw: &File,
@@ -57,8 +57,8 @@ pub fn complete_pending_boot(
         let result = job
             .join()
             .map_err(|_| refused("Original completion worker panicked"))?;
-        // Never let cancelled peer retirement become a success acknowledgement,
-        // even if a durable commit completed just before cancellation arrived.
+        // A cancelled peer retirement never becomes a success acknowledgement, even if a durable
+        // commit completed just before cancellation arrived.
         if let Some(error) = observed_error {
             return Err(error);
         }
@@ -66,8 +66,8 @@ pub fn complete_pending_boot(
         result
     })
 }
-/// Bounded data copied from real quiescent/verified production transactions.
-/// Construction remains private; no serialized fixture claim can mint this.
+/// Bounded data copied from real quiescent production transactions; construction stays private, so
+/// no serialized fixture claim can mint it.
 pub(in crate::setup::home_capture) struct CompletedQualificationEvidence {
     pub(in crate::setup::home_capture) source_disk_guids: Vec<String>,
     pub(in crate::setup::home_capture) read_claim_sha256: [u8; 32],
@@ -86,8 +86,8 @@ fn complete_owned(
 ) -> io::Result<()> {
     complete_owned_run(target, raw, caller, password, cancel, cancellation, false).map(|_| ())
 }
-/// Only the fixed installed consumer qualifier uses this internal entry. Normal
-/// pending completion keeps its existing retry/caller behavior unchanged.
+/// Only the fixed installed consumer qualifier uses this internal entry; normal pending completion
+/// keeps its retry and caller behavior unchanged.
 pub(in crate::setup::home_capture) fn qualify_owned(
     target: &TargetDrive,
     raw: &File,
@@ -111,14 +111,13 @@ fn complete_owned_run(
     if caller == 0 {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
-    // The authenticated boot administrator and the protected original source
-    // user are distinct identities. Password/setup and source proofs authorize
-    // the transfer; the receiver UID never substitutes for original credentials.
+    // The boot administrator and the protected source user are distinct identities: password and
+    // source proofs authorize the transfer, and the receiver UID never substitutes for them.
     migration::check_cancel(cancel)?;
     let read = with_boot_medium(target, raw, cancel, |medium| {
         if let Some(committed) = crate::setup::prepared_setup::completion::boot_review::CompletedBootReview::review_if_committed(medium, &password, cancel)? {
-            // The actual selected Store, completion marker and both sealed
-            // generations authenticate retry; no source export is restarted.
+            // The selected store, completion marker and both sealed generations authenticate retry;
+            // no source export is restarted.
             if qualification { return Err(refused("Qualification requires fresh actual original export, not committed retry")); }
             committed.validate(cancel)?;
             drop(committed);
@@ -135,13 +134,13 @@ fn complete_owned_run(
         Ok(Some(Arc::new(read)))
     })?;
     let Some(read) = read else {
-        // Existing completion is acknowledged only after readonly retirement;
-        // the controller still reacquires and adopts the exact generation.
+        // Existing completion is acknowledged only after read-only retirement; the controller still
+        // reacquires and adopts the exact generation.
         migration::check_cancel(cancel)?;
         return Ok(None);
     };
-    // The original readonly medium mount has actually retired before this
-    // independently source-disjoint writable output mount can be admitted.
+    // The read-only medium mount has retired before this source-disjoint writable output mount can
+    // be admitted.
     migration::check_cancel(cancel)?;
     if read
         .output_selection_declaration(cancel)?
@@ -202,16 +201,15 @@ fn complete_owned_run(
     })();
     drop(transaction);
     drop(read);
-    // Both successful and cancelled/failed workers require the real canonical
-    // namespace-death receipt before root releases its owned writable mount.
+    // Successful and failed workers alike need the real namespace-death receipt before root
+    // releases its writable mount.
     let (shutdown, key, work) = outcome.cleanup_receipt()?;
     medium.finish(shutdown, key, work)?;
     result
 }
 
-/// Result of the selected-material factory. No Home receipt is fabricated.
-/// Only this module can construct it after actual independent validation and
-/// observed source/output retirement.
+/// Result of the selected-material factory: only this module constructs it, after independent
+/// validation and observed source and output retirement.
 pub(in crate::setup::home_capture) struct CompletedApplicationsQualificationEvidence {
     pub(in crate::setup::home_capture) setup: crate::imager_model::PreparedSetupExpectation,
     pub(in crate::setup::home_capture) source_disk_guids: Vec<String>,
@@ -220,7 +218,6 @@ pub(in crate::setup::home_capture) struct CompletedApplicationsQualificationEvid
         crate::setup::flatpak_transfer::portable::Expectation,
     pub(in crate::setup::home_capture) completion_receipt_sha256: [u8; 32],
 }
-/// Fixed installed original6 factory; no caller paths, declarations or proof DTOs.
 pub(in crate::setup::home_capture) fn qualify_applications_owned(
     target: &TargetDrive,
     raw: &File,
@@ -240,14 +237,14 @@ pub(in crate::setup::home_capture) fn qualify_applications_owned(
             target.clone(),
             cancel,
         )?;
-        // The actual admission getter validates the private declaration;
-        // this module does not widen the declaration's constructor/API.
+        // The admission getter validates the private declaration; this module does not widen its
+        // API.
         let _ = read.output_applications_declaration(cancel)?;
         pending.validate()?;
         Ok(Arc::new(read))
     })?;
-    // All participant source roots must carry the same protected disposable
-    // marker used by the existing Home factory. It supplies no source authority.
+    // Every participant source root carries the same protected disposable marker as the existing
+    // Home factory, which supplies no source authority.
     let sources = read.qualification_owned_sources(cancel)?;
     let claim = read.output_read_claim_digest(cancel)?;
     complete_applications_run(read, password, cancel, cancellation, Some((sources, claim)))?
@@ -309,8 +306,8 @@ fn complete_applications_run(
     result
 }
 
-/// Authenticate and adopt the fixed standard installer generation only inside
-/// the exact selected readonly medium scope. Success follows owned retirement.
+/// Authenticates and adopts the fixed installer generation only inside the exact selected
+/// read-only medium scope; success follows owned retirement.
 pub fn extract_completed_boot(
     target: &TargetDrive,
     raw: &File,
@@ -338,8 +335,8 @@ pub fn extract_completed_boot(
                     migration::check_cancel(&worker_cancelled)?;
                     review.adopt_install_generation(&worker_cancelled)?;
                     review.validate(&worker_cancelled)?;
-                    // All borrowed source pins die before with_boot_medium's
-                    // confirmed owned readonly unmount, including error paths.
+                    // All borrowed source pins die before the confirmed owned unmount, also on error
+                    // paths.
                     drop(review);
                     Ok(())
                 })

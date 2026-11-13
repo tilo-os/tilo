@@ -687,6 +687,9 @@ fields = [
   { path = "messages.*.appearance.persona.service", type = "text" },
   { path = "messages.*.appearance.persona.account", type = "text" },
   { path = "messages.*.appearance.persona.linked", type = { option = "text" } },
+  { path = "messages.*.acting", type = { option = { named = "Acting" } }, readonly = true, stored = "record" },
+  { path = "messages.*.acting.name", type = { option = "text" } },
+  { path = "messages.*.acting.person", type = { option = "text" } },
   { path = "messages.*.share", type = { option = { named = "WindowShare" } }, readonly = true, stored = "record" },
   { path = "messages.*.share.access", type = { named = "ShareAccess" } },
   { path = "messages.*.share.open", type = "bool" },
@@ -849,6 +852,13 @@ params = [
 ]
 
 [[resources.types]]
+name = "Acting"
+fields = [
+  { name = "name", type = { option = "text" } },
+  { name = "person", type = { option = "text" } },
+]
+
+[[resources.types]]
 name = "AgentFinish"
 cases = [
   { name = "complete" },
@@ -960,6 +970,7 @@ fields = [
   { name = "pinned", type = "bool" },
   { name = "work", type = { option = { named = "Work" } } },
   { name = "appearance", type = { option = { named = "ShownAs" } } },
+  { name = "acting", type = { option = { named = "Acting" } } },
   { name = "share", type = { option = { named = "WindowShare" } } },
   { name = "attempts", type = "int" },
 ]

@@ -1,13 +1,7 @@
-//! The per-VM root SSH key.
-//!
-//! `vm create` makes an ed25519 key per VM in `keys/` beside `vms.toml`
-//! (kept when it already exists) and records its path as the VM's `key`;
-//! every SSH connection to the VM uses it. The dev image reads the public
-//! key from the systemd credential [`CREDENTIAL`], which systemd's provision
-//! tmpfiles write to `/root/.ssh/authorized_keys` at boot (see
-//! `os/dev-image/etc/ssh/sshd_config.d/40-tilo-vm.conf`). Adapters with a
-//! credential channel pass it at creation ([`smbios_credential`]); the rest
-//! need [`install_command`] once after the first boot.
+//! The per-VM root SSH key. `vm create` makes an ed25519 key per VM in `keys/`
+//! beside `vms.toml` (kept when it already exists); the dev image reads the
+//! public key from the systemd credential [`CREDENTIAL`] and writes it to
+//! `/root/.ssh/authorized_keys` at boot.
 
 use std::path::{Path, PathBuf};
 
@@ -17,14 +11,12 @@ use base64::engine::general_purpose::STANDARD;
 use crate::error::CliError;
 use crate::hypervisor::{CommandLine, Runner, SshEndpoint, run_all};
 
-/// The credential the dev image turns into root's `authorized_keys`.
 pub const CREDENTIAL: &str = "ssh.authorized_keys.root";
 
 /// The dev image's password login (`os/account.env`), the way in before root
 /// has a key.
 pub const DEV_ACCOUNT: &str = "tester";
 
-/// Where VM `name`'s private key lives; the public key is beside it as `.pub`.
 pub fn key_path(registry_path: &Path, name: &str) -> PathBuf {
     registry_path
         .parent()
@@ -39,7 +31,6 @@ pub fn public_path(key: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// `ssh-keygen` for a new, passphrase-less key at `key`.
 pub fn keygen_command(key: &Path, name: &str) -> CommandLine {
     CommandLine::new("ssh-keygen", &["-q", "-t", "ed25519", "-N", ""])
         .arg("-C")
@@ -61,7 +52,6 @@ pub fn read_public(key: &Path) -> Result<String, CliError> {
     Ok(line)
 }
 
-/// Make VM `name`'s key at `key` unless it exists; returns its public key.
 pub fn ensure(runner: &mut dyn Runner, key: &Path, name: &str) -> Result<String, CliError> {
     if !key.exists() {
         if let Some(dir) = key.parent() {
@@ -106,9 +96,6 @@ pub fn kernel_credential(public: &str) -> String {
     )
 }
 
-/// The one-time step for a VM that did not get the key as a credential:
-/// the dev account logs in with its password, and sudo appends the key to
-/// root's `authorized_keys`. Runs the same in a POSIX shell and `PowerShell`.
 pub fn install_command(endpoint: &SshEndpoint, public: &str) -> String {
     format!(
         "ssh -t -o StrictHostKeyChecking=accept-new -p {} {DEV_ACCOUNT}@{} 'sudo install -d -m 0700 /root/.ssh && echo {} | base64 -d | sudo tee -a /root/.ssh/authorized_keys >/dev/null && sudo restorecon -R /root/.ssh'",
@@ -124,11 +111,8 @@ mod tests {
 
     const PUBLIC: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample tilo-vm-dev";
 
-    /// Keys live beside the registry, the credential carries the key line base64-encoded, the install step
-    /// logs in as the dev account, and an existing key is kept.
     #[test]
     fn the_dev_ssh_key_lives_beside_the_registry_and_logs_in_as_dev() {
-        // Phase: keys_live_beside_the_registry.
         #[cfg(unix)]
         {
             let key = key_path(Path::new("/cfg/tilo-vm/vms.toml"), "dev");
@@ -143,7 +127,6 @@ mod tests {
             );
         }
 
-        // Phase: the_credential_carries_the_key_line_base64_encoded.
         {
             let value = smbios_credential(PUBLIC);
             let encoded = value
@@ -164,7 +147,6 @@ mod tests {
             );
         }
 
-        // Phase: the_install_step_logs_in_as_the_dev_account.
         {
             let endpoint = SshEndpoint {
                 user: "root".into(),
@@ -180,9 +162,7 @@ mod tests {
             assert!(command.ends_with("| base64 -d | sudo tee -a /root/.ssh/authorized_keys >/dev/null && sudo restorecon -R /root/.ssh'"));
         }
 
-        // Phase: an_existing_key_is_kept.
         {
-            /// Records what would have run, and runs nothing.
             struct Record(Vec<String>);
             impl Runner for Record {
                 fn output(

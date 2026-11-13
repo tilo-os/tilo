@@ -1,17 +1,7 @@
-//! Formula evaluation, through `IronCalc`.
-//!
-//! The sheets keep every cell's raw input in their own document; `IronCalc`
-//! evaluates a workbook built from those inputs. A [`Calc`] keeps that
-//! workbook between recalculations and writes only the cells that changed
-//! since the last one, so an edit to a large sheet re-parses one formula
-//! rather than all of them.
-//!
-//! Literal input is handed over as the value the app has already read it as
-//! (a typed `$1,000` is stored as `1000` with a currency format, see
-//! `infer.rs`), never as text for `IronCalc` to interpret again. Formulas go
-//! over as written, except that a sheet a reference names is spelled the way
-//! the workbook spells it: references match sheet names regardless of case,
-//! `IronCalc`'s only exactly.
+//! Formula evaluation through `IronCalc`. The sheets keep every cell's raw input; a [`Calc`]
+//! keeps a workbook built from them and writes only the cells that changed, so an edit
+//! re-parses one formula rather than all. Literal input arrives as the value the app already
+//! read it as, never as text to interpret again.
 
 use std::collections::HashMap;
 use std::hash::BuildHasher;
@@ -30,27 +20,24 @@ use crate::refs::{fold_sheet, offset_refs, rename_sheets};
 use crate::workbook::{SheetSnapshot, Workbook};
 use ui::tilo_resource::Id;
 
-/// The name the one sheet of a lone sheet's workbook goes by.
+/// The sheet name a lone sheet's workbook uses.
 const LONE_SHEET: &str = "Sheet1";
 
-/// One sheet's raw inputs by position, shared: a [`Calc`] keeps the inputs
-/// it was given, and inputs it is given again (the same allocation) are
-/// known to be unchanged without comparing them cell by cell.
+/// One sheet's raw inputs by position, shared: inputs given again as the same allocation are
+/// known unchanged without comparing cells.
 pub type Inputs = Arc<HashMap<Addr, String>>;
 
-/// Every sheet of a workbook by name and raw input, for evaluating one of
-/// them whose formulas read the others.
+/// Every sheet's raw inputs by name, for evaluating one whose formulas read the others.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Book {
-    /// Each sheet's name and raw inputs, in workbook order.
     pub sheets: Vec<(String, HashMap<Addr, String>)>,
     /// Which of them is evaluated.
     pub own: usize,
 }
 
 impl Book {
-    /// Whether any input of `raw` may read another sheet: a formula naming
-    /// one with `!`. Only such a sheet is evaluated with its workbook.
+    /// Whether any input may read another sheet with a `!`; only such a sheet is evaluated
+    /// with its workbook.
     #[must_use]
     pub fn needed(raw: &HashMap<Addr, String>) -> bool {
         raw.values()
@@ -58,15 +45,13 @@ impl Book {
     }
 }
 
-/// A workbook kept evaluated: `IronCalc`'s model of it and the raw inputs it
-/// was last given, sheet by sheet.
+/// A workbook kept evaluated: `IronCalc`'s model and the raw inputs it was last given.
 pub struct Calc {
     /// `None` only when `IronCalc` refuses even an empty workbook.
     model: Option<Model<'static>>,
-    /// Each sheet's name and the raw inputs written into it.
+    /// Each sheet's name and the inputs written into it.
     fed: Vec<(String, Inputs)>,
-    /// The workbook's sheet names by [`fold_sheet`], each to the first sheet
-    /// spelled that way: what a formula's sheet reference is rewritten to.
+    /// The workbook's sheet names by [`fold_sheet`], each to the first sheet spelled that way.
     names: HashMap<String, String>,
 }
 
@@ -77,7 +62,6 @@ impl Default for Calc {
 }
 
 impl Calc {
-    /// A calculator holding no sheets yet.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -87,13 +71,9 @@ impl Calc {
         }
     }
 
-    /// Bring the workbook to `sheets` (each one's name and raw inputs, in
-    /// workbook order) and evaluate it when anything changed. A sheet given
-    /// the inputs it was last given is left as it is; otherwise cells are
-    /// written only where their input differs from what the workbook holds.
-    /// A change to the sheets themselves (added, removed, renamed or
-    /// reordered) builds the workbook anew, since a formula reads the sheet
-    /// it names as the workbook stood when the formula was written.
+    /// Bring the workbook to `sheets` and evaluate it when anything changed. A sheet given the
+    /// inputs it had is left as it is; a change to the sheets themselves rebuilds the workbook,
+    /// since a formula reads the sheet it names as the workbook stood.
     pub fn update<'s>(&mut self, sheets: impl IntoIterator<Item = (&'s str, &'s Inputs)>) {
         let sheets: Vec<_> = sheets.into_iter().collect();
         let same_sheets = self.model.is_some()
@@ -138,9 +118,7 @@ impl Calc {
         }
     }
 
-    /// A new workbook of `sheets` (each one's name and raw inputs, in
-    /// workbook order), evaluated. Remembers no inputs: what it is given is
-    /// only read.
+    /// A new workbook of `sheets`, evaluated; it remembers no inputs.
     fn load<'s, S: BuildHasher + 's>(
         &mut self,
         sheets: impl Iterator<Item = (&'s str, &'s HashMap<Addr, String, S>)>,
@@ -160,7 +138,6 @@ impl Calc {
         model.evaluate();
     }
 
-    /// A new workbook with one empty sheet per name.
     fn rebuild<'n>(&mut self, names: impl Iterator<Item = &'n str>) {
         self.fed.clear();
         self.names.clear();
@@ -172,9 +149,8 @@ impl Calc {
         else {
             return;
         };
-        // `IronCalc` asks for valid, distinct sheet names, the app does not:
-        // each sheet is added under a stand-in and then takes its own name,
-        // which formulas reach once the workbook is read anew.
+        // `IronCalc` asks for valid, distinct sheet names, the app does not: each sheet is added
+        // under a stand-in and then takes its own name.
         for at in 1..names.len() {
             if model.add_sheet(&format!("S{at}")).is_err() {
                 return;
@@ -194,8 +170,7 @@ impl Calc {
         self.model = Some(model);
     }
 
-    /// What each cell of the sheet at `sheet` computes, the cells a formula
-    /// spills its array into among them.
+    /// What each cell of the sheet computes, spilled cells among them.
     #[must_use]
     pub fn values(&self, sheet: usize) -> HashMap<Addr, CellValue> {
         let Some(model) = &self.model else {
@@ -219,26 +194,22 @@ impl Calc {
     }
 }
 
-/// A workbook evaluated state by state: every sheet in one [`Calc`], so
-/// showing another sheet reads values already computed, and a new state
-/// re-reads only the sheets it changed.
+/// A workbook evaluated state by state, so showing another sheet reads values already computed
+/// and a new state re-reads only what changed.
 #[derive(Default)]
 pub struct WorkbookCalc {
     calc: Calc,
-    /// The state last evaluated. Holding it keeps its sheets where they
-    /// are, so a sheet of a later state at the same address is that sheet,
-    /// unchanged.
+    /// The state last evaluated; holding it keeps its sheets where they are.
     state: Option<Rc<Workbook>>,
     /// Each sheet's raw inputs as last read, by id.
     inputs: HashMap<Id, Inputs>,
-    /// Each sheet's [`effective_formats`] as last worked out, by id, until
-    /// the sheet changes: inferring them parses every formula.
+    /// Each sheet's [`effective_formats`] as last worked out, until the sheet changes: inferring
+    /// them parses every formula.
     formats: HashMap<Id, HashMap<Addr, CellFormat>>,
 }
 
 impl WorkbookCalc {
-    /// Evaluate `state`. `known` is one sheet's raw inputs the caller has
-    /// read from `state` already, so they are not read again.
+    /// Evaluate `state`; `known` is one sheet's inputs the caller already read.
     pub fn update(&mut self, state: &Rc<Workbook>, known: Option<(&Id, &HashMap<Addr, String>)>) {
         let previous = self.state.replace(Rc::clone(state));
         let mut inputs = HashMap::with_capacity(state.sheets.len());
@@ -270,8 +241,7 @@ impl WorkbookCalc {
         );
     }
 
-    /// The [`effective_formats`] of sheet `id`, whose cells `snap` holds as
-    /// of the last update.
+    /// The effective formats of sheet `id`, whose cells `snap` holds as of the last update.
     pub fn formats(&mut self, id: &Id, snap: &SheetSnapshot) -> HashMap<Addr, CellFormat> {
         self.formats
             .entry(id.clone())
@@ -279,7 +249,6 @@ impl WorkbookCalc {
             .clone()
     }
 
-    /// What each cell of sheet `id` computes, as of the last update.
     #[must_use]
     pub fn values(&self, id: &Id) -> HashMap<Addr, CellValue> {
         self.state
@@ -290,8 +259,8 @@ impl WorkbookCalc {
     }
 }
 
-/// Write each cell's raw input into sheet `sheet`, `""` clearing it. A
-/// `fresh` sheet holds nothing yet, so there is nothing to clear first.
+/// Each cell's input written into the sheet, `""` clearing it; a `fresh` sheet has nothing to
+/// clear first.
 fn write_all<S: BuildHasher>(
     model: &mut Model<'_>,
     names: &HashMap<String, String>,
@@ -300,8 +269,7 @@ fn write_all<S: BuildHasher>(
     mut writes: Vec<(Addr, &str)>,
     fresh: bool,
 ) {
-    // Row by row, so the cell above a formula holds its input already when
-    // the formula may be a copy of it.
+    // Row by row, so the cell above a formula holds its input before the formula copies it.
     writes.sort_unstable_by_key(|((column, row), _)| (*row, *column));
     for (addr, raw) in writes {
         let above = addr
@@ -320,7 +288,7 @@ fn write_all<S: BuildHasher>(
     }
 }
 
-/// Write `raw` into the cell at `addr` of sheet `sheet`, `""` clearing it.
+/// Write `raw` into the cell, `""` clearing it.
 fn write(
     model: &mut Model<'_>,
     names: &HashMap<String, String>,
@@ -344,8 +312,8 @@ fn write(
     if !is_valid_row(row) || !is_valid_column_number(column) {
         return;
     }
-    // Clearing first drops what the cell held, the array a formula there
-    // spilled included, and what of another formula's array it showed.
+    // Clearing first drops what the cell held, including a spilled array and another formula's
+    // array shown there.
     if !fresh
         && model
             .set_user_input(sheet, row, column, String::new())
@@ -356,9 +324,8 @@ fn write(
     if raw.is_empty() {
         return;
     }
-    // The value is all the app reads of a cell, so input goes in through
-    // the calls that set it alone: `set_user_input` would also work out a
-    // number format for each formula and look the cell's style up again.
+    // The value is all the app reads, so input goes through the calls that set it alone:
+    // `set_user_input` would also work out a number format per formula.
     let written = if raw.starts_with('=') {
         if let Some(formula) =
             above.and_then(|above| copied_down(model, sheet, (row, column), above, raw))
@@ -396,11 +363,8 @@ fn write(
     }
 }
 
-/// The formula of the cell above `(row, column)` when `raw` is its input,
-/// `above`, copied one row down. `IronCalc` keeps a sheet's formulas by
-/// their relative form, so the copy is that same formula and needs no
-/// parsing: a column of formulas filled down, as large sheets mostly are,
-/// is parsed once.
+/// The formula of the cell above, when `raw` is its input copied one row down. `IronCalc`
+/// keeps formulas in relative form, so the copy needs no parsing.
 fn copied_down(
     model: &Model<'_>,
     sheet: u32,
@@ -421,10 +385,8 @@ fn copied_down(
     (!names_whole_rows(raw) && offset_refs(above, 0, 1) == raw).then_some(formula)
 }
 
-/// Whether `raw` may name whole rows (`1:3`, `$2:$2`): a `:` with a row
-/// number after it. A copy keeps those as written, where `IronCalc` reads
-/// them relative to the cell, so such a formula is never taken for a copy.
-/// Text like `"10:30"` answers yes too, which only costs a parse.
+/// Whether `raw` names whole rows (`1:3`, `$2:$2`), which a copy keeps as written. Text like
+/// `"10:30"` answers yes too, which only costs a parse.
 fn names_whole_rows(raw: &str) -> bool {
     raw.split(':').skip(1).any(|after| {
         after
@@ -440,8 +402,7 @@ fn set_error(model: &mut Model<'_>, sheet: u32, row: i32, column: i32) -> Result
         .set_cell_with_error(row, column, Error::ERROR, 0)
 }
 
-/// The value input that is no formula stands for: a number, `TRUE` or
-/// `FALSE` in any case, otherwise the text as written.
+/// What input that is no formula means: a number, `TRUE` or `FALSE`, otherwise the text.
 fn literal(raw: &str) -> CellValue {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -465,7 +426,7 @@ fn literal(raw: &str) -> CellValue {
     }
 }
 
-/// The value `IronCalc` holds in `cell`; `None` for an empty one.
+/// The value `IronCalc` holds in `cell`.
 fn value_of(cell: &Cell, strings: &[String]) -> Option<CellValue> {
     Some(match cell {
         Cell::EmptyCell { .. } => return None,
@@ -508,22 +469,20 @@ fn error_of(error: &Error) -> FormulaError {
     }
 }
 
-/// The local time zone's IANA name, which `TODAY()` and `NOW()` read the
-/// date and time in.
+/// The local zone's IANA name, which `TODAY()` and `NOW()` read the date in.
 fn zone() -> &'static str {
     static ZONE: OnceLock<String> = OnceLock::new();
     ZONE.get_or_init(|| iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_owned()))
 }
 
-/// What each cell of one sheet's raw inputs computes, the sheet on its own.
+/// What each cell of one sheet's inputs computes, the sheet on its own.
 pub fn recalculate<S: BuildHasher>(raw: &HashMap<Addr, String, S>) -> HashMap<Addr, CellValue> {
     let mut calc = Calc::new();
     calc.load([(LONE_SHEET, raw)].into_iter());
     calc.values(0)
 }
 
-/// What each cell of `snap` computes: with the workbook it came from when
-/// its formulas read other sheets, on its own otherwise.
+/// What each cell of `snap` computes: with its workbook when a formula reads other sheets.
 #[must_use]
 pub fn recalculate_snapshot(snap: &SheetSnapshot) -> HashMap<Addr, CellValue> {
     let mut calc = Calc::new();
@@ -536,19 +495,14 @@ pub fn recalculate_snapshot(snap: &SheetSnapshot) -> HashMap<Addr, CellValue> {
     }
 }
 
-/// Why a formula does not parse: the error its cell shows, and the problem
-/// in words for whoever wrote it.
+/// Why a formula does not parse: the error its cell shows and the problem in words.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParseError {
-    /// What the cell shows.
     pub error: FormulaError,
-    /// What is wrong.
     pub problem: String,
 }
 
-/// `body` (a formula without its `=`) parsed as if in the first cell of a
-/// sheet with no others: a reference to another sheet parses, and reads as
-/// a broken one.
+/// `body` parsed as if in the first cell of a sheet with no others.
 fn parse(body: &str) -> Node {
     let mut parser = new_parser_english(vec![LONE_SHEET.to_owned()], Vec::new(), HashMap::new());
     parser.parse(
@@ -561,15 +515,11 @@ fn parse(body: &str) -> Node {
     )
 }
 
-/// Why cell input `raw` is a formula that does not parse: `None` for a
-/// formula that parses and for input that is no formula. The cell keeps the
-/// input and shows the error, as a spreadsheet does.
+/// Why `raw` is a formula that does not parse; `None` for one that parses or is no formula.
 pub fn parse_error(raw: &str) -> Option<ParseError> {
     let body = raw.strip_prefix('=')?;
-    // IronCalc's parser stops at the end of the first whole expression and
-    // ignores what follows, where a spreadsheet refuses the formula: `=1 2`
-    // fails once wrapped in parentheses, which must close after it, and a
-    // `)` that closes nothing is caught before the parser sees it.
+    // IronCalc's parser stops at the first whole expression and ignores the rest, where a
+    // spreadsheet refuses `=1 2`, which fails once parenthesised.
     let broken = body.trim().is_empty()
         || closes_unopened(body)
         || [body, &format!("N(({body}))")]
@@ -581,8 +531,7 @@ pub fn parse_error(raw: &str) -> Option<ParseError> {
     })
 }
 
-/// Whether `body` has a `)` with no `(` before it to close, outside text in
-/// quotes and quoted sheet names.
+/// Whether `body` has a `)` with no `(` before it, outside quotes and quoted sheet names.
 fn closes_unopened(body: &str) -> bool {
     let mut depth = 0usize;
     let mut quote = None;
@@ -601,8 +550,7 @@ fn closes_unopened(body: &str) -> bool {
     false
 }
 
-/// A sentence saying why a cell holding `raw` evaluates to `err`. For a
-/// formula that could not be read, it names the most likely mistake.
+/// Why a cell holding `raw` evaluates to `err`, naming the likely mistake.
 pub fn explain(raw: &str, err: FormulaError) -> String {
     match err {
         FormulaError::Error => {
@@ -642,31 +590,23 @@ pub fn explain(raw: &str, err: FormulaError) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Format propagation
-// ---------------------------------------------------------------------------
-
-/// The unit a sub-expression carries while propagating formats. We track
-/// the *category* (and the specific currency, when it's currency) rather
-/// than a full `CellFormat`, because propagation cares about the unit, not
-/// the exact rendering style.
+/// The unit a sub-expression carries while propagating formats: the category, and the currency
+/// when it is money.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Unit {
-    /// A bare scalar — `5`, `=2+2`, a General/Number cell. Multiplying a
-    /// scalar by a currency yields that currency (`5 * $100 = $500`).
+    /// A bare scalar; a scalar times a currency is that currency.
     Scalar,
     /// Money in a specific currency.
     Currency(tilo_locale::Currency),
     /// A percentage value.
     Percent,
     Date(tilo_locale::DateStyle),
-    /// A time/duration serial.
+    /// A time or duration serial.
     Time(ui::clock::TimeStyle),
-    /// Conflicting units (e.g. USD + EUR) — render plain.
+    /// Conflicting units such as USD + EUR, which render plain.
     Mixed,
 }
 
-/// The arithmetic operators units combine through.
 #[derive(Clone, Copy, PartialEq)]
 enum Op {
     Add,
@@ -676,8 +616,7 @@ enum Op {
     Pow,
 }
 
-/// The format each cell of `snap` shows in: its own, else, for a formula,
-/// the one it takes from its operands ([`infer_result_format`]).
+/// The format each cell shows in: its own, else the one a formula takes from its operands.
 #[must_use]
 pub fn effective_formats(snap: &SheetSnapshot) -> HashMap<Addr, CellFormat> {
     let mut fmt = snap.fmt.clone();
@@ -692,21 +631,10 @@ pub fn effective_formats(snap: &SheetSnapshot) -> HashMap<Addr, CellFormat> {
     fmt
 }
 
-/// Infer the display format a computed cell should adopt from the formats
-/// of the cells its formula references. Returns `None` when nothing useful
-/// can be inferred (the caller then leaves the cell's own format, defaulting
-/// to General).
-///
-/// Rules, mirroring Excel/Sheets behaviour:
-///   * `=5*B2` where B2 is currency → that currency (a scalar times money
-///     stays money). Likewise `B2/2`, `B2+B3`, `-B2`.
-///   * currency `+`/`-` currency of the **same** currency → that currency;
-///     **different** currencies → plain number (Mixed).
-///   * percent through `+`/`-`/scalar `*` → percent.
-///   * date `-` date → a duration (Number); date `+` scalar → date.
-///   * SUM/AVERAGE/MIN/MAX/etc. over a uniformly-formatted range inherit
-///     that format.
-///   * anything ambiguous → `None` (plain).
+/// The format a computed cell takes from the cells its formula references; `None` when
+/// nothing useful can be inferred. Money times a scalar stays money, money with money of the
+/// same currency stays, different currencies and anything ambiguous render plain, and an
+/// aggregate over a uniformly formatted range inherits it.
 pub fn infer_result_format<S: BuildHasher>(
     body: &str,
     formats: &HashMap<Addr, CellFormat, S>,
@@ -720,20 +648,18 @@ pub fn infer_result_format<S: BuildHasher>(
     }
 }
 
-/// The unit a cell's stored format implies.
 fn unit_of_format(fmt: CellFormat) -> Unit {
     match fmt {
         CellFormat::Currency(c) => Unit::Currency(c),
         CellFormat::Percent => Unit::Percent,
         CellFormat::Date(s) => Unit::Date(s),
         CellFormat::Time(s) => Unit::Time(s),
-        // General/Number/Boolean/Text all behave as scalars for propagation.
+        // General, Number, Boolean and Text all behave as scalars.
         _ => Unit::Scalar,
     }
 }
 
-/// The cell a reference [`parse`] read names: relative to the first cell,
-/// where it was parsed, unless anchored.
+/// The cell a parsed reference names, unless anchored.
 fn referenced(row: i32, column: i32, absolute_row: bool, absolute_column: bool) -> Option<Addr> {
     let at = |n: i32, absolute: bool| {
         let one_based = if absolute { n } else { n.checked_add(1)? };
@@ -742,7 +668,6 @@ fn referenced(row: i32, column: i32, absolute_row: bool, absolute_column: bool) 
     Some((at(column, absolute_column)?, at(row, absolute_row)?))
 }
 
-/// Recursively determine an expression's unit.
 fn unit_of<S: BuildHasher>(node: &Node, formats: &HashMap<Addr, CellFormat, S>) -> Unit {
     match node {
         Node::ReferenceKind {
@@ -782,21 +707,18 @@ fn unit_of<S: BuildHasher>(node: &Node, formats: &HashMap<Addr, CellFormat, S>) 
     }
 }
 
-/// Combine two operand units under a binary operator.
 fn combine(op: Op, l: Unit, r: Unit) -> Unit {
     match op {
-        // Division of two equal units is a ratio → unitless (`$/$`, `%/%`).
+        // Two equal units divided are a ratio, so unitless.
         Op::Div if l == r && l != Unit::Scalar => Unit::Scalar,
-        // Multiplication/division by a scalar keeps the unit; any other
-        // pairing of two real units is ambiguous (Mixed).
+        // A scalar keeps the unit; any other pair of units is ambiguous.
         Op::Mul | Op::Div | Op::Pow => match (l, r) {
             (Unit::Scalar, u) | (u, Unit::Scalar) => u,
             _ => Unit::Mixed,
         },
-        // Addition/subtraction: same unit stays; date−date becomes a
-        // duration (treated as Number → Scalar); unit ± scalar keeps unit.
+        // The same unit stays; date minus date becomes a duration; a unit with a scalar keeps it.
         Op::Add | Op::Sub => match (l, r) {
-            // date − date is a span of days, not a date.
+            // Date minus date is a span of days.
             (Unit::Date(_), Unit::Date(_)) if op == Op::Sub => Unit::Scalar,
             (a, b) if a == b => a,
             (Unit::Scalar, u) | (u, Unit::Scalar) => u,
@@ -805,8 +727,7 @@ fn combine(op: Op, l: Unit, r: Unit) -> Unit {
     }
 }
 
-/// The unit a function call produces. Aggregates over a range inherit the
-/// range's uniform unit; ROUND/ABS/etc. inherit their first argument.
+/// A call's unit: an aggregate inherits its range's unit, the rest their first argument.
 fn unit_of_call<S: BuildHasher>(
     name: &str,
     args: &[Node],
@@ -827,18 +748,15 @@ fn unit_of_call<S: BuildHasher>(
             }
             acc.unwrap_or(Unit::Scalar)
         }
-        // Date/time builders render as dates/times so a bare `=TODAY()` shows
-        // a date rather than its underlying serial number.
+        // Date builders render as dates, so a bare `=TODAY()` shows a date, not a serial.
         "DATE" | "TODAY" | "NOW" => Unit::Date(tilo_locale::DateStyle::Iso),
         "TIME" => Unit::Time(ui::clock::TimeStyle::H24),
-        // Counting / text / logical / lookup functions are unitless.
+        // Counting, text, logical and lookup functions are unitless.
         _ => Unit::Scalar,
     }
 }
 
-/// Units contributed by a single argument — a range contributes the unit of
-/// each formatted cell it spans (an unformatted one is a scalar, which
-/// leaves an aggregate's unit as it is).
+/// The units one argument contributes: a range contributes each formatted cell's unit.
 fn arg_units<S: BuildHasher>(arg: &Node, formats: &HashMap<Addr, CellFormat, S>) -> Vec<Unit> {
     match arg {
         Node::RangeKind {

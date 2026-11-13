@@ -99,18 +99,14 @@ fn field_id(meta: &tilolang_tilo::runtime::Meta, ty: &str, field: &str) -> Strin
 }
 
 /// A note titled `title`, made through the notes app's own actions.
-fn note(service: &mut RecordService, meta: &tilolang_tilo::runtime::Meta, title: &str) -> String {
+fn note(service: &mut RecordService, title: &str) -> String {
     let notebook = service
         .resources()
         .into_iter()
         .find(|resource| resource.kind == format!("tl.{NOTES_APP}.Notebook"))
         .unwrap();
     let Started::Done(made) = service
-        .invoke(
-            notebook.id.as_str(),
-            &action_id(meta, "new_note"),
-            &Map::new(),
-        )
+        .invoke(notebook.id.as_str(), "new_note", &Map::new())
         .unwrap()
     else {
         panic!("a tilolang action is done once committed");
@@ -119,7 +115,7 @@ fn note(service: &mut RecordService, meta: &tilolang_tilo::runtime::Meta, title:
     service
         .invoke(
             &note,
-            &action_id(meta, "retitle"),
+            "retitle",
             json!({ "title": title }).as_object().unwrap(),
         )
         .unwrap();
@@ -270,7 +266,7 @@ fn texts(node: &tilolang_tilo::runtime::UiNode) -> Vec<String> {
 #[test]
 fn a_place_composes_the_notes_editor_over_the_note_and_an_edit_there_changes_the_note() {
     let (mut service, meta) = notebook();
-    let note = note(&mut service, &meta, "Groceries");
+    let note = note(&mut service, "Groceries");
 
     let (mut part, link) = showing(&service, &note);
     let arrangement = note_arrangement(&note);
@@ -338,7 +334,7 @@ fn the_shell_keeps_no_copy_of_the_apps_it_composes() {
 #[test]
 fn the_notes_body_written_in_a_place_is_the_body_the_notes_app_reads() {
     let (mut service, meta) = notebook();
-    let note = note(&mut service, &meta, "Groceries");
+    let note = note(&mut service, "Groceries");
     let (part, link) = showing(&service, &note);
 
     let view = canvas(&part);
@@ -369,8 +365,8 @@ fn the_notes_body_written_in_a_place_is_the_body_the_notes_app_reads() {
 #[test]
 fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
     let _settled = ui::motion::testing::settled();
-    let (mut service, meta) = notebook();
-    let note = note(&mut service, &meta, "Groceries");
+    let (mut service, _) = notebook();
+    let note = note(&mut service, "Groceries");
     let (mut part, link) = super::tests_support::part_as(reading_with_windows(), None);
     let mut arrangement = note_arrangement(&note);
     // The one place names no view: it falls back to its type's default view.
@@ -467,7 +463,6 @@ struct Room {
     channel: String,
     message: ResourceRef,
     task: ResourceRef,
-    tasks: tilolang_tilo::runtime::Meta,
     /// The readings the session follows for the shell's places, by id, each with its type: what
     /// it reads again for the ones a change touched.
     following: BTreeMap<String, String>,
@@ -532,7 +527,6 @@ fn room() -> Room {
         channel: target(&design).id_string(),
         message,
         task: published(&target(&made)),
-        tasks: tasks.meta,
         following: BTreeMap::new(),
         needed: std::collections::BTreeSet::new(),
     }
@@ -779,11 +773,7 @@ fn a_chat_place_ticks_the_task_made_from_its_message_done() {
 
     // Ben finishes the task in Tasks, with no Tasks window open: the message's row ticks.
     room.service
-        .invoke(
-            &room.task.id_string(),
-            &action_id(&room.tasks, "check"),
-            &Map::new(),
-        )
+        .invoke(&room.task.id_string(), "check", &Map::new())
         .unwrap();
     room.service.settle();
     for _ in 0..8 {

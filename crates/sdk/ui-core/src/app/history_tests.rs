@@ -2988,6 +2988,27 @@ fn native_owned_committed_read_applies_over_an_unfinished_word() {
     }
 }
 
+/// A peer's change lands mid-word: the word closes as its own step instead of the change waiting.
+#[test]
+fn a_peers_change_lands_while_the_person_here_is_typing() {
+    let mut fixture = RoutedOwners::new();
+    let incoming = fixture.remote(0, "peer-line", true);
+    let binding = fixture.bindings[0].clone();
+    let typed = binding.with_document(&mut fixture.app.state.doc, |doc, _| {
+        doc.put(ROOT, "local-draft", "unfinished").unwrap();
+    });
+    typed.unwrap();
+    fixture.app.apply_signed_document_envelope(&incoming, None);
+    assert_eq!(fixture.value(0, "peer-line").as_deref(), Some("remote"));
+    assert_eq!(
+        fixture.value(0, "local-draft").as_deref(),
+        Some("unfinished")
+    );
+    let records = &fixture.records;
+    let pending = records.read_checked(&binding.checkout.id, |doc| doc.pending_ops());
+    assert_eq!(pending.unwrap(), 0, "the word is a finished step");
+}
+
 #[test]
 fn native_history_entry_pointer_captures_before_discard() {
     let probe =

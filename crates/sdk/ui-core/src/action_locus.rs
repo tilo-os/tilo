@@ -46,6 +46,13 @@ pub(crate) fn draw_action_presence(
         if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
             continue;
         }
+        // A record whose whole surface is its narrowest target names no place a
+        // person could look at: the activity rail says what it does, in its own
+        // card, rather than a label at the surface's corner over whatever
+        // stands there (a window's own sidebar heading).
+        if !names_a_place(bounds, viewport) {
+            continue;
+        }
         let user = crate::permissions::UserId(interaction.actor.id.clone());
         let control = control_bounds(tree, bindings, &interaction, bounds).unwrap_or(bounds);
         // An agent's place is washed in its colour and framed in it, brighter the moment its step
@@ -65,16 +72,17 @@ pub(crate) fn draw_action_presence(
         );
         // An agent's marker wears the one tag that says who it is and what it
         // is doing; anyone else's outline is labelled beside it.
+        let ink = ink_around(tree, bounds, viewport);
         let place = crate::presence::MarkerPlace {
             locus: bounds,
             control,
-            ink: ink_around(tree, bounds, viewport),
+            ink: ink.clone(),
         };
         let marker =
             presence.draw_agent_action_marker(paint, &interaction, &place, viewport, surface, now);
         if marker.is_none() {
             let label = presence.interaction_status_label(&interaction);
-            presence.draw_action_label_within(paint, &user, &label, bounds, viewport);
+            presence.draw_action_label_within(paint, &user, &label, bounds, viewport, &ink);
         }
         if let Some(marker) = marker
             && presence.participant_kind(&user) == crate::presence::ParticipantKind::Agent
@@ -532,4 +540,36 @@ pub(crate) fn resource_bounds(
         && bounds.width() > 0.0
         && bounds.height() > 0.0)
         .then_some((bounds, widget))
+}
+
+/// Whether `bounds` names a place in `viewport` narrower than the surface itself: what a label
+/// beside a step points at. A step that resolves only to the whole surface has no such place,
+/// and its card stands in the activity rail instead.
+fn names_a_place(bounds: vello::kurbo::Rect, viewport: vello::kurbo::Rect) -> bool {
+    bounds.width() < viewport.width() - 1.0 || bounds.height() < viewport.height() - 1.0
+}
+
+#[cfg(test)]
+mod tests {
+    use vello::kurbo::Rect;
+
+    /// A step that resolves only to the whole surface names no place a label could point at, so
+    /// its card stands on the activity rail; anything narrower in either direction does.
+    #[test]
+    fn a_step_naming_no_place_is_left_to_the_activity_rail() {
+        let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        assert!(!super::names_a_place(viewport, viewport));
+        assert!(!super::names_a_place(
+            viewport.inflate(-0.5, -0.5),
+            viewport
+        ));
+        assert!(super::names_a_place(
+            Rect::new(0.0, 48.0, 1280.0, 800.0),
+            viewport
+        ));
+        assert!(super::names_a_place(
+            Rect::new(240.0, 0.0, 1280.0, 800.0),
+            viewport
+        ));
+    }
 }

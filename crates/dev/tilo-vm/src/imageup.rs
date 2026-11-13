@@ -1,16 +1,7 @@
 //! Moving a running dev VM onto another image with bootc: a dev image built on
-//! this host (`vm upgrade --from local`), a CI build (`--from ci:<tag>`: its
-//! published dev image, or one built here FROM its integration image) or any
-//! dev image from a registry.
-//!
-//! A local image travels as an OCI layout. `skopeo` writes it from podman's
-//! storage into a per-VM directory on the host, reusing every blob already
-//! there, so only new layers are written; `rsync` mirrors that directory to
-//! [`VM_LAYOUT`] in the VM, so only new blobs cross; and
-//! `bootc switch --transport oci` imports only the layers the VM's store lacks.
-//! No registry, no daemon on the host, and nothing hypervisor-specific: it
-//! needs only the SSH the rest of tilo-vm uses. The image the VM boots is the
-//! `podman build` output byte for byte, never a patched rootfs.
+//! this host (`vm upgrade --from local`), a CI build (`--from ci:<tag>`) or any
+//! dev image from a registry. A local image travels as an OCI layout mirrored
+//! into the VM, so only new blobs cross; no registry and no daemon on the host.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -21,8 +12,6 @@ use crate::error::CliError;
 use crate::hypervisor::{CommandLine, SshEndpoint};
 use crate::vmbuild::sh_quote;
 
-/// The tag of the locally built images: `TILO_LOCAL_TAG`, `latest` when unset,
-/// so builds from different checkouts on one host can keep their images apart.
 pub fn local_tag() -> Result<String, CliError> {
     parse_local_tag(std::env::var("TILO_LOCAL_TAG").ok().as_deref())
 }
@@ -45,47 +34,31 @@ fn parse_local_tag(value: Option<&str>) -> Result<String, CliError> {
     }
 }
 
-/// What `--from local` builds and moves the VM onto.
-///
-/// # Errors
-/// An invalid `TILO_LOCAL_TAG`.
 pub fn local_dev_image() -> Result<String, CliError> {
     Ok(format!("localhost/tilo-vm:{}", local_tag()?))
 }
 
-/// The production image the local dev image is built FROM.
-///
-/// # Errors
-/// An invalid `TILO_LOCAL_TAG`.
 pub fn local_base() -> Result<String, CliError> {
     Ok(format!("localhost/tilo:{}", local_tag()?))
 }
-/// The script `--from local` runs (relative to the worktree).
 pub const BUILD_SCRIPT: &str = "os/dev/build-dev-image.sh";
 /// The OCI layout in the VM that bootc switches to; in /var, so it survives
 /// the switch, and each upgrade only adds the blobs that changed.
 pub const VM_LAYOUT: &str = "/var/lib/tilo-vm/image";
 pub const LAYOUT_TAG: &str = "tilo-vm";
-/// The bootc image reference of [`VM_LAYOUT`].
 pub fn layout_imgref() -> String {
     format!("{VM_LAYOUT}:{LAYOUT_TAG}")
 }
 const LOCKS: &str = "/var/lib/tilo-vm/locks";
 
-/// What `vm upgrade --from` names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpgradeFrom {
-    /// `local`: build this worktree's dev image; `local:<image>`: one already
-    /// in podman's storage.
     Local { image: String, build: bool },
-    /// `ci:<tag>` or `sha:<commit>`: a CI build of the OS, by its `main-<sha7>`
-    /// (or release) tag.
     Ci { tag: String },
 }
 
 const FROM_FORMS: &str = "tilo-vm vm upgrade --from local (build this worktree's dev image)   |   --from ci:main-<sha7> or --from sha:<commit> (a CI build)   |   --from local:localhost/tilo-vm:<tag> (one already built)   |   --image registry.tilo.so/tilo/tilo-vm:<tag> (a published one)";
 
-/// Parse `--from`; a `sha:` is resolved through the worktree's git.
 pub fn parse_from(
     from: &str,
     worktree: Option<&crate::context::Worktree>,
@@ -111,11 +84,6 @@ pub fn parse_from(
     }
 }
 
-/// Where a CI build of `tag` can come from, in the order `vm upgrade` tries
-/// them: the dev images published for it (built on the unsigned integration
-/// image, then on a signed release), which the VM pulls itself; then the
-/// production images a dev image can be built FROM here: the integration image
-/// of a main build, then the signed release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CiCandidates {
     pub dev_images: Vec<String>,
@@ -123,7 +91,6 @@ pub struct CiCandidates {
 }
 
 pub fn ci_candidates(tag: &str, arch: &str) -> CiCandidates {
-    // `ci:main-1a2b3c4-x86_64` names the integration image's own tag.
     let tag = tag.strip_suffix(&format!("-{arch}")).unwrap_or(tag);
     let dev_tag = tag.strip_suffix("-ci").unwrap_or(tag);
     CiCandidates {
@@ -137,10 +104,6 @@ pub fn ci_candidates(tag: &str, arch: &str) -> CiCandidates {
     }
 }
 
-/// A board dev image (`os/Containerfile.board`, for a board's
-/// `/usr/lib/tilo/hardware-profile.json` id) is published only as
-/// `tilo-vm:<ref>-<sha7>-<board>`: sealed, with the board's device tree in
-/// its UKI, so nothing here can build one from a base.
 pub fn board_candidates(tag: &str, board: &str) -> CiCandidates {
     let tag = tag.strip_suffix(&format!("-{board}")).unwrap_or(tag);
     let dev_tag = tag.strip_suffix("-ci").unwrap_or(tag);
@@ -156,10 +119,6 @@ pub fn ci_commit(tag: &str) -> Option<&str> {
         .filter(|sha| sha.len() == 7 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// A commit that is not on main is found by listing the integration repository's tags:
-/// `tilo-ci:<ref>-<sha7>-<arch>` is an image a dev image can be built FROM. A board has none
-/// (its dev image is sealed with the board's device tree). `skopeo list-tags` output in,
-/// bases out; several refs sort by name so the choice is stable.
 pub fn ci_ref_bases(sha: &str, arch: &str, board: Option<&str>, ci_tags: &str) -> Vec<String> {
     if board.is_some() {
         return Vec::new();
@@ -190,14 +149,11 @@ pub fn list_tags_command(repository: &str) -> CommandLine {
     CommandLine::new("skopeo", &["list-tags"]).arg(format!("docker://{repository}"))
 }
 
-/// The local tag of a dev image built FROM a CI base.
 pub fn ci_dev_image(base: &str) -> String {
     let tag = base.rsplit_once(':').map_or(base, |(_, tag)| tag);
     format!("localhost/tilo-vm:ci-{tag}")
 }
 
-/// Does `reference` exist in its registry? (`skopeo inspect --raw` reads only
-/// the manifest.)
 pub fn exists_command(reference: &str) -> CommandLine {
     CommandLine::new("skopeo", &["inspect", "--raw"]).arg(format!("docker://{reference}"))
 }
@@ -215,14 +171,11 @@ pub fn is_dev_name(reference: &str) -> bool {
         })
 }
 
-/// What `podman image inspect` and a look inside say about a local image.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImageFacts {
     pub id: String,
     pub flavour: Option<String>,
-    /// A UKI under /boot/EFI/Linux: a sealed production image.
     pub sealed: bool,
-    /// The image's /usr/share/tilo-vm/base.json.
     pub base: Option<Value>,
 }
 
@@ -230,7 +183,6 @@ pub fn inspect_command(image: &str) -> CommandLine {
     CommandLine::new("podman", &["image", "inspect", image])
 }
 
-/// Read base.json and look for a UKI, in one throwaway container.
 pub fn probe_command(image_id: &str) -> CommandLine {
     CommandLine::new(
         "podman",
@@ -263,17 +215,11 @@ pub fn parse_inspect(json: &str) -> Result<(String, Option<String>), String> {
     Ok((id, flavour))
 }
 
-/// Where `tilo-vm image build` writes, under its output directory.
 pub const BUILT_LAYOUT: &str = "image";
-/// The dev disk `tilo-vm image build --disk` writes there.
 pub const BUILT_DISK: &str = "disk.qcow2";
 
-/// The script `image disk` runs (relative to the worktree): the build's disk
-/// step, with `TILO_SKIP_BUILD=1`.
 pub const DISK_SCRIPT: &str = "os/dev/build-image.sh";
 
-/// Copy a layout [`BUILT_LAYOUT`]-style (tag [`LAYOUT_TAG`]) into podman's
-/// storage as `image`.
 pub fn import_layout_command(layout: &Path, image: &str) -> CommandLine {
     CommandLine::new("skopeo", &["copy", "--quiet"])
         .arg(format!("oci:{}:{LAYOUT_TAG}", layout.display()))
@@ -297,8 +243,6 @@ pub fn is_auth_failure(bootc_stderr: &str) -> bool {
         .any(|needle| text.contains(needle))
 }
 
-/// Copy a registry image into the VM's host-side layout with this host's
-/// registry login (podman's or skopeo's `auth.json`), for `arch`.
 pub fn registry_export_command(
     image: &str,
     arch: &str,
@@ -317,14 +261,12 @@ pub fn registry_export_command(
     .arg(format!("oci:{}:{LAYOUT_TAG}", layout.display()))
 }
 
-/// The labels of a registry image, for `arch`, without pulling it.
 pub fn registry_inspect_command(image: &str, arch: &str) -> CommandLine {
     CommandLine::new("skopeo", &["inspect", "--override-arch"])
         .arg(crate::ci::podman_arch(arch))
         .arg(format!("docker://{image}"))
 }
 
-/// The `sh.tilo.image.flavour` label from `skopeo inspect` output.
 pub fn registry_flavour(inspect: &str) -> Option<String> {
     serde_json::from_str::<Value>(inspect)
         .ok()?
@@ -347,22 +289,14 @@ pub fn is_already_rollback(bootc_stderr: &str) -> bool {
     bootc_stderr.contains("same fs-verity digest as the existing Some(Rollback) deployment")
 }
 
-/// Is `path` an OCI image layout directory (what `--image <dir>` takes)?
 pub fn is_layout(path: &Path) -> bool {
     path.join("oci-layout").is_file() && path.join("index.json").is_file()
 }
 
-/// What `vm upgrade --image <layout>` checks, saved beside the layout as
-/// `<layout>.facts`: [`inspect_command`]'s output, a `@@probe` line and
-/// [`probe_command`]'s, as they were where the image was built.
 pub fn layout_facts_text(inspect: &str, probe: &str) -> String {
     format!("{}\n@@probe\n{probe}", inspect.trim_end())
 }
 
-/// The image's name and facts from [`layout_facts_text`].
-///
-/// # Errors
-/// Text without the marker, or inspect output that does not parse.
 pub fn parse_layout_facts(text: &str) -> Result<(String, ImageFacts), String> {
     let (inspect, probe) = text
         .split_once("\n@@probe\n")
@@ -385,7 +319,6 @@ pub fn parse_layout_facts(text: &str) -> Result<(String, ImageFacts), String> {
     Ok((name, facts))
 }
 
-/// Apply [`probe_command`]'s output to `facts`.
 pub fn parse_probe(output: &str, facts: &mut ImageFacts) {
     let (base, uki) = output.split_once("@@uki").unwrap_or((output, ""));
     facts.base = serde_json::from_str(base.trim()).ok();
@@ -443,9 +376,6 @@ fn text<'a>(value: Option<&'a Value>, key: &str) -> Option<&'a str> {
 
 /// Refuse an image whose production base is older than the one the VM runs;
 /// `Ok(Some(note))` when the two cannot be compared.
-///
-/// # Errors
-/// A base created before the VM's.
 pub fn check_base_age(
     image: &str,
     vm_base: Option<&Value>,
@@ -478,7 +408,6 @@ pub fn check_base_age(
     }
 }
 
-/// One bootc deployment, as `bootc status --json` reports it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Deployment {
     pub image: String,
@@ -524,10 +453,8 @@ pub fn short_digest(digest: &str) -> &str {
     digest.get(..19).unwrap_or(digest)
 }
 
-/// `bootc status --json`, reduced to what upgrade and rollback need.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BootcStatus {
-    /// The image the next boot follows: (image, transport).
     pub spec: Option<(String, String)>,
     pub booted: Option<Deployment>,
     pub staged: Option<Deployment>,
@@ -561,8 +488,6 @@ pub fn parse_bootc_status(json: &str) -> Result<BootcStatus, String> {
     })
 }
 
-/// The bootc command that stages `imgref`: `switch`, or `upgrade` when the VM
-/// already follows it (bootc treats a switch to the same spec as a no-op).
 pub fn stage_command(status: &BootcStatus, transport: &str, imgref: &str) -> Vec<String> {
     let follows = status
         .spec
@@ -597,30 +522,21 @@ pub fn bootc_line(words: &[&str]) -> String {
     esp_writable_for(&format!("bootc {command}"))
 }
 
-/// A subshell that runs the shell `command` with the ESP writable, as [`bootc_line`] does.
 fn esp_writable_for(command: &str) -> String {
     format!(
         "(ro=; if findmnt -n -o FSTYPE,OPTIONS /boot 2>/dev/null | grep -q '^vfat *ro,'; then ro=1; mount -o remount,rw /boot || exit 1; fi; {command}; rc=$?; [ -z \"$ro\" ] || mount -o remount,ro /boot; exit $rc)"
     )
 }
 
-/// The device's channel helper (os/usr/libexec/tilo-update-channel), and the first word of
-/// [`update_command`].
+/// The device's update-channel helper: `update_command`'s first word.
 pub const UPDATE_CHANNEL: &str = "/usr/libexec/tilo-update-channel";
 
-/// What `vm upgrade` runs to move a device onto a registry image: the device's own update path,
-/// the one its update timer runs. `Some(image)` pins that dev image in place of the device's
-/// channel until the channel moves on; `None` returns it to its channel. [`under_vm_lock`]
-/// turns it into the line.
 pub fn update_command(pin: Option<&str>) -> Vec<String> {
     let mut words = vec![UPDATE_CHANNEL.to_owned()];
     words.extend(pin.map(str::to_owned));
     words
 }
 
-/// [`update_command`] as a shell line: pin (or unpin), then `tilo-verified-update`, which
-/// switches to what the channel helper names and stages it as the timer would. An image that
-/// predates channels has no helper: bootc switches it (or upgrades what it follows) directly.
 fn update_line(pin: Option<&str>) -> String {
     let (follow, direct) = match pin {
         Some(image) => (
@@ -659,26 +575,16 @@ pub fn under_vm_lock(words: &[String]) -> String {
     )
 }
 
-/// The VM's own boot-entry pass, run right after bootc staged a deployment or
-/// reordered them. A deployment that has never booted well has to carry a
-/// boot loader try counter BEFORE the reboot into it: one that fails before
-/// userspace (a hung disk unlock, a crash in the initrd) never runs anything
-/// that could add it later, and without one the boot loader picks it again on
-/// every boot instead of going back to the previous deployment.
 pub const BOOT_ENTRIES: &str = "if [ -x /usr/libexec/tilo-deployment ]; then /usr/libexec/tilo-deployment entries 2>&1; echo \"@@entries $?\"; else echo '@@entries absent'; fi";
 
-/// What [`BOOT_ENTRIES`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntriesOutcome {
-    /// The pass ran: every deployment that needs a counter has one.
     Done,
     /// The image's pass found no boot loader layout: an image from before
     /// tilo-esp-generator mounts nothing at /boot or /boot/efi, so its pass
     /// cannot see the ESP even where sd-boot started from one.
     NoLayout,
-    /// The image has no tilo-deployment at all.
     Absent,
-    /// The pass failed; its output.
     Failed(String),
 }
 
@@ -737,7 +643,6 @@ echo "@@counted $n""#
     )
 }
 
-/// What [`count_staged_entry_script`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Counted {
     Entries(usize),
@@ -766,11 +671,9 @@ pub fn parse_counted(output: &str) -> Counted {
 /// Printed in place of bootc's status when the VM has no bootc.
 const NO_BOOTC: &str = "@@nobootc";
 
-/// A remote line that says whether the VM has bootc.
 pub const BOOTC_PROBE: &str =
     "if command -v bootc >/dev/null 2>&1; then echo bootc=yes; else echo bootc=no; fi";
 
-/// [`BOOTC_PROBE`]'s answer; `None` when it did not run.
 pub fn parse_bootc_probe(output: &str) -> Option<bool> {
     output.lines().find_map(|line| match line.trim() {
         "bootc=yes" => Some(true),
@@ -779,7 +682,6 @@ pub fn parse_bootc_probe(output: &str) -> Option<bool> {
     })
 }
 
-/// What `upgrade` reads from the VM before it changes anything.
 pub fn vm_facts_script() -> String {
     format!(
         "cat /proc/sys/kernel/random/boot_id; echo @@base; cat /usr/share/tilo-vm/base.json 2>/dev/null; echo; echo @@free; df -Pk /var | awk 'NR==2 {{print $4}}'; echo @@board; cat /usr/lib/tilo/hardware-profile.json 2>/dev/null; echo; echo @@bootc; if command -v bootc >/dev/null 2>&1; then {}; else echo {NO_BOOTC}; fi",
@@ -790,7 +692,6 @@ pub fn vm_facts_script() -> String {
 /// Why [`parse_vm_facts`] found no bootc status.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FactsError {
-    /// The VM has no bootc at all: not a bootc dev image.
     NoBootc,
     /// bootc ran but said nothing usable, or the output is cut short.
     Unreadable(String),
@@ -808,7 +709,6 @@ pub struct VmFacts {
 }
 
 impl VmFacts {
-    /// The CPU architecture the VM's image targets (from base.json), if it says.
     pub fn arch(&self) -> Option<String> {
         let target = self.base.as_ref()?.get("target")?.as_str()?;
         target
@@ -819,8 +719,6 @@ impl VmFacts {
     }
 }
 
-/// # Errors
-/// No bootc on the VM, or no bootc status in the output.
 pub fn parse_vm_facts(output: &str) -> Result<VmFacts, FactsError> {
     let cut = |what: &str| FactsError::Unreadable(what.to_owned());
     let (boot, rest) = output
@@ -854,7 +752,6 @@ pub fn parse_vm_facts(output: &str) -> Result<VmFacts, FactsError> {
     })
 }
 
-/// The host-side OCI layout for one VM.
 pub fn host_layout(vm: &str) -> PathBuf {
     tilo_paths::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
@@ -863,9 +760,6 @@ pub fn host_layout(vm: &str) -> PathBuf {
         .join(vm)
 }
 
-/// Write `image` from podman's storage into the layout. Blobs the layout
-/// already has are reused, and layers stay uncompressed: compressing costs far
-/// more than it saves on the way into a local VM.
 pub fn export_command(image: &str, layout: &Path, digest_file: &Path) -> CommandLine {
     CommandLine::new(
         "skopeo",
@@ -877,8 +771,6 @@ pub fn export_command(image: &str, layout: &Path, digest_file: &Path) -> Command
     .arg(format!("oci:{}:{LAYOUT_TAG}", layout.display()))
 }
 
-/// Mirror the layout into [`VM_LAYOUT`]: only new blobs cross, and blobs no
-/// longer referenced go, so the VM keeps one image's worth.
 pub fn rsync_command(
     layout: &Path,
     endpoint: &SshEndpoint,
@@ -928,7 +820,6 @@ fn blob_path(layout: &Path, digest: &str) -> Option<PathBuf> {
         .then(|| layout.join("blobs").join(algorithm).join(hex))
 }
 
-/// Every blob the layout's index reaches: manifests, configs, layers.
 pub fn referenced_blobs(layout: &Path) -> std::io::Result<BTreeSet<String>> {
     fn walk(layout: &Path, descriptor: &Value, seen: &mut BTreeSet<String>) -> std::io::Result<()> {
         let Some(digest) = descriptor.get("digest").and_then(Value::as_str) else {
@@ -980,8 +871,6 @@ pub fn referenced_blobs(layout: &Path) -> std::io::Result<BTreeSet<String>> {
     Ok(seen)
 }
 
-/// Keep only the tag this tool writes, then delete the blobs nothing
-/// references any more. Returns the bytes freed.
 pub fn prune_layout(layout: &Path) -> std::io::Result<u64> {
     let index_path = layout.join("index.json");
     let mut index: Value =
@@ -1020,7 +909,6 @@ pub fn prune_layout(layout: &Path) -> std::io::Result<u64> {
     Ok(freed)
 }
 
-/// Total size of the blobs the layout references.
 pub fn layout_bytes(layout: &Path) -> u64 {
     referenced_blobs(layout).map_or(0, |blobs| {
         blobs
@@ -1038,7 +926,6 @@ mod tests {
 
     use super::*;
 
-    /// `TILO_LOCAL_TAG` names the local images' tag, `latest` when unset; anything else is refused.
     #[test]
     fn local_tag_is_latest_unless_named() {
         assert_eq!(parse_local_tag(None).unwrap(), "latest");
@@ -1053,11 +940,8 @@ mod tests {
         }
     }
 
-    /// from-local builds and from-local-image does not; only dev names pass; production-named, unlabelled
-    /// and sealed images are refused with the fix; an older base is refused and an unknown age is a note.
     #[test]
     fn image_upgrades_accept_only_fresh_labelled_dev_images() {
-        // Phase: from_local_builds_and_from_local_image_does_not.
         {
             assert_eq!(
                 parse_from("local", None).unwrap(),
@@ -1085,7 +969,6 @@ mod tests {
             }
         }
 
-        // Phase: only_dev_names_pass.
         {
             for good in [
                 "localhost/tilo-vm:latest",
@@ -1105,7 +988,6 @@ mod tests {
             }
         }
 
-        // Phase: production_named_unlabelled_and_sealed_images_are_refused_with_the_fix.
         {
             let error = check_image("localhost/tilo:latest", &dev_facts()).unwrap_err();
             assert!(
@@ -1128,7 +1010,6 @@ mod tests {
             check_image("localhost/tilo-vm:x", &dev_facts()).unwrap();
         }
 
-        // Phase: an_older_base_is_refused_and_an_unknown_age_is_a_note.
         {
             let base = |digest: &str, created: &str| json!({ "image_digest": digest, "base_created": created, "base_image": "localhost/tilo:latest" });
             let running = base("sha256:aa", "2026-09-20T10:00:00Z");
@@ -1161,8 +1042,6 @@ mod tests {
         }
     }
 
-    /// A built layout's facts read back as the image's own would, and a layout directory is told
-    /// apart from a registry reference.
     #[test]
     fn built_layout_facts_read_as_the_images_own() {
         let inspect = "[{\"Id\": \"abc\", \"RepoTags\": [\"localhost/tilo-vm:latest\"], \"Labels\": {\"sh.tilo.image.flavour\": \"dev\"}}]\n";
@@ -1222,7 +1101,6 @@ mod tests {
         );
     }
 
-    /// A commit off main is found by its integration image's `<ref>-<sha7>-<arch>` tags.
     #[test]
     fn a_pull_request_commit_resolves_through_its_ref_tags() {
         assert_eq!(ci_commit("main-1a2b3c4"), Some("1a2b3c4"));
@@ -1243,11 +1121,8 @@ mod tests {
         );
     }
 
-    /// `--from ci:` and `--from sha:` name a CI tag, which resolves to published dev images, then
-    /// bases; a dev image built here from a CI base is a local dev name.
     #[test]
     fn ci_upgrade_sources_resolve_to_published_or_locally_built_dev_images() {
-        // Phase: from_ci_and_sha_name_a_ci_tag.
         {
             assert_eq!(
                 parse_from("ci:main-1a2b3c4", None).unwrap(),
@@ -1263,7 +1138,6 @@ mod tests {
             );
         }
 
-        // Phase: ci_candidates_try_published_dev_images_then_bases.
         {
             let expected = CiCandidates {
                 dev_images: vec!["registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64".into()],
@@ -1273,13 +1147,11 @@ mod tests {
                 ],
             };
             assert_eq!(ci_candidates("main-1a2b3c4", "x86_64"), expected);
-            // The integration image's own tag and the dev disk's -ci tag name the same build.
             assert_eq!(ci_candidates("main-1a2b3c4-x86_64", "x86_64"), expected);
             assert_eq!(ci_candidates("main-1a2b3c4-ci", "x86_64"), expected);
             for image in expected.dev_images {
                 assert!(is_dev_name(&image), "{image}");
             }
-            // A board device takes its board's image of the build, whatever tag form names it.
             let board = CiCandidates {
                 dev_images: vec!["registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-lenovo-83ed".into()],
                 bases: Vec::new(),
@@ -1294,7 +1166,6 @@ mod tests {
             assert!(is_dev_name(&board.dev_images[0]));
         }
 
-        // Phase: a_private_image_is_copied_through_the_host.
         {
             assert!(is_auth_failure(
                 "error: Switching: pulling: reading manifest main-1a2b3c4-lenovo-83ed: unauthorized: authentication required"
@@ -1321,7 +1192,6 @@ mod tests {
             assert_eq!(registry_flavour(r#"{"Labels":null}"#), None);
         }
 
-        // Phase: a_dev_image_built_from_a_ci_base_is_a_local_dev_name.
         {
             let image = ci_dev_image("registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64");
             assert_eq!(image, "localhost/tilo-vm:ci-main-1a2b3c4-x86_64");
@@ -1342,11 +1212,8 @@ mod tests {
         }
     }
 
-    /// Inspect and probe output become facts; bootc status reduces to spec and deployments; VM facts parse
-    /// in one round trip; the bootc probe answers yes, no or nothing.
     #[test]
     fn guest_facts_are_probed_in_one_round_trip() {
-        // Phase: inspect_and_probe_output_become_facts.
         {
             let (id, flavour) = parse_inspect(
                 r#"[{"Id":"4bd2","Labels":{"sh.tilo.image.flavour":"dev","x":"y"}}]"#,
@@ -1371,7 +1238,6 @@ mod tests {
             assert!(facts.base.is_none());
         }
 
-        // Phase: bootc_status_reduces_to_spec_and_deployments.
         {
             let status = parse_bootc_status(STATUS).unwrap();
             assert_eq!(status.spec, Some((layout_imgref(), "oci".to_owned())));
@@ -1388,7 +1254,6 @@ mod tests {
             assert!(parse_bootc_status("not json").is_err());
         }
 
-        // Phase: vm_facts_parse_in_one_round_trip.
         {
             let output = format!(
                 "b00t\n@@base\n{{\"image_digest\":\"sha256:aa\",\"target\":\"aarch64-unknown-linux-gnu\"}}\n\n@@free\n1024\n@@board\n{{\"schema_version\":1,\"id\":\"lenovo-83ed\"}}\n@@bootc\n{STATUS}\n"
@@ -1404,7 +1269,6 @@ mod tests {
                 parse_vm_facts("b00t\n@@base\n\n@@free\n\n@@board\n\n@@bootc\n"),
                 Err(FactsError::Unreadable(_))
             ));
-            // No bootc at all is its own answer, not a JSON parse error.
             assert_eq!(
                 parse_vm_facts("b00t\n@@base\n\n@@free\n1\n@@board\n\n@@bootc\n@@nobootc\n")
                     .unwrap_err(),
@@ -1412,7 +1276,6 @@ mod tests {
             );
         }
 
-        // Phase: the_bootc_probe_answers_yes_no_or_nothing.
         {
             assert_eq!(parse_bootc_probe("bootc=yes\n"), Some(true));
             assert_eq!(parse_bootc_probe("motd\nbootc=no\n"), Some(false));
@@ -1427,15 +1290,12 @@ mod tests {
         "booted":{"image":{"image":{"image":"/var/lib/tilo-vm/image:tilo-vm","transport":"oci"},"imageDigest":"sha256:1111111111111111111111"},"pinned":false},
         "rollback":{"image":{"image":{"image":"localhost/tilo-vm:standin-a","transport":"registry"},"imageDigest":"sha256:2222222222222222222222"}}}}"#;
 
-    /// Staging switches once then upgrades; transfer commands reuse blobs and hold the image lock; the
-    /// Windows image layout is a local MSYS2 rsync operand; pruning keeps what the tag reaches.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn image_transfer_stages_once_and_prunes_only_unreachable_blobs() {
-        // Phase: staging_switches_once_then_upgrades.
         {
             let fresh = BootcStatus {
                 spec: Some(("localhost/tilo-vm:standin-a".into(), "registry".into())),
@@ -1462,7 +1322,6 @@ mod tests {
                 "{locked}"
             );
             assert!(locked.contains("bootc upgrade; rc=$?"), "{locked}");
-            // A registry image goes the device's own update way: pinned, then its verified update.
             let pinned = under_vm_lock(&update_command(Some("registry.tilo.so/tilo/tilo-vm:x")));
             assert!(
                 pinned.contains("/usr/libexec/tilo-update-channel pin")
@@ -1486,7 +1345,6 @@ mod tests {
             assert!(vm_facts_script().contains(&format!("then {line}; else echo @@nobootc; fi")));
         }
 
-        // Phase: transfer_commands_reuse_blobs_and_hold_the_image_lock.
         {
             let export = export_command(
                 "localhost/tilo-vm:latest",
@@ -1521,7 +1379,6 @@ mod tests {
             );
         }
 
-        // Phase: windows_image_layout_is_a_local_msys2_rsync_operand.
         #[cfg(windows)]
         {
             let endpoint = SshEndpoint {
@@ -1537,7 +1394,6 @@ mod tests {
             );
         }
 
-        // Phase: pruning_keeps_what_the_tag_reaches.
         {
             let dir = tempfile::tempdir().unwrap();
             let layout = dir.path();
@@ -1601,7 +1457,6 @@ mod tests {
             ),
             EntriesOutcome::Done
         );
-        // An image from before tilo-esp-generator, and the current wording.
         assert_eq!(
             parse_entries(
                 "tilo-deployment: no systemd-boot layout — nothing to maintain\n@@entries 0\n"

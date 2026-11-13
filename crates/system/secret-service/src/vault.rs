@@ -13,7 +13,7 @@ use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zeroize::Zeroize;
 
-use crate::app::{AppId, Trust};
+use crate::app::{CallerId, Trust};
 
 /// The vault layout this build writes.
 pub const VAULT_VERSION: u32 = 1;
@@ -86,7 +86,7 @@ impl<'de> Deserialize<'de> for SecretBytes {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Owner {
     /// Made by this identity; only it reads it.
-    App(AppId),
+    App(CallerId),
     /// Brought over from an older keyring. Apps of the system read it; an
     /// application the person merely runs does not.
     Imported,
@@ -95,7 +95,7 @@ pub enum Owner {
 impl Owner {
     /// Whether `caller` may see an item with this owner.
     #[must_use]
-    pub fn admits(&self, caller: &AppId) -> bool {
+    pub fn admits(&self, caller: &CallerId) -> bool {
         match self {
             Self::App(owner) => owner == caller,
             Self::Imported => caller.trust() == Trust::System,
@@ -154,8 +154,8 @@ pub struct Vault {
     pub version: u32,
     pub collections: BTreeMap<String, Collection>,
     pub aliases: BTreeMap<String, String>,
-    /// Keyed by [`AppId`].
-    pub apps: BTreeMap<AppId, AppRecord>,
+    /// Keyed by [`CallerId`].
+    pub apps: BTreeMap<CallerId, AppRecord>,
     /// The portal's per-application master secrets, keyed by the app's
     /// package id.
     pub sandbox_secrets: BTreeMap<String, SecretBytes>,
@@ -216,8 +216,8 @@ mod tests {
 
     #[test]
     fn imported_items_are_for_the_system_and_own_items_for_their_owner() {
-        let system = AppId::parse("binary:/usr/bin/chromium").unwrap();
-        let local = AppId::parse("local-process:/home/me/tool").unwrap();
+        let system = CallerId::parse("binary:/usr/bin/chromium").unwrap();
+        let local = CallerId::parse("local-process:/home/me/tool").unwrap();
         assert!(Owner::Imported.admits(&system));
         assert!(!Owner::Imported.admits(&local));
         assert!(Owner::App(local.clone()).admits(&local));

@@ -1,13 +1,11 @@
-//! The namespace plane: an Automerge-backed move-tree CRDT (Kleppmann model).
-//! Nodes are keyed by a stable `NodeId`, not path, with an explicit `parent`
-//! register, so rename/move/delete are real move ops: no duplicate parents,
-//! delete reparents to the `TRASH` sentinel (a concurrently-created child ends
-//! up trashed, never dangling), and a concurrent cross-move cycle is
-//! deterministically broken by [`Namespace::resolve`] (lowest-id node in the
-//! cycle reverts to `prev_parent`/`ROOT`), so every peer converges identically.
+//! The namespace plane: an Automerge-backed move-tree CRDT, with nodes keyed by a
+//! stable `NodeId` and an explicit `parent` register, so rename, move and delete are
+//! real move operations: no duplicate parents, delete reparents to the `TRASH`
+//! sentinel, and a concurrent cross-move cycle is deterministically broken by
+//! [`Namespace::resolve`], so every peer converges identically.
 //!
-//! Inode numbers are a local `NodeId`<->`u64` index; renames keep the node id,
-//! so the inode stays stable across renames.
+//! Inode numbers are a local `NodeId` to `u64` index; a rename keeps the node id, so
+//! the inode stays stable.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, UNIX_EPOCH};
@@ -27,15 +25,14 @@ use uuid::Uuid;
 /// A document node's field naming, by content id, the bytes last written to its file
 /// ([`Namespace::document_written`]).
 const VERBATIM: &str = "verbatim";
-/// The content id of the document's projection when [`VERBATIM`] was written: the file is those
-/// bytes while the projection still is this.
+/// The content id of the document's projection when [`VERBATIM`] was written: the file
+/// is those bytes while the projection still is this.
 const VERBATIM_READS: &str = "verbatim_reads";
 
 pub const ROOT_INO: u64 = 1;
-/// Sentinel parent for the tree root (not materialized as a node).
 pub use fs_protocol::tree::ROOT_ID;
-// The document's layout is `fs_protocol::tree`'s: the record that carries the
-// tree reads the same document the mount writes.
+// The document's layout is `fs_protocol::tree`'s: the record that carries the tree reads
+// the same document the mount writes.
 use fs_protocol::tree::{
     CONTENT_REVISION_KEY, NODES_KEY, PLACEMENT_NAME_KEY, RECORD_ID_KEY, ROOT_RECORD_ID_KEY,
     TRASH_ID,
@@ -44,9 +41,8 @@ const RECORD_ID_MIGRATION_DOMAIN: &[u8] = b"tilo.collaborative-fs.namespace-reco
 /// Prefix of a node id derived from its stable record id, so every device
 /// independently rebuilding the same record log creates the same node object.
 const RECORD_NODE_ID_PREFIX: &str = "record:";
-/// Bounded fixed-point rounds for sibling name conflicts. Each round a losing
-/// record gets a longer, record-id-specific name, so a directory with N
-/// records settles in at most a few dozen rounds in practice.
+/// Bounded fixed-point rounds for sibling name conflicts: each round gives a losing
+/// record a longer, record-id-specific name, so a directory settles in a few dozen rounds.
 const MAX_STRUCTURAL_CONFLICT_ROUNDS: usize = 64;
 const STRUCTURAL_CONFLICT_MARKER: &[u8] = b".sync-conflict-";
 
@@ -72,8 +68,6 @@ pub struct LiveRecordBlobRoots {
     pub thumbnail: Option<Hash>,
 }
 
-/// One live node naming content: its path (for path-scoped grants), its
-/// record (for record-scoped grants) and the blobs it names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LiveBlobOwner {
     pub path: String,
@@ -169,7 +163,6 @@ pub struct Entry {
     pub author: String,
 }
 
-/// The fields of an [`Entry`] that serve FUSE attributes and content reads.
 #[derive(Clone, Copy, Debug)]
 struct NodeMeta {
     record_id: FileRecordId,
@@ -179,36 +172,31 @@ struct NodeMeta {
     mtime: u64,
 }
 
-/// What [`Namespace::inode_view`] is asked for.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct InodeQuery {
-    /// Also describe an inode no longer reachable from the root, as a kernel
-    /// handle opened before its unlink or replacement may.
+    /// Also describe an inode no longer reachable from the root, as a kernel handle
+    /// opened before its unlink or replacement may.
     pub unlinked: bool,
-    /// Build the inode's absolute path, for the ACL check.
     pub path: bool,
 }
 
-/// One inode as a single FUSE request sees it, read under one namespace
-/// lock. See [`Namespace::inode_view`].
+/// One inode as a single FUSE request sees it, read under one namespace lock
+/// ([`Namespace::inode_view`]).
 #[derive(Clone, Debug)]
 pub(crate) struct InodeView {
     pub attr: FileAttr,
     pub hash: Option<Hash>,
-    /// Reachable from the root, as [`Namespace::getattr`] requires.
     pub live: bool,
-    /// The absolute path, when asked for and the inode is live.
     pub path: Option<String>,
-    /// A CRDT-backed document whose bytes are its export: a codec under the
-    /// legacy content authority.
+    /// A CRDT-backed document whose bytes are its export: a codec under the legacy
+    /// content authority.
     pub document: bool,
 }
 
 /// One authoritative, path-current row in the namespace-owned record index.
 ///
-/// The record UUID is the durable identity. `path` is deliberately projection
-/// metadata: it is replaced on a rename/move and is never accepted as an
-/// authority token by a caller.
+/// The record UUID is the durable identity. `path` is projection metadata: it is
+/// replaced on a rename or move and never accepted as an authority token.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IndexedRecord {
     pub record_id: FileRecordId,
@@ -218,8 +206,6 @@ pub struct IndexedRecord {
     pub is_dir: bool,
 }
 
-/// One node's row of the record index, read from its document once by
-/// [`Namespace::read_nodes_once`].
 #[derive(Clone)]
 struct NodeRow {
     record_id: Option<FileRecordId>,
@@ -228,27 +214,23 @@ struct NodeRow {
     is_dir: bool,
 }
 
-/// Everything one walk over the document's nodes yields: the structural index,
-/// each node's index row, and how many nodes carry each record id.
 struct NodeWalk {
     tree: TreeIndex,
     rows: HashMap<String, NodeRow>,
     occurrences: HashMap<FileRecordId, usize>,
 }
 
-/// Structural index over every node in the document: where each node sits
-/// and, per parent, its children by name. `lookup`, `readdir` and name checks
-/// consult it instead of scanning every node. Local placement writes update
-/// it node by node; every opaque document import rebuilds it.
+/// Structural index over every node in the document: where each node sits and, per
+/// parent, its children by name. `lookup`, `readdir` and name checks consult it instead
+/// of scanning every node. Local placement writes update it node by node; an opaque
+/// document import rebuilds it.
 #[derive(Clone, Debug, Default)]
 struct TreeIndex {
     placement: HashMap<String, (String, FileNameV1)>,
     children: HashMap<String, BTreeMap<FileNameV1, BTreeSet<String>>>,
-    /// The nodes carrying each stable record id, live or trashed. A node's
-    /// record id is written once, when the node is created or migrated.
+    /// The nodes carrying each stable record id, live or trashed; a node's record id is
+    /// written once, when the node is created or migrated.
     records: HashMap<FileRecordId, BTreeSet<String>>,
-    /// The record id each node carries, so a delta that moves one knows
-    /// which record identities it changed hands between.
     record_of: HashMap<String, FileRecordId>,
 }
 
@@ -318,7 +300,6 @@ impl TreeIndex {
         self.placement.insert(id.to_string(), (parent, name));
     }
 
-    /// Nodes placed under `parent` as `name`, in id order.
     fn named<'a>(&'a self, parent: &str, name: &[u8]) -> impl Iterator<Item = &'a String> {
         let name = FileNameV1::from(name.to_vec());
         self.children
@@ -328,7 +309,6 @@ impl TreeIndex {
             .flatten()
     }
 
-    /// Every node placed under `parent`, in (name, id) order.
     fn children<'a>(&'a self, parent: &str) -> impl Iterator<Item = &'a String> {
         self.children
             .get(parent)
@@ -338,9 +318,8 @@ impl TreeIndex {
     }
 }
 
-/// Order-independent digest of the record index: the wrapping 256-bit sum of
-/// one digest per row, so adding or removing a row updates it in O(1)
-/// instead of rehashing every row.
+/// Order-independent digest of the record index: the wrapping 256-bit sum of one digest
+/// per row, so adding or removing a row updates it in O(1) instead of rehashing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct RecordIndexDigest([u64; 4]);
 
@@ -389,8 +368,8 @@ impl RecordIndexDigest {
 
 #[derive(Clone)]
 pub struct Namespace {
-    /// The document; its every change is announced to
-    /// [`Self::subscribe_changes`] (see [`changes`]).
+    /// The document; its every change is announced to [`Self::subscribe_changes`]
+    /// ([`changes`]).
     doc: ChangeTrackedDoc,
     nodes: ObjId,
     ino_to_id: HashMap<u64, String>,
@@ -398,62 +377,53 @@ pub struct Namespace {
     next_ino: u64,
     author: String,
     next_id: u64,
-    /// Stable-record catalogue used by the mount's paged record projection.
-    /// It is updated with structural mutations rather than being reconstructed
-    /// by every xattr manifest/page request.
+    /// Stable-record catalogue for the mount's paged record projection, updated with
+    /// structural mutations rather than rebuilt by every page request.
     record_index: BTreeMap<FileRecordId, IndexedRecord>,
     record_index_order: Vec<FileRecordId>,
     record_index_revision: String,
-    /// Stable record identities that are currently multiply bound.  They are
-    /// deliberately absent from the public index until a full reconciliation
-    /// proves the ambiguity gone.
+    /// Stable record identities that are currently multiply bound; they stay absent from
+    /// the public index until a full reconciliation proves the ambiguity gone.
     record_index_ambiguous: HashSet<FileRecordId>,
     record_index_digest: RecordIndexDigest,
     tree: TreeIndex,
-    /// Every node carries a record id. Local creation always writes one, so
-    /// only a document import can clear this (and each import re-runs the
-    /// migration), which keeps `save_incremental` from rescanning all nodes.
+    /// Every node carries a record id. Local creation always writes one, so only a
+    /// document import can clear this (and each import re-runs the migration), which keeps
+    /// `save_incremental` from rescanning all nodes.
     record_ids_complete: bool,
-    /// Nodes a delta placed since the last resolution: the only nodes a
-    /// cycle can newly run through, so only they are searched. The next
-    /// resolution clears it, and it never holds more than the tree.
+    /// Nodes a delta placed since the last resolution: the only nodes a cycle can newly
+    /// run through. The next resolution clears it, and it never holds more than the tree.
     placed_since_resolve: HashSet<String>,
-    /// A document read as saved may carry a cycle no resolution has run on
-    /// yet, so the next resolution scans it whole, once.
+    /// A document read as saved may carry a cycle no resolution has run on yet, so the
+    /// next resolution scans it whole, once.
     cycle_scan_pending: bool,
-    /// While set (to the heads the batch began at, and the changes not yet
-    /// taken then), [`Self::save_incremental`] returns nothing, so a batch
-    /// of changes becomes one delta when it ends. Encoding a delta
-    /// regenerates its changes from the op set (a pass over the document),
-    /// so one per changed file is quadratic in a changeset.
+    /// While set (to the heads the batch began at, and the changes not yet taken then),
+    /// [`Self::save_incremental`] returns nothing, so a batch of changes becomes one
+    /// delta. Encoding a delta regenerates its changes from the op set, so one per changed
+    /// file is quadratic in a changeset.
     #[cfg(test)]
     record_index_rebuilds: u64,
-    /// Changes whenever changes another replica made are merged into the
-    /// document. Concurrent edits, and so content conflicts, can only arrive
-    /// that way: this replica's own changes are causally ordered. Drawn from
-    /// a process-wide counter so no two instances share a value.
+    /// Changes whenever changes another replica made are merged into the document, where
+    /// concurrent edits and content conflicts can only arrive. Drawn from a process-wide
+    /// counter so no two instances share a value.
     merge_generation: u64,
-    /// Calls of [`crate::conflict::detect`] on this namespace.
     #[cfg(test)]
     conflict_scans: std::sync::Arc<std::sync::atomic::AtomicU64>,
     #[cfg(test)]
     record_index_page_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
     #[cfg(test)]
     node_entry_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    /// Node objects looked up in the document; see [`Self::node_lookup_count`].
     node_lookups: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
-/// Source of `Namespace::merge_generation` values.
 static NEXT_MERGE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 fn next_merge_generation() -> u64 {
     NEXT_MERGE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Cheap fingerprint of a [`Namespace`]: its document heads. Equal tokens mean
-/// no node, path, hash or content revision changed, so a background reconciler
-/// can skip a pass without walking the namespace.
+/// Cheap fingerprint of a [`Namespace`]: its document heads. Equal tokens mean no node,
+/// path, hash or content revision changed, so a reconciler can skip a pass.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NamespaceChangeToken {
     heads: Vec<automerge::ChangeHash>,
@@ -495,9 +465,9 @@ fn record_node_id(record_id: FileRecordId) -> String {
     format!("{RECORD_NODE_ID_PREFIX}{}", record_id.0)
 }
 
-/// A bounded, valid sibling name for a record that lost a name to a smaller
-/// stable record id. The record id makes the choice independent of arrival
-/// order and collision-free without a local counter.
+/// A bounded, valid sibling name for a record that lost a name to a smaller stable record
+/// id. The record id makes the choice independent of arrival order and collision-free
+/// without a local counter.
 fn structural_conflict_name(name: &[u8], record_id: FileRecordId) -> FileNameV1 {
     let suffix = format!(
         "{}{}",
@@ -536,8 +506,8 @@ fn read_u64(doc: &AutoCommit, obj: &ObjId, key: &str) -> u64 {
 }
 
 impl Namespace {
-    /// A namespace over `doc` whose `nodes` map is already in place, with
-    /// only the root bound and every derived index empty.
+    /// A namespace over `doc` whose `nodes` map is already in place, with only the root
+    /// bound and every derived index empty.
     fn over(
         doc: AutoCommit,
         nodes: ObjId,
@@ -581,9 +551,6 @@ impl Namespace {
         Ok(ns)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if the fresh document's root `nodes` map cannot be created.
     pub fn new(author: impl Into<String>) -> Result<Self, automerge::AutomergeError> {
         let mut doc = AutoCommit::new();
         let nodes = doc.put_object(&ROOT, "nodes", ObjType::Map)?;
@@ -596,9 +563,6 @@ impl Namespace {
         Ok(ns)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `data` is not a valid automerge document, or its root `nodes` map can't be created.
     pub fn from_bytes(
         author: impl Into<String>,
         data: &[u8],
@@ -635,12 +599,12 @@ impl Namespace {
         }
         self.doc.save()
     }
-    /// Finish a mutation: every node it made has its stable record id before
-    /// anything reads the document (`save`, `changes_since`).
+    /// Finish a mutation: every node it made has its stable record id before anything
+    /// reads the document (`save`, `changes_since`).
     ///
-    /// INVARIANT: pair every mutation with its `note_change` inside the same
-    /// `Namespace` lock scope, so the ids of a change are there before another
-    /// change's `save` folds them.
+    /// INVARIANT: pair every mutation with its `note_change` inside the same `Namespace`
+    /// lock scope, so the ids of a change are there before another change's `save` folds
+    /// them.
     pub fn note_change(&mut self) {
         if !self.record_ids_complete {
             self.ensure_record_ids();
@@ -648,13 +612,11 @@ impl Namespace {
     }
 
     /// Changes since the last `save_incremental`/load/merge, advancing the shared
-    /// automerge watermark. For callers that carry the delta itself (a staged
-    /// transaction); a plain mutation follows [`Self::note_change`].
+    /// automerge watermark.
     ///
     /// INVARIANT: pair every mutation with its `save_incremental` inside the same
-    /// `Namespace` lock scope — the watermark is one shared cursor, so a mutation
-    /// saved outside that scope can have its delta silently swallowed by a
-    /// concurrent remote-apply.
+    /// `Namespace` lock scope: the watermark is one shared cursor, so a mutation saved
+    /// outside that scope can have its delta swallowed by a concurrent remote apply.
     pub fn save_incremental(&mut self) -> Vec<u8> {
         self.note_change();
         self.doc.save_incremental()
@@ -676,9 +638,6 @@ impl Namespace {
         let _ = self.doc.save_incremental();
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `other`'s document cannot be merged into this one.
     pub fn merge_doc(&mut self, other: &mut Namespace) -> Result<(), automerge::AutomergeError> {
         let before = self.doc.get_heads();
         self.doc.arm_patches();
@@ -691,7 +650,8 @@ impl Namespace {
         Ok(())
     }
 
-    /// Apply a remote delta: advance the watermark, resolve, and return the resolution delta to broadcast (empty if none).
+    /// Apply a remote delta: advance the watermark, resolve, and return the resolution
+    /// delta to broadcast (empty if none).
     pub fn apply_remote_and_resolve(
         &mut self,
         data: &[u8],
@@ -709,9 +669,6 @@ impl Namespace {
         Ok(self.doc.save_incremental())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `data` is not a valid automerge document, or cannot be merged into this one.
     pub fn merge_remote_and_resolve(
         &mut self,
         data: &[u8],
@@ -730,21 +687,13 @@ impl Namespace {
         Ok(self.doc.save_incremental())
     }
 
-    /// Take in a tree record's whole document, as a mount joins the tree its
-    /// workspace keeps.
+    /// Take in a tree record's whole document, as a mount joins the tree its workspace
+    /// keeps.
     ///
-    /// A namespace that holds no node of its own is no replica of the record:
-    /// it is a mount that has been given no tree yet, and it takes the
-    /// record's document as its own — the record's nodes, under the record's
-    /// own root identity, rather than a second empty tree created beside them
-    /// and merged. One that holds nodes already is a replica, and the record
-    /// merges into it. The caller publishes what this device then holds that
-    /// the record does not: nothing, for a document taken as it is.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `data` is not a valid automerge document, or cannot
-    /// be merged into this one.
+    /// A namespace that holds no node of its own is no replica of the record: it takes the
+    /// record's document as its own, under the record's root identity, rather than merging
+    /// into a second empty tree. One that holds nodes already is a replica, and the record
+    /// merges into it.
     pub fn adopt_or_merge_remote_and_resolve(
         &mut self,
         data: &[u8],
@@ -753,12 +702,11 @@ impl Namespace {
             return self.merge_remote_and_resolve(data);
         }
         let mut adopted = AutoCommit::load(data)?;
-        // A record no mount has written holds no tree: nothing to take.
         let Some((Value::Object(ObjType::Map), nodes)) = adopted.get(&ROOT, NODES_KEY)? else {
             return Ok(Vec::new());
         };
-        // The device keeps writing as itself: the document's actor is this
-        // mount's, whatever the devices before it wrote as.
+        // The device keeps writing as itself: the document's actor is this mount's, whatever
+        // the devices before it wrote as.
         adopted.set_actor(self.doc.get_actor().clone());
         self.doc.replace_document(adopted);
         self.nodes = nodes;
@@ -776,30 +724,28 @@ impl Namespace {
         Ok(Vec::new())
     }
 
-    /// Whether this namespace holds a tree of its own: a node a mount here
-    /// created, rather than only the empty map a fresh document starts with.
+    /// Whether this namespace holds a tree of its own, rather than only the empty map a
+    /// fresh document starts with.
     #[must_use]
     pub fn holds_tree(&self) -> bool {
         self.doc.keys(&self.nodes).next().is_some()
     }
 
-    /// Moves [`Self::merge_generation`] on when a merge since `before`
-    /// brought changes.
+    /// Moves [`Self::merge_generation`] on when a merge since `before` brought changes.
     fn note_merge(&mut self, before: &[automerge::ChangeHash]) {
         if self.doc.get_heads() != before {
             self.merge_generation = next_merge_generation();
         }
     }
 
-    /// Changes whenever changes another replica made were merged in, and
-    /// only then: equal values mean no new content conflict can have
-    /// arrived, so a reconciler can skip [`crate::conflict::detect`].
+    /// Changes whenever changes another replica made were merged in, and only then: equal
+    /// values mean no new content conflict can have arrived, so a reconciler can skip
+    /// [`crate::conflict::detect`].
     #[must_use]
     pub fn merge_generation(&self) -> u64 {
         self.merge_generation
     }
 
-    /// Counts a [`crate::conflict::detect`] scan.
     #[cfg(test)]
     pub(crate) fn note_conflict_scan(&self) {
         self.conflict_scans
@@ -812,18 +758,15 @@ impl Namespace {
         map_at(&self.doc, &self.nodes, id)
     }
 
-    /// Node objects looked up in the document so far: the unit of work of
-    /// every metadata read, so a test can bound what a listing costs.
     #[must_use]
     pub fn node_lookup_count(&self) -> u64 {
         self.node_lookups.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Reconstruct the index once while loading or after an opaque remote
-    /// Automerge merge.  Serving a record-index page never calls this: page
-    /// work is a slice of `record_index`, not a document traversal.  Every
-    /// mutation this replica makes on its own refreshes only the nodes it
-    /// changed ([`Self::index_refresh_node`]).
+    /// Reconstruct the index once while loading or after an opaque remote merge. Serving a
+    /// record-index page never calls this: page work is a slice of `record_index`. Every
+    /// mutation this replica makes on its own refreshes only the nodes it changed
+    /// ([`Self::index_refresh_node`]).
     fn rebuild_record_index(&mut self) {
         let NodeWalk {
             tree,
@@ -852,9 +795,8 @@ impl Namespace {
                 } else {
                     format!("{parent_path}/{}", escape_path_name(item.name.as_bytes()))
                 };
-                // Traverse all structurally reachable nodes, even a legacy
-                // duplicate-ID node.  Only the unique stable record itself is
-                // eligible for the public index.
+                // Traverse all structurally reachable nodes, even a legacy duplicate-ID node;
+                // only the unique stable record is eligible for the public index.
                 queue.push_back((id.clone(), path.clone()));
                 let Some(record_id) = item.record_id else {
                     continue;
@@ -892,11 +834,10 @@ impl Namespace {
         }
     }
 
-    /// The structural index of every node, read from the document once per
-    /// node: its placement, name, kind and record id come from the same
-    /// object. Opening a namespace and every received peer delta rebuild
-    /// through here, so this is the per-node cost of both
-    /// (`Self::node_lookup_count` is the work the performance gate bounds).
+    /// The structural index of every node, read from the document once per node. Opening a
+    /// namespace and every received peer delta rebuild through here, so this is the
+    /// per-node cost of both, and `Self::node_lookup_count` is the work the performance
+    /// gate bounds.
     fn read_nodes_once(&self) -> NodeWalk {
         let parse_record_id = |value: String| Uuid::parse_str(&value).ok().map(FileRecordId);
         let mut rows = HashMap::new();
@@ -907,9 +848,8 @@ impl Namespace {
                 continue;
             };
             let node_record_id = str_at(&self.doc, &node, RECORD_ID_KEY).and_then(parse_record_id);
-            // `record_id_for_id` answers the reserved root id from the
-            // document root and every other node from its own object; the
-            // structural index bound the node's own key.
+            // `record_id_for_id` answers the reserved root id from the document root and every
+            // other node from its own object; the structural index bound the node's own key.
             let record_id = if id == ROOT_ID {
                 str_at(&self.doc, &ROOT, ROOT_RECORD_ID_KEY).and_then(parse_record_id)
             } else {
@@ -950,10 +890,9 @@ impl Namespace {
         }
     }
 
-    /// Fold what an apply brought into the structural index and the
-    /// catalogue: the nodes the patches touched, and the subtrees a
-    /// placement change moved. Receiving one of a peer's edits therefore
-    /// costs that edit, not the workspace; only opening a document reads
+    /// Fold what an apply brought into the structural index and the catalogue: the nodes the
+    /// patches touched, and the subtrees a placement change moved, so receiving one of a
+    /// peer's edits costs that edit rather than the workspace. Only opening a document reads
     /// every node ([`Self::rebuild_record_index`]).
     ///
     /// Takes the patches the caller armed before the apply
@@ -961,9 +900,8 @@ impl Namespace {
     fn index_after_apply(&mut self) {
         let patches = self.doc.take_patches();
         if self.root_record_id().is_none() {
-            // A document root without a record identity is a legacy snapshot
-            // migrating through a peer: its node ids are derived for the
-            // whole document, which is the load path.
+            // A document root without a record identity is a legacy snapshot migrating through
+            // a peer: its node ids are derived for the whole document, which is the load path.
             self.ensure_record_ids();
             self.rebuild_record_index();
             self.doc.disarm_patches();
@@ -978,8 +916,6 @@ impl Namespace {
         self.index_nodes(&touched);
     }
 
-    /// The node ids a set of patches touched: keys added to or removed from
-    /// the `nodes` map, and nodes whose own map changed.
     fn patched_nodes(&self, patches: &[automerge::Patch]) -> HashSet<String> {
         let mut ids = HashSet::new();
         for patch in patches {
@@ -1002,14 +938,12 @@ impl Namespace {
         ids
     }
 
-    /// Bring the structural index and the catalogue rows of `touched` in
-    /// line with the document, and nothing else.
     fn index_nodes(&mut self, touched: &HashSet<String>) {
         let mut records = HashSet::new();
         let mut moved = Vec::new();
         if touched.contains(ROOT_ID) {
-            // The reserved id answers to the document root's record, so its
-            // row and the root's ambiguity move with it.
+            // The reserved id answers to the document root's record, so its row and the root's
+            // ambiguity move with it.
             records.extend(self.root_record_id());
         }
         for id in touched {
@@ -1035,8 +969,6 @@ impl Namespace {
             }
             records.extend(self.tree.record_of.get(id).copied());
         }
-        // Rows and ambiguity follow the record identities the delta moved,
-        // both sides of one that changed hands included.
         for record in &records {
             if let Some(row) = self.record_index.get(record).cloned()
                 && self.tree.record_of.get(&row.node_id) != Some(record)
@@ -1057,9 +989,8 @@ impl Namespace {
         self.placed_since_resolve.extend(moved);
     }
 
-    /// Bring the rows of every node bound to `record` in line with the
-    /// document: a record that changed hands leaves its old node to the new
-    /// one, and a duplicate is withheld from both.
+    /// Bring the rows of every node bound to `record` in line with the document: a record that
+    /// changed hands leaves its old node to the new one, and a duplicate is withheld from both.
     fn index_refresh_bound_nodes(&mut self, record: FileRecordId) {
         let bound = self.tree.records.get(&record).cloned().unwrap_or_default();
         for id in &bound {
@@ -1067,9 +998,6 @@ impl Namespace {
         }
     }
 
-    /// The record id each node carries, as a rebuild counts it: every node
-    /// in the map, trashed or unreachable included, under the document
-    /// root's identity when it sits on the reserved root id.
     fn record_occurrences(&self, record_id: FileRecordId) -> usize {
         let bound = self
             .tree
@@ -1087,17 +1015,14 @@ impl Namespace {
             .map(FileRecordId)
     }
 
-    /// The record id stored on a node's own map, which is its identity
-    /// everywhere but the document root ([`Self::record_id_for_id`]).
+    /// The record id stored on a node's own map, which is its identity everywhere but the
+    /// document root ([`Self::record_id_for_id`]).
     fn node_record_id(&self, id: &str) -> Option<FileRecordId> {
         str_at(&self.doc, &self.node(id)?, RECORD_ID_KEY)
             .and_then(|value| Uuid::parse_str(&value).ok())
             .map(FileRecordId)
     }
 
-    /// Give one node the record id its creator would derive, if a peer
-    /// brought it without one ([`Self::ensure_record_ids`] migrates a whole
-    /// document on load).
     fn ensure_record_id(&mut self, id: &str) {
         let Some(node) = self.node(id) else { return };
         if str_at(&self.doc, &node, RECORD_ID_KEY)
@@ -1111,8 +1036,8 @@ impl Namespace {
         self.tree.bind_record(id, record_id);
     }
 
-    /// Snapshot one bounded canonical page.  The returned rows are ordered by
-    /// stable record UUID and clone at most `limit` entries.
+    /// Snapshot one bounded canonical page, ordered by stable record UUID, cloning at most
+    /// `limit` entries.
     pub fn indexed_record_page(&self, offset: usize, limit: usize) -> Vec<IndexedRecord> {
         #[cfg(test)]
         self.record_index_page_reads
@@ -1139,16 +1064,15 @@ impl Namespace {
         self.record_index.get(&record_id).cloned()
     }
 
-    /// Opaque generation captured when the index changed. Reading it is O(1):
-    /// manifest/page serving must never enumerate an adversarially large set
-    /// of Automerge heads merely to validate a cursor.
+    /// Opaque generation captured when the index changed. Reading it is O(1): serving a
+    /// manifest or page must never enumerate Automerge heads to validate a cursor.
     #[must_use]
     pub fn indexed_record_revision(&self) -> &str {
         &self.record_index_revision
     }
 
-    /// O(1): derived from the row count and the incrementally maintained
-    /// row digest, so a create does not rehash the whole catalogue.
+    /// O(1): derived from the row count and the incrementally maintained row digest, so a
+    /// create does not rehash the whole catalogue.
     fn update_record_index_revision(&mut self) {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"tilo.fs.namespace-record-index.v2\0");
@@ -1159,10 +1083,8 @@ impl Namespace {
         self.record_index_revision = hasher.finalize().to_hex().to_string();
     }
 
-    /// Bring one node's catalogue row in line with the document: a create, a
-    /// rename, a move and a trash all end here, so each of them costs the one
-    /// node (its row's path comes from the structural index) instead of a
-    /// walk over the whole namespace.
+    /// Bring one node's catalogue row in line with the document: a create, a rename, a move and
+    /// a trash all end here, so each costs the one node instead of a walk over the namespace.
     fn index_refresh_node(&mut self, id: &str) {
         if id == ROOT_ID {
             return;
@@ -1172,8 +1094,8 @@ impl Namespace {
         };
         let existing = self.record_index.get(&record_id).cloned();
         if let Some(row) = existing.as_ref().filter(|row| row.node_id != id) {
-            // A duplicate durable identity is withheld until a full
-            // reconciliation can represent the ambiguity fail-closed.
+            // A duplicate durable identity is withheld until a full reconciliation can represent
+            // the ambiguity fail-closed.
             let row = row.clone();
             self.index_drop_row(&row);
             self.record_index_ambiguous.insert(record_id);
@@ -1203,9 +1125,8 @@ impl Namespace {
         self.update_record_index_revision();
     }
 
-    /// Re-path `root` and every node below it after a placement change, so a
-    /// moved subtree costs its own size and nothing else in the catalogue is
-    /// touched.
+    /// Re-path `root` and every node below it after a placement change, so a moved subtree
+    /// costs its own size and nothing else in the catalogue is touched.
     fn index_refresh_subtree(&mut self, root: &str) {
         let mut visited = HashSet::from([root.to_string()]);
         let mut queue = VecDeque::from([root.to_string()]);
@@ -1255,8 +1176,6 @@ impl Namespace {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Calls of [`Self::entry_for_node`]: a whole-namespace walk makes one
-    /// per live node, so a test can prove a pass did not walk.
     #[cfg(test)]
     #[must_use]
     pub fn node_entry_read_count(&self) -> u64 {
@@ -1267,9 +1186,9 @@ impl Namespace {
     fn deterministic_record_id(&self, id: &str) -> FileRecordId {
         let mut hasher = blake3::Hasher::new();
         hasher.update(RECORD_ID_MIGRATION_DOMAIN);
-        // The nodes-map object id is minted once with the namespace and remains
-        // stable across save/load and replica merges. Including it prevents
-        // legacy ids such as `alice/0` from colliding across workspaces.
+        // The nodes-map object id is minted once with the namespace and stays stable across
+        // save/load and replica merges; including it keeps legacy ids such as `alice/0` from
+        // colliding across workspaces.
         hasher.update(self.nodes.to_string().as_bytes());
         hasher.update(&[0]);
         hasher.update(id.as_bytes());
@@ -1281,8 +1200,8 @@ impl Namespace {
         FileRecordId(Uuid::from_bytes(bytes))
     }
 
-    /// Populate snapshots written before record-scoped replication. Peers
-    /// migrating the same legacy namespace independently derive the same ids.
+    /// Populate snapshots written before record-scoped replication; peers migrating the same
+    /// legacy namespace independently derive the same ids.
     fn ensure_record_ids(&mut self) {
         if self.root_record_id().is_none() {
             let record_id = self.deterministic_record_id(ROOT_ID);
@@ -1314,8 +1233,6 @@ impl Namespace {
         let only = matches.next()?;
         matches.next().is_none().then_some(only)
     }
-    /// The kind of the live node `ino`: what [`Self::getattr`] tells of it,
-    /// without reading the node's other fields.
     pub fn live_kind(&self, ino: u64) -> Option<FileType> {
         let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
@@ -1342,8 +1259,6 @@ impl Namespace {
         }
     }
 
-    /// Bring one node's entry in the structural index in line with the
-    /// document after its parent or name changed.
     fn reindex_node(&mut self, id: &str) {
         let placement = self.node(id).and_then(|node| {
             let parent = str_at(&self.doc, &node, "parent")?;
@@ -1356,11 +1271,8 @@ impl Namespace {
         }
     }
 
-    /// Walk the parent chain: `true` if it reaches ROOT (visible), `false` if it
-    /// hits TRASH, a missing node, or a cycle.
-    /// Whether `id`'s parent chain reaches the root. Walks the structural
-    /// index, which mirrors every node's document parent, instead of
-    /// reading the document once per hop.
+    /// Whether `id`'s parent chain reaches the root. Walks the structural index, which mirrors
+    /// every node's document parent, instead of reading the document once per hop.
     fn reaches_root(&self, id: &str) -> bool {
         let mut cur = id;
         // A chain longer than the tree has nodes is a cycle.
@@ -1396,15 +1308,15 @@ impl Namespace {
         })
     }
 
-    /// The fields of [`Self::entry`] a FUSE request needs, read from the
-    /// node once: no parent, name or author strings, and the record id and
-    /// content revision resolved without looking the node up again.
+    /// The fields of [`Self::entry`] a FUSE request needs, read from the node once: no parent,
+    /// name or author strings, and the record id and content revision resolved without looking
+    /// the node up again.
     fn node_meta(&self, id: &str) -> Option<NodeMeta> {
         self.node_meta_at(id, &self.node(id)?)
     }
 
-    /// [`Self::node_meta`] of the node object `obj` for `id`. A node with no
-    /// record id has no entry, exactly as [`Self::entry`] requires.
+    /// [`Self::node_meta`] of the node object `obj` for `id`. A node with no record id has no
+    /// entry, exactly as [`Self::entry`] requires.
     fn node_meta_at(&self, id: &str, obj: &ObjId) -> Option<NodeMeta> {
         let record_id = if id == ROOT_ID {
             self.record_id_for_id(id)?
@@ -1431,9 +1343,7 @@ impl Namespace {
         self.tree.children(parent_id).cloned().collect()
     }
 
-    /// The live child of `parent_id` named `name` — smallest id wins on a tie.
     fn child_named(&self, parent_id: &str, name: impl AsRef<[u8]>) -> Option<String> {
-        // The index yields same-named nodes in id order.
         self.tree
             .named(parent_id, name.as_ref())
             .find(|id| self.reaches_root(id))
@@ -1472,12 +1382,10 @@ impl Namespace {
         self.ino_to_id.get(&ino).map(std::string::String::as_str)
     }
 
-    /// Return the exact byte-preserving basename used for signed mutations.
     pub fn file_name_for(&self, ino: u64) -> Option<FileNameV1> {
         self.id_for_ino(ino).and_then(|id| self.name_of(id))
     }
 
-    /// Stable collaborative record id for a local inode.
     pub fn record_id_for(&self, ino: u64) -> Option<FileRecordId> {
         self.record_id_for_id(self.id_for_ino(ino)?)
     }
@@ -1492,9 +1400,8 @@ impl Namespace {
         Uuid::parse_str(&value).ok().map(FileRecordId)
     }
 
-    /// Describe the currently visible namespace node as a signed-binding
-    /// payload. The caller supplies the certified actor and observation time
-    /// that will be covered by the record envelope signature.
+    /// Describe the currently visible namespace node as a signed-binding payload. The caller
+    /// supplies the certified actor and observation time the record envelope signature covers.
     #[must_use]
     pub fn signed_binding_for(
         &self,
@@ -1539,22 +1446,21 @@ impl Namespace {
 
     /// Project one already-verified structural binding.
     ///
-    /// The latest converged binding is the authority for this record's
-    /// existence and placement:
+    /// The latest converged binding is the authority for this record's existence and
+    /// placement:
     ///
-    /// - an unknown record with a non-tombstone binding is created at its
-    ///   signed parent/name (the parent must already be a unique live
-    ///   directory, so a child whose parent has not arrived yet is deferred);
-    /// - a live record moves, or becomes visible again after a concurrent
-    ///   delete when its newer binding wins the replica's deterministic
-    ///   binding order;
+    /// - an unknown record with a non-tombstone binding is created at its signed
+    ///   parent and name (the parent must already be a unique live directory, so a
+    ///   child whose parent has not arrived yet is deferred);
+    /// - a live record moves, or becomes visible again after a concurrent delete when
+    ///   its newer binding wins the replica's deterministic binding order;
     /// - a tombstone trashes a live record and is a no-op for one never seen;
-    /// - records that want one name are assigned it in stable-record-id order,
-    ///   the others keep a deterministic `.sync-conflict-<record>` sibling.
+    /// - records that want one name are assigned it in stable-record-id order, the
+    ///   others keep a deterministic `.sync-conflict-<record>` sibling.
     ///
-    /// Unsigned nodes are never renamed or trusted: they always keep their
-    /// name, and a signed record that collides with one is the one that moves.
-    /// Repeated application is idempotent.
+    /// Unsigned nodes are never renamed or trusted: they keep their name, and a signed
+    /// record that collides with one is the one that moves. Repeated application is
+    /// idempotent.
     pub fn apply_signed_binding(
         &mut self,
         binding: &FileBindingV1,
@@ -1593,9 +1499,8 @@ impl Namespace {
                 let current_parent = self
                     .parent_of(&id)
                     .ok_or(BindingProjectionError::InvalidMove)?;
-                // The settled current name may be a conflict sibling; the
-                // signed placement intent, not the visible name, decides
-                // whether this binding is already applied.
+                // The settled current name may be a conflict sibling; the signed placement
+                // intent, not the visible name, decides whether this binding is already applied.
                 if current_parent == parent_id
                     && self.placement_name_of(&id).as_ref() == Some(&binding.name)
                 {
@@ -1611,16 +1516,14 @@ impl Namespace {
                 }
                 return Ok(true);
             }
-            // A newer binding than the tombstone resurrects the record. The
-            // replica selects bindings by their signed stamp, so this is the
-            // same deterministic delete/move conflict decision on every peer.
+            // A newer binding than the tombstone resurrects the record. The replica selects
+            // bindings by their signed stamp, so this is the same deterministic delete/move
+            // conflict decision on every peer.
             self.set_signed_placement(&id, &parent_id, &binding.name, binding.observed_at_ms);
             self.settle_structural_conflicts(&parent_id)?;
             return Ok(true);
         }
         if binding.tombstoned {
-            // A delete for a record this device never held changes no path.
-            // Keeping it out of the tree is the whole effect.
             return Ok(false);
         }
         let id = self
@@ -1639,11 +1542,9 @@ impl Namespace {
         Ok(true)
     }
 
-    /// Admit a binding only to create a missing node, never to move,
-    /// resurrect or tombstone an existing one. Transaction participants use
-    /// this to make their pre-transaction nodes available to the atomic
-    /// transaction projector without letting a stale ordinary binding undo
-    /// the transaction's result on replay.
+    /// Admit a binding only to create a missing node, never to move, resurrect or tombstone an
+    /// existing one: transaction participants make their pre-transaction nodes available to the
+    /// projector without letting a stale ordinary binding undo the transaction on replay.
     pub fn apply_signed_binding_create_only(
         &mut self,
         binding: &FileBindingV1,
@@ -1700,7 +1601,6 @@ impl Namespace {
         Ok(true)
     }
 
-    /// The unique live directory a signed binding may name as its parent.
     fn resolve_signed_parent(
         &self,
         parent_record: FileRecordId,
@@ -1717,8 +1617,8 @@ impl Namespace {
         Ok(id)
     }
 
-    /// The one node carrying a stable record id, whether currently live or
-    /// trashed. Duplicate identities stay fail-closed.
+    /// The one node carrying a stable record id, whether currently live or trashed. Duplicate
+    /// identities stay fail-closed.
     fn signed_record_node(
         &self,
         record_id: FileRecordId,
@@ -1742,9 +1642,9 @@ impl Namespace {
             .or_else(|| self.name_of(id))
     }
 
-    /// Record the signed placement intent and provisionally move the node
-    /// there. [`Self::settle_structural_conflicts`] then assigns the names of
-    /// every sibling that wants the same one.
+    /// Record the signed placement intent and provisionally move the node there.
+    /// [`Self::settle_structural_conflicts`] then assigns the names of every sibling that wants
+    /// the same one.
     fn set_signed_placement(&mut self, id: &str, parent_id: &str, name: &FileNameV1, mtime: u64) {
         let previous_parent = self.parent_of(id);
         if previous_parent.as_deref() != Some(parent_id) {
@@ -1758,11 +1658,10 @@ impl Namespace {
         self.index_refresh_subtree(id);
     }
 
-    /// Assign the names of all live children of `parent_id` that ask for one
-    /// name. The smallest stable record id keeps the requested name; the
-    /// others get a deterministic conflict sibling. This is a fixed point over
-    /// the signed placement names, so every peer that holds the same records
-    /// computes the same tree regardless of the order they arrived in.
+    /// Assign the names of all live children of `parent_id` that ask for one name. The smallest
+    /// stable record id keeps the requested name; the others get a deterministic conflict
+    /// sibling. A fixed point over the signed placement names, so every peer that holds the same
+    /// records computes the same tree whatever order they arrived in.
     fn settle_structural_conflicts(
         &mut self,
         parent_id: &str,
@@ -1797,9 +1696,8 @@ impl Namespace {
                 ids.sort_by_key(|id| self.structural_owner_key(id));
                 for loser in ids.into_iter().skip(1) {
                     let Some(record_id) = self.record_id_for_id(&loser) else {
-                        // An unsigned node is not this authority's to rename;
-                        // leave it where it is and never move a signed record
-                        // onto or over it silently.
+                        // An unsigned node is not this authority's to rename: leave it where it
+                        // is, and never move a signed record onto or over it silently.
                         continue;
                     };
                     next.insert(loser, structural_conflict_name(name.as_bytes(), record_id));
@@ -1824,9 +1722,9 @@ impl Namespace {
         Err(BindingProjectionError::StructuralConflictLoop)
     }
 
-    /// Total order for a contested name: nodes without a stable record id
-    /// keep precedence (they are never renamed), then the stable record id,
-    /// then the node id for an impossible tie.
+    /// Total order for a contested name: nodes without a stable record id keep precedence
+    /// (they are never renamed), then the stable record id, then the node id for an
+    /// impossible tie.
     fn structural_owner_key(&self, id: &str) -> (u8, FileRecordId, String) {
         match self.record_id_for_id(id) {
             Some(record_id) => (1, record_id, id.to_string()),
@@ -1834,17 +1732,16 @@ impl Namespace {
         }
     }
 
-    /// Apply one fully committed replacement-rename transaction while the
-    /// namespace lock is held. All preconditions are checked before mutation;
-    /// the returned delta contains both the victim tombstone and source move.
+    /// Apply one fully committed replacement-rename transaction while the namespace lock is
+    /// held. All preconditions are checked before mutation; the returned delta holds both the
+    /// victim tombstone and the source move.
     pub fn apply_replacement_transaction(
         &mut self,
         manifest: &FileMutationTransactionManifest,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
-        // Automerge transactions make the document edits atomic, but the
-        // verified-record projection is maintained alongside the document.
-        // Apply to a complete clone so a late projection failure cannot leave
-        // either authority half-mutated in the live namespace.
+        // Automerge transactions make the document edits atomic, but the verified-record
+        // projection is maintained alongside the document. Apply to a complete clone so a late
+        // projection failure cannot leave either authority half-mutated.
         let mut candidate = self.clone();
         let delta = candidate.apply_replacement_transaction_in_place(manifest)?;
         if delta.is_some() {
@@ -1853,9 +1750,8 @@ impl Namespace {
         Ok(delta)
     }
 
-    /// Apply one multi-record mutation to a complete namespace clone,
-    /// publishing the clone only after every precondition and both record
-    /// projections succeed.
+    /// Apply one multi-record mutation to a complete namespace clone, publishing the clone only
+    /// after every precondition and both record projections succeed.
     pub fn apply_manifest(
         &mut self,
         manifest: &FileMutationTransactionManifest,
@@ -1953,11 +1849,10 @@ impl Namespace {
         Ok(Some(self.save_incremental()))
     }
 
-    /// Install the exact namespace delta durably staged for a Keep Both
-    /// transaction, then project both signed content revisions. Automerge node
-    /// ids are actor-local, so independently replaying the semantic mutation
-    /// can produce different (but equivalent) bytes; recovery must instead
-    /// apply the journaled bytes that peers will receive.
+    /// Install the exact namespace delta durably staged for a Keep Both transaction, then project
+    /// both signed content revisions. Automerge node ids are actor-local, so replaying the
+    /// semantic mutation could produce different bytes; recovery applies the journaled bytes
+    /// peers will receive.
     pub fn apply_staged_keep_both_delta(
         &mut self,
         manifest: &FileMutationTransactionManifest,
@@ -2243,10 +2138,9 @@ impl Namespace {
         Ok(Some(self.save_incremental()))
     }
 
-    /// Winning atomic content pointer for this inode. Malformed or
-    /// cross-record values fail closed to the legacy projection. Callers that
-    /// cross a trust boundary must additionally verify the referenced version
-    /// in the signed record repository.
+    /// Winning atomic content pointer for this inode. Malformed or cross-record values fail
+    /// closed to the legacy projection. Callers that cross a trust boundary must additionally
+    /// verify the referenced version in the signed record repository.
     pub fn content_revision_for(&self, ino: u64) -> Option<ContentRevisionV1> {
         self.content_revision_for_id(self.id_for_ino(ino)?)
     }
@@ -2255,8 +2149,6 @@ impl Namespace {
         self.raw_content_revision_for_id(id)
     }
 
-    /// [`Self::content_revision_for_id`] for a node whose object and record
-    /// id the caller has already read.
     fn content_revision_of(
         &self,
         obj: &ObjId,
@@ -2278,9 +2170,9 @@ impl Namespace {
         (self.record_id_for_id(id) == Some(revision.record_id)).then_some(revision)
     }
 
-    /// Resolve a live stable record without going through a mutable path.
-    /// Shared-record replication uses this to apply content metadata after a
-    /// rename while preserving the namespace's existing name and parent.
+    /// Resolve a live stable record without going through a mutable path: shared-record
+    /// replication applies content metadata after a rename while keeping the existing name and
+    /// parent.
     pub fn ino_for_record_id(&self, record_id: FileRecordId) -> Option<u64> {
         if self.record_id_for(ROOT_INO) == Some(record_id) {
             return Some(ROOT_INO);
@@ -2291,10 +2183,9 @@ impl Namespace {
             .and_then(|id| self.id_to_ino.get(id).copied())
     }
 
-    /// Resolve one live stable record while lazily assigning its process-local
-    /// inode. Namespace snapshots intentionally do not persist inode maps, so
-    /// authenticated startup reconciliation must use this before any FUSE
-    /// lookup has warmed the cache. Ambiguous stable identities fail closed.
+    /// Resolve one live stable record while lazily assigning its process-local inode. Namespace
+    /// snapshots do not persist inode maps, so authenticated startup reconciliation uses this
+    /// before any FUSE lookup has warmed the cache. Ambiguous identities fail closed.
     pub(crate) fn ensure_ino_for_record_id(&mut self, record_id: FileRecordId) -> Option<u64> {
         if self.record_id_for(ROOT_INO) == Some(record_id) {
             return Some(ROOT_INO);
@@ -2303,10 +2194,9 @@ impl Namespace {
         Some(self.ino_for_id(&only))
     }
 
-    /// The one live node bound to `record_id`, `None` when there is none or
-    /// more than one. The structural index knows every node carrying the
-    /// id, so this costs O(nodes of the record × depth), not a scan of the
-    /// tree; each candidate is checked against the document.
+    /// The one live node bound to `record_id`, `None` when there is none or more than one. The
+    /// structural index knows every node carrying the id, so this costs O(nodes of the record ×
+    /// depth), not a scan of the tree; each candidate is checked against the document.
     fn unique_live_node_for_record(&self, record_id: FileRecordId) -> Option<String> {
         let mut live = self
             .tree
@@ -2319,12 +2209,11 @@ impl Namespace {
         Some(only)
     }
 
-    /// Absolute path of `ino` within the mount — `"/"` for the root, `"/a/b/c"`
-    /// otherwise; `None` if unknown or its parent chain doesn't reach ROOT
-    /// (trashed / cyclic).
+    /// Absolute path of `ino` within the mount, `"/"` for the root, `None` if unknown or its
+    /// parent chain does not reach the root (trashed or cyclic).
     ///
-    /// This is what FUSE's per-identity ACL enforcement keys on: the check is
-    /// "may this identity read/write *this path*", so it needs the resolved path.
+    /// This is what the per-identity ACL check keys on: "may this identity read or write this
+    /// path".
     pub fn path_for(&self, ino: u64) -> Option<String> {
         if ino == ROOT_INO {
             return Some("/".to_string());
@@ -2332,15 +2221,13 @@ impl Namespace {
         self.path_for_id(self.id_for_ino(ino)?)
     }
 
-    /// Absolute path of a stable namespace node id. Unlike inode numbers,
-    /// node ids are present before a FUSE lookup allocates a local inode, so
-    /// the network content gate can map a requested blob back to every live
+    /// Absolute path of a stable namespace node id. Node ids exist before a FUSE lookup allocates
+    /// a local inode, so the network content gate can map a requested blob back to every live
     /// path that names it without mutating the namespace index.
     pub fn path_for_id(&self, id: &str) -> Option<String> {
         if id == ROOT_ID {
             return Some("/".to_string());
         }
-        // The structural index holds every node's parent and name.
         let mut cur = id;
         let mut parts: Vec<String> = Vec::new();
         let mut hops = self.tree.placement.len().saturating_add(1);
@@ -2360,9 +2247,6 @@ impl Namespace {
         Some(format!("/{}", parts.join("/")))
     }
 
-    /// Every live path whose file content or generated thumbnail has `hash`,
-    /// as tests observe it; the blob provider indexes
-    /// [`Self::live_blob_owners`] once instead. Trashed nodes are omitted.
     #[cfg(test)]
     pub fn live_paths_for_blob(&self, hash: Hash) -> Vec<String> {
         self.live_node_ids()
@@ -2374,13 +2258,6 @@ impl Namespace {
             .collect()
     }
 
-    /// Bounded direct reverse lookup for manifest roots and thumbnails, as
-    /// tests observe [`Self::live_record_blob_roots`]. Returns stable record
-    /// IDs only—never paths, names, or sibling metadata.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::live_record_blob_roots`].
     #[cfg(test)]
     pub fn live_record_ids_for_direct_blob(
         &self,
@@ -2398,9 +2275,8 @@ impl Namespace {
         Ok(records)
     }
 
-    /// Minimal live record graph used by the content store to resolve manifest
-    /// chunks. Kept crate-private so callers cannot accidentally disclose
-    /// another record's roots while checking one requested blob.
+    /// Minimal live record graph the content store uses to resolve manifest chunks. Crate-private,
+    /// so a caller checking one requested blob cannot disclose another record's roots.
     pub fn live_record_blob_roots(
         &self,
         max_live_records: usize,
@@ -2436,9 +2312,8 @@ impl Namespace {
         Ok(roots)
     }
 
-    /// Parent inode of a visible node. The root has no parent. This is kept in
-    /// the namespace layer so callers never try to recover identity from a
-    /// path string (renames preserve node identity and inode number).
+    /// Parent inode of a visible node; the root has none. Callers recover identity here rather
+    /// than from a path string, since renames keep the node identity and inode number.
     pub fn parent_ino(&mut self, ino: u64) -> Option<u64> {
         if ino == ROOT_INO {
             return None;
@@ -2458,8 +2333,8 @@ impl Namespace {
     }
 
     fn attr_for(ino: u64, kind: NodeKind, size: u64, mtime_ms: u64) -> FileAttr {
-        // Saturates rather than panics: `mtime_ms` is stored CRDT state, not
-        // computed here, so an out-of-range value must degrade, not take the mount down.
+        // Saturates rather than panics: `mtime_ms` is stored CRDT state, so an out-of-range value
+        // must degrade, not take the mount down.
         let t = UNIX_EPOCH
             .checked_add(Duration::from_millis(mtime_ms))
             .unwrap_or(UNIX_EPOCH);
@@ -2515,9 +2390,8 @@ impl Namespace {
         attr
     }
 
-    /// Attribute lookup for a kernel file handle whose directory entry has
-    /// since been unlinked or replaced. Path lookup must continue using
-    /// [`Self::getattr`]; only an already-open handle may reach this view.
+    /// Attribute lookup for a kernel file handle whose directory entry has since been unlinked or
+    /// replaced. Path lookup keeps using [`Self::getattr`]; only an open handle reaches this view.
     pub(crate) fn getattr_including_unlinked(&self, ino: u64) -> Option<FileAttr> {
         let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
@@ -2527,8 +2401,6 @@ impl Namespace {
         Some(self.node_attr(ino, id, &meta))
     }
 
-    /// [`Self::getattr`] and [`Self::hash_for`] of a live node, reading it
-    /// once.
     pub(crate) fn attr_and_hash(&self, ino: u64) -> Option<(FileAttr, Option<Hash>)> {
         let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
@@ -2541,15 +2413,11 @@ impl Namespace {
         Some((self.node_attr(ino, id, &meta), meta.hash))
     }
 
-    /// Everything one FUSE request asks about `ino`, read in one pass so the
-    /// caller takes the namespace lock once: what [`Self::getattr`] (or,
-    /// with `unlinked`, [`Self::getattr_including_unlinked`]),
-    /// [`Self::hash_for`], [`Self::path_for`] and [`Self::document_codec`]
-    /// would each answer. The path is only built when `query.path` asks for
-    /// it — a mount without an ACL never looks at it.
-    ///
-    /// `None` when [`Self::getattr`] is `None` and either `unlinked` is not
-    /// set or the inode is unknown.
+    /// Everything one FUSE request asks about `ino`, read in one pass so the caller takes the
+    /// namespace lock once: what [`Self::getattr`] (or, with `unlinked`,
+    /// [`Self::getattr_including_unlinked`]), [`Self::hash_for`], [`Self::path_for`] and
+    /// [`Self::document_codec`] would each answer. The path is built only when `query.path` asks
+    /// for it, so a mount without an ACL never looks at it.
     pub(crate) fn inode_view(&self, ino: u64, query: InodeQuery) -> Option<InodeView> {
         let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
@@ -2580,8 +2448,6 @@ impl Namespace {
         })
     }
 
-    /// The inode and kind of `parent_ino`'s live child `name`: what
-    /// [`Self::lookup`] finds, without reading the child's other fields.
     pub fn lookup_kind(
         &mut self,
         parent_ino: u64,
@@ -2644,8 +2510,7 @@ impl Namespace {
         self.node_meta(id)?.hash
     }
 
-    /// `None` only if the document's node map itself has become unwritable
-    /// (never observed against a live `Namespace`); every caller already
+    /// `None` only if the document's node map itself has become unwritable; every caller already
     /// returns `Option`/`bool` for other failure modes, so this folds into the same contract.
     fn create_node(
         &mut self,
@@ -2667,7 +2532,6 @@ impl Namespace {
         )
     }
 
-    /// [`Self::create_node`] bound to an existing stable `record_id`.
     fn create_node_as(
         &mut self,
         parent_id: &str,
@@ -2679,19 +2543,16 @@ impl Namespace {
         record_id: FileRecordId,
     ) -> Option<String> {
         let name = name.as_ref();
-        // Node identity is derived from the stable record identity, not from
-        // the local author counter. A peer rebuilding this record from the
-        // signed log therefore creates the same Automerge object key as the
-        // device that published it, and the two namespaces merge instead of
-        // producing two nodes for one record.
+        // Node identity is derived from the stable record identity, not from the local author
+        // counter, so a peer rebuilding this record from the signed log creates the same Automerge
+        // object key and the two namespaces merge instead of making two nodes for one record.
         let derived = record_node_id(record_id);
         let id = if self.node(&derived).is_some() {
             if self.record_id_for_id(&derived) == Some(record_id) {
                 return None;
             }
-            // A pre-existing legacy object happens to use the derived key.
-            // Keep the stable record itself, with a local node key; the
-            // record id, not the object key, is the durable identity.
+            // A pre-existing legacy object happens to use the derived key. Keep the stable record
+            // with a local node key; the record id, not the object key, is the durable identity.
             self.gen_id()
         } else {
             derived
@@ -2729,9 +2590,9 @@ impl Namespace {
         Some(self.ino_for_id(&id))
     }
 
-    /// Create a projected file for an already-authoritative stable record.
-    /// Used only by exact-record share admission: it refuses nil/duplicate
-    /// record ids and name collisions instead of minting or aliasing identity.
+    /// Create a projected file for an already-authoritative stable record, for exact-record share
+    /// admission: it refuses nil or duplicate record ids and name collisions instead of minting
+    /// or aliasing identity.
     pub fn create_projected_file(
         &mut self,
         parent_ino: u64,
@@ -2765,8 +2626,6 @@ impl Namespace {
         Some(self.ino_for_id(&id))
     }
 
-    /// [`Self::create_projected_file`] whose content is `revision`: the node
-    /// is written with the revision's fields, not created and then updated.
     pub fn create_projected_file_at_revision(
         &mut self,
         parent_ino: u64,
@@ -2798,7 +2657,6 @@ impl Namespace {
         Some(self.ino_for_id(&id))
     }
 
-    /// Create a directory whose stable identity has already been signed.
     pub fn create_projected_dir(
         &mut self,
         parent_ino: u64,
@@ -2824,8 +2682,8 @@ impl Namespace {
 
     // Document files: content lives as a CRDT, not opaque bytes.
 
-    /// Create a file whose content is a structured rich-text document stored as a
-    /// CRDT (concurrent edits merge). `codec` is the format key (e.g. `odt`, `md`).
+    /// Create a file whose content is a structured rich-text document stored as a CRDT (concurrent
+    /// edits merge). `codec` is the format key (e.g. `odt`, `md`).
     pub fn create_document(
         &mut self,
         parent_ino: u64,
@@ -2851,10 +2709,10 @@ impl Namespace {
         map_at(&self.doc, &self.node(id)?, "doc")
     }
 
-    /// Project a document into its file format, embedding the binary content (images, binary
-    /// package parts) it references from `content`. A codec normalizes (Markdown joins a
-    /// paragraph's lines): what the file reads is [`Self::document_written`] while the document
-    /// still projects as it did when they were written.
+    /// Project a document into its file format, embedding the binary content it references from
+    /// `content`. A codec normalizes (Markdown joins a paragraph's lines): what the file reads is
+    /// [`Self::document_written`] while the document still projects as it did when they were
+    /// written.
     pub fn export_document(
         &self,
         ino: u64,
@@ -2865,8 +2723,8 @@ impl Namespace {
     }
 
     /// The bytes last written to document `ino`'s file, by the content id the file's version keeps
-    /// them under, and the content id ([`tilo_content::hash_bytes`]) of the document's projection
-    /// then: the file is those bytes while the projection still is that.
+    /// them under, and the content id of the document's projection then: the file is those bytes
+    /// while the projection still is that.
     pub fn document_written(&self, ino: u64) -> Option<(Hash, String)> {
         let node = self.node(self.ino_to_id.get(&ino)?)?;
         let written = str_at(&self.doc, &node, VERBATIM)?.parse::<Hash>().ok()?;
@@ -2897,7 +2755,6 @@ impl Namespace {
         self.set_field(&id, VERBATIM_READS, tilo_content::hash_bytes(projected));
     }
 
-    /// The document `id` projected into its file format.
     fn project_document(
         &self,
         id: &str,
@@ -2918,17 +2775,14 @@ impl Namespace {
             .ok()
     }
 
-    /// Bring a document's content to what `bytes` says (whole-file write), by
-    /// reconciling it into the CRDT the document already is.
+    /// Bring a document's content to what `bytes` says (a whole-file write) by reconciling it into
+    /// the CRDT the document already is.
     ///
-    /// The file states what the document should read, not what its CRDT should
-    /// hold: blocks the file leaves unchanged keep their ids, a peer's
-    /// concurrent edit merges as any other edit does, and a save adds only its
-    /// own difference to the history. The binary content the file embeds is kept
-    /// in `content`; the document only references it.
+    /// The file states what the document should read, not what its CRDT should hold: blocks the
+    /// file leaves unchanged keep their ids, a peer's concurrent edit merges, and a save adds only
+    /// its own difference. The binary content the file embeds is kept in `content`.
     ///
-    /// Returns whether the write happened: a malformed file leaves the document
-    /// as it was.
+    /// Returns whether the write happened: a malformed file leaves the document as it was.
     pub fn import_document(
         &mut self,
         ino: u64,
@@ -2951,8 +2805,7 @@ impl Namespace {
         let Some(root) = self.document_root(&id) else {
             return false;
         };
-        // Parse into a throwaway document first — a malformed input must never
-        // touch the stored one.
+        // Parse into a throwaway document first: a malformed input must never touch the stored one.
         let mut probe = tilo_doc::Document::new();
         let mut inputs = tilo_content::ContentInputs::new();
         if provider
@@ -2966,8 +2819,8 @@ impl Namespace {
         if content.put_inputs(&inputs).is_err() {
             return false;
         }
-        // The write is one transaction: either it lands as the file says, or it
-        // is rolled back and the document reads as it did.
+        // The write is one transaction: either it lands as the file says, or it is rolled back and
+        // the document reads as it did.
         if tilo_doc::reconcile_under(&mut self.doc, &root, &wanted).is_err()
             || !tilo_doc::reads_as(&self.doc, &root, &wanted)
         {
@@ -2978,33 +2831,28 @@ impl Namespace {
         true
     }
 
-    /// Current heads of the document — a cheap change token (e.g. to invalidate a derived export cache).
     pub fn heads(&mut self) -> Vec<automerge::ChangeHash> {
         self.doc.get_heads()
     }
 
-    /// A receiver that sees, after this call, every change to the
-    /// document. It says that something may have changed, never what;
-    /// compare [`Self::heads`] to know. Persisting and repairing on it
-    /// replaces polling.
+    /// A receiver that sees, after this call, every change to the document. It says that something
+    /// may have changed, never what; compare [`Self::heads`] to know.
     #[must_use]
     pub fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.doc.subscribe()
     }
 
-    /// O(heads): a token that changes whenever anything this namespace
-    /// projects changes. Background reconcilers compare it instead of walking
-    /// every node to discover that nothing happened.
+    /// O(heads): a token that changes whenever anything this namespace projects changes, so a
+    /// reconciler compares it instead of walking every node to discover that nothing happened.
     pub fn change_token(&mut self) -> NamespaceChangeToken {
         NamespaceChangeToken {
             heads: self.doc.get_heads(),
         }
     }
 
-    /// Whether the document file `ino` (its node: codec and content) changed
-    /// between namespace heads `before` and `after`. The diff walks only
-    /// that node's objects, so a change to another file costs little and
-    /// keeps a derived export valid. Unknown inodes count as changed.
+    /// Whether the document file `ino` (its node: codec and content) changed between namespace heads
+    /// `before` and `after`. The diff walks only that node's objects. Unknown inodes count as
+    /// changed.
     pub fn document_changed_between(
         &mut self,
         ino: u64,
@@ -3031,8 +2879,6 @@ impl Namespace {
             .collect();
         self.doc.save_after(&known)
     }
-
-    // Fine-grained document edits: the path that merges semantically.
 
     fn with_doc_mut<R>(
         &mut self,
@@ -3099,9 +2945,8 @@ impl Namespace {
         if self.node(&id).is_none() {
             return false;
         }
-        // A legacy mutation explicitly supersedes any atomic revision. This
-        // prevents remaining old call sites from changing mirror fields that
-        // revision-aware readers would otherwise ignore.
+        // A legacy mutation explicitly supersedes any atomic revision, so remaining old call sites
+        // cannot change mirror fields that revision-aware readers ignore.
         if let Some(obj) = self.node(&id) {
             let _ = self.doc.delete(&obj, CONTENT_REVISION_KEY);
         }
@@ -3113,7 +2958,6 @@ impl Namespace {
                 }
             }
         }
-        // Content changed, so any recorded thumbnail is stale — drop the pointer (regenerates lazily).
         if let Some(obj) = self.node(&id) {
             let _ = self.doc.delete(&obj, "thumb");
         }
@@ -3124,10 +2968,9 @@ impl Namespace {
         true
     }
 
-    /// Atomically advertise one immutable signed history version as the
-    /// current file content. Loose hash/size fields are mirrored only for
-    /// legacy readers; revision-aware readers always select this single CRDT
-    /// scalar and therefore cannot observe a torn content tuple.
+    /// Atomically advertise one immutable signed history version as the current file content. Loose
+    /// hash and size fields are mirrored only for legacy readers; revision-aware readers select this
+    /// single CRDT scalar and so cannot observe a torn content tuple.
     pub fn set_content_revision(
         &mut self,
         ino: u64,
@@ -3137,8 +2980,8 @@ impl Namespace {
         self.install_content_revision(ino, revision, mtime, true)
     }
 
-    /// Advance only the signed record/version pointer while retaining a
-    /// preview of unchanged bytes (for rename/move metadata versions).
+    /// Advance only the signed record and version pointer while retaining a preview of unchanged
+    /// bytes (for rename and move metadata versions).
     pub fn set_content_revision_preserving_preview(
         &mut self,
         ino: u64,
@@ -3164,14 +3007,10 @@ impl Namespace {
         {
             return false;
         }
-        // When the document already carries this revision at this time (the
-        // author wrote it, and it arrived with the namespace; or it is being
-        // projected again), verifying it here is all that is left: writing
-        // the same fields again would only add document operations that
-        // every peer then has to sync. Concurrent values (two devices
-        // projected their own heads while apart) are not carried: writing
-        // the winner resolves them, as a namespace conflict copy would
-        // otherwise surface the loser.
+        // When the document already carries this revision at this time (the author wrote it, or it
+        // is projected again), verifying it is all that is left: writing the same fields again would
+        // only add operations every peer has to sync. Concurrent values are resolved by writing the
+        // winner.
         if self.raw_content_revision_for_id(&id) == Some(*revision)
             && !self.has_concurrent_content(&id)
             && self
@@ -3202,9 +3041,8 @@ impl Namespace {
         true
     }
 
-    /// Attach the content hash of a generated thumbnail blob to `ino`, so the
-    /// pointer rides the namespace replica and a peer can preview before
-    /// fetching the full content.
+    /// Attach the content hash of a generated thumbnail blob to `ino`, so the pointer rides the
+    /// namespace replica and a peer can preview before fetching the full content.
     pub fn set_thumb(&mut self, ino: u64, thumb: &Hash) -> bool {
         let Some(id) = self.ino_to_id.get(&ino).cloned() else {
             return false;
@@ -3221,11 +3059,10 @@ impl Namespace {
         str_at(&self.doc, &self.node(id)?, "thumb").and_then(|h| hash_from_hex(&h))
     }
 
-    /// Every live node naming content, with its path: the input of the blob
-    /// provider's reverse index. One pass over the tree, where a lookup per
-    /// blob would scan it per request.
-    /// A record placed at more than one live node publishes no thumbnail,
-    /// as in [`Self::thumbnail_for_id`].
+    /// Every live node naming content, with its path: the input of the blob provider's reverse
+    /// index. One pass over the tree, where a lookup per blob would scan it per request. A record
+    /// placed at more than one live node publishes no thumbnail, as in
+    /// [`Self::thumbnail_for_id`].
     pub(crate) fn live_blob_owners(&self) -> Vec<LiveBlobOwner> {
         let live = self.live_node_ids();
         live.iter()
@@ -3255,7 +3092,6 @@ impl Namespace {
             .and_then(|value| hash_from_hex(&value))
     }
 
-    /// Delete = move the node (and its subtree) to TRASH.
     pub fn remove(&mut self, ino: u64) -> bool {
         let Some(id) = self.ino_to_id.get(&ino).cloned() else {
             return false;
@@ -3263,7 +3099,8 @@ impl Namespace {
         if self.node(&id).is_none() || !self.reaches_root(&id) {
             return false;
         }
-        // Record the content hash at deletion time, so a concurrent edit can be detected and resurrected.
+        // Record the content hash at deletion time, so a concurrent edit can be detected and
+        // resurrected.
         match self.node_hash(&id) {
             Some(h) => self.set_field(&id, "deleted_hash", hash_to_hex(&h)),
             None => {
@@ -3288,15 +3125,13 @@ impl Namespace {
             .collect()
     }
 
-    /// Whether `id` itself was moved to the trash, not just an ancestor.
     pub fn is_directly_trashed(&self, id: &str) -> bool {
         self.parent_of(id).as_deref() == Some(TRASH_ID)
     }
 
-    /// Up to `limit` node ids, live or not, in key order, starting after
-    /// `after` (at the first when `None`). Seeking to `after` is a search,
-    /// not a walk, so a caller can visit every node in bounded steps and
-    /// release the namespace lock between them.
+    /// Up to `limit` node ids, live or not, in key order, starting after `after` (at the first when
+    /// `None`). Seeking to `after` is a search, not a walk, so a caller can visit every node in
+    /// bounded steps and release the namespace lock between them.
     pub fn node_ids_after(&self, after: Option<&str>, limit: usize) -> Vec<String> {
         let start = after.map_or(std::ops::Bound::Unbounded, |id| {
             std::ops::Bound::Excluded(id.to_string())
@@ -3320,7 +3155,8 @@ impl Namespace {
         self.reaches_root(id)
     }
 
-    /// Rename / move: a single reparent (node keeps its id, so inode stays stable). Rejects moving a directory into its own descendant.
+    /// Rename or move: a single reparent, so the node keeps its id and the inode stays stable.
+    /// Rejects moving a directory into its own descendant.
     pub fn rename(
         &mut self,
         parent_ino: u64,
@@ -3377,10 +3213,9 @@ impl Namespace {
 
     // Structural resolution (cycle breaking).
 
-    /// Find one cycle in the parent graph (never reaching ROOT/TRASH), as the
-    /// node ids forming the loop. Found in node-id order, which is part of
-    /// the repair every peer must agree on; `starts` narrows the search to
-    /// the nodes a delta placed.
+    /// Find one cycle in the parent graph (never reaching the root or trash), as the node ids
+    /// forming the loop. Found in node-id order, which is part of the repair every peer must agree
+    /// on; `starts` narrows the search to the nodes a delta placed.
     fn find_cycle(&self, starts: Option<&HashSet<String>>) -> Option<Vec<String>> {
         let mut ids: Vec<String> = match starts {
             Some(starts) => starts.iter().cloned().collect(),
@@ -3402,7 +3237,6 @@ impl Namespace {
                     break;
                 }
                 seq.push(cur.clone());
-                // The structural index holds every node's parent.
                 match self.tree.placement.get(&cur) {
                     Some((parent, _)) => cur = parent.clone(),
                     None => break,
@@ -3412,15 +3246,15 @@ impl Namespace {
         None
     }
 
-    /// Break every move-cycle deterministically: the lowest-id node in each cycle
-    /// reverts to `prev_parent` (or ROOT). Pure function of the doc, so every peer computes the same repair.
+    /// Break every move cycle deterministically: the lowest-id node in each reverts to `prev_parent`
+    /// (or the root). A pure function of the doc, so every peer computes the same repair.
     pub fn resolve(&mut self) -> bool {
         self.resolve_nodes(None)
     }
 
-    /// [`Self::resolve`] searching only the nodes a delta placed: the state
-    /// the delta applied to held no cycle, so a cycle it made runs through
-    /// one of them, and the repair is the same one a whole scan would make.
+    /// [`Self::resolve`] searching only the nodes a delta placed: the state it applied to held no
+    /// cycle, so a cycle it made runs through one of them, and the repair is the one a whole scan
+    /// would make.
     fn resolve_nodes(&mut self, candidates: Option<HashSet<String>>) -> bool {
         self.cycle_scan_pending = false;
         let mut starts = candidates;
@@ -3460,9 +3294,9 @@ impl Namespace {
         !repaired.is_empty()
     }
 
-    /// Break the cycles made since the last resolution. A document opened as
-    /// saved may carry a cycle no resolution ran on, so it is searched whole
-    /// once; after that only the nodes a delta placed are ([`Self::resolve_nodes`]).
+    /// Break the cycles made since the last resolution. A document opened as saved may carry a
+    /// cycle no resolution ran on, so it is searched whole once; after that only the nodes a delta
+    /// placed are ([`Self::resolve_nodes`]).
     fn resolve_pending(&mut self) -> bool {
         let placed = std::mem::take(&mut self.placed_since_resolve);
         if std::mem::take(&mut self.cycle_scan_pending) {
@@ -3473,8 +3307,6 @@ impl Namespace {
         }
         self.resolve_nodes(Some(placed))
     }
-
-    // Path + conflict helpers (used by tests and conflict.rs).
 
     /// Resolve a `/`-style path (root-relative, no leading slash) to a live entry.
     pub fn entry_at(&self, path: &str) -> Option<Entry> {
@@ -3490,7 +3322,6 @@ impl Namespace {
         self.entry(&cur)
     }
 
-    /// Resolve a `/`-style path to an inode (allocating one if needed).
     pub fn resolve_path_ino(&mut self, path: &str) -> Option<u64> {
         let mut cur = ROOT_ID.to_string();
         for seg in path.split('/').filter(|s| !s.is_empty()) {
@@ -3506,8 +3337,8 @@ impl Namespace {
             .collect()
     }
 
-    /// Stable entry lookup used by the storage authority.  It intentionally
-    /// exposes logical metadata, never an underlying host path.
+    /// Stable entry lookup used by the storage authority; it exposes logical metadata only, never a
+    /// host path.
     pub fn entry_for_node(&self, id: &str) -> Option<Entry> {
         #[cfg(test)]
         self.node_entry_reads
@@ -3529,8 +3360,8 @@ impl Namespace {
         Some((self.parent_of(id)?, self.name_of(id)?))
     }
 
-    /// Record-index presentation type without allocating a process-local
-    /// inode. The caller still needs to apply its live mount ACL to the path.
+    /// Record-index presentation without allocating a process-local inode. The caller still applies
+    /// its live mount ACL to the path.
     pub fn node_is_dir(&self, id: &str) -> Option<bool> {
         self.node(id)?;
         Some(self.kind_of(id) == NodeKind::Dir)
@@ -3559,7 +3390,6 @@ impl Namespace {
         }
     }
 
-    /// Whether the node's content hash or revision holds concurrent values.
     fn has_concurrent_content(&self, id: &str) -> bool {
         let Some(obj) = self.node(id) else {
             return false;
@@ -3571,8 +3401,7 @@ impl Namespace {
         })
     }
 
-    /// Concurrent atomic revision values for a node. Cross-record or malformed
-    /// scalars are omitted.
+    /// Concurrent atomic revision values for a node. Cross-record or malformed scalars are omitted.
     pub fn content_revision_conflicts(&self, id: &str) -> Vec<(String, ContentRevisionV1)> {
         let Some(obj) = self.node(id) else {
             return Vec::new();
@@ -3592,7 +3421,6 @@ impl Namespace {
         }
     }
 
-    /// Create a conflict-copy sibling node under `parent_id`, unless one named `name` already exists.
     pub fn create_conflict_copy(
         &mut self,
         parent_id: &str,
@@ -3610,9 +3438,9 @@ impl Namespace {
     }
 }
 
-/// Reversible presentation for byte names in path-based policy and metadata.
-/// Valid UTF-8 remains readable; `%` and invalid bytes are escaped so distinct
-/// kernel names cannot collapse onto the same authorization path.
+/// Reversible presentation for byte names in path-based policy and metadata. Valid UTF-8 stays
+/// readable; `%` and invalid bytes are escaped so distinct kernel names cannot collapse onto one
+/// authorization path.
 pub(crate) fn escape_path_name(bytes: &[u8]) -> String {
     let mut out = String::new();
     let mut offset = 0;

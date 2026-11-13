@@ -23,7 +23,6 @@ const LISTED: usize = 200;
 /// One row: a person's step, or an agent run's consecutive steps.
 #[derive(Clone, Debug, PartialEq)]
 struct Entry {
-    /// The newest version of the entry: what choosing it shows.
     change: String,
     action: String,
     author: String,
@@ -196,7 +195,6 @@ pub fn checkpoint_button(cx: &ViewCx<Artwork>) -> Element {
     })
 }
 
-/// While a past version is shown: what it is, and restoring it.
 fn viewing(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     cx.switch(&tools.preview, |cx, preview| {
         let Some(version) = preview else {
@@ -218,7 +216,6 @@ fn viewing(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     })
 }
 
-/// The live artwork, at the top of the list.
 fn now_row(tools: &Tools) -> Element {
     let content = Row::new()
         .with_padding(ui::tokens::Spacing::BASE.s2, ui::tokens::Spacing::BASE.s2)

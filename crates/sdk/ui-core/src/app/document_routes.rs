@@ -483,7 +483,7 @@ impl App {
     }
 
     fn drain_document_routes_after_refresh(&mut self) {
-        let mut changed = self.document_routes.merge_owned();
+        let mut changed = self.document_routes.merge_owned(&mut self.state.doc);
         while let Some(mutation) = self.document_routes.primary.front() {
             match self.state.merge_remote_committed(mutation) {
                 Ok(Some(applied)) => {
@@ -919,9 +919,10 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
         }
     }
 
-    /// Merge what peers sent into every held record. Whether a record
+    /// Merge what peers sent into every held record, each as an action boundary of the window's
+    /// document `outer` ([`crate::history_mode::HistoryOwner::merge_remote`]). Whether a record
     /// changed.
-    pub(super) fn merge_owned(&mut self) -> bool {
+    pub(super) fn merge_owned(&mut self, outer: &mut automerge::AutoCommit) -> bool {
         let mut changed = false;
         for entry in &mut self.owners {
             let Some(owner) = entry.owners.first() else {
@@ -944,7 +945,7 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
                     }
                     _ => None,
                 };
-                match owner.merge_remote(mutation) {
+                match owner.merge_remote(mutation, outer) {
                     Ok(merged) => {
                         // The route delivered these changes, so they are never
                         // published back on it; this app's own unsent changes

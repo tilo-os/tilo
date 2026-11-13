@@ -1,14 +1,4 @@
-//! How many items each folder in the listing holds, for the Size column
-//! ("12 items") and the preview.
-//!
-//! Counting reads a folder's entries, which can be slow (a large folder, a
-//! network share), so it never runs on the UI thread: a folder the view asks
-//! about is queued for one background worker, which counts it and wakes the
-//! window. Counts are cached by the folder's path and its modification time,
-//! so a folder is read again only after its own entries change, and the view
-//! shows nothing until the count is known. Counting lists names only: it
-//! never opens a file or descends into subfolders, so it hydrates nothing on a
-//! cloud mount.
+//! How many items each folder in the listing holds, counted off the UI thread.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -18,8 +8,6 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Local};
 
-/// What a count is valid for: the folder, as of a modification time, with
-/// or without hidden entries.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct Key {
     path: PathBuf,
@@ -33,7 +21,6 @@ struct Shared {
     queued: HashSet<Key>,
 }
 
-/// The cache and its worker. Cheap to share between the views of a window.
 pub struct FolderCounts {
     shared: Arc<Mutex<Shared>>,
     generation: Arc<AtomicU64>,
@@ -49,8 +36,6 @@ impl std::fmt::Debug for FolderCounts {
 }
 
 impl FolderCounts {
-    /// Counts whose arrivals call `wake` (the window's wake handle), from the
-    /// worker's thread.
     pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
         Self {
             shared: Arc::default(),
@@ -61,9 +46,6 @@ impl FolderCounts {
         }
     }
 
-    /// The number of items in `folder` (modified at `modified`), counting
-    /// hidden entries only with `hidden`, once known. Asks the worker for it
-    /// otherwise; [`Self::take_arrived`] says when it is in.
     pub fn count(
         &self,
         folder: &Path,
@@ -91,8 +73,6 @@ impl FolderCounts {
         None
     }
 
-    /// Count `folders` (path and modification time) on this thread, for a
-    /// one-frame capture that cannot wait for the worker.
     pub fn settle(&self, folders: &[(PathBuf, Option<DateTime<Local>>)], hidden: bool) {
         for (path, modified) in folders {
             if let Some(count) = count_entries(path, hidden) {
@@ -110,7 +90,6 @@ impl FolderCounts {
         }
     }
 
-    /// Whether a count arrived since the last call: the view then shows it.
     pub fn take_arrived(&self) -> bool {
         let now = self.generation.load(Ordering::Acquire);
         self.seen.swap(now, Ordering::AcqRel) != now
@@ -148,7 +127,6 @@ struct Worker {
 }
 
 impl Worker {
-    /// Count what arrives until every [`FolderCounts`] sender is gone.
     fn run(&self, receiver: &Receiver<Key>) {
         while let Ok(key) = receiver.recv() {
             let count = count_entries(&key.path, key.hidden);
@@ -169,8 +147,6 @@ impl Worker {
     }
 }
 
-/// The entries of `folder`, hidden (dot) entries only with `hidden`, or
-/// `None` when it cannot be read.
 fn count_entries(folder: &Path, hidden: bool) -> Option<u64> {
     let entries = std::fs::read_dir(folder).ok()?;
     let mut count = 0_u64;
@@ -200,7 +176,6 @@ mod tests {
             woke.send(std::thread::current().id()).unwrap();
         });
 
-        // Unknown at first: the view shows nothing yet.
         assert_eq!(counts.count(dir.path(), None, false), None);
         let worker = wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         assert_ne!(worker, ui_thread, "counted on the worker's thread");

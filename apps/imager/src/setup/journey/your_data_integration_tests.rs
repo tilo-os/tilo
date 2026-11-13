@@ -1,14 +1,11 @@
-//! Your data's real tree on a real discovered inventory: every checkbox is
-//! applied through the production effect path and asserted on the selection
-//! the capture reads. Only source discovery is a fixture; the folders, browser
-//! profiles, sign-ins and mail accounts come from actual read-only discovery.
+//! Your data's real tree on a real discovered inventory, every checkbox applied through
+//! the production effect path.
+
 use super::super::belongings::Belongings;
 use super::super::*;
 use imager_backend::{account_transfer, home_transfer};
 use std::path::Path;
 
-/// A home with two documents folders, one loose file, a Firefox profile with a
-/// Slack cookie and a Thunderbird profile with two accounts.
 fn fixture() -> tempfile::TempDir {
     let fixture = tempfile::tempdir().unwrap();
     let home = fixture.path();
@@ -196,15 +193,12 @@ fn folder_toggle_changes_the_capture_exclusions_and_the_painted_tree() {
         preview.your_data().group(&documents).unwrap().toggle(),
         super::Toggle::None
     );
-    // The person's decision reaches the checkbox they clicked, and the parent
-    // reports the exact mixed state instead of one total.
     let (checked, mixed) = checkbox(
         &preview,
         &preview.your_data().group(&documents).unwrap().test_id,
     );
     assert_eq!((checked, mixed), (Some(false), false));
     assert_eq!(preview.your_data().toggle(), super::Toggle::Mixed);
-    // The category still says files come over, and the other folders stay.
     assert!(preview.journey.categories[0]);
     assert!(
         preview
@@ -233,7 +227,6 @@ fn folder_toggle_changes_the_capture_exclusions_and_the_painted_tree() {
         work[0], work[1],
         "two sibling folders must not render as the same row"
     );
-    // An identity the inventory no longer has changes nothing.
     assert_eq!(
         apply(
             &mut preview,
@@ -276,7 +269,6 @@ fn selecting_the_files_source_again_restores_every_folder() {
             .unwrap()
             .is_empty()
     );
-    // Every child is now excluded, and the top checkbox says so.
     assert_eq!(
         preview.your_data().source("files").unwrap().toggle(),
         super::Toggle::None
@@ -349,7 +341,6 @@ fn browser_profile_domain_and_session_choices_are_owned_per_profile() {
     let before = preview.belongings.browser.profile_state(&profile).unwrap();
     assert!(before.included && before.bookmarks && before.history);
 
-    // Excluding this profile clears its saved sign-in as well as both domains.
     apply(
         &mut preview,
         InstallerPreviewEffect::SetYourDataGroup {
@@ -372,7 +363,6 @@ fn browser_profile_domain_and_session_choices_are_owned_per_profile() {
         "an excluded profile leaves no website session behind"
     );
 
-    // Re-including the profile restores its own data only.
     let remaining = preview.your_data();
     let remaining_group = remaining
         .group(&profile_group)
@@ -404,8 +394,6 @@ fn browser_profile_domain_and_session_choices_are_owned_per_profile() {
     assert!(restored.included && restored.bookmarks && restored.history);
     assert_eq!(preview.belongings.browser.selected().profiles().len(), 1);
 
-    // One profile's history is independent of its bookmarks, and the total
-    // shown by the parent is the exact selection the capture reads.
     apply(
         &mut preview,
         InstallerPreviewEffect::SetYourDataItem {
@@ -442,8 +430,6 @@ fn browser_profile_domain_and_session_choices_are_owned_per_profile() {
     assert!(!preview.journey.browser_domains[0]);
     assert!(preview.journey.browser_domains[1]);
 
-    // Real login metadata names a saved account without exposing a password,
-    // and says plainly that the password itself is not carried.
     let (accounts_eligible, accounts_included, accounts_detail, accounts_note) = {
         let inventory = preview.your_data();
         let accounts = inventory
@@ -469,8 +455,6 @@ fn browser_profile_domain_and_session_choices_are_owned_per_profile() {
     );
     assert!(accounts_note.is_some());
 
-    // The saved sign-in is its own selected source/service pair inside the
-    // profile group, and turning it off leaves the domains alone.
     let sign_in = preview
         .your_data()
         .group(&profile_group)
@@ -595,7 +579,6 @@ fn thunderbird_accounts_and_folders_are_selected_independently_and_validated() {
     let first_folder = preview.your_data().source(&mail).unwrap().groups[0].items[0]
         .id
         .clone();
-    // Excluding one account leaves the other account and its folders intact.
     apply(
         &mut preview,
         InstallerPreviewEffect::SetYourDataGroup {
@@ -628,7 +611,6 @@ fn thunderbird_accounts_and_folders_are_selected_independently_and_validated() {
             )
             .is_ok()
     );
-    // One folder inside the remaining account is an independent decision.
     apply(
         &mut preview,
         InstallerPreviewEffect::SetYourDataItem {
@@ -650,8 +632,6 @@ fn thunderbird_accounts_and_folders_are_selected_independently_and_validated() {
         !selected.accounts[0].folders.is_empty(),
         "the sibling folders stay selected"
     );
-    // The painted row reports the exact state of the account, and the source
-    // keeps its mixed mark: nothing was widened by the folder decision.
     assert_eq!(
         preview.your_data().source(&mail).unwrap().toggle(),
         super::Toggle::Mixed
@@ -680,7 +660,6 @@ fn thunderbird_accounts_and_folders_are_selected_independently_and_validated() {
         (Some(false), true),
         "the account whose folder was removed is the shared mixed state"
     );
-    // An account identity that no longer exists is refused and changes nothing.
     assert_eq!(
         apply(
             &mut preview,
@@ -707,9 +686,6 @@ fn thunderbird_accounts_and_folders_are_selected_independently_and_validated() {
     assert!(selection.validate(reviewed).is_ok());
 }
 
-/// A real GOA configuration with two accounts: the exact per-account and
-/// per-service rows are the selection, and only the checked services become
-/// pending destination rows. A mailbox the person already has is reused.
 fn goa_fixture() -> tempfile::TempDir {
     let fixture = tempfile::tempdir().unwrap();
     let home = fixture.path();
@@ -849,8 +825,6 @@ fn goa_accounts_and_services_are_individually_selectable_and_only_selected_becom
         (Some(false), false)
     );
 
-    // The aggregate identity still skips the optional Accounts step without
-    // owning the exact account rows: their selection survives the alias.
     apply(
         &mut preview,
         InstallerPreviewEffect::SetYourDataSource {
@@ -957,9 +931,6 @@ fn goa_accounts_and_services_are_individually_selectable_and_only_selected_becom
     );
 }
 
-/// Nextcloud and rclone are app sources with real account identities and the
-/// services they turn on. They start selected like every other discovered
-/// source, and the master decision covers all of them in one edit.
 #[test]
 fn nextcloud_and_rclone_are_product_sources_selected_by_default() {
     let fixture = tempfile::tempdir().unwrap();
@@ -1013,7 +984,6 @@ fn nextcloud_and_rclone_are_product_sources_selected_by_default() {
         "a source row never publishes its server or credential"
     );
 
-    // One rclone remote is its own decision; the Nextcloud account stays.
     apply(
         &mut preview,
         InstallerPreviewEffect::SetYourDataGroup {
@@ -1071,9 +1041,6 @@ fn nextcloud_and_rclone_are_product_sources_selected_by_default() {
     );
 }
 
-/// A granted Windows OneDrive root carries account metadata even though its
-/// configuration names no service list. It is recognized as a file account and
-/// keeps its real identity instead of disappearing behind a generic form.
 #[test]
 fn granted_windows_onedrive_root_is_an_account_source() {
     use imager_backend::windows_inventory::{RootRole, SelectedRoot};
@@ -1203,8 +1170,6 @@ fn excluded_folder_reaches_the_canonical_home_capture_review() {
         "the actual reviewed producer omits every file below the excluded folder"
     );
     selected.validate().unwrap();
-    // Media preparation takes its own route on a filesystem whose original
-    // reader retains the source; either route carries the same exclusions.
     let media = imager_backend::setup::portable_home_media::HomeSource::review_selected_for_media_preparation(
         fixture.path(),
         &exclusions,
@@ -1212,7 +1177,6 @@ fn excluded_folder_reaches_the_canonical_home_capture_review() {
     )
     .unwrap();
     assert_eq!(media.exclusions(), exclusions.as_slice());
-    // The excluded original is only read, never deleted or rewritten.
     assert_eq!(
         std::fs::read(fixture.path().join("Documents/Private/taxes.txt")).unwrap(),
         b"private"

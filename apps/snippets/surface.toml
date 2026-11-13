@@ -1,35 +1,37 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "snippets.library"
-label = "Snippets"
+label = "Snippet library"
 version = 1
 fields = [
-  { path = "snippets", type = "Collection<Snippet>", stored = "collection" },
-  { path = "snippets.*.title", type = "String", label = true },
-  { path = "snippets.*.body", type = "String" },
-  { path = "snippets.*.description", type = "String" },
+  { path = "snippets", type = { collection = { named = "Snippet" } }, stored = "collection" },
+  { path = "snippets.*.title", type = "text", label = true },
+  { path = "snippets.*.body", type = "text" },
+  { path = "snippets.*.description", type = "text" },
   { path = "snippets.*.favorite", type = "bool" },
-  { path = "snippets.*.folder", type = "Atom" },
-  { path = "snippets.*.language", type = "Language" },
-  { path = "snippets.*.tags", type = "Set<String>" },
-  { path = "snippets.*.uses", type = "Counter", readonly = true },
+  { path = "snippets.*.folder", type = "text" },
+  { path = "snippets.*.language", type = { named = "Language" } },
+  { path = "snippets.*.tags", type = { set = "text" } },
+  { path = "snippets.*.uses", type = "int", readonly = true },
 ]
 
 [[resources.verbs]]
 id = "new-snippet"
 kind = "undoable"
 params = [
-  { name = "title", required = true, schema = { type = "string" } },
-  { name = "folder", required = false, schema = { type = ["string", "null"] } },
+  { name = "title", type = "text", required = true, schema = { type = "string" } },
+  { name = "folder", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "duplicate"
 kind = "undoable"
 params = [
-  { name = "snippet", required = true, schema = { type = "string" } },
-  { name = "title", required = false, schema = { type = ["string", "null"] } },
+  { name = "snippet", type = "text", required = true, schema = { type = "string" } },
+  { name = "title", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -37,36 +39,68 @@ id = "delete"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "snippet", required = true, schema = { type = "string" } },
+  { name = "snippet", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "record-use"
 kind = "undoable"
 params = [
-  { name = "snippet", required = true, schema = { type = "string" } },
+  { name = "snippet", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "rename-folder"
 kind = "undoable"
 params = [
-  { name = "folder", required = true, schema = { type = "string" } },
-  { name = "to", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "folder", type = "text", required = true, schema = { type = "string" } },
+  { name = "to", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
 id = "rename-tag"
 kind = "undoable"
 params = [
-  { name = "tag", required = true, schema = { type = "string" } },
-  { name = "to", required = true, schema = { type = "string" } },
+  { name = "tag", type = "text", required = true, schema = { type = "string" } },
+  { name = "to", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "remove-tag"
 kind = "undoable"
 params = [
-  { name = "tag", required = true, schema = { type = "string" } },
+  { name = "tag", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "Language"
+cases = [
+  { name = "text" },
+  { name = "shell" },
+  { name = "rust" },
+  { name = "sql" },
+  { name = "git" },
+  { name = "python" },
+  { name = "javascript" },
+  { name = "json" },
+  { name = "yaml" },
+  { name = "markdown" },
+  { name = "html" },
+  { name = "css" },
+  { name = "toml" },
+  { name = "dockerfile" },
+]
+
+[[resources.types]]
+name = "Snippet"
+fields = [
+  { name = "title", type = "text" },
+  { name = "body", type = "text" },
+  { name = "description", type = "text" },
+  { name = "favorite", type = "bool" },
+  { name = "folder", type = "text" },
+  { name = "language", type = { named = "Language" } },
+  { name = "tags", type = { set = "text" } },
+  { name = "uses", type = "int" },
 ]
 

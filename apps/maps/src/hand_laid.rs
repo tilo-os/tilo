@@ -1,14 +1,10 @@
-//! Driving the toolkit controls the map places by hand (the From/To fields,
-//! the offline sheet's field and stepper, the overflow menu) with the event's
-//! own document.
+//! Driving the toolkit controls the map places by hand, with the event's own document: the From/To
+//! fields, the offline sheet's field and stepper, the overflow menu.
 
 use taffy::{NodeId, Style, TaffyTree};
 use ui::widget::Widget;
 use winit::event::WindowEvent;
 
-/// Drive one event through `widget`, a control laid out by hand rather than
-/// by the widget tree, against `doc`, the document the event came with.
-/// Returns whether the control handled it.
 pub(crate) fn drive(
     widget: &mut dyn Widget,
     event: &WindowEvent,

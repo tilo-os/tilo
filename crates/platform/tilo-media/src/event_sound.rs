@@ -1,9 +1,9 @@
 //! Session-owned desktop event-sound delivery.
 //!
-//! The compositor submits a cue to a bounded worker; it never forks or waits
-//! on the render thread. The freedesktop sound-theme lookup happens here and
-//! `pw-play` plays the resolved file on the current `PipeWire` session route.
-//! Missing audio support is reported as a capability, never faked.
+//! The compositor submits a cue to a bounded worker and never forks or waits on the
+//! render thread; the freedesktop sound-theme lookup happens here and `pw-play` plays
+//! the file on the session route. Missing audio support is reported as a capability,
+//! never faked.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -18,15 +18,11 @@ pub enum SoundBackend {
     Unavailable,
 }
 
-/// One sound to play.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SoundCue {
-    /// freedesktop sound-naming-spec ids, most specific first.
     pub ids: &'static [&'static str],
     pub description: &'static str,
-    /// freedesktop sound theme to look the ids up in.
     pub theme: String,
-    /// Linear `0..=1`.
     pub volume: f32,
 }
 
@@ -61,8 +57,6 @@ fn command_exists(name: &str) -> bool {
     })
 }
 
-/// `$XDG_DATA_HOME/sounds` then each `$XDG_DATA_DIRS/sounds`, per the
-/// freedesktop sound-theme spec.
 fn sound_roots() -> Vec<PathBuf> {
     tilo_paths::xdg::data_home()
         .into_iter()
@@ -71,12 +65,9 @@ fn sound_roots() -> Vec<PathBuf> {
         .collect()
 }
 
-/// An installed sound theme.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoundTheme {
-    /// Directory name; what the settings store uses.
     pub id: String,
-    /// `Name=` from `index.theme`.
     pub name: String,
 }
 
@@ -125,8 +116,6 @@ fn is_path_component(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', '\0'])
 }
 
-/// The first `index.theme` for `theme` along the search path, with the root
-/// it was found in.
 fn theme_index(roots: &[PathBuf], theme: &str) -> Option<(PathBuf, ThemeIndex)> {
     if !is_path_component(theme) {
         return None;
@@ -138,7 +127,6 @@ fn theme_index(roots: &[PathBuf], theme: &str) -> Option<(PathBuf, ThemeIndex)> 
     })
 }
 
-/// Sound themes installed on this machine, sorted by name.
 pub fn installed_themes() -> Vec<SoundTheme> {
     installed_themes_in(&sound_roots())
 }
@@ -170,8 +158,6 @@ fn installed_themes_in(roots: &[PathBuf]) -> Vec<SoundTheme> {
     themes
 }
 
-/// The sound file for the first of `ids` that `theme` (or a theme it
-/// inherits from, ending with `freedesktop`) provides.
 pub fn resolve_sound_file(theme: &str, ids: &[&str]) -> Option<PathBuf> {
     resolve_sound_file_in(&sound_roots(), theme, ids)
 }
@@ -243,12 +229,8 @@ fn play_one(backend: SoundBackend, cue: &SoundCue) {
         }
         SoundBackend::Unavailable => return,
     };
-    // One cue at a time. The bounded sender coalesces bursts while the worker
-    // waits, preventing event storms from becoming a process storm. A broken
-    // audio route cannot strand the worker or leave descendants.
     #[cfg(not(target_arch = "wasm32"))]
     let _ = bounded_command::run_prepared(command, None, 1024, std::time::Duration::from_secs(5));
-    // The browser has no processes; its backend is always `Unavailable`.
     #[cfg(target_arch = "wasm32")]
     drop(command);
 }
@@ -269,8 +251,6 @@ impl Drop for Inner {
     }
 }
 
-/// Cloneable session owner. Dropping the final clone closes and joins its
-/// worker. `play()` is non-blocking and coalesces bursts at one pending cue.
 #[derive(Clone, Debug)]
 pub struct EventSoundPlayer(Arc<Inner>);
 

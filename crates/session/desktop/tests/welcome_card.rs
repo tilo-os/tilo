@@ -130,6 +130,7 @@ fn windows(handle: &DesktopHandle) -> Vec<String> {
     handle.read(|tree| {
         tree.tabs()
             .filter_map(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile))
+            .map(String::from)
             .collect()
     })
 }

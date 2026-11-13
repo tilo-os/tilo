@@ -68,11 +68,6 @@ mod native_editing_tests {
         assert_eq!(packet[5], 6, "physical input did not revoke original lease");
     }
 
-    /// At a native editor prompt, dictation still needs the editor's
-    /// acknowledgement, but an ordinary commit (the on-screen keyboard's
-    /// letters) becomes the editor's own acknowledged edit, so hosts serve the
-    /// prompt to standard text input and the on-screen keyboard opens. The
-    /// field stays a terminal input, so the keyboard keeps its terminal keys.
     #[test]
     fn a_native_editor_prompt_takes_ordinary_commits() {
         let (widget, _producer) = fixture().expect("qualified native editor fixture");
@@ -92,9 +87,6 @@ mod native_editing_tests {
         assert!(ui::ime::ImeWindowState::from_widget(&widget).is_some());
     }
 
-    /// The on-screen keyboard's terminal keys work at a native editor
-    /// prompt: each is a real key the editor reads from the PTY, so Up walks
-    /// its history and Ctrl+C interrupts.
     #[test]
     fn the_terminal_keys_reach_a_native_editor_prompt_as_keys() {
         use winit::keyboard::{Key, NamedKey};
@@ -220,9 +212,6 @@ mod native_editing_tests {
             receipt.poll(),
             Some(Err(ui::text_input::Failure::Rejected))
         ));
-        // The receipt resolves only after the client decided not to send, so
-        // a packet it had sent would already be queued: this read waits for
-        // nothing that could still arrive.
         producer
             .read_timeout(Some(Duration::from_millis(100)))
             .unwrap();

@@ -494,7 +494,6 @@ fn nested_home_exclusions_are_enforced_by_the_canonical_producer() {
             .entries()
             .all(|entry| !entry.unwrap().0.starts_with("Documents/Private"))
     );
-    // The same producer refuses a path that is not under the source.
     assert!(
         SourceInventory::capture_portable_home(&pin, &home)
             .unwrap()
@@ -690,7 +689,6 @@ fn identities_follow_the_entry_not_its_position_across_sibling_changes() {
     assert!(named(&documents.children, "Aaa").is_some());
     assert!(named(&documents.children, "Gamma").is_some());
 
-    // Removing a sibling changes no surviving identity.
     fs::remove_dir_all(home.join("Documents/Beta")).unwrap();
     let third = documents_tree(&home);
     let documents = named(&third.sources, "Documents").unwrap();
@@ -950,7 +948,6 @@ fn the_running_setups_own_files_in_the_source_home_are_never_offered() {
     let tree = discover_home(&home, &SteamCatalog::builtin()).unwrap();
     assert_eq!(tree.totals.local_files, 0, "{:?}", tree.totals);
     assert_eq!(tree.totals.unknown_size_files, 0, "{:?}", tree.totals);
-    // Data beside them is still offered.
     fs::write(home.join("document"), b"mine").unwrap();
     let tree = discover_home(&home, &SteamCatalog::builtin()).unwrap();
     assert_eq!(tree.totals.local_files, 1, "{:?}", tree.totals);

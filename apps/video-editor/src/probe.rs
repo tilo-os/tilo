@@ -1,49 +1,19 @@
-//! Real, dependency-free media probing.
+//! Media metadata read straight from a file's container bytes, with no decoder
+//! and no external process: ISOBMFF, Matroska, MP3, WAV, PNG and JPEG, plus the
+//! extension for formats this does not parse.
 //!
-//! Import turns a picked file into a [`crate::model::MediaItem`], which needs
-//! real metadata — duration, dimensions, codec, kind. This module reads that
-//! straight from the container bytes, with no decoder and no external process,
-//! so it produces **real** metadata on the default (hermetic) build:
-//!
-//!   * **ISOBMFF** (`.mp4` / `.mov` / `.m4v` / `.m4a`): duration from `mvhd`,
-//!     pixel dimensions from the video track's `tkhd`, the codec four-CC from
-//!     `stsd`, the kind from `hdlr`, and the frame rate from the video track's
-//!     sample count over the movie duration.
-//!   * **Matroska / `WebM`** (EBML): duration from the `Info` segment's
-//!     `Duration` × `TimestampScale`, pixel dimensions from the first video
-//!     `TrackEntry`, and the kind from the track types present.
-//!   * **MP3** (MPEG-1/2/2.5 Layer III): duration from a `Xing`/`Info` VBR
-//!     header when present (exact frame count), else a CBR estimate from the
-//!     first frame's bitrate over the audio byte length; `ID3v2` tags are skipped.
-//!   * **WAV** (RIFF/WAVE): channels / sample-rate / bit-depth from `fmt `, and
-//!     the duration from the `data` chunk size over the byte rate.
-//!   * **PNG / JPEG**: pixel dimensions from the header (`IHDR` / `SOFn`).
-//!
-//! Anything we can't parse degrades honestly, in one of three ways:
-//!
-//!   * The bytes are **positively not media** (an HTML page, a text file, an
-//!     archive, an executable) — the probe *fails* with
-//!     [`ProbeError::NotMedia`] naming what they really are. A download that
-//!     went wrong and landed as `page.mp4` is refused at import instead of
-//!     becoming a `0x0`, zero-length "video" that can never play.
-//!   * The extension names no media format at all — [`ProbeError::Unrecognised`].
-//!   * The extension names a real format whose container we do not parse (AVI,
-//!     MPEG-TS, FLAC …) — the kind comes from the extension and the numeric
-//!     fields stay zero / unknown, never fabricated.
-//!
-//! Under `--features decode` the caller can additionally confirm duration
-//! against the real `GStreamer` pipeline, but the container parse here is already
-//! real and is what the default build relies on.
+//! A file that cannot be described honestly is refused rather than guessed at:
+//! bytes that are positively not media name what they are, an extension that is
+//! no media format is unrecognised, and a container this does not parse keeps the
+//! kind from its extension with every number unknown.
 
 use std::path::Path;
 
 use crate::model::MediaKind;
 
-/// A still image has no intrinsic duration; give it a sensible default span on
-/// the timeline (matching the common NLE convention) so it can be placed.
+/// A still has no intrinsic duration, so it gets a default span on the timeline.
 pub const DEFAULT_IMAGE_DURATION: f64 = 5.0;
 
-/// Real metadata read from a file's container, ready to become a `MediaItem`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProbedMedia {
     pub kind: MediaKind,
@@ -52,52 +22,31 @@ pub struct ProbedMedia {
     pub duration: f64,
     pub width: u32,
     pub height: u32,
-    /// Frames per second, read from the container's real per-sample timing
-    /// (ISOBMFF `stts` deltas over the `mdhd` timescale, Matroska
-    /// `DefaultDuration`). **`0.0` means unknown** — a fragmented or
-    /// non-timed container carries no frame timing in its header, and the
-    /// probe says so rather than inventing a rate. Callers must render
-    /// unknown as unknown; substituting a plausible default reports a number
-    /// the file never claimed.
+    /// Frames per second from the container's own timing. **`0.0` means unknown**:
+    /// a fragmented container carries none, and callers must render unknown as
+    /// unknown rather than substitute a plausible rate.
     pub fps: f64,
-    /// Container/codec tag (four-CC or format name), or `"unknown"`.
     pub codec: String,
-    /// Whether the container carries a sound track alongside the picture.
-    ///
-    /// A video file's audio is the thing a person most often forgets a
-    /// timeline can lose: nothing on screen says "this clip has sound" until
-    /// the export comes back silent. The probe already walks the track
-    /// handlers to decide the file's kind, so it knows this for free — it
-    /// simply used to throw the answer away.
-    ///
-    /// `false` for a format whose header the probe does not parse. That is a
-    /// floor, not a claim: it means "no sound track was found", and a caller
-    /// must not read it as "there is none".
+    /// Whether a sound track was found alongside the picture. `false` is a floor,
+    /// not a claim: it means none was found, and a format this probe does not parse
+    /// always answers false.
     pub has_audio: bool,
 }
 
-/// Why a file yielded no real media metadata.
-///
-/// Every variant is a refusal, not a degraded guess: a caller that gets one
-/// must decline the import and say why, because there is nothing truthful to
-/// put in a [`crate::model::MediaItem`].
+/// A refusal, not a degraded guess: a caller must decline the import and say
+/// why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProbeError {
-    /// The file could not be read at all.
     Io(String),
-    /// The file has no bytes.
     Empty,
-    /// The bytes are positively something other than media. `detected` names
-    /// what they actually are, for the message shown to the user.
-    NotMedia { detected: &'static str },
-    /// No container header matched and the extension names no media format we
-    /// recognise — nothing honest can be said about this file.
+    NotMedia {
+        detected: &'static str,
+    },
+    /// No container matched and the extension names no media format.
     Unrecognised,
 }
 
 impl std::fmt::Display for ProbeError {
-    /// A refusal reads in the window's language: it is shown to the person who
-    /// picked the file, in the notice that says the import did not happen.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let words = match self {
             ProbeError::Io(e) => crate::resource::CATALOG.t_args(
@@ -122,39 +71,22 @@ impl std::fmt::Display for ProbeError {
 
 impl std::error::Error for ProbeError {}
 
-/// Probe a file on disk into real [`ProbedMedia`]. Reads the bytes (the whole
-/// file for the small clips this handles; a large import is capped) and
-/// dispatches on the magic bytes.
+/// The whole file for a small clip, a prefix for a large one, dispatched on the
+/// magic bytes.
 ///
-/// Fails with a [`ProbeError`] when the file holds nothing that can honestly
-/// be described as media — the caller must refuse the import and show
-/// [`ProbeError`]'s message rather than adding an item with invented metadata.
-///
-/// # Errors
-///
-/// [`ProbeError::Io`] when the file cannot be read, otherwise whatever
-/// [`probe_bytes`] reports for its contents.
+/// Fails when the file holds nothing that can honestly be described as media:
+/// the caller must refuse the import and show the message rather than add an
+/// item with invented metadata.
 pub fn probe_file(path: &Path) -> Result<ProbedMedia, ProbeError> {
-    // Read the file to parse its container header. Cap very large files: the
-    // metadata we need lives in the header + `moov`, and a faststart MP4 puts
-    // `moov` up front, so the first slice suffices for the common case.
+    // The metadata lives in the header and `moov`, so a prefix suffices.
     const CAP: u64 = 96 * 1024 * 1024;
     let data = crate::files::read_prefix(path, CAP).map_err(|e| ProbeError::Io(e.to_string()))?;
     probe_bytes(&data, path)
 }
 
-/// Probe already-read `data`. Pure, so it is unit-testable on crafted bytes.
-/// `path` is used only as an extension hint when the magic bytes are unknown.
-///
-/// The order matters: every container we can genuinely parse is tried first,
-/// so a real file is never mistaken for something else. Only bytes that match
-/// no media header at all reach the not-media check.
-///
-/// # Errors
-///
-/// [`ProbeError::Empty`] for no bytes, [`ProbeError::NotMedia`] when the bytes
-/// are positively something else, and [`ProbeError::Unrecognised`] when neither
-/// the header nor `path`'s extension names a media format.
+/// Pure, so it is testable on crafted bytes; `path` is only an extension hint.
+/// Every container we parse is tried first, so only bytes matching no media
+/// header at all reach the not-media check.
 pub fn probe_bytes(data: &[u8], path: &Path) -> Result<ProbedMedia, ProbeError> {
     if data.is_empty() {
         return Err(ProbeError::Empty);
@@ -187,26 +119,17 @@ pub fn probe_bytes(data: &[u8], path: &Path) -> Result<ProbedMedia, ProbeError> 
     {
         return Ok(p);
     }
-    // No media header matched. Before falling back to the extension, check
-    // whether the bytes are positively something *else* — this is the case
-    // that used to slip through as a `0x0` zero-length "video": a saved web
-    // page, an error response, or a text file wearing a `.mp4` name.
+    // Nothing matched a media header: before the extension, check whether the
+    // bytes are positively something else.
     if let Some(detected) = non_media_signature(data) {
         return Err(ProbeError::NotMedia { detected });
     }
-    // A container we do not parse but plausibly real media: kind from the
-    // extension, numeric fields left unknown.
     fallback_from_extension(path)
 }
 
-// ---- "this is not media at all" ------------------------------------------
-
-/// Positively identify bytes as something other than media, returning a short
-/// human-readable name for what they are. `None` means "could still be a
-/// container we simply do not parse" — never a claim that the bytes *are* media.
+/// `None` means it could still be a container we do not parse, never a claim
+/// that the bytes are media.
 fn non_media_signature(d: &[u8]) -> Option<&'static str> {
-    // Binary formats that are unambiguously not media containers. Each names
-    // the catalogue message for what the bytes really are.
     const MAGIC: &[(&[u8], &str)] = &[
         (b"%PDF-", "video-editor-file-pdf"),
         (b"PK\x03\x04", "video-editor-file-zip"),
@@ -230,24 +153,21 @@ fn non_media_signature(d: &[u8]) -> Option<&'static str> {
             return Some(name);
         }
     }
-    // YUV4MPEG2 is the one media container that opens with a line of ASCII;
-    // the text sniff below would otherwise call it a text file.
+    // YUV4MPEG2 is real video that opens with ASCII: the text sniff would
+    // otherwise call it a text file.
     if d.starts_with(b"YUV4MPEG2") {
         return None;
     }
     textual_kind(d)
 }
 
-/// Classify `d` as text, and say what kind. Media containers are binary — they
-/// carry NUL bytes and raw byte values in their first kilobyte — so bytes that
-/// read as clean text are never a container we failed to parse.
+/// Media containers are binary, so bytes that read as clean text are never one.
 fn textual_kind(d: &[u8]) -> Option<&'static str> {
     let d = d.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(d); // UTF-8 BOM
     let head = d.get(..1024).unwrap_or(d);
     if head.is_empty() {
         return None;
     }
-    // Any NUL, or a run of non-text control bytes, means binary.
     let mut control = 0usize;
     for &b in head {
         if b == 0 {
@@ -260,7 +180,6 @@ fn textual_kind(d: &[u8]) -> Option<&'static str> {
     if control * 100 > head.len() {
         return None; // >1% control bytes: binary
     }
-    // Must decode as UTF-8 up to the last whole character in the window.
     let mut end = head.len();
     while end > 0
         && head
@@ -300,7 +219,6 @@ fn textual_kind(d: &[u8]) -> Option<&'static str> {
 
 fn image_probe(w: u32, h: u32, codec: &str) -> ProbedMedia {
     ProbedMedia {
-        // A still carries no sound track.
         has_audio: false,
         kind: MediaKind::Image,
         duration: DEFAULT_IMAGE_DURATION,
@@ -311,8 +229,8 @@ fn image_probe(w: u32, h: u32, codec: &str) -> ProbedMedia {
     }
 }
 
-/// Media containers we do not parse but which are unquestionably media, so an
-/// import of one is honest with unknown numbers rather than refused.
+/// Media we do not parse but which is unquestionably media, so an import of
+/// one is honest with unknown numbers rather than refused.
 pub(crate) const VIDEO_EXTS: &[&str] = &[
     "mp4", "m4v", "mov", "qt", "mkv", "webm", "avi", "flv", "f4v", "wmv", "asf", "mpg", "mpeg",
     "mpe", "m1v", "m2v", "ts", "m2ts", "mts", "ogv", "3gp", "3g2", "vob", "mxf", "divx", "rm",
@@ -327,12 +245,9 @@ pub(crate) const IMAGE_EXTS: &[&str] = &[
     "ico", "jxl", "tga",
 ];
 
-/// Last resort once no container matched and the bytes are not positively
-/// something else: trust the extension for the *kind* only, and leave every
-/// number unknown.
-///
-/// An extension that names no media format at all is a refusal — guessing
-/// `Video` for an arbitrary file is what produced dead `0p / 0:00` bin items.
+/// Trusts the extension for the kind and leaves every number unknown. An
+/// extension that names no media format is a refusal: guessing `Video` for any
+/// file produced dead bin items.
 fn fallback_from_extension(path: &Path) -> Result<ProbedMedia, ProbeError> {
     let ext = path
         .extension()
@@ -361,9 +276,8 @@ fn fallback_from_extension(path: &Path) -> Result<ProbedMedia, ProbeError> {
         height: 0,
         fps: 0.0,
         codec: "unknown".into(),
-        // The header was never parsed here — the kind came from the
-        // extension. "No sound track was found" is the honest answer, and
-        // it is a floor rather than a claim that there is none.
+        // The header was never parsed here, so no sound track was found: a floor,
+        // not a claim.
         has_audio: false,
     })
 }
@@ -372,21 +286,16 @@ fn is_wav(d: &[u8]) -> bool {
     d.starts_with(b"RIFF") && d.get(8..12) == Some(b"WAVE".as_slice())
 }
 fn is_isobmff(d: &[u8]) -> bool {
-    // The first box is normally `ftyp`; be lenient and also accept a leading
-    // `moov` / `mdat` / `free` / `skip` / `wide` box (some `.mov` files).
     matches!(
         d.get(4..8),
         Some(b"ftyp" | b"moov" | b"mdat" | b"free" | b"skip" | b"wide")
     )
 }
 fn is_ebml(d: &[u8]) -> bool {
-    // Both Matroska and WebM open with the EBML header magic `1A 45 DF A3`.
     d.starts_with(&[0x1A, 0x45, 0xDF, 0xA3])
 }
-/// Whether `d` (with `path`'s extension as a hint) is an MP3 stream: an `ID3v2`
-/// tag, or a raw MPEG audio frame sync in the first bytes. Extension-only files
-/// still fall through to the frame-sync scan, so a mislabelled file is rejected
-/// rather than reported with fabricated numbers.
+/// An `ID3v2` tag or a raw frame sync, so a mislabelled file is refused
+/// rather than given invented numbers.
 fn looks_like_mp3(d: &[u8], path: &Path) -> bool {
     if d.starts_with(b"ID3") {
         return true;
@@ -401,8 +310,6 @@ fn looks_like_mp3(d: &[u8], path: &Path) -> bool {
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .eq_ignore_ascii_case("mp3");
-    // For a .mp3 without a leading tag/sync, only accept if a sync appears
-    // within the first few KB (some files have leading junk).
     ext && d
         .iter()
         .take(8192)
@@ -410,11 +317,8 @@ fn looks_like_mp3(d: &[u8], path: &Path) -> bool {
         .any(|(i, &b)| b == 0xFF && d.get(i + 1).is_some_and(|n| (n & 0xE0) == 0xE0))
 }
 
-/// Big-endian `u32` at `at`, or `None` if the buffer is too short.
-///
-/// These take an offset rather than a pre-sliced buffer because `&d[a..b]` is
-/// itself a panic on a short read, and every caller here is parsing a file the
-/// user opened. One bounds check inside beats a hundred at the call sites.
+/// An offset rather than a pre-sliced buffer: `&d[a..b]` is itself a panic on
+/// a short read, and every caller here parses a file the user opened.
 fn be_u32(d: &[u8], at: usize) -> Option<u32> {
     let end = at.checked_add(4)?;
     Some(u32::from_be_bytes(d.get(at..end)?.try_into().ok()?))
@@ -429,19 +333,14 @@ fn le_u32(d: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(d.get(at..end)?.try_into().ok()?))
 }
 
-/// A WAV file's layout: its `fmt ` fields and where its samples are.
 pub(crate) struct WavLayout {
-    /// `1` integer PCM, `3` float, `0xFFFE` extensible.
     pub format: u16,
     pub channels: u16,
     pub bits: u16,
     pub byte_rate: u32,
-    /// Where the `data` chunk's samples start, and the size it declares
-    /// (which may run past a prefix read of the file).
     pub data: Option<(usize, usize)>,
 }
 
-/// Walk a RIFF/WAVE file's chunks. `None` when `d` is not a WAV.
 pub(crate) fn wav_layout(d: &[u8]) -> Option<WavLayout> {
     if !is_wav(d) {
         return None;
@@ -470,7 +369,6 @@ pub(crate) fn wav_layout(d: &[u8]) -> Option<WavLayout> {
             b"data" => layout.data = Some((body, size)),
             _ => {}
         }
-        // Chunks are word-aligned (pad byte when the size is odd).
         i = body + size + (size & 1);
     }
     Some(layout)
@@ -497,24 +395,21 @@ fn parse_wav(d: &[u8]) -> Option<ProbedMedia> {
         height: 0,
         fps: 0.0,
         codec,
-        // A WAV is sound outright; it lands on an audio track the mixer
-        // already reads. This flag marks a *picture* that carries sound.
+        // A WAV is sound outright; `has_audio` marks a picture that carries sound.
         has_audio: false,
     })
 }
 
-/// One box's payload slice and four-CC.
 struct BoxRef<'a> {
     typ: [u8; 4],
     body: &'a [u8],
 }
 
-/// Iterate the sibling boxes contained in `data`. Tolerates truncation.
 fn iter_boxes(data: &[u8]) -> Vec<BoxRef<'_>> {
     let mut out = Vec::new();
     let mut i = 0usize;
-    // Every read is checked and the cursor only moves forward, so a box header
-    // claiming a bogus size ends the walk instead of indexing past the buffer.
+    // Every read is checked and the cursor only moves forward, so a bogus size
+    // ends the walk instead of indexing past the buffer.
     while i.saturating_add(8) <= data.len() {
         let Some(size32) = be_u32(data, i).map(u64::from) else {
             break;
@@ -541,7 +436,6 @@ fn iter_boxes(data: &[u8]) -> Vec<BoxRef<'_>> {
         };
         let total = total as usize;
         if total < header || i.saturating_add(total) > data.len() {
-            // Truncated / bad size — take the rest as this box's body and stop.
             let body_start = i.saturating_add(header).min(data.len());
             out.push(BoxRef {
                 typ,
@@ -553,14 +447,11 @@ fn iter_boxes(data: &[u8]) -> Vec<BoxRef<'_>> {
             break;
         };
         out.push(BoxRef { typ, body });
-        // `total >= header >= 8`, so the cursor always advances and the loop
-        // terminates even on a file that claims overlapping boxes.
         i = i.saturating_add(total);
     }
     out
 }
 
-/// First child box of `typ` within `data`.
 fn child(data: &[u8], typ: [u8; 4]) -> Option<&[u8]> {
     iter_boxes(data)
         .into_iter()
@@ -568,7 +459,6 @@ fn child(data: &[u8], typ: [u8; 4]) -> Option<&[u8]> {
         .map(|b| b.body)
 }
 
-/// Follow a nested path of four-CCs to a box body.
 fn descend<'a>(data: &'a [u8], path: &[&[u8; 4]]) -> Option<&'a [u8]> {
     let mut cur = data;
     for step in path {
@@ -580,7 +470,6 @@ fn descend<'a>(data: &'a [u8], path: &[&[u8; 4]]) -> Option<&'a [u8]> {
 fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
     let moov = child(data, *b"moov")?;
 
-    // Movie duration from mvhd.
     let (timescale, duration_units) = child(moov, *b"mvhd")
         .and_then(timescale_and_duration)
         .unwrap_or((0, 0));
@@ -621,13 +510,9 @@ fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
             if let Some(c) = &track_codec {
                 codec.clone_from(c);
             }
-            // Real frame rate: the track's own sample deltas (`stts`) over its
-            // own media timescale (`mdhd`). That is the rate the container
-            // actually states — 30000/1001 comes out as 29.97, not 30 — and it
-            // is per-track, so an edit list or a trailing audio-only stretch
-            // cannot skew it the way sample-count-over-movie-duration did.
-            // A container that carries no sample table (fragmented MP4, where
-            // timing lives in `moof`) leaves `fps` at 0.0, meaning unknown.
+            // The track's own sample deltas over its own media timescale: 30000/1001
+            // comes out as 29.97, per track, so an edit list cannot skew it. A
+            // fragmented MP4 carries no sample table and leaves fps unknown.
             let media_timescale = descend(trak, &[b"mdia", b"mdhd"])
                 .and_then(timescale_and_duration)
                 .map_or(0, |(ts, _)| ts);
@@ -669,14 +554,12 @@ fn saw_video_recorded(w: u32, h: u32, codec: &str) -> bool {
     w != 0 && h != 0 && codec != "unknown"
 }
 
-/// (timescale, duration) from an `mvhd` **or** `mdhd` payload — the two boxes
-/// share this prefix layout, so the movie header and a track's media header
-/// both parse here. `mvhd`'s timescale times the movie; `mdhd`'s times that
-/// one track's samples, which is what frame timing must be measured against.
+// `mvhd` and `mdhd` share this prefix layout: `mvhd`'s timescale times the
+/// movie, `mdhd`'s times one track's samples, which frame timing is measured
+/// against.
 fn timescale_and_duration(body: &[u8]) -> Option<(u32, u64)> {
     let version = *body.first()?;
     if version == 1 {
-        // 1 + 3 flags + 8 create + 8 modify = 20, then timescale(4), duration(8)
         if body.len() < 32 {
             return None;
         }
@@ -684,7 +567,6 @@ fn timescale_and_duration(body: &[u8]) -> Option<(u32, u64)> {
         let dur = u64::from_be_bytes(body.get(24..32)?.try_into().ok()?);
         Some((ts, dur))
     } else {
-        // 1 + 3 + 4 create + 4 modify = 12, then timescale(4), duration(4)
         if body.len() < 20 {
             return None;
         }
@@ -694,8 +576,6 @@ fn timescale_and_duration(body: &[u8]) -> Option<(u32, u64)> {
     }
 }
 
-/// Track pixel dimensions from a `tkhd` payload. Width/height are the last two
-/// 16.16 fixed-point u32s of the payload, regardless of version.
 fn tkhd_dims(body: &[u8]) -> Option<(u32, u32)> {
     if body.len() < 8 {
         return None;
@@ -706,7 +586,6 @@ fn tkhd_dims(body: &[u8]) -> Option<(u32, u32)> {
     Some((w, h))
 }
 
-/// Handler type ("vide" / "soun" / …) from an `hdlr` payload (at offset 8).
 fn hdlr_type(body: &[u8]) -> Option<String> {
     if body.len() < 12 {
         return None;
@@ -714,7 +593,6 @@ fn hdlr_type(body: &[u8]) -> Option<String> {
     Some(String::from_utf8_lossy(body.get(8..12)?).trim().to_string())
 }
 
-/// Codec four-CC from an `stsd` payload's first sample entry.
 fn stsd_codec(body: &[u8]) -> Option<String> {
     // version+flags(4) entry_count(4) then entry: size(4) format(4).
     if body.len() < 16 {
@@ -724,14 +602,9 @@ fn stsd_codec(body: &[u8]) -> Option<String> {
     Some(String::from_utf8_lossy(fourcc).trim().to_string())
 }
 
-/// Average frame rate from an `stts` (time-to-sample) payload, in `timescale`
-/// units per second.
-///
-/// `stts` is a run-length table of `(sample_count, sample_delta)` pairs giving
-/// each sample's real duration. Summing both columns yields total samples over
-/// total time — exact for constant-rate video, and the true average for
-/// variable-rate video. `None` when the table is absent or empty, which is the
-/// honest "the container does not say" answer.
+/// The average over the table's `(sample_count, sample_delta)` pairs: exact for
+/// constant-rate video, the true average for variable. `None` when the table is
+/// absent or empty, which is the honest "the container does not say".
 fn stts_frame_rate(body: &[u8], timescale: u32) -> Option<f64> {
     if timescale == 0 || body.len() < 8 {
         return None;
@@ -741,8 +614,6 @@ fn stts_frame_rate(body: &[u8], timescale: u32) -> Option<f64> {
     let mut units: u64 = 0;
     for e in 0..entries {
         let off = 8 + e * 8;
-        // A truncated table is read as far as it goes rather than refused:
-        // the samples that are there still state the rate.
         let (Some(count), Some(delta)) = (be_u32(body, off), be_u32(body, off + 4)) else {
             break;
         };
@@ -755,7 +626,6 @@ fn stts_frame_rate(body: &[u8], timescale: u32) -> Option<f64> {
     Some(samples as f64 * f64::from(timescale) / units as f64)
 }
 
-// The EBML element IDs we care about, in their full (marker-retained) form.
 const EBML_SEGMENT: u64 = 0x1853_8067;
 const EBML_INFO: u64 = 0x1549_A966;
 const EBML_TIMESTAMP_SCALE: u64 = 0x2A_D7B1;
@@ -766,14 +636,10 @@ const EBML_TRACK_TYPE: u64 = 0x83;
 const EBML_VIDEO: u64 = 0xE0;
 const EBML_PIXEL_WIDTH: u64 = 0xB0;
 const EBML_PIXEL_HEIGHT: u64 = 0xBA;
-/// Nanoseconds per frame, stated by the track itself.
 const EBML_DEFAULT_DURATION: u64 = 0x23_E383;
 
-/// Read one EBML variable-length integer at `d[i..]`.
-///
-/// Returns `(value, byte_len)`. For element IDs (`keep_marker`) the leading
-/// length-descriptor bits are retained so the value matches the canonical id
-/// constants; for sizes the marker is stripped to yield the true length.
+/// `(value, byte_len)`. For an id the leading length-descriptor bits are kept so
+/// the value matches the canonical constants; for a size they are stripped.
 fn read_vint(d: &[u8], i: usize, keep_marker: bool) -> Option<(u64, usize)> {
     let first = *d.get(i)?;
     if first == 0 {
@@ -800,9 +666,6 @@ fn read_vint(d: &[u8], i: usize, keep_marker: bool) -> Option<(u64, usize)> {
     Some((value, len))
 }
 
-/// The direct child elements of an EBML container `d`, as `(id, data)` pairs.
-/// Tolerates truncation and the "unknown size" vint (all size bits set), which
-/// a streamed Segment uses — its data then runs to the end of the buffer.
 fn ebml_children(d: &[u8]) -> Vec<(u64, &[u8])> {
     let mut out = Vec::new();
     let mut i = 0usize;
@@ -817,14 +680,12 @@ fn ebml_children(d: &[u8]) -> Vec<(u64, &[u8])> {
         if data_start > d.len() {
             break;
         }
-        // Unknown size: every value bit set for the vint's width.
         let unknown = size == (1u64 << (7 * sz_len as u64)) - 1;
         let data_end = if unknown || data_start + size as usize > d.len() {
             d.len()
         } else {
             data_start + size as usize
         };
-        // `data_start <= data_end <= d.len()` by the checks above.
         let Some(data) = d.get(data_start..data_end) else {
             break;
         };
@@ -841,12 +702,10 @@ fn ebml_find(d: &[u8], id: u64) -> Option<&[u8]> {
         .map(|(_, x)| x)
 }
 
-/// Big-endian unsigned integer from an EBML element payload (1..8 bytes).
 fn ebml_uint(d: &[u8]) -> u64 {
     d.iter().fold(0u64, |acc, &b| (acc << 8) | u64::from(b))
 }
 
-/// IEEE float from an EBML element payload (4 or 8 bytes; 0 otherwise).
 fn ebml_float(d: &[u8]) -> Option<f64> {
     if let Ok(b) = <[u8; 4]>::try_from(d) {
         Some(f64::from(f32::from_be_bytes(b)))
@@ -858,7 +717,6 @@ fn ebml_float(d: &[u8]) -> Option<f64> {
 }
 
 fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
-    // The top level holds the EBML header then the Segment.
     let segment = ebml_find(d, EBML_SEGMENT)?;
 
     // Duration lives in Info as `Duration` (a float, in TimestampScale units).
@@ -922,18 +780,15 @@ fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
         height,
         fps,
         codec: "matroska".to_string(),
-        // Matroska track type 2 is audio, already walked above.
         has_audio: saw_audio,
     })
 }
 
-/// Read a 4-byte `ID3v2` syncsafe integer (7 bits per byte).
 fn syncsafe(b: [u8; 4]) -> usize {
     b.iter()
         .fold(0usize, |acc, &byte| (acc << 7) | usize::from(byte & 0x7F))
 }
 
-/// One decoded MPEG audio frame header.
 struct Mp3Header {
     /// True for MPEG Version 1 (vs. 2 / 2.5) — selects samples-per-frame.
     mpeg1: bool,
@@ -996,7 +851,6 @@ fn parse_mp3_frame_header(d: &[u8]) -> Option<Mp3Header> {
 }
 
 fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
-    // Skip an ID3v2 tag if present.
     let off = if d.starts_with(b"ID3")
         && let Some(size) = d.get(6..10).and_then(|s| <[u8; 4]>::try_from(s).ok())
     {
@@ -1004,7 +858,6 @@ fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
     } else {
         0
     };
-    // Find the first valid frame sync.
     let mut header = None;
     let mut scan = off;
     let limit = d.len().saturating_sub(4);
@@ -1045,7 +898,6 @@ fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
         }
     }
 
-    // No VBR header: constant-bitrate estimate over the audio byte length.
     if h.bitrate_bps == 0 {
         return Some(mp3_probe(0.0));
     }
@@ -1056,8 +908,7 @@ fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
 
 fn mp3_probe(duration: f64) -> ProbedMedia {
     ProbedMedia {
-        // The file *is* the sound; it lands on an audio track, which the
-        // mixer already reads. `has_audio` marks a *picture* that also
+        // A file that is sound outright: `has_audio` marks a picture that also
         // carries sound, so it stays false here.
         has_audio: false,
         kind: MediaKind::Audio,
@@ -1093,7 +944,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn probe_parses_crafted_mp4_and_wav_headers() {
-        // Case `parses_a_crafted_mp4_for_duration_dims_codec_and_fps`.
         {
             // mvhd: v0, timescale 1000, duration 6000 → 6.0s.
             let mut mvhd = vec![0u8; 20];
@@ -1268,15 +1118,10 @@ mod tests {
                 }
             }
         }
-        // Case `an_html_page_saved_as_mp4_is_refused_not_imported_as_video`.
         {
-            // The real failing case: a download that returned the web page instead
-            // of the file, saved under the media name it asked for. It matches no
-            // container, and the old extension fallback turned it into a
-            // MediaKind::Video with 0x0 dimensions and 0:00 duration — a dead bin
-            // item that could never play.
-            // Byte-for-byte shape of the real file: two blank lines, then the
-            // doctype. The leading whitespace is why a naive prefix check misses it.
+            // The failing case: a download that returned the web page instead of the file,
+            // saved under the media name it asked for. The leading whitespace is why a
+            // naive prefix check misses it.
             let html =
                 b"\n\n<!DOCTYPE html>\n<html lang=\"en\" class=\"fixed_navbar\">\n\t<head>\n\
 \t\t<title>\n\t\tEverything wrong with the world is in this video\n\t\t</title>\n\
@@ -1298,8 +1143,7 @@ mod tests {
             );
         }
         {
-            // Prove it through the production entry point the importer calls, not
-            // just the pure byte path.
+            // Through the production entry point the importer calls.
             let f = std::env::temp_dir().join(format!("tilo-ve-fake-{}.mp4", std::process::id()));
             std::fs::write(&f, b"<!DOCTYPE html><html><body>nope</body></html>").unwrap();
             let err = probe_file(&f).expect_err("probe_file refuses an HTML page named .mp4");
@@ -1359,16 +1203,13 @@ mod tests {
             );
         }
         {
-            // Arbitrary binary with no media extension: we know nothing about it,
-            // so say nothing rather than declaring it a video.
+            // Arbitrary binary with no media extension: say nothing rather than call it a
+            // video.
             let err = probe_bytes(&[0x00, 0x11, 0x22, 0xFE, 0xED, 0x00], Path::new("blob.dat"))
                 .expect_err("an unknown extension is not a video");
             assert_eq!(err, ProbeError::Unrecognised);
         }
-        // Case `no_input_makes_the_probe_panic`:
-        // Media files come from the user, so a malformed one must not crash the
-        // editor. Every parser here reads container headers that carry their own
-        // lengths, which is the shape that indexes past a truncated buffer.
+        // Media files come from the user, so a malformed one must not crash the editor.
         {
             let path = std::path::Path::new("probe.mp4");
 
@@ -1386,9 +1227,7 @@ mod tests {
                 }
             }
 
-            // Length fields claiming more than the buffer holds — an ISOBMFF box
-            // size of 0xFFFF_FFFF, and the 64-bit large-size form with nothing
-            // behind it.
+            // Length fields claiming more than the buffer holds.
             let mut huge = b"\x00\x00\x00\x18ftypmp42".to_vec();
             huge.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
             huge.extend_from_slice(b"moov");
@@ -1484,7 +1323,6 @@ mod tests {
             assert_eq!(p.kind, MediaKind::Audio);
             assert!((p.duration - 3.0).abs() < 1e-6);
         }
-        // Case `parses_mp3_xing_header_for_exact_duration`.
         {
             // MPEG1 Layer III, 128 kbps, 44100 Hz, stereo; Xing with 1000 frames.
             let mut mp3 = vec![0xFF, 0xFB, 0x90, 0x00];
@@ -1503,7 +1341,6 @@ mod tests {
                 p.duration
             );
         }
-        // Case `estimates_cbr_mp3_duration_and_skips_id3`.
         {
             // ID3v2 tag of 20 bytes, then a 128 kbps frame with no Xing header.
             let mut mp3 = Vec::new();
@@ -1526,9 +1363,8 @@ mod tests {
             );
         }
         {
-            // AVI and FLAC are genuine media we have no container parser for.
-            // These must keep working exactly as before: right kind, no invented
-            // numbers. Only the *positively-not-media* case became a refusal.
+            // AVI and FLAC are genuine media we have no parser for: right kind, no
+            // invented numbers.
             let avi = probe_bytes(
                 &[
                     b'R', b'I', b'F', b'F', 0x10, 0x00, 0x00, 0x00, b'A', b'V', b'I', b' ', 0x00,
@@ -1557,7 +1393,6 @@ mod tests {
         }
     }
 
-    /// Encode an EBML size as a minimal-length vint (with its marker bit).
     fn ebml_size(n: usize) -> Vec<u8> {
         for len in 1..=8usize {
             let max = (1u64 << (7 * len as u64)) - 1;
@@ -1570,7 +1405,6 @@ mod tests {
         }
         vec![0x01]
     }
-    /// `id` bytes ++ size vint ++ payload — one EBML element.
     fn ebml(id: &[u8], payload: &[u8]) -> Vec<u8> {
         let mut v = id.to_vec();
         v.extend_from_slice(&ebml_size(payload.len()));

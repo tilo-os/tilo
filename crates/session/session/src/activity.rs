@@ -169,18 +169,17 @@ fn ask_for_frame(woken: &AtomicBool, wake: Option<&tilo_service::Wake>) {
 }
 
 impl Activity {
-    /// This session's activity: the desk under `state` and `old_desk` , the records, the person.
+    /// This session's activity: the desk under `state` , the records, the person.
     #[cfg(target_os = "linux")]
     pub(crate) fn new(
         state: Option<&std::path::Path>,
-        old_desk: Option<&std::path::Path>,
         person: String,
         store: Option<Store>,
         changes: crate::platform::records::Changes,
         apps: Option<Arc<dyn Apps>>,
         wake: Option<tilo_service::Wake>,
     ) -> Self {
-        let desk = DeskDoc::load(state, old_desk, &person);
+        let desk = DeskDoc::load(state, &person);
         let unlock = UnlockHistory::new(state, &person);
         let given = Given {
             desk,
@@ -431,6 +430,17 @@ impl Activity {
         shows: &[(tilo_desktop_model::TabId, String)],
     ) -> bool {
         self.0.desk.record_now(tree, time, shows)
+    }
+
+    /// [`Self::record_desk_now`] for a session whose workspace records hold the person's view of the
+    /// layout: the document keeps the desk and what this device's displays show.
+    pub fn record_displays_now(
+        &self,
+        tree: &DesktopTree,
+        time: i64,
+        shows: &[(tilo_desktop_model::TabId, String)],
+    ) -> bool {
+        self.0.desk.record_displays_now(tree, time, shows)
     }
 
     /// The desk document, which the arrangement reads and changes too.
@@ -1466,7 +1476,6 @@ mod tests {
             let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Tiles));
             let activity = Activity::new(
                 None,
-                None,
                 "ada".to_string(),
                 None,
                 crate::platform::records::Changes::default(),
@@ -1637,7 +1646,7 @@ mod tests {
         write(&mut notebook, 2);
 
         desk.activity = Activity::over(Given {
-            desk: DeskDoc::load(None, None, "ada"),
+            desk: DeskDoc::load(None, "ada"),
             person: "ada".into(),
             store: Some(Arc::clone(&store)),
             state: None,
@@ -1748,7 +1757,7 @@ mod tests {
         };
         write(&mut notebook, 2_000);
         let activity = Activity::over(Given {
-            desk: DeskDoc::load(None, None, "ada"),
+            desk: DeskDoc::load(None, "ada"),
             person: "ada".into(),
             store: Some(Arc::clone(&store)),
             state: None,

@@ -10,7 +10,6 @@ fn local_ms(y: i32, mo: u32, d: u32, h: u32, mi: u32, s: u32) -> i64 {
     local(y, mo, d, h, mi, s).timestamp_millis()
 }
 
-/// A 12:00 "Lunch" alarm turned on long before any case's clock.
 fn lunch(days: &[WeekdayKey]) -> Alarm {
     Alarm {
         label: "Lunch".into(),
@@ -33,7 +32,6 @@ fn at(when: DateTime<Local>) -> (DateTime<Utc>, DateTime<Local>) {
     (when.with_timezone(&Utc), when)
 }
 
-/// The ledger as a device reads it back after a restart.
 fn restarted(delivery: &Delivery) -> Delivery {
     serde_json::from_value(serde_json::to_value(delivery).unwrap()).unwrap()
 }

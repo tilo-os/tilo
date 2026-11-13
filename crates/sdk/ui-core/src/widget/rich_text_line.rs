@@ -587,6 +587,9 @@ impl RichTextLine {
     ) -> Result<(), crate::view::ThawError> {
         self.paint_dirty = true;
         self.inner.adopt_bound_text(state)?;
+        // The line's own runs are the block editor's to draw (in their writer's colour, over the
+        // blocks' glyphs), so its text field draws none of its own.
+        self.inner.clear_authored();
         self.align_bound_projection(state);
         self.refresh_attributes();
         Ok(())

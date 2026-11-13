@@ -20,11 +20,21 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.speed-test@3fb52e93b9c21f28";
+export const SURFACE = "so.tilo.speed-test@303db65a9e1defad";
+
+export interface Measurement {
+  at_ms: number;
+  ping: number;
+  jitter: number;
+  download: number;
+  upload: number;
+  server: string;
+  device: string;
+}
 
 /** Internet speed test — `speed-test.results`. */
 export interface Results extends tilo.Resource {
-  readonly results: unknown;
+  readonly results: Measurement[];
   record(args: {
     ping: number;
     jitter: number;

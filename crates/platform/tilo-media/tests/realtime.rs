@@ -1,16 +1,11 @@
 //! The real-time encoder and decoder, end to end through `GStreamer`.
 //!
-//! * The software round trips need no GPU and run in CI: VP9 (libvpx) and AV1
-//!   (SVT-AV1 or libaom encode, dav1d or libaom decode) are royalty-free and
-//!   part of the build environment's plugin set. They fail, rather than skip,
-//!   when those elements are missing, because then the royalty-free fallback
-//!   the OS relies on is not there.
-//! * The hardware round trips run only where the registry lists a hardware
-//!   encoder for the codec (which the VA-API and NVCODEC plugins do only when
-//!   a device reports the capability). Where none is listed they say so and
-//!   return; they never substitute a software element and report success.
-//! * The latency measurement prints per-frame encode and decode times for
-//!   every path this machine has.
+//! The software round trips need no GPU and run in CI: VP9 (libvpx) and AV1 (SVT-AV1 or
+//! libaom encode, dav1d or libaom decode) are royalty-free and part of the build
+//! environment's plugin set, and they fail rather than skip when those elements are
+//! missing. The hardware round trips run only where the registry lists a hardware
+//! encoder for the codec, and never substitute a software element. The latency
+//! measurement prints per-frame encode and decode times.
 #![cfg(feature = "realtime")]
 #![allow(
     clippy::unwrap_used,
@@ -134,12 +129,10 @@ fn round_trip(
     )
 }
 
-/// `frame` in `format`'s byte order (BGR formats swap red and blue).
 fn frame_as(format: InputFormat, width: u32, height: u32, n: u32) -> Vec<u8> {
     in_format(format, frame(width, height, n))
 }
 
-/// An RGBA `frame` in `format`'s byte order.
 fn in_format(format: InputFormat, mut f: Vec<u8>) -> Vec<u8> {
     if matches!(format, InputFormat::Bgra | InputFormat::Bgrx) {
         for px in f.chunks_exact_mut(4) {
@@ -276,15 +269,12 @@ fn software_round_trip(codec: StreamCodec) {
 
 #[test]
 fn software_codecs_round_trip_royalty_free_and_ten_bit() {
-    // Phase `vp9_round_trips_in_software_without_a_gpu`.
     {
         software_round_trip(StreamCodec::Vp9);
     }
-    // Phase `av1_round_trips_in_software_without_a_gpu`.
     {
         software_round_trip(StreamCodec::Av1);
     }
-    // Phase `software_elements_are_the_royalty_free_tier`.
     {
         for codec in [StreamCodec::Vp9, StreamCodec::Av1] {
             let mut config = EncoderConfig::new(codec, 64, 64, 30);
@@ -306,7 +296,6 @@ fn software_codecs_round_trip_royalty_free_and_ten_bit() {
             assert_eq!(dec.element().unwrap().tier, CodecTier::RoyaltyFree);
         }
     }
-    // Phase `ten_bit_output_is_p010_planes`.
     {
         let mut config = EncoderConfig::new(StreamCodec::Vp9, 64, 64, 30);
         config.policy = RealtimePolicy::SoftwareOnly;
@@ -338,15 +327,12 @@ fn software_codecs_round_trip_royalty_free_and_ten_bit() {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn keyframes_and_hardware_round_trips_behave_for_realtime_streams() {
-    // Phase `hardware_round_trips_where_the_device_has_them`.
     fn hardware_round_trips_where_the_device_has_them() {
         let codecs = hardware_codecs();
         if codecs.is_empty() {
             eprintln!("realtime: no hardware encode+decode listed on this machine; not run");
             return;
         }
-        // RGBA (a CPU readback), BGRx (what a compositor renders), and BGRx
-        // through the dmabuf-capable pipeline, which converts on the GPU.
         for (codec, format, dmabuf) in codecs.iter().flat_map(|c| {
             [
                 (*c, InputFormat::Rgba, false),
@@ -389,7 +375,6 @@ fn keyframes_and_hardware_round_trips_behave_for_realtime_streams() {
             );
         }
     }
-    // Phase `a_forced_keyframe_lands_on_the_next_frame_only`.
     {
         let mut config = EncoderConfig::new(StreamCodec::Vp9, 160, 120, 30);
         config.policy = RealtimePolicy::SoftwareOnly;
@@ -418,7 +403,6 @@ fn keyframes_and_hardware_round_trips_behave_for_realtime_streams() {
             "keyframes exactly at the start and where one was forced"
         );
     }
-    // Phase `a_late_joiner_decodes_nothing_until_a_keyframe`.
     {
         let mut config = EncoderConfig::new(StreamCodec::Vp9, 160, 120, 30);
         config.policy = RealtimePolicy::SoftwareOnly;
@@ -454,7 +438,6 @@ fn keyframes_and_hardware_round_trips_behave_for_realtime_streams() {
         assert!(units[3].keyframe);
         assert!(dec.decode(&units[3].data, None).expect("decode").is_some());
     }
-    // Phase `hardware_round_trips_where_the_device_has_them` (defined above).
     hardware_round_trips_where_the_device_has_them();
 }
 
@@ -474,12 +457,6 @@ fn percentile(times: &[Duration], p: f64) -> Duration {
     v[idx.min(v.len() - 1)]
 }
 
-/// Per-frame latency of every real-time path this machine has, at 720p.
-///
-/// The first frame (element start-up) is excluded. A buffering element shows
-/// up as whole frame intervals of delay, which only a quiet machine can tell
-/// from load: run by hand there. The software round trips check every
-/// frame's picture on every runner.
 #[test]
 #[ignore = "latency measurement for a quiet machine, not a shared-runner gate"]
 fn realtime_latency_per_frame() {
@@ -514,10 +491,6 @@ fn realtime_latency_per_frame() {
     }
 }
 
-/// The compositor's zero-copy path: a `BGRx` frame in a GPU-tiled dmabuf (the
-/// layout a compositor renders into) imported by `vapostproc` and encoded on
-/// the GPU, decoded back and compared. Runs where VA-API lists a hardware
-/// encoder; otherwise says so.
 #[cfg(unix)]
 #[test]
 fn a_gpu_dmabuf_is_encoded_without_a_cpu_copy_on_va_hardware() {
@@ -623,7 +596,5 @@ fn a_gpu_dmabuf_is_encoded_without_a_cpu_copy_on_va_hardware() {
         enc.element().element,
         dec.element().map_or("?", |e| e.element)
     );
-    // One intra frame through two GPU colour conversions lands near 30 dB; a
-    // misread layout (wrong stride, tiling or channel order) lands below 15.
     assert!(psnr >= 26.0, "the imported dmabuf's pixels arrived intact");
 }

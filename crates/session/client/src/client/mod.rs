@@ -304,6 +304,16 @@ impl Client {
         }
     }
 
+    /// The person the workspace `workspace`'s governance admitted `device` as: who a member is
+    /// whose device announced no certificate here.
+    #[must_use]
+    pub fn governed_person(&self, workspace: &str, device: EndpointId) -> Option<String> {
+        self.host
+            .borrow()
+            .as_ref()
+            .and_then(|host| host.governed_person(workspace, device))
+    }
+
     /// Take one thing the plane heard, and hand the host who is here now: who said they are here,
     /// what they said of themselves, where their pointer went. A session's loop calls this for
     /// everything its transport hands it.

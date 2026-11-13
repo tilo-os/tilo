@@ -1,5 +1,5 @@
-//! Layout and painting of the library surfaces: the grid and timeline, albums,
-//! places, library analysis, the viewer details and the empty state.
+//! Layout and painting of the library surfaces: the grid and timeline, albums, places, library
+//! analysis, the viewer details and the empty state.
 
 use crate::strings::{tr, tr_args, tr_count};
 use crate::timeline_projection::TimelineGeometry;
@@ -29,9 +29,9 @@ use super::{
 };
 use ui::widget::DrawChild;
 
-/// Coarse, bundled coastlines for the private/offline Places overview. These
-/// are intentionally only continental silhouettes: they add orientation but
-/// cannot be mistaken for current navigation data or a precision basemap.
+/// Coarse, bundled coastlines for the private/offline Places overview. These are intentionally only
+/// continental silhouettes: they add orientation but cannot be mistaken for current navigation data
+/// or a precision basemap.
 pub(super) const OFFLINE_WORLD_LANDMASSES: &[&[(f64, f64)]] = &[
     &[
         (72.0, -168.0),
@@ -107,9 +107,6 @@ pub(super) const OFFLINE_WORLD_LANDMASSES: &[&[(f64, f64)]] = &[
 ];
 
 impl Photos {
-    /// The photograph's shared details as label/value rows: when and where
-    /// it was taken, who and what is in it. The name and size are already
-    /// in the header and the status bar.
     fn viewer_detail_rows(details: &ViewerDetails) -> Vec<(String, String)> {
         let mut rows = Vec::new();
         if let Some(description) = details.description.as_deref() {
@@ -133,9 +130,6 @@ impl Photos {
         rows
     }
 
-    /// Show the photograph's shared details on the floating material over
-    /// the picture itself, inside the bounds the picture is drawn in. Chrome
-    /// over media is a floating panel; the picture keeps everything else.
     pub(super) fn draw_viewer_details(
         &self,
         scene: &mut Scene,
@@ -165,8 +159,6 @@ impl Photos {
         let pad = f64::from(theme.tokens.spacing.s4);
         let width =
             (image.width() - 2.0 * inset).min(f64::from(theme.tokens.metrics.panel_width_list));
-        // A picture too small to hold the panel keeps all its pixels; the
-        // details stay in its accessibility description.
         if width < f64::from(theme.tokens.metrics.panel_width_utility) * 0.75 {
             return;
         }
@@ -178,9 +170,6 @@ impl Photos {
         let ink = theme.on_ground(ui::chrome::panel_ground(theme));
         let body_h = face.height(text_renderer, &ink, width - 2.0 * pad);
         let height = body_h + 2.0 * pad;
-        // The details never take over the picture: where they would cover
-        // more than a quarter of it, the picture keeps its pixels and the
-        // details stay in its accessibility description.
         if height > image.height() - 2.0 * inset || width * height > image.area() / 4.0 {
             return;
         }
@@ -197,8 +186,6 @@ impl Photos {
         );
     }
 
-    /// Nothing to show in the content column: the shared empty state the
-    /// window keeps mounted while the column is empty.
     pub(super) fn draw_empty_state(
         empty: Option<&mut EmptyState>,
         scene: &mut Scene,
@@ -221,13 +208,6 @@ impl Photos {
         f64::from(theme.text(role).line_height_px())
     }
 
-    /// Lay out the canvas: the `ImageViewer` if a photograph is open, else a
-    /// placeholder leaf sized to soak the remaining height. `flex_basis: 0`
-    /// with `min_size: 0` is what stops a large image's intrinsic size from
-    /// pushing the layout wider than the window — the failure mode where
-    /// content is silently clipped because the container grew past its
-    /// parent instead of the content being scaled to fit. Split out of
-    /// `build_layout` to keep that dispatch under the line-count limit.
     #[allow(
         clippy::unwrap_used,
         reason = "these taffy nodes are freshly built with fixed, valid styles"
@@ -274,8 +254,6 @@ impl Photos {
             }
             for control in &mut self.people_controls {
                 let node = control.button.build_layout(taffy, theme, node_map);
-                // A card opens by itself; its button carries only the
-                // control's name and action, at no size.
                 let rect = if control.is_card() {
                     Rect::new(
                         self.canvas_rect.x0,
@@ -286,8 +264,6 @@ impl Photos {
                 } else {
                     control.bounds
                 };
-                // A control's width is left to the button, which measures
-                // its own label; the surface reads it back after layout.
                 let width = if control.is_card() {
                     Dimension::length(0.0)
                 } else {
@@ -343,8 +319,6 @@ impl Photos {
                     .unwrap(),
             }
         };
-        // The photograph is media: it takes the whole content column, and
-        // the library surfaces lay out their own gutters.
         let inset = 0.0;
         taffy
             .set_style(
@@ -368,9 +342,6 @@ impl Photos {
         canvas
     }
 
-    /// Lay out the status bar's band: zero height with nothing to say (a band
-    /// kept anyway would leave a rule and a strip of empty chrome under an
-    /// empty state), else `status_bar::height`.
     #[allow(
         clippy::unwrap_used,
         reason = "this taffy node is freshly built with a fixed, valid style"
@@ -461,8 +432,6 @@ impl Photos {
         self.collection_page_hits.extend(rects);
     }
 
-    /// The content column inside its gutters: the page edge of every library
-    /// surface.
     pub(super) fn content_frame(&self, theme: &Theme) -> Rect {
         let rhythm = &theme.tokens.spacing.rhythm;
         let side = f64::from(rhythm.group);
@@ -476,9 +445,6 @@ impl Photos {
         )
     }
 
-    /// The album overview: one media card per album, its cover the first
-    /// photograph in it, in a grid that reflows with the width. Covers come
-    /// from the bounded thumbnail cache; originals are never decoded here.
     #[expect(
         clippy::too_many_lines,
         reason = "the album grid measures, scrolls and paints its rows in one pass"
@@ -517,7 +483,6 @@ impl Photos {
             .iter()
             .map(|(_, _, count)| tr_count("photos-count-photos", *count))
             .collect();
-        // Every album is in the grid; the grid scrolls in the column.
         let viewport = Rect::new(
             content.x0,
             self.canvas_rect.y0,
@@ -615,17 +580,12 @@ impl Photos {
         }
     }
 
-    /// The scroll thumb's track beside a scrolling region of the content
-    /// column: in the column's trailing gutter, clear of what scrolls.
     pub(super) fn scroll_track(region: Rect, theme: &Theme) -> Rect {
         let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
         let x0 = region.x1 + (f64::from(theme.tokens.spacing.rhythm.group) - gutter) / 2.0;
         Rect::new(x0, region.y0, x0 + gutter, region.y1)
     }
 
-    /// Photo analysis: how much of the library is searchable, the run in
-    /// progress and its controls, the local model, and the photographs that
-    /// failed. Pixels stay on this device; the compact results are shared.
     #[expect(
         clippy::too_many_lines,
         reason = "the analysis page lays out its stats, run, model and failures in one pass"
@@ -656,7 +616,6 @@ impl Photos {
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         let mut y = frame.y0;
 
-        // What is searchable now, ready, and waiting for its bytes.
         let (analyzed, available, awaiting) = self.library_analysis_coverage;
         let values = [
             analyzed.to_string(),
@@ -673,8 +632,6 @@ impl Photos {
             StatTileFace::new(&labels[1], &values[1]),
             StatTileFace::new(&labels[2], &values[2]),
         ];
-        // The tiles reflow as a `StatGroup` does: all in one row where they
-        // fit, else one per row, never an uneven 2 + 1.
         let tile_min = (Self::line_of(theme, ui::TextRole::Body) * 7.0).round();
         let fits = ui::widget::card_columns(frame.width(), tile_min, group);
         let columns = (1..=tiles.len().min(fits))
@@ -695,7 +652,6 @@ impl Photos {
         }
         y += 3usize.div_ceil(columns) as f64 * (tile_h + sibling) - sibling + group;
 
-        // The run.
         let phase = self.library_analysis.phase;
         let phase_label = match phase {
             LibraryAnalysisPhase::Idle => tr("photos-analysis-idle"),
@@ -711,8 +667,6 @@ impl Photos {
             None,
         );
         y += Self::line_of(theme, ui::TextRole::Heading) + f64::from(rhythm.tight);
-        // Without a model on this device there is nothing to start; the
-        // page says what it needs instead of offering a dead button.
         let has_model = self.library_analysis_capability.is_some();
         let summary = match phase {
             LibraryAnalysisPhase::Idle if has_model => tr("photos-analysis-idle-body"),
@@ -817,7 +771,6 @@ impl Photos {
             y += button_h + group;
         }
 
-        // The model that does the work.
         let model_rows: Vec<(String, String, bool)> = self
             .library_analysis_capability
             .as_ref()
@@ -860,7 +813,6 @@ impl Photos {
         }
         y += list_h + group;
 
-        // Photographs the model could not read.
         if self.library_analysis.has_failures() && y < frame.y1 {
             ctx.text_role(
                 &tr("photos-analysis-needs-attention"),
@@ -908,10 +860,6 @@ impl Photos {
         }
     }
 
-    /// The timeline: the photographs of each capture day in justified rows
-    /// at their own aspect ratios under the day's heading, scrolled by the
-    /// date index at the trailing edge. Only the rows in view are
-    /// materialised; the rest stay reachable through search and resources.
     #[expect(
         clippy::too_many_lines,
         reason = "the timeline lays out, paints and records the hit targets of the rows in view in one pass"
@@ -1010,8 +958,6 @@ impl Photos {
                 ))
             })
             .collect();
-        // The moving content is clipped to its region, so a fast scroll
-        // never paints over the header row or the status bar.
         let clip = Rect::new(
             self.canvas_rect.x0,
             top,
@@ -1083,9 +1029,6 @@ impl Photos {
         }
     }
 
-    /// The timeline's row geometry in the content column under `theme`: the
-    /// width beside the date index, the row height for the density, the
-    /// tight gap between photographs and the height of a day's heading.
     pub(super) fn timeline_geometry(&self, theme: &Theme) -> TimelineGeometry {
         let frame = self.content_frame(theme);
         let rhythm = &theme.tokens.spacing.rhythm;
@@ -1100,8 +1043,6 @@ impl Photos {
         }
     }
 
-    /// While photographs are being chosen, each shows whether it is in:
-    /// a check on the inverted fill when chosen, an empty ring otherwise.
     fn paint_pick_mark(ctx: &mut PaintCtx<'_>, card: Rect, chosen: bool, hovered: bool) {
         use vello::peniko::Fill;
         let theme = ctx.theme;
@@ -1143,9 +1084,6 @@ impl Photos {
         }
     }
 
-    /// The hover actions of a photograph: details at the leading corner,
-    /// favourite and remove at the trailing one, each on the floating
-    /// material over the picture.
     fn paint_card_actions(&self, ctx: &mut PaintCtx<'_>, id: &str, card: Rect, favorite: bool) {
         let theme = ctx.theme;
         let actions = card_action_controls(card, theme);
@@ -1210,10 +1148,6 @@ impl Photos {
         }
     }
 
-    /// The places of the library on an offline map, with the list of places
-    /// beside it on a wide window, or the located photographs as a list. The
-    /// map is a bundled low-detail land silhouette, never a tile service:
-    /// opening Places sends no coordinate off this device.
     #[expect(
         clippy::too_many_lines,
         reason = "the map, its markers and their hit targets share one geometry pass"
@@ -1251,8 +1185,6 @@ impl Photos {
         };
         let map = Rect::new(bounds.x0, bounds.y0, bounds.x1 - rail_w, bounds.y1);
         self.places_map_bounds = map;
-        // Arriving at Places frames every place on the map, clear of its
-        // edges by a marker and its label.
         if std::mem::take(&mut self.places_fit_pending) {
             let points: Vec<(f64, f64)> = place_clusters
                 .iter()
@@ -1263,8 +1195,6 @@ impl Photos {
                 crate::places::MapViewport::fitting(&points, map.width(), map.height(), margin);
         }
 
-        // The map is content: water on the raised well, land one step off it,
-        // coasts derived from the land.
         let colors = &theme.tokens.colors;
         let water = colors.surfaces.raised;
         let land = colors.lift_on(water, 1.0);
@@ -1333,8 +1263,6 @@ impl Photos {
                 continue;
             }
             let radius = marker_r * (1.0 + camera_feedback * 0.10);
-            // A place is its photograph, ringed in the ground so it reads
-            // against land and water alike.
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -1415,8 +1343,6 @@ impl Photos {
         }
     }
 
-    /// The places beside the map, one row each, so the next decision is a
-    /// place to open rather than a marker to find.
     fn draw_places_overview_rail(
         &mut self,
         scene: &mut Scene,
@@ -1469,7 +1395,6 @@ impl Photos {
         }
     }
 
-    /// The located photographs as a list, a page at a time.
     fn draw_places_list(
         &mut self,
         scene: &mut Scene,
@@ -1549,8 +1474,6 @@ impl Photos {
         );
     }
 
-    /// The album picker for a selection: a modal sheet over the window, one
-    /// row per album, the chosen one lifted. Painted in the top layer.
     #[expect(
         clippy::too_many_lines,
         reason = "the sheet measures, lays out and paints its rows and paged actions in one pass"

@@ -1,8 +1,8 @@
-//! Personal bookmark folders inside the existing Browser library page.
+//! Personal bookmark folders inside the Browser library page.
 //!
-//! This adapter owns no document state and dispatches no ad-hoc callbacks.
-//! Every navigation and item command binds to the host's published resource
-//! action. Only one folder and one bounded page are materialised at a time.
+//! It owns no document state and dispatches no callbacks of its own: every navigation and
+//! item command binds to the host's published resource action. Only one folder and one
+//! bounded page are materialised at a time.
 
 use std::rc::Rc;
 
@@ -16,14 +16,13 @@ use crate::imported_folders::{ImportedNode, ImportedTree, NodeKind};
 
 const PAGE_SIZE: usize = 50;
 
-/// Borrow the actual personal record projection without copying it into a
-/// workspace document or a second view-owned storage model.
+/// Borrow the personal record projection without copying it into a workspace document or a
+/// second view-owned model.
 pub struct ViewState<'a> {
     pub bookmarks: &'a Bookmarks,
     pub imported_trees: &'a [ImportedTree],
 }
 
-/// Host-owned ephemeral presentation, reached by the published folder action.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Location {
     pub source: Option<[u8; 32]>,
@@ -57,7 +56,6 @@ pub enum ViewRequest {
     },
 }
 
-/// Copy resolved through the Browser's existing Fluent catalogue by the host.
 pub struct LocalizedLabels {
     pub back: String,
     pub previous: String,
@@ -166,8 +164,8 @@ fn page_offset(count: usize, requested: usize) -> usize {
     }
 }
 
-/// Exactly the Back, Previous and Next routes rendered by the active view,
-/// for the host's public resource catalogue and automation surface.
+/// Exactly the Back, Previous and Next routes the active view renders, for the host's
+/// resource catalogue and automation surface.
 pub fn navigation_requests(state: &ViewState<'_>, location: &Location) -> Vec<ViewRequest> {
     let count = entries(state, location).len();
     let offset = page_offset(count, location.offset);
@@ -218,8 +216,8 @@ fn entry_requests(entry: &Entry<'_>) -> Option<(ViewRequest, ViewRequest)> {
     }
 }
 
-/// Item routes for exactly the current rendered page. The host publishes these
-/// beside navigation routes; off-page resources remain reachable by search.
+/// Item routes for exactly the current rendered page, published beside their navigation
+/// routes; off-page resources stay reachable by search.
 pub fn visible_requests(state: &ViewState<'_>, location: &Location) -> Vec<ViewRequest> {
     let entries = entries(state, location);
     let offset = page_offset(entries.len(), location.offset);
@@ -306,9 +304,9 @@ fn entry_view(entry: &Entry<'_>, bindings: &Bindings, labels: &LocalizedLabels) 
     }
 }
 
-/// Compose the active personal bookmark folder inside the existing library.
-/// Source order, separators and repeated placements are preserved. Every item
-/// stays reachable through bounded folder pages rather than a truncated list.
+/// Compose the active folder inside the library, with source order, separators and repeated
+/// placements preserved. Every item stays reachable through bounded folder pages rather than
+/// a truncated list.
 pub fn view(
     state: &ViewState<'_>,
     location: &Location,
@@ -498,8 +496,6 @@ mod tests {
         );
         let mut ids = Vec::new();
         open_ids(overview.as_ref(), &mut ids);
-        // A genuine pre-existing flat bookmark remains; the two imported URL
-        // placements are reached through their folder, not flattened into it.
         assert_eq!(ids.len(), 2);
         let imported_only = imported_fixture(false);
         let imported_adapter = ViewState {

@@ -1,10 +1,9 @@
-//! Pure data model for the editor — media bin, tracks, clips, project.
+//! The editor's data model: media bin, tracks, clips, project.
 //!
-//! The project is the editor's model: `#[derive(Model)]` stores it in the
-//! record's document field by field, media, tracks, clips and markers keyed
-//! by their own ids ([`Keyed`]), so collaborators' edits merge per field.
-//! All the non-trivial editing math (split, trim, move, ripple duration)
-//! lives here behind unit tests; the verbs ([`crate::resource`]) run it.
+//! `#[derive(Model)]` stores the project in the record field by field, with media, tracks,
+//! clips and markers keyed by their own ids, so collaborators' edits merge per field. The
+//! editing math (split, trim, move, ripple) lives here behind unit tests; the verbs
+//! ([`crate::resource`]) run it.
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Id, Identified, Keyed, Model, Ordered};
@@ -26,14 +25,12 @@ pub const MIN_CLIP: f64 = 0.10;
 
 pub use crate::angles::{CutSides, Side, SidePlacement};
 
-/// Per-clip colour + blend filters. All are linear, normalised so the
-/// inspector sliders run 0..1 and a fresh clip is the identity:
-///   * `brightness`/`contrast`/`saturation`: 0.5 = unchanged, 0 = none,
-///     1 = doubled. (Stored as 0..1 so one slider widget fits them all.)
+/// Per-clip colour + blend filters, normalised so the sliders run 0..1 and a fresh clip is
+/// the identity: `brightness`/`contrast`/`saturation` at 0.5 = unchanged, 0 = none, 1 =
+/// doubled (one slider widget fits them all).
 ///
-/// These are render parameters only — the model stores them, the preview
-/// applies them, and they replicate field-by-field through the CRDT so two
-/// peers grading the same clip converge.
+/// Render parameters only: the model stores them, the preview applies them, and they
+/// replicate field by field.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct Filters {
     pub brightness: f64,
@@ -123,8 +120,6 @@ impl EffectKind {
             EffectKind::Vignette => "vignette",
         }
     }
-    /// The catalogue message naming this effect, painted in the inspector's
-    /// effect menu and in a folded header's summary.
     pub fn message(self) -> &'static str {
         match self {
             EffectKind::Grayscale => "video-editor-effect-grayscale",
@@ -157,14 +152,12 @@ impl EffectKind {
 
 /// Where a clip's picture lands inside the project frame.
 ///
-/// The identity transform is the aspect-fit ("contain") placement the
-/// compositor has always used, so a clip that has never been touched
-/// renders exactly as before. Everything is expressed in **frame-relative**
-/// units rather than pixels, so changing the project resolution rescales a
-/// composition instead of breaking it.
+/// The identity is the aspect-fit ("contain") placement, so a clip never touched renders as
+/// before. Everything is **frame-relative** rather than pixels, so a resolution change
+/// rescales a composition instead of breaking it.
 ///
-/// Order of operations, source → screen: crop the source, translate the
-/// anchor to the origin, scale, rotate, then offset by `pos`.
+/// Order, source to screen: crop the source, translate the anchor to the origin, scale,
+/// rotate, offset by `pos`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct Transform {
     /// Horizontal scale about the anchor. 1.0 = the aspect-fit size.
@@ -273,12 +266,8 @@ impl Transform {
     }
 }
 
-/// How fast a clip plays, and in which direction.
-///
-/// `rate` is a multiplier on real time: 2.0 plays twice as fast, so the
-/// same source window occupies half as long on the timeline. This is why
-/// [`Clip::duration`] divides by the rate — speeding a clip up shortens
-/// it, exactly as dragging its speed handle should.
+/// `rate` is a multiplier on real time: 2.0 occupies half as long on the timeline, which is
+/// why [`Clip::duration`] divides by it.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct Speed {
     pub rate: f64,
@@ -320,8 +309,6 @@ impl Speed {
     pub fn is_normal(&self) -> bool {
         !self.reverse && (self.rate() - 1.0).abs() < 1e-9
     }
-    /// Signed rate: negative when playing backwards. What the source-time
-    /// map and the audio resampler both step by.
     pub fn signed(&self) -> f64 {
         if self.reverse {
             -self.rate()
@@ -349,17 +336,14 @@ impl Speed {
     }
 }
 
-/// A colour key: the layer stops contributing wherever its picture is
-/// close enough — in *chroma*, not in brightness — to [`Self::color`].
+/// A colour key: the layer stops contributing wherever its picture is close enough — in
+/// *chroma*, not brightness — to [`Self::color`].
 ///
-/// Keying on chroma rather than on RGB distance is what lets a real green
-/// screen work: the lit and the shadowed parts of one backing cloth differ
-/// enormously in brightness and barely at all in hue, so a straight RGB
-/// distance either keeps the shadows or eats the subject.
+/// Chroma rather than RGB distance is what lets a real green screen work: one cloth's lit
+/// and shadowed parts differ enormously in brightness and barely in hue.
 ///
-/// The key runs on the **source** picture, before the grade and the effect
-/// chain — the order a keyer sits in on a real desk, and the reason grading
-/// a keyed clip does not re-open the matte.
+/// The key runs on the **source** picture, before the grade and the effect chain, so
+/// grading a keyed clip does not re-open the matte.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct ChromaKey {
     pub enabled: bool,
@@ -423,11 +407,9 @@ impl ChromaKey {
 
     /// Chroma normalised by brightness.
     ///
-    /// Plain Cb/Cr scale with exposure: a shadowed patch of a green screen
-    /// has the same *hue* as a lit one and a much smaller Cb/Cr, so an
-    /// absolute chroma distance keys the lit cloth and keeps the shadows —
-    /// the classic green-screen failure. Dividing by luma removes the
-    /// exposure term, so one tolerance covers the whole cloth.
+    /// Plain Cb/Cr scale with exposure, so an absolute chroma distance keys the lit cloth and
+    /// keeps the shadowed part. Dividing by luma removes the exposure term, so one tolerance
+    /// covers the whole cloth.
     pub fn norm_chroma(rgb: [f64; 3]) -> (f64, f64) {
         let y = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]).max(Self::DARK_FLOOR);
         let (cb, cr) = Self::chroma(rgb);
@@ -541,17 +523,12 @@ impl MaskShape {
 
 /// A feathered shape that limits where a layer contributes.
 ///
-/// The mask is positioned in **frame** space, not in the layer's own —
-/// `x`/`y` are offsets from the frame centre in frame widths and heights,
-/// exactly like [`Transform::pos_x`], and `w`/`h` are fractions of the
-/// frame. That is deliberate: a frame-space mask composes with the
-/// transform instead of being confounded by it, so a layer can be moved
-/// *behind* a stationary hole — the classic reveal — and a feather keeps
-/// its width however the layer under it is scaled.
+/// **Frame** space, not the layer's own: `x`/`y` are offsets from the frame centre and
+/// `w`/`h` fractions of the frame, like [`Transform::pos_x`]. That composes with the
+/// transform instead of being confounded by it, so a layer can be moved behind a stationary
+/// hole and a feather keeps its width however the layer is scaled.
 ///
-/// For the common case where the mask is wanted *on* the picture rather
-/// than on the frame, [`Mask::over`] seeds one onto a transform's
-/// on-screen box, which is one click in the inspector.
+/// [`Mask::over`] seeds one onto a transform's on-screen box, for the mask *on* a picture.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct Mask {
     pub shape: MaskShape,
@@ -589,12 +566,8 @@ impl Mask {
         self.shape != MaskShape::None
     }
 
-    /// A mask sized and placed over what `transform` puts on screen, for a
-    /// source of aspect `src_aspect` inside a frame of aspect `frame_aspect`.
-    ///
-    /// This is what makes "round off my picture-in-picture" one click: the
-    /// shape lands on the placed picture rather than in the middle of the
-    /// frame, and the user shapes it from there.
+    /// For a source of aspect `src_aspect` inside a frame of aspect `frame_aspect`. This is
+    /// what makes "round off my picture-in-picture" one click.
     pub fn over(
         shape: MaskShape,
         transform: &Transform,
@@ -726,13 +699,10 @@ impl TextAlign {
     }
 }
 
-/// A title: the text of a [`MediaKind::Text`] source and how it is set.
+/// A title: the text of a text source and how it is set.
 ///
-/// Sizes are fractions of the **frame height**, not pixels, so a title
-/// composed against a 1080p project still reads correctly when the project
-/// is switched to 4K. The colour is stored explicitly (unlike clip palette
-/// slots) because a title's colour is authored content, not chrome — the
-/// user picked it and it must survive a theme change.
+/// Sizes are fractions of the **frame height**, so a title composed against 1080p still reads
+/// on 4K. The colour is stored explicitly, being authored content rather than chrome.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct TextSource {
     pub content: String,
@@ -823,8 +793,6 @@ impl MediaKind {
             _ => MediaKind::Video,
         }
     }
-    /// Does this media carry a picture? Titles, images and video do; audio
-    /// does not.
     pub fn is_visual(self) -> bool {
         matches!(self, MediaKind::Video | MediaKind::Image | MediaKind::Text)
     }
@@ -834,8 +802,6 @@ impl MediaKind {
     pub fn is_generated(self) -> bool {
         matches!(self, MediaKind::Text)
     }
-    /// The catalogue message naming this kind, in the bin's rows and in the
-    /// spoken value of a clip.
     pub fn message(self) -> &'static str {
         match self {
             MediaKind::Video => "video-editor-kind-video",
@@ -947,17 +913,13 @@ pub struct MediaItem {
     /// comes out of the document instead of out of a file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<TextSource>,
-    /// Whether a *picture* source also carries a sound track.
+    /// Whether a *picture* source also carries a sound track, so the mixer can find it: a
+    /// video file lands on a video track, and reading only audio tracks made a talking-head
+    /// clip silent in the preview and in the export.
     ///
-    /// The timeline puts a video file on a video track, and the mixer used to
-    /// read audio only from audio tracks — so a talking-head clip was silent
-    /// in the preview and silent in the exported file, with nothing on screen
-    /// admitting it. This is what lets the mixer find that sound.
-    ///
-    /// False for a still, and false for a sound-only file: those land on an
-    /// audio track, which the mixer already read. It is also false for a
-    /// container whose header the probe does not parse — "no sound track was
-    /// found", not "there is none".
+    /// False for a still and for a sound-only file, which land on an audio track. Also false
+    /// for a container the probe does not parse: "no sound track was found", not "there is
+    /// none".
     #[serde(default)]
     pub has_audio: bool,
 }
@@ -1008,16 +970,9 @@ pub struct Track {
     pub solo: bool,
     /// The lane's fader, in **decibels**, `0.0` being unity.
     ///
-    /// Decibels rather than a linear fraction because a linear fader is the
-    /// wrong control for level: half way along a `0..1` track is -6 dB, which
-    /// is most of the useful range crushed into the top fifth, and a `0..2`
-    /// track is worse — it reads as "200%", which is not a thing loudness
-    /// does. Every mixing desk anyone has used is marked in dB, and a person
-    /// mixing a voice under music thinks "bring the music down 6" rather than
-    /// "multiply it by 0.501".
-    ///
-    /// Defaults to `0.0` and `#[serde(default)]`, so a project written before
-    /// faders existed loads at unity and sounds exactly as it did.
+    /// Decibels rather than a fraction because a linear fader puts -6 dB half way along and
+    /// crushes the useful range into the top fifth. Defaults to `0.0` with `#[serde(default)]`,
+    /// so a project written before faders existed loads at unity.
     #[serde(default)]
     pub gain_db: f64,
     /// Where the lane sits across the stereo field: `-1` hard left, `0`
@@ -1048,17 +1003,10 @@ impl Default for Track {
 /// spend most of its travel on differences nobody can hear.
 pub const MIN_GAIN_DB: f64 = -60.0;
 
-/// The loudest. **+12 dB is four times unity**, and the reason there is a
-/// ceiling at all is that a fader with none is a way to destroy a mix by
-/// accident: at +30 dB every source is square-wave clipped and there is no
-/// position on the track that is not.
-///
-/// +12 is where the desks land (Pro Tools and Reaper both stop there) because
-/// it is the most a *recorded* signal usefully takes: a lav that peaked at
-/// -12 dBFS reaches full scale here, and anything needing more than that
-/// wants re-recording or normalising, not a fader. Above unity has to be
-/// reachable — a voiceover under music is unmixable if the only direction is
-/// down — and this is how far it reaches.
+/// **+12 dB is four times unity.** A fader with no ceiling can destroy a mix by accident, and
+/// +12 is where the desks land: it is the most a recorded signal usefully takes. Above unity
+/// has to be reachable, since a voiceover under music is unmixable if the only direction is
+/// down.
 pub const MAX_GAIN_DB: f64 = 12.0;
 
 /// A fader position as a linear amplitude multiplier.
@@ -1073,8 +1021,6 @@ pub fn db_to_linear(db: f64) -> f64 {
     10f64.powf(db / 20.0)
 }
 
-/// The inverse, for a readout. Silence reads as [`MIN_GAIN_DB`] rather than
-/// `-inf`, which is what the track's bottom stop means.
 pub fn linear_to_db(gain: f64) -> f64 {
     if gain <= 0.0 {
         return MIN_GAIN_DB;
@@ -1091,22 +1037,14 @@ impl Track {
         db_to_linear(self.gain_db.clamp(MIN_GAIN_DB, MAX_GAIN_DB))
     }
 
-    /// The pan matrix: what this lane's signal is multiplied by in the left
-    /// and the right channel.
+    /// The pan matrix: what this lane's signal is multiplied by in each channel.
     ///
-    /// This is the **0 dB pan law** — the channel you pan toward stays at
-    /// unity and the one you pan away from is attenuated to nothing. The
-    /// alternative, a constant-power law, keeps a mono source's *perceived*
-    /// loudness even across the sweep, but it does so by making the ends
-    /// 3 dB louder than the centre, and a law that can raise a level is a law
-    /// that can turn a mix that was just under full scale into one that
-    /// clips. Given that silent clipping is the fault this whole surface
-    /// exists to end, pan here can never add gain. The price is real and
-    /// worth naming: a hard-panned mono source is about 3 dB quieter than the
-    /// same source centred.
+    /// The **0 dB pan law**: the channel panned toward stays at unity and the other is
+    /// attenuated. A constant-power law would make the ends 3 dB louder than the centre, and a
+    /// law that can raise a level can turn a mix just under full scale into one that clips.
+    /// The price is that a hard-panned mono source is about 3 dB quieter than a centred one.
     ///
-    /// On stereo material this acts as a balance, which is what a lane fader's
-    /// pan does everywhere.
+    /// On stereo material this acts as a balance.
     pub fn pan_gains(&self) -> (f64, f64) {
         let p = self.pan.clamp(-1.0, 1.0);
         (1.0 - p.max(0.0), 1.0 + p.min(0.0))
@@ -1144,8 +1082,6 @@ impl Track {
     }
 }
 
-/// A placed clip: a reference to media, positioned on a track, sourcing a
-/// `[in_point, out_point]` window of that media.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct Clip {
     #[model(readonly)]
@@ -1183,8 +1119,7 @@ pub struct Clip {
     /// instead of an instant cut.
     #[serde(default)]
     pub transition_duration: f64,
-    /// Ordered stack of image effects applied after the base grade. Empty by
-    /// default; the user adds / removes / reorders them.
+    /// Ordered stack of image effects applied after the base grade.
     #[serde(default)]
     pub effects: Ordered<ClipEffect>,
     /// Where the picture lands in the frame: crop, scale, rotation,
@@ -1195,12 +1130,10 @@ pub struct Clip {
     /// Playback rate and direction. Normal by default.
     #[serde(default)]
     pub speed: Speed,
-    /// Colour key. Disabled by default, so a clip that has never been keyed
-    /// composites exactly as before.
+    /// Colour key. Disabled by default.
     #[serde(default)]
     pub key: ChromaKey,
-    /// Shape mask limiting where this layer contributes. [`MaskShape::None`]
-    /// by default — no mask at all.
+    /// Shape mask limiting where this layer contributes.
     #[serde(default)]
     pub mask: Mask,
     /// Keyframe curves. A parameter with a curve here ignores its constant
@@ -1211,55 +1144,31 @@ pub struct Clip {
     /// Markers pinned to this clip, in clip-local seconds.
     #[serde(default)]
     pub markers: Keyed<Marker>,
-    /// Which **link group** this clip belongs to, if any. Two clips carrying
-    /// the same id are linked: the picture and the sound of one shot, which
-    /// move, trim, split, delete and re-time together.
+    /// Which **link group** this clip belongs to. Two clips carrying the same id are one
+    /// shot's picture and sound, which move, trim, split, delete and re-time together.
     ///
-    /// Deliberately a shared group id rather than "my partner is clip X". A
-    /// pointer has to be repaired when one half is deleted, and this document
-    /// is a CRDT two people edit at once, so the repair is a conflict waiting
-    /// to happen. A group id degrades safely instead: delete one half and the
-    /// other is simply a clip whose group has one member, which is
-    /// indistinguishable from an unlinked clip everywhere it matters (see
-    /// [`Project::link_partners`]).
+    /// A shared group id rather than "my partner is clip X": a pointer has to be repaired when
+    /// one half is deleted, and in a record two people edit that repair is a conflict. A group
+    /// id degrades safely — one member is indistinguishable from unlinked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<Uuid>,
-    /// True when this picture clip's own sound has been split off onto an
-    /// audio clip, so the mixer must not also read it from here.
+    /// True when this picture clip's own sound has been split off onto an audio clip, so the
+    /// mixer must not also read it here.
     ///
-    /// It is not the same question as "am I linked", and it must not be
-    /// answered by asking the link, for two reasons:
+    /// Not the same question as "am I linked": unlinking would then double the sound, and
+    /// linking a music bed to a shot must not silence the shot. Only splitting the sound off
+    /// moves where it comes from.
     ///
-    ///  * **Unlinking would double the sound.** Break the link and the picture
-    ///    clip would start carrying sound the audio clip is already carrying —
-    ///    the shot heard twice, at double level, and as an echo the moment the
-    ///    two are slid apart.
-    ///  * **Linking a music bed to a shot must not silence the shot.** A link
-    ///    is a general "these move together"; only splitting the sound off
-    ///    actually moves where the sound comes from.
-    ///
-    /// False in every project written before linked audio existed, which is
-    /// exactly why those still play: they have no audio clip, so their picture
-    /// clip still carries the sound.
+    /// False in every project written before linked audio existed, which is why those still
+    /// play.
     #[serde(default, skip_serializing_if = "is_false")]
     pub sound_split: bool,
-    /// Whether edits made to one member of this clip's group reach the others.
+    /// Unlinking clears **this**, not [`Self::link`], so the group survives as a record of
+    /// what came from one placement: that is what answers "is this shot's sound already on
+    /// the timeline". Clearing the id instead offered "Split off audio" again on an unlinked
+    /// clip and made a duplicate.
     ///
-    /// Unlinking clears **this**, not [`Self::link`], so the group survives as
-    /// a record of what came from one placement. That is what lets the editor
-    /// answer a question it otherwise could not: *is this shot's sound already
-    /// on the timeline?* Clearing the id instead made an unlinked picture clip
-    /// indistinguishable from one whose sound half had been deleted, so it was
-    /// offered "Split off audio" again and taking it made a second, duplicate
-    /// audio clip.
-    ///
-    /// With the group kept, the two cases separate exactly: a partner still
-    /// shares the id (offer to re-link) or none does (offer the split). No
-    /// pointer, so the CRDT argument for a group id still holds — deleting a
-    /// half removes a member and repairs nothing.
-    ///
-    /// Defaults true so a clip written before this, and every clip with no
-    /// group at all, behaves as it always did.
+    /// Defaults true, so a clip with no group behaves as it always did.
     #[serde(default = "yes_default", skip_serializing_if = "is_true")]
     pub link_follows: bool,
 }
@@ -1321,8 +1230,6 @@ impl Default for Clip {
     }
 }
 
-/// Default incoming-transition length, seconds, for a clip that has not been
-/// given one. Matches the constant the compositor used to hardcode.
 pub const DEFAULT_TRANSITION_SECS: f64 = 0.6;
 
 /// How close a keyframe has to be to an instant to count as sitting *on*
@@ -1414,8 +1321,6 @@ impl Clip {
         }
     }
 
-    /// Clear the stack and every animation curve belonging to it, preserving
-    /// unrelated clip animation.
     pub fn clear_effects(&mut self) {
         self.effects.clear();
         self.anim.clear_effect_slots();
@@ -1474,14 +1379,11 @@ impl Clip {
         })
     }
 
-    /// Write `param`'s **constant** field — the write-side twin of
-    /// [`Self::param_const`], and the other half of what a control bound to a
-    /// parameter needs. Silently ignores an `EffectAmount` past the end of
-    /// the stack, for the same reason reading one returns `None`.
+    /// The write-side twin of [`Self::param_const`]. Silently ignores an `EffectAmount` past
+    /// the end of the stack, as reading one returns `None`.
     ///
-    /// This writes the constant only. A caller editing an *animated*
-    /// parameter wants [`Self::set_key_at`] instead, or the value it writes
-    /// will be overridden by the curve the moment it is read back.
+    /// This writes the constant only; a caller editing an *animated* parameter wants
+    /// [`Self::set_key_at`], or the curve overrides what it wrote.
     pub fn set_param_const(&mut self, param: Param, v: f64) {
         match param {
             Param::Opacity => self.opacity = v,
@@ -1512,13 +1414,9 @@ impl Clip {
         }
     }
 
-    /// Set `param` to `v` at `playhead`, keying it when it is animated and
-    /// writing its constant when it is not.
-    ///
-    /// This is what a slider drag calls, and it is why keying a parameter
-    /// once turns every later drag into a new keyframe: an animated
-    /// parameter's constant is dead, so writing it would look like the
-    /// control had stopped working.
+    /// Keying it when it is animated and writing its constant when it is not: what a slider
+    /// drag calls, and why keying a parameter once turns every later drag into a new
+    /// keyframe.
     pub fn set_param_at(&mut self, param: Param, playhead: f64, v: f64) {
         if self.anim.is_animated(param) {
             let interp = self.key_interp_at(param, playhead).unwrap_or_default();
@@ -1528,12 +1426,9 @@ impl Clip {
         }
     }
 
-    /// **The one door.** The value of `param` at absolute timeline time
-    /// `playhead`: the curve if this clip has one, else the constant.
-    ///
-    /// Every reader — compositor, audio mixer, export, inspector — goes
-    /// through here, which is why animating a parameter needs no second
-    /// code path anywhere.
+    /// **The one door.** The value of `param` at absolute time `playhead`: the curve if there
+    /// is one, else the constant. Every reader — compositor, mixer, export, inspector — comes
+    /// through here.
     pub fn param_at(&self, param: Param, playhead: f64) -> f64 {
         let local = playhead - self.start;
         self.anim
@@ -1550,8 +1445,6 @@ impl Clip {
         self.anim.ensure(param).set_key(local, value, interp);
     }
 
-    /// Remove `param`'s keyframe near `playhead` (within [`KEY_TOL`]).
-    /// Returns whether one went.
     pub fn remove_key_at(&mut self, param: Param, playhead: f64) -> bool {
         let local = playhead - self.start;
         let Some(track) = self.anim.track_mut(param) else {
@@ -1575,8 +1468,6 @@ impl Clip {
             .is_some_and(|t| t.keys.iter().any(|k| (k.t - local).abs() <= KEY_TOL))
     }
 
-    /// The interpolation of `param`'s key at `playhead`, or `None` when
-    /// there is no key there to have one.
     pub fn key_interp_at(&self, param: Param, playhead: f64) -> Option<Interp> {
         let local = playhead - self.start;
         self.anim
@@ -1587,8 +1478,6 @@ impl Clip {
             .map(|k| k.interp)
     }
 
-    /// Re-shape how `param`'s key at `playhead` leaves itself. Returns
-    /// whether there was a key there to re-shape.
     pub fn set_interp_at(&mut self, param: Param, playhead: f64, interp: Interp) -> bool {
         let local = playhead - self.start;
         let Some(track) = self.anim.track_mut(param) else {
@@ -1605,13 +1494,9 @@ impl Clip {
         true
     }
 
-    /// Every instant this clip has a key on, in **absolute timeline
-    /// seconds**, sorted and deduplicated across parameters.
-    ///
-    /// Absolute because the callers are the timeline (drawing ticks on the
-    /// clip body) and the playhead (stepping between keys), both of which
-    /// work in timeline time. Deduplicated because two parameters keyed
-    /// together are one instant to a reader, not two.
+    /// **Absolute timeline seconds**, sorted and deduplicated across parameters: the callers
+    /// are the timeline and the playhead, which work in timeline time, and two parameters
+    /// keyed together are one instant.
     pub fn key_times(&self) -> Vec<f64> {
         let mut out: Vec<f64> = self
             .anim
@@ -1653,13 +1538,11 @@ impl Clip {
         }
     }
 
-    /// The tone curve at `playhead`, with an animated [`Param::CurveMix`]
-    /// substituted in. The shapes themselves are static — only how much of
-    /// them lands is a curve of its own.
+    /// With an animated [`Param::CurveMix`] substituted in: the shapes are static, and only
+    /// how much of them lands is a curve of its own.
     ///
-    /// The result is [`Curve::normalised`] whatever the source, so a
-    /// document or a peer cannot hand the bake a spline with points out of
-    /// order or off the ends.
+    /// The result is [`Curve::normalised`] whatever the source, so a peer cannot hand the bake
+    /// a spline with points out of order.
     pub fn curves_at(&self, playhead: f64) -> Curve {
         let mut c = self.curves.normalised();
         if !self.anim.is_empty() {
@@ -1734,14 +1617,9 @@ impl Clip {
             .collect()
     }
 
-    /// Seconds into the source this clip is showing at timeline time
-    /// `playhead`.
-    ///
-    /// Forward, the playhead's distance into the clip is multiplied by the
-    /// rate and added to the in-point. Reversed, it is subtracted from the
-    /// out-point, so the clip's first timeline frame is the source's last.
-    /// The result is held inside `[in, out]`: past either end a clip shows
-    /// its edge frame rather than footage it does not own.
+    /// Forward, the distance into the clip is multiplied by the rate and added to the
+    /// in-point; reversed, it is subtracted from the out-point. The result stays inside
+    /// `[in, out]`: past either end a clip shows its edge frame.
     pub fn source_time(&self, playhead: f64) -> f64 {
         let into = (playhead - self.start).max(0.0);
         let travelled = into * self.speed.rate();
@@ -1792,17 +1670,10 @@ pub struct Project {
     pub fps: f64,
     pub width: u32,
     pub height: u32,
-    /// Whether the frame size and rate above were *chosen* — by a person, or
-    /// by a project file that carried them — rather than being the blank
-    /// project's stand-in.
-    ///
-    /// A blank project has to start at some shape, and 1920×1080 at 30 is the
-    /// least surprising one; but a project that has never been told its
-    /// format is not the same thing as one that was told 16:9. Without this
-    /// flag the two are indistinguishable, and [`Self::adopt_format`] would
-    /// have to choose between never adopting a clip's shape (which is how
-    /// vertical footage ended up letterboxed with no way out) and overriding
-    /// a format the user had just set by hand.
+    /// A blank project has to start at some shape, and 1920×1080 at 30 is the least
+    /// surprising; but a project never told its format is not one told 16:9. Without this flag
+    /// [`Self::adopt_format`] would either never adopt a clip's shape — how vertical footage
+    /// ended up letterboxed — or override a format just set by hand.
     #[serde(default)]
     pub format_explicit: bool,
     /// Timeline **in** mark, in absolute seconds: where a render of the
@@ -1820,13 +1691,9 @@ pub struct Project {
     pub markers: Keyed<Marker>,
 }
 
-/// The narrowest and widest frame dimension a project may be set to.
-///
-/// Not a guess: the low stop keeps a frame big enough for the even-dimension
-/// rounding every H.264 encoder needs, and the high stop is 8K, past which
-/// the compositor's readback buffer for one frame is measured in hundreds of
-/// megabytes. A value outside the pair is clamped rather than refused — "as
-/// big as it goes" is a legible intent.
+/// The low stop keeps a frame big enough for the even-dimension rounding an H.264 encoder
+/// needs, and the high stop is 8K, past which one frame's readback buffer is hundreds of
+/// megabytes. Outside the pair a value is clamped rather than refused.
 pub const MIN_FRAME: u32 = 16;
 pub const MAX_FRAME: u32 = 8192;
 /// The slowest and fastest project rate. One frame per second is a legitimate
@@ -1875,8 +1742,6 @@ impl Project {
         self.format_explicit = true;
     }
 
-    /// The project's frame aspect, falling back to 16:9 for a degenerate
-    /// height rather than dividing by zero.
     pub fn aspect(&self) -> f64 {
         if self.height > 0 {
             f64::from(self.width) / f64::from(self.height)
@@ -1885,14 +1750,8 @@ impl Project {
         }
     }
 
-    /// Take this media's shape as the project's own — what a blank project
-    /// does when its first clip lands, so footage that is vertical, square or
-    /// 4K does not have to be letterboxed into a 16:9 frame nobody chose.
-    ///
-    /// Refused once the format has been chosen deliberately, and refused for
-    /// a source that does not carry a shape (audio, a title, a container that
-    /// declared nothing) — adopting zeroes would leave the project with no
-    /// frame at all.
+    /// What a blank project does when its first clip lands, so vertical, square or 4K footage
+    /// is not letterboxed into a frame nobody chose.
     pub fn adopt_format(&mut self, m: &MediaItem) -> bool {
         if self.format_explicit || m.width == 0 || m.height == 0 {
             return false;
@@ -2040,25 +1899,16 @@ impl Project {
         self.clips.find_mut(&key(id))
     }
 
-    /// Every lane in `lanes` with its fader brought **down** by `db`, as the
-    /// whole-track writes that change is.
+    /// Every lane in `lanes` brought **down** by `db`, as whole-track writes.
     ///
-    /// Every lane moves by the same number, and that is what makes this a trim
-    /// rather than a re-mix: a mix is a sum, scaling every layer of a sum by
-    /// one factor scales the sum by exactly that factor, so the balance
-    /// between the lanes is left precisely where the person mixing put it and
-    /// only the total comes down.
+    /// Every lane moves by the same number, which makes this a trim rather than a re-mix: a
+    /// mix is a sum, and scaling every layer of a sum scales the sum by that factor, so the
+    /// balance stays where the person mixing put it. Moving only the lanes caught over would
+    /// change the balance and would not even guarantee the sum fits — two lanes at two-thirds
+    /// each are over without either being over alone.
     ///
-    /// Moving only the lanes that were *caught* over would do neither. It
-    /// changes the balance, and it does not even guarantee the sum fits —
-    /// a mix goes over whenever the lanes add up past full scale, which two
-    /// lanes at two-thirds each manage without either one being over on its
-    /// own.
-    ///
-    /// `db` at or below zero is nothing to do and writes nothing. A lane that
-    /// lands on [`MIN_GAIN_DB`] has hit the bottom of its travel and is off,
-    /// which can only make the sum quieter than asked for — so the result is
-    /// "at or under the target", never over it.
+    /// `db` at or below zero writes nothing. A lane that lands on [`MIN_GAIN_DB`] is off,
+    /// which can only make the sum quieter: "at or under the target", never over.
     pub fn lanes_trimmed_by(&self, lanes: &[TrackId], db: f64) -> Vec<Track> {
         if !db.is_finite() || db <= 0.0 {
             return Vec::new();
@@ -2226,8 +2076,6 @@ impl Project {
         Some(new_id)
     }
 
-    /// Move a clip's left edge to `new_start` (clamped to >= 0). Trimming
-    /// is unaffected — the whole source window slides.
     pub fn move_clip(&mut self, id: ClipId, new_start: f64) {
         if let Some(c) = self.clip_mut(id) {
             c.start = new_start.max(0.0);
@@ -2251,16 +2099,13 @@ impl Project {
         false
     }
 
-    /// The lane kind a clip belongs on: the kind of the track it already sits
-    /// on, and only failing that the kind of media it references.
+    /// The kind of the track it already sits on, and only failing that the kind of media it
+    /// references.
     ///
-    /// The track has to be asked first because one source can legitimately be
-    /// placed as two clips. The audio half of a linked pair references a video
-    /// file and lives on an audio lane; deriving its kind from the media would
-    /// call it a video clip, and [`Self::can_place`] would then refuse to let
-    /// it move along its own lane. Falls back to video for a clip whose track
-    /// *and* media are both gone, so a broken clip still has a home rather
-    /// than silently migrating to audio.
+    /// The track comes first because one source can be placed as two clips: the audio half of
+    /// a linked pair references a video file and lives on an audio lane, and deriving its kind
+    /// from the media would refuse to let it move along its own lane. Falls back to video so a
+    /// broken clip still has a home.
     pub fn clip_kind(&self, id: ClipId) -> TrackKind {
         if let Some(kind) = self
             .clip(id)
@@ -2272,8 +2117,6 @@ impl Project {
         self.media_kind_of(id)
     }
 
-    /// The lane kind the clip's *source* asks for, ignoring where it currently
-    /// sits — what a fresh placement of that media would choose.
     pub fn media_kind_of(&self, id: ClipId) -> TrackKind {
         self.clip(id)
             .and_then(|c| self.media(c.media))
@@ -2326,20 +2169,16 @@ impl Project {
         v
     }
 
-    /// Whether `id` has at least one partner — the question every affordance
-    /// asks, because a group of one is not a link, it is a clip.
     pub fn is_linked(&self, id: ClipId) -> bool {
         !self.link_partners(id).is_empty()
     }
 
-    /// Everything that came from the same placement as `id`, **including
-    /// clips whose link no longer follows**, and excluding `id` itself.
+    /// Everything that came from the same placement as `id`, **including clips whose link no
+    /// longer follows**, and excluding `id` itself.
     ///
-    /// [`Self::link_partners`] answers "what moves when this moves"; this
-    /// answers "what came from here". They differ only after an unlink, and
-    /// that difference is the whole point: it is what lets the editor offer
-    /// to re-link a shot to a sound clip that is still sitting on the
-    /// timeline, instead of offering to split off a second copy of it.
+    /// [`Self::link_partners`] answers "what moves when this moves"; this answers "what came
+    /// from here". After an unlink they differ, which is what lets the editor offer to re-link
+    /// a sound clip still on the timeline rather than split off a second copy.
     pub fn group_members(&self, id: ClipId) -> Vec<ClipId> {
         let Some(link) = self.clip(id).and_then(|c| c.link) else {
             return Vec::new();
@@ -2359,13 +2198,9 @@ impl Project {
             .find(|p| self.clip_kind(*p) == TrackKind::Audio)
     }
 
-    /// Put every clip in `ids` into one fresh link group, returning its id.
-    ///
-    /// Refused, changing nothing, for fewer than two clips that actually
-    /// exist: linking a clip to itself is not a state the rest of the editor
-    /// should have to recognise. The id is minted here, so a caller that
-    /// dispatches the resulting clips carries it on the wire rather than
-    /// re-rolling it on every peer.
+    /// Refused, changing nothing, for fewer than two clips that exist: linking a clip to itself
+    /// is not a state the rest of the editor should have to recognise. The id is minted here,
+    /// so the clips a caller dispatches carry it on the wire rather than re-rolling it.
     pub fn link_clips(&mut self, ids: &[ClipId]) -> Option<Uuid> {
         let mut live: Vec<ClipId> = Vec::new();
         for id in ids {
@@ -2387,21 +2222,14 @@ impl Project {
         Some(link)
     }
 
-    /// Take every clip in `ids` out of whatever group it was in, returning the
-    /// clips that actually changed so the caller replicates exactly those.
-    ///
-    /// A group left holding one member is left alone: it already reads as
-    /// unlinked everywhere ([`Self::is_linked`]), and clearing it would be a
-    /// second write nobody asked for.
+    /// A group left holding one member is left alone: it already reads as unlinked, and
+    /// clearing it would be a write nobody asked for.
     /// Take `ids` out of their group entirely — id and following both.
     ///
-    /// Different from [`Self::unlink_clips`], and the difference matters. An
-    /// unlink is a user saying "stop moving together", and the group survives
-    /// so the editor can still find the sound a shot was split from. This is
-    /// for a clip that was never part of that placement at all — the tail of
-    /// a cut, which is a new clip — and leaving it holding the group would
-    /// tell it its sound is already on the timeline when the sound it can see
-    /// belongs to the head.
+    /// Different from [`Self::unlink_clips`]: an unlink means "stop moving together" and keeps
+    /// the group, so the editor can still find the sound a shot was split from. This is for a
+    /// clip that was never part of that placement — the tail of a cut — which would otherwise
+    /// claim its sound is on the timeline when that sound belongs to the head.
     pub fn detach_from_group(&mut self, ids: &[ClipId]) {
         for id in ids {
             if let Some(c) = self.clip_mut(*id) {
@@ -2428,12 +2256,9 @@ impl Project {
         changed
     }
 
-    /// Place the *sound* of `video_clip` on `audio_track` as its linked half:
-    /// the same source, the same `start`, the same trim window, the same rate.
-    ///
-    /// Returns the new clip's id, or `None` when the picture clip is gone or
-    /// the two are already linked. The pair shares a freshly minted group id,
-    /// so neither half points at the other.
+    /// The same source, the same `start`, trim window and rate. `None` when the picture clip is
+    /// gone or the two are already linked. The pair shares a freshly minted group id, so
+    /// neither half points at the other.
     pub fn add_linked_audio(&mut self, video_clip: ClipId, audio_track: TrackId) -> Option<ClipId> {
         let mut audio = self.clip(video_clip)?.clone();
         let link = tilo_resource::fresh_uuid();
@@ -2469,14 +2294,9 @@ impl Project {
         Some(id)
     }
 
-    /// Split every clip in `id`'s link group at timeline time `at`, returning
-    /// the `(head, tail)` pair each one produced.
-    ///
-    /// The heads stay in the group they were already in and the tails become a
-    /// group of their own, because the alternative — four clips in one group —
-    /// would make dragging the second half of the shot drag the first half
-    /// with it. A tail with no sibling is left unlinked rather than in a group
-    /// of one, so it does not stay tied to the head it was cut from.
+    /// The heads stay in the group they were in and the tails become a group of their own:
+    /// four clips in one group would make dragging the second half drag the first. A tail with
+    /// no sibling is left unlinked rather than in a group of one.
     pub fn split_linked(&mut self, id: ClipId, at: f64) -> Vec<(ClipId, ClipId)> {
         let group = self.link_group(id);
         self.split_group(&group, at)
@@ -2501,8 +2321,6 @@ impl Project {
         pairs
     }
 
-    /// Delete every clip in `id`'s link group, leaving the gaps where they
-    /// were. Returns the ids removed.
     pub fn delete_linked(&mut self, id: ClipId) -> Vec<ClipId> {
         let group = self.link_group(id);
         self.clips.retain(|c| !group.contains(&c.id));
@@ -2568,13 +2386,9 @@ impl Project {
         applied
     }
 
-    /// Re-time `id` and every clip linked to it to the same rate and
-    /// direction.
-    ///
-    /// Speed is the one field where following the link is not a convenience:
-    /// change the picture's rate and not the sound's and the two drift apart
-    /// by a growing amount for the rest of the shot, which is a fault a user
-    /// cannot diagnose from anything on screen.
+    /// Speed is the one field where following the link is not a convenience: change the
+    /// picture's rate and not the sound's and the two drift apart for the rest of the shot,
+    /// which nothing on screen explains.
     pub fn set_speed_linked(&mut self, id: ClipId, rate: f64, reverse: bool) {
         let group = self.link_group(id);
         self.set_speed_group(&group, rate, reverse);
@@ -2589,20 +2403,13 @@ impl Project {
         }
     }
 
-    /// Whether `id` is a picture clip whose source carries sound and which has
-    /// no **linked** audio clip carrying it — the state the "split off audio"
-    /// affordance exists for.
+    /// Deliberately asks the link rather than [`Clip::sound_split`]: the flag says the sound
+    /// left the picture, not that the clip it left for still exists. Deleting the audio lane
+    /// takes every sound half with it, and a rule reading the flag would leave every shot
+    /// permanently silent with no way back.
     ///
-    /// Deliberately asks the link rather than [`Clip::sound_split`]. The flag
-    /// says the sound left the picture; it does not say the clip it left for
-    /// still exists. Deleting the audio lane takes every sound half with it,
-    /// and a rule that read the flag would leave every shot on the timeline
-    /// permanently silent with nothing on screen offering a way back. Asking
-    /// the link instead makes that recoverable: press it and the sound gets a
-    /// clip again.
-    ///
-    /// True for every clip in a project saved before linked audio existed,
-    /// which is how those get a sound clip at all.
+    /// True for every clip in a project saved before linked audio existed, which is how those
+    /// get a sound clip at all.
     pub fn can_split_audio(&self, id: ClipId) -> bool {
         let Some(clip) = self.clip(id) else {
             return false;
@@ -2627,15 +2434,10 @@ impl Project {
         self.tracks.iter().any(|t| t.kind == kind && t.solo)
     }
 
-    /// Whether `track` should be heard (audio) or drawn (video) right now.
-    ///
-    /// This is the single query the preview, the audio path and the export
-    /// renderer should ask — mute and solo interact, and duplicating the rule
-    /// is how they drift apart. Solo wins: while anything of that kind is
-    /// soloed, a non-soloed track is silent even if it is not muted, and a
-    /// soloed track is heard even if it is also muted (soloing is the louder
-    /// statement of intent, and the mute flag is preserved for when solo is
-    /// released).
+    /// The single query the preview, the audio path and the export ask: mute and solo
+    /// interact, and duplicating the rule is how they drift apart. Solo wins — while anything
+    /// of that kind is soloed a non-soloed track is silent, and a soloed track is heard even
+    /// if also muted.
     pub fn track_audible(&self, track: TrackId) -> bool {
         let Some(t) = self.track(track) else {
             return false;
@@ -2657,8 +2459,6 @@ impl Project {
         self.track(track).is_none_or(|t| t.locked)
     }
 
-    /// Whether the clip that owns `id` may currently be edited — false when
-    /// its own track is locked.
     pub fn clip_editable(&self, id: ClipId) -> bool {
         self.clip(id).is_some_and(|c| !self.track_locked(c.track))
     }
@@ -2691,18 +2491,14 @@ impl Project {
             .map(|t| t.id)
     }
 
-    /// Drag the left (in) handle by `delta` seconds. Positive `delta`
-    /// removes source from the playback head (clip shrinks from the left
-    /// and its timeline start moves right); negative reveals more source.
-    /// Reversed playback removes the source's out-point, not its in-point.
-    /// Clamped to the source bounds while keeping at least `MIN_CLIP`.
+    /// Drag the in handle by `delta` seconds: positive removes source from the head (the clip
+    /// shrinks from the left and its start moves right), negative reveals more. Reversed
+    /// playback removes the source's out-point. Clamped to the source bounds, keeping at least
+    /// `MIN_CLIP`.
     ///
-    /// Returns the delta it *actually* applied after clamping, in source
-    /// seconds. A caller trimming several clips at once (the halves of a
-    /// linked pair) has to hand the rest the amount the first one really
-    /// moved, or a clip that clamped and a clip that did not would drift apart
-    /// by exactly the difference — which is the desync a link exists to
-    /// prevent.
+    /// Returns the delta *actually* applied, in source seconds: a caller trimming several clips
+    /// at once has to hand the rest the amount the first one really moved, or the halves drift
+    /// apart by exactly the difference — the desync a link exists to prevent.
     pub fn trim_in(&mut self, id: ClipId, delta: f64) -> f64 {
         let media_dur = self
             .clip(id)
@@ -2832,14 +2628,11 @@ impl Project {
         best.map_or(t, |(c, _)| c)
     }
 
-    /// Paste `clip` as a new independent clip starting at `start` on
-    /// `track` (the clip keeps its trim window, filters and fades). Returns
-    /// the new id. Used by copy/paste — the source clip is unchanged.
+    /// Keeping its trim window, filters and fades. The source clip is unchanged.
     ///
-    /// Independent includes *unlinked*: carrying the source's link group over
-    /// would tie the copy to the clip it was copied from, so dragging the
-    /// original would drag the copy across the timeline. A caller pasting a
-    /// whole linked pair re-links the copies to each other afterwards.
+    /// Independent includes *unlinked*: carrying the group over would tie the copy to the clip
+    /// it came from, so dragging the original would drag the copy. A caller pasting a linked
+    /// pair re-links the copies afterwards.
     pub fn paste_clip(&mut self, mut clip: Clip, track: TrackId, start: f64) -> ClipId {
         clip.id = tilo_resource::fresh_uuid();
         clip.track = track;
@@ -2959,11 +2752,6 @@ mod key_and_mask_tests {
                 assert_eq!(k.coverage(keep), 1.0, "{keep:?} is nothing like the key");
             }
         }
-        // Case `brightness_does_not_change_whether_a_colour_keys`:
-        // The reason the key measures chroma and not RGB distance: one green
-        // screen is never one green. A lit patch and a shadowed patch of the
-        // same cloth are far apart in RGB and close together in hue, and both
-        // have to key.
         {
             let k = keyer();
             for gain in [0.2_f64, 0.35, 0.6, 1.0, 1.35] {
@@ -2993,10 +2781,6 @@ mod key_and_mask_tests {
                 "the two shades are {rgb_gap:.2} apart in RGB"
             );
         }
-        // Case `near_black_falls_out_of_the_key_instead_of_keying_on_noise`:
-        // The one place brightness *does* decide the matte: near black there
-        // is no reliable hue left, so those pixels are kept rather than having
-        // their noise amplified into the key.
         {
             let k = keyer();
             assert_eq!(
@@ -3121,10 +2905,6 @@ mod key_and_mask_tests {
             );
             assert_eq!(m.coverage(0.98, 0.5, 1.0), 0.0, "so is the far edge");
         }
-        // Case `a_rect_keeps_the_corners_an_ellipse_of_the_same_size_drops`:
-        // A rect and an ellipse of the same extent must not be the same mask —
-        // they differ exactly at the corners of the box, which is the only
-        // place the shape choice shows.
         {
             let base = Mask {
                 w: 0.8,
@@ -3208,10 +2988,6 @@ mod key_and_mask_tests {
                 "but the point it moved to is"
             );
         }
-        // Case `a_rotated_rect_turns_rather_than_shearing`:
-        // A rotated rect has to actually rotate. On a wide frame that only
-        // works if the rotation happens in aspect-corrected space — otherwise
-        // the shape shears and a 90° turn is not the same rect stood on end.
         {
             let fa = 16.0 / 9.0;
             let tall = Mask {
@@ -3256,10 +3032,6 @@ mod key_and_mask_tests {
             assert!(m.coverage(0.5 + m.x, 0.5 + m.y, 16.0 / 9.0) > 0.9);
             assert_eq!(m.coverage(0.5, 0.5, 16.0 / 9.0), 0.0);
         }
-        // Case `fitting_over_a_narrow_source_follows_the_aspect_fit`:
-        // A source narrower than the frame is letterboxed at the identity
-        // transform, so a mask fitted over it must be narrower than the frame
-        // too — not the full width the frame would suggest.
         {
             let m = Mask::over(MaskShape::Rect, &Transform::default(), 1.0, 16.0 / 9.0);
             assert!(
@@ -3303,10 +3075,6 @@ mod key_and_mask_tests {
             assert_eq!(c.key_at(3.0), c.key);
             assert_eq!(c.mask_at(3.0), c.mask);
         }
-        // Case `keying_a_mask_makes_it_travel_with_the_playhead`:
-        // The whole reason these are parameters: a mask that cannot move
-        // cannot follow a subject, and a key that cannot ramp cannot be
-        // eased in over a shot.
         {
             let mut c = keyed_clip();
             // Clip-local 0 and 4 — the clip starts at timeline 2.0.
@@ -4336,14 +4104,10 @@ mod tests {
     }
 }
 
-/// Linked audio and video: the shared group id, what follows it, and what a
-/// half-deleted pair degrades to.
 #[cfg(test)]
 mod link_tests {
     use super::*;
 
-    /// A project holding one picture source whose container carries sound,
-    /// placed on V1, plus an empty audio lane to split the sound onto.
     fn shot() -> (Project, ClipId, TrackId) {
         let mut p = Project::new("interview");
         let media = Uuid::new_v4();
@@ -4397,15 +4161,8 @@ mod link_tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn linking_and_splitting_sound_forms_a_two_clip_group() {
-        // Case `an_unlinked_shot_is_offered_its_sound_back_rather_than_a_second_copy`:
-        // Unlinking must not offer to split the sound off a second time.
-        //
-        // The sound clip is still sitting on the timeline; splitting again makes
-        // a duplicate playing the same thing twice. Answering this needs the
-        // editor to tell "unlinked, sound still here" from "sound half deleted",
-        // which is why an unlink keeps the group id and clears only the
-        // following — the two cases then separate exactly, with no pointer to
-        // repair and no heuristic over media and spans.
+        // Unlinking must not offer to split the sound off a second time: the sound clip is
+        // still on the timeline, and splitting again makes a duplicate.
         {
             let (mut p, vid, aid) = pair();
             assert!(

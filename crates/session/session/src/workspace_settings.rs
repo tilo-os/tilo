@@ -830,8 +830,8 @@ fn settings(
     sheet::Settings {
         title: t("workspace-settings-title"),
         name: workspace.map_or_else(
-            || t("workspace-settings-workspace-fallback"),
-            |ws| ws.name.clone(),
+            || tilo_desktop_surface::names::workspace(""),
+            |ws| tilo_desktop_surface::names::workspace(&ws.name),
         ),
         role: workspace
             .and_then(|ws| ws.role_of(person))
@@ -985,12 +985,12 @@ fn going(tree: &DesktopTree, engine: Option<&Engine>) -> Going {
         )
     });
     let leavable = tree.workspaces.len() > 1 && !sole_member;
-    let name = workspace.map(|workspace| workspace.name.clone());
+    let name = workspace.map_or_else(
+        || tilo_desktop_surface::names::workspace(""),
+        |workspace| tilo_desktop_surface::names::workspace(&workspace.name),
+    );
     let decision = sheet::Decision {
-        title: tilo_sheets::words(
-            "workspace-delete-title",
-            &[("name", name.as_deref().unwrap_or_default())],
-        ),
+        title: tilo_sheets::words("workspace-delete-title", &[("name", name.as_str())]),
         description: tilo_sheets::word("workspace-delete-body"),
         keep: tilo_sheets::word("workspace-delete-keep"),
         review: String::new(),

@@ -1,5 +1,5 @@
-//! Root-service bootstrap for one SAME-source original Home projection.
-//! Credentials become effective only inside the completed canonical namespace.
+//! Root-service bootstrap for one SAME-source original Home projection. Credentials
+//! become effective only inside the completed canonical namespace.
 use crate::owned_service::refused;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -158,8 +158,7 @@ impl FilterLaunch {
         if argv.len() < expected.len() || argv.iter().take(4).map(String::as_str).ne(expected) {
             return Err(refused("Canonical original baseline prefix differs"));
         }
-        // The compatibility filter stays active. The exact full baseline is
-        // held sealed until the signed shim completes its confined projection.
+        // The compatibility filter stays active.
         argv.drain(2..4);
         Ok(())
     }
@@ -362,8 +361,6 @@ impl Bootstrap {
     pub(super) fn splice(&self, argv: &mut Vec<String>) -> io::Result<()> {
         root()?;
         // Preserve numeric source credentials in the ORIGINAL user namespace.
-        // Mount/PID/network/IPC isolation remains mandatory. Only the signed
-        // shim receives SETUID/SETGID, which it clears before executing worker.
         crate::owned_service::splice_custody(
             argv,
             &crate::owned_service::CustodySplice {
@@ -375,10 +372,8 @@ impl Bootstrap {
                 } else {
                     &[]
                 },
-                // These are empty, root-owned directories in bwrap's fresh filesystem,
-                // created BEFORE any data or host binds. Private data copies otherwise
-                // make their synthetic parents 0700, blocking the later source UID.
-                // No host path, original source leaf or delegated app leaf is chmodded.
+                // These are empty, root-owned directories in bwrap's fresh filesystem, created BEFORE
+                // any data or host binds.
                 traversal: &[
                     "/etc",
                     "/etc/alternatives",
@@ -462,8 +457,7 @@ fn validate_namespace(facts: &Facts) -> io::Result<()> {
             ));
         }
     }
-    // O_PATH performs only identity/readonly metadata checks. Root does not
-    // read or traverse source contents before the confined credential drop.
+    // O_PATH performs only identity/readonly metadata checks.
     let source = File::options()
         .read(true)
         .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -477,8 +471,7 @@ fn validate_namespace(facts: &Facts) -> io::Result<()> {
     }
     readonly(&source)
 }
-/// Signed shim only: namespace reattestation and fd closure precede source
-/// credential application. Ambient parent credentials never change.
+/// Signed shim only: namespace reattestation and fd closure precede source credential application.
 pub(crate) fn enter(keep: &mut Vec<i32>) -> io::Result<()> {
     let facts = phase(Stage::ReceiveBootstrap, receive())?;
     phase(Stage::VerifyNamespaceAndHome, validate_namespace(&facts))?;
@@ -508,8 +501,8 @@ pub(crate) fn enter(keep: &mut Vec<i32>) -> io::Result<()> {
             }),
         )?;
     }
-    // No worker, claim or source credential drop is reachable before the
-    // complete canonical baseline is installed on all shim threads.
+    // No worker, claim or source credential drop is reachable before the complete canonical baseline
+    // is installed on all shim threads.
     if let Some(filter) = filter {
         phase(Stage::InstallBaseline, filter.install())?;
     }
@@ -603,7 +596,6 @@ fn publish_claim(digest: [u8; 32]) -> io::Result<()> {
     Ok(())
 }
 /// Compare an original request with the digest inherited from the signed shim.
-/// A serialized claim, environment variable or ordinary file cannot authorize it.
 pub fn verify_original_read_claim(expected: [u8; 32]) -> io::Result<()> {
     if expected == [0; 32] {
         return Err(refused("Original read claim is empty"));

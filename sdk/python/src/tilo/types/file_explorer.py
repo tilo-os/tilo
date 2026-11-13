@@ -45,7 +45,7 @@ RecentUse = Literal["opened", "changed"]
 
 class Folder(Resource):
     """Folder — `files.folder`."""
-    __surface__ = "so.tilo.file-explorer@942efd2271836ebf"
+    __surface__ = "so.tilo.file-explorer@cb62eaabb4a7bfc3"
     places: list[Bookmark]
 
     def add_bookmark(self,
@@ -255,11 +255,11 @@ class Folder(Resource):
 
 class Tree(Resource):
     """Files — `files.tree`."""
-    __surface__ = "so.tilo.file-explorer@942efd2271836ebf"
+    __surface__ = "so.tilo.file-explorer@cb62eaabb4a7bfc3"
 
 class Recent(Resource):
     """Recent files — `files.recent`."""
-    __surface__ = "so.tilo.file-explorer@942efd2271836ebf"
+    __surface__ = "so.tilo.file-explorer@cb62eaabb4a7bfc3"
     devices: dict[str, Any]
 
     def note(self,

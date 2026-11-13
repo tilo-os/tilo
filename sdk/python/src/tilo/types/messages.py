@@ -76,7 +76,7 @@ class Projected(TypedDict):
 
 class Messages(Resource):
     """Messages — `tilo.messages`."""
-    __surface__ = "so.tilo.messages@b13277ac12c04698"
+    __surface__ = "so.tilo.messages@23bf6eb5fe40bef0"
     @property
     def conversations(self) -> list[Conversation]:
         """Read only."""
@@ -178,7 +178,7 @@ class Messages(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.messages@b13277ac12c04698"
+    __surface__ = "so.tilo.messages@23bf6eb5fe40bef0"
     accounts: list[PersonAccount]
     active: dict[str, str]
 
@@ -214,7 +214,7 @@ class Accounts(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.messages@b13277ac12c04698"
+    __surface__ = "so.tilo.messages@23bf6eb5fe40bef0"
     people: list[Person]
 
     def project_contact(self,
@@ -310,7 +310,7 @@ class Identities(Resource):
 
 class Drafts(Resource):
     """Message drafts — `messages.drafts`."""
-    __surface__ = "so.tilo.messages@b13277ac12c04698"
+    __surface__ = "so.tilo.messages@23bf6eb5fe40bef0"
     drafts: dict[str, str]
 
     def keep_draft(self,

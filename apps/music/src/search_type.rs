@@ -1,29 +1,5 @@
-//! Search-type seam — Music result descriptors and canonical resource actions.
-//!
-//! Music must *not* build a bespoke OS-wide search. Instead it exposes clean
-//! descriptors the global-search framework can register, so a song / album /
-//! artist / playlist shows up in the OS search palette with a cover, a title
-//! and a subtitle — and activating a hit resolves a canonical resource action
-//! that plays the song or opens the album/artist/playlist page.
-//!
-//! This module defines Music's provider-side descriptors. The toolkit-facing
-//! library provider below supplies the shared palette with canonical actions:
-//!
-//! * [`SearchableType`] — the static descriptor (stable id, display name,
-//!   whether hits carry a cover). One per app-provided result type.
-//! * [`SearchHit`] — one result row: title, subtitle, a real cover URL (live)
-//!   or a procedural seed (offline), plus the deep link that opens it.
-//! * [`MusicSearchProvider`] — turns a query into [`SearchHit`]s by delegating
-//!   to an explicitly supplied [`crate::backend::MusicBackend`]. The shipping
-//!   build enables the live backend; tests can supply the offline sample.
-//! * [`library_entries`] — the user's **own library** (synced across their
-//!   devices) as the library resource's search entries, so a saved album or a
-//!   personal playlist is findable even on the hermetic/offline build.
-//!
-//! Descriptor registration is a one-liner
-//! (`for t in music::searchable_types() { registry.register(t) }` plus a
-//! provider query with no reach into app internals. Search activation itself
-//! goes through the shared operation broker and Music's exported resource tree.
+//! Music's search results: the descriptors and hits the one Ctrl+K palette shows, and
+//! the library's own entries as a synchronous source.
 
 use ui::icons::Icon;
 use ui::tilo_resource::{SearchEntry, SearchWeight};
@@ -31,26 +7,22 @@ use ui::tilo_resource::{SearchEntry, SearchWeight};
 use crate::backend::{MusicBackend, SearchTop};
 use crate::model::Library;
 
-/// Stable ids for Music's four searchable result types. The framework uses them
-/// to deduplicate providers and persist per-type preferences.
+/// Ids the framework dedupes providers and persists per-type preferences by.
 pub const SONG_TYPE_ID: &str = "music.song";
 pub const ALBUM_TYPE_ID: &str = "music.album";
 pub const ARTIST_TYPE_ID: &str = "music.artist";
 pub const PLAYLIST_TYPE_ID: &str = "music.playlist";
 
-/// A static descriptor of a result type Music contributes to global search.
+/// A result type Music adds to global search.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchableType {
-    /// Stable id (e.g. [`SONG_TYPE_ID`]).
     pub id: &'static str,
-    /// Human, localisable display name for the palette section header.
     pub display_name: &'static str,
-    /// Whether hits of this type carry a cover, so the palette reserves image
-    /// space. Artists render a round avatar; the rest a square cover.
+    /// Whether hits carry a cover, so the palette reserves image space; artists get a round
+    /// avatar.
     pub has_thumbnail: bool,
 }
 
-/// The descriptor Music registers for song results.
 pub fn song_searchable_type() -> SearchableType {
     SearchableType {
         id: SONG_TYPE_ID,
@@ -59,7 +31,6 @@ pub fn song_searchable_type() -> SearchableType {
     }
 }
 
-/// The descriptor Music registers for album results.
 pub fn album_searchable_type() -> SearchableType {
     SearchableType {
         id: ALBUM_TYPE_ID,
@@ -68,7 +39,6 @@ pub fn album_searchable_type() -> SearchableType {
     }
 }
 
-/// The descriptor Music registers for artist results.
 pub fn artist_searchable_type() -> SearchableType {
     SearchableType {
         id: ARTIST_TYPE_ID,
@@ -77,7 +47,6 @@ pub fn artist_searchable_type() -> SearchableType {
     }
 }
 
-/// The descriptor Music registers for playlist results.
 pub fn playlist_searchable_type() -> SearchableType {
     SearchableType {
         id: PLAYLIST_TYPE_ID,
@@ -86,8 +55,7 @@ pub fn playlist_searchable_type() -> SearchableType {
     }
 }
 
-/// Every result type Music contributes, in the order the palette should section
-/// them (songs first, then albums, artists, playlists).
+/// Every result type, in the order the palette sections them.
 pub fn all_searchable_types() -> Vec<SearchableType> {
     vec![
         song_searchable_type(),
@@ -97,64 +65,49 @@ pub fn all_searchable_types() -> Vec<SearchableType> {
     ]
 }
 
-/// A single global-search result row contributed by Music.
+/// One result row Music contributes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchHit {
-    /// The result type this hit belongs to (e.g. [`SONG_TYPE_ID`]).
     pub type_id: &'static str,
-    /// Primary line (song / album / artist / playlist title).
     pub title: String,
-    /// Secondary line: the artist, the owner, "N songs", a duration — whatever
-    /// disambiguates the hit at a glance.
+    /// A second line that tells similar hits apart.
     pub subtitle: String,
-    /// Real cover-art URL (`YouTube` image CDN) when the live backend provides
-    /// one. Empty for own-library / offline hits — the palette then renders the
-    /// procedural tile keyed by [`Self::thumbnail_seed`], so no image bytes
-    /// need cross the boundary.
+    /// A cover URL when the catalogue has one; when it is empty the palette draws the
+    /// procedural tile keyed by [`Self::thumbnail_seed`].
     pub cover_url: String,
-    /// Seed for Music's deterministic cover gradient — the palette can ask
-    /// Music to render it when [`Self::cover_url`] is empty.
+    /// The seed of Music's cover gradient, used when [`Self::cover_url`] is empty.
     pub thumbnail_seed: String,
-    /// Opaque deep link the framework round-trips back to Music to open the
-    /// result. Format: `music://{track,album,artist,playlist}/<id>`.
+    /// The link the framework hands back: `music://{track,album,artist,playlist}/<id>`.
     pub deep_link: String,
 }
 
 impl SearchHit {
-    /// The play deep-link for a track (`video_id` for a live hit, the library
-    /// `TrackId` for an own-library hit — either way the id Music plays).
+    /// A track's link: the catalogue video id, or the library id.
     pub fn track_link(id: &str) -> String {
         format!("music://track/{id}")
     }
-    /// The album-page deep-link.
     pub fn album_link(id: &str) -> String {
         format!("music://album/{id}")
     }
-    /// The artist-page deep-link.
     pub fn artist_link(id: &str) -> String {
         format!("music://artist/{id}")
     }
-    /// The playlist-page deep-link.
     pub fn playlist_link(id: &str) -> String {
         format!("music://playlist/{id}")
     }
 }
 
-/// A parsed deep link identifying which entity a global-search hit opens. The
-/// app's launch handling turns this into the real navigation / play action.
+/// A parsed deep link: what a hit opens.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeepLink {
-    /// Play a track by id.
     Track(String),
     Album(String),
     Artist(String),
-    /// Open a playlist page.
     Playlist(String),
 }
 
 impl DeepLink {
-    /// Parse a `music://<kind>/<id>` deep link. Rejects any other scheme (so a
-    /// hostile `https://evil/…` never routes) and an empty id.
+    /// Parse a `music://<kind>/<id>` link; any other scheme, and an empty id, is rejected.
     pub fn parse(link: &str) -> Option<Self> {
         let rest = link.strip_prefix("music://")?;
         let (kind, id) = rest.split_once('/')?;
@@ -172,11 +125,8 @@ impl DeepLink {
     }
 }
 
-/// Turns a query into [`SearchHit`]s by delegating to whichever
-/// [`crate::backend::MusicBackend`] the build selected (offline sample by
-/// default — which yields nothing — or the real rustypipe client under
-/// `--features live`). The global-search framework owns ranking *across* apps;
-/// this provider only contributes Music's rows, in YouTube-Music order.
+/// Turns a query into hits through the backend the build selected; the framework ranks
+/// across apps, this provider only adds Music's rows.
 pub struct MusicSearchProvider<'a> {
     backend: &'a dyn MusicBackend,
 }
@@ -186,14 +136,11 @@ impl<'a> MusicSearchProvider<'a> {
         Self { backend }
     }
 
-    /// The descriptors this provider contributes.
     pub fn searchable_types(&self) -> Vec<SearchableType> {
         all_searchable_types()
     }
 
-    /// Contribute hits for `query`. A failing (network / offline) search
-    /// collapses to an empty contribution — a broken music search must never
-    /// break OS-wide search.
+    /// Hits for `query`; a failing search contributes nothing rather than break OS search.
     pub fn query(&self, query: &str) -> Vec<SearchHit> {
         if query.trim().is_empty() {
             return Vec::new();
@@ -203,7 +150,6 @@ impl<'a> MusicSearchProvider<'a> {
         };
         let mut hits = Vec::new();
 
-        // The mixed "top result" leads, mirroring the app's own results page.
         if let Some(top) = &bundle.top {
             hits.push(top_hit(top));
         }
@@ -300,12 +246,10 @@ fn song_subtitle(artist: &str, duration_s: u32) -> String {
     }
 }
 
-/// An album's one secondary fact: its artist.
 fn album_subtitle(artist: &str, _kind: &str, _year: u32) -> String {
     artist.to_string()
 }
 
-/// An artist's one secondary fact: how many people follow them, when known.
 fn artist_subtitle(subscribers: u64) -> String {
     if subscribers == 0 {
         String::new()
@@ -314,7 +258,6 @@ fn artist_subtitle(subscribers: u64) -> String {
     }
 }
 
-/// A playlist's one secondary fact: who made it, else how long it is.
 fn playlist_subtitle(owner: &str, tracks: u64) -> String {
     match (owner.is_empty(), tracks) {
         (false, _) => owner.to_string(),
@@ -324,22 +267,7 @@ fn playlist_subtitle(owner: &str, tracks: u64) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Global-search framework bridge (`ui::search`).
-//
-// The seam above ([`SearchHit`], [`MusicSearchProvider`]) is Music's rich,
-// backend-facing shape. The block below is the thin adapter that plugs it into
-// the *shared* framework every Tilo app registers with — [`ui::search`] — so a
-// song / album / artist / playlist appears in the one Ctrl+K palette
-// [`ui::app::App`] drives, ranked on an even footing with every other app's
-// hits, and activating a row routes onto Music's real play/navigate path
-// (the app's launch handling). This is the reference wiring the
-// [`apps/contacts`] `SearchProvider` pins, applied to Music's four types.
-// ---------------------------------------------------------------------------
-
-/// The palette group-header (kind) label for a Music result type — the plural
-/// of the singular [`SearchableType::display_name`], so a Ctrl+K section reads
-/// "Songs" / "Albums" / "Artists" / "Playlists".
+/// The plural of a type's name, for its palette section header.
 pub fn kind_label(type_id: &str) -> &'static str {
     match type_id {
         SONG_TYPE_ID => "Songs",
@@ -350,10 +278,8 @@ pub fn kind_label(type_id: &str) -> &'static str {
     }
 }
 
-/// The leading glyph a Music result type carries in the palette. The icon set
-/// has no person/disc glyph, so songs and artists share the note; albums use
-/// the stacked-layers glyph and playlists the list glyph — the kind header
-/// disambiguates either way.
+/// A type's glyph in the palette: songs and artists share the note, albums the layers,
+/// playlists the list.
 fn kind_icon(type_id: &str) -> Icon {
     match type_id {
         ALBUM_TYPE_ID => Icon::Layers,
@@ -362,15 +288,7 @@ fn kind_icon(type_id: &str) -> Icon {
     }
 }
 
-/// The user's **own library** — synced across their devices — as typed
-/// Song/Album/Artist/Playlist search entries, the library resource's own
-/// ([`crate::model::Library`]): found from the one Ctrl+K palette and OS
-/// search, each invoking the canonical action that plays the song or opens
-/// the page. An empty library contributes nothing — nothing is fabricated.
-///
-/// It is library-scoped and synchronous: the live YouTube-Music search (which
-/// does real HTTP) stays in Music's own search view, driven off-thread by the
-/// [`crate::stream`] worker.
+/// The library's own entries, synchronous: catalogue search stays in Music's view.
 pub fn library_entries(lib: &Library) -> Vec<SearchEntry> {
     let mut entries = Vec::new();
     for track in lib.tracks.values() {
@@ -460,12 +378,10 @@ mod tests {
     use super::*;
     use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult};
 
-    /// The library's search source, as the framework builds it.
     fn source(lib: &Library) -> impl SearchProvider + use<> {
         ui::framework::testing::search_source::<crate::model::Library>(library_entries(lib))
     }
 
-    /// The library's hits for `query` as the deep links Music routes.
     fn library_hits(lib: &Library, query: &str) -> Vec<SearchHit> {
         source(lib)
             .search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
@@ -582,8 +498,6 @@ mod tests {
         }
 
         {
-            // The subscriber count in an artist subtitle is abbreviated via the
-            // shared compact-count formatter (12_300 → "12.3K").
             assert_eq!(artist_subtitle(0), "");
             assert_eq!(artist_subtitle(12_300), "12.3K subscribers");
             assert_eq!(artist_subtitle(4_100_000), "4.1M subscribers");
@@ -593,9 +507,6 @@ mod tests {
     #[test]
     fn library_provider_registers_real_hits_and_fabricates_nothing() {
         {
-            // The default backend is offline: real OS search over it yields no rows
-            // (the app shows the local library instead) — and crucially does not
-            // fabricate any.
             let backend = default_backend();
             let provider = MusicSearchProvider::new(backend.as_ref());
             assert!(provider.query("aurora").is_empty());
@@ -638,7 +549,6 @@ mod tests {
         }
 
         {
-            // An empty (default) library fabricates nothing.
             assert!(library_hits(&Library::default(), "anything").is_empty());
             assert!(library_hits(&Library::default(), "").is_empty());
         }
@@ -647,14 +557,10 @@ mod tests {
             use ui::search::SearchRegistry;
             let lib = seed::sample_library();
 
-            // It IS a `ui::search::SearchProvider`: register it into the shared
-            // registry the global Ctrl+K palette drives, alongside every other app.
             let mut registry = SearchRegistry::new();
             registry.register(Box::new(source(&lib)));
             assert_eq!(registry.provider_count(), 1);
 
-            // A real library track surfaces as a typed "Songs" row addressing the
-            // stable play effect exported by the track resource.
             let track = lib.tracks.values().next().unwrap().clone();
             let song = registry
                 .query(&track.title)
@@ -692,7 +598,6 @@ mod tests {
         }
 
         {
-            // An empty (default) library contributes zero entries.
             assert!(library_entries(&Library::default()).is_empty());
             assert!(source(&Library::default()).search("anything").is_empty());
         }

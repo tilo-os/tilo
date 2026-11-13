@@ -1,45 +1,32 @@
 //! Real-time codec element tables and the order they are tried in.
 //!
-//! Playback lets `decodebin3` autoplug under the ranks in [`crate::hw`]. The
-//! real-time path (screen sharing, calls, recording) names its elements
-//! outright, so the order it tries them in lives here, next to the decode
-//! ranking, rather than in each consumer:
+//! Playback lets `decodebin3` autoplug under the ranks in [`crate::hw`]; the
+//! real-time path names its elements outright, in this order:
 //!
-//! 1. fixed-function hardware: VA-API, NVCODEC, V4L2 (stateless decode
-//!    first), then Vulkan Video decode;
-//! 2. royalty-free software: dav1d / libaom for AV1 decode, SVT-AV1 / rav1e /
-//!    libaom for AV1 encode, libvpx for VP9;
-//! 3. H.264 in software only through Cisco's `openh264` binary, which the
-//!    `openh264` `GStreamer` plugin loads from the system. Nothing here
-//!    compiles an H.264 or HEVC implementation into Tilo.
+//! 1. fixed-function hardware: VA-API, NVCODEC, V4L2 (stateless decode first), then
+//!    Vulkan Video decode;
+//! 2. royalty-free software: dav1d / libaom for AV1 decode, SVT-AV1 / rav1e / libaom
+//!    for AV1 encode, libvpx for VP9;
+//! 3. H.264 in software only through Cisco's `openh264` binary, which the `openh264`
+//!    plugin loads from the system.
 //!
-//! HEVC has no software encoder entry at all: the OS does not ship a patented
-//! software encoder. Software decoders for patented codecs are listed last as
-//! [`CodecTier::SystemProvided`] and are only used when the system itself
-//! provides one (for example after the user installed the additional-codecs
-//! pack).
+//! HEVC has no software encoder entry: the OS ships no patented software encoder.
+//! Software decoders for patented codecs sit last as [`CodecTier::SystemProvided`],
+//! used only when the system provides one.
 
 use crate::encode::{EncoderKind, HwEncPolicy};
 use crate::hw::{DecoderKind, HwPolicy};
 
-/// A bitstream the real-time path can carry.
-///
-/// The wire labels are protocol: [`Self::wire_label`] is what peers put in a
-/// stream announcement, and [`Self::from_wire_label`] is its inverse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum StreamCodec {
-    /// H.264, 8-bit 4:2:0. The baseline every peer can decode.
     H264,
-    /// HEVC Main10, the HDR path when a hardware encoder exists.
     HevcMain10,
-    /// VP9 profile 0, royalty-free.
     Vp9,
     /// AV1 main profile (8- or 10-bit), royalty-free.
     Av1,
 }
 
 impl StreamCodec {
-    /// Every codec this build knows.
     pub const ALL: [StreamCodec; 4] = [
         StreamCodec::H264,
         StreamCodec::HevcMain10,
@@ -67,9 +54,6 @@ impl StreamCodec {
         }
     }
 
-    /// The compressed caps both sides of the real-time path agree on: Annex-B
-    /// access units for H.264/HEVC, one frame per buffer for VP9, one temporal
-    /// unit of an OBU stream for AV1.
     pub fn stream_caps(self) -> &'static str {
         match self {
             StreamCodec::H264 => {
@@ -85,8 +69,6 @@ impl StreamCodec {
         }
     }
 
-    /// The parser that normalises an encoder's output (and a peer's input)
-    /// into [`Self::stream_caps`].
     pub fn parser(self) -> &'static str {
         match self {
             StreamCodec::H264 => "h264parse",
@@ -96,7 +78,6 @@ impl StreamCodec {
         }
     }
 
-    /// Bits per sample the codec carries on this path.
     pub fn bit_depth(self) -> u8 {
         match self {
             StreamCodec::HevcMain10 => 10,
@@ -104,21 +85,15 @@ impl StreamCodec {
         }
     }
 
-    /// Whether encoding this codec in software needs no patent licence.
     pub fn is_royalty_free(self) -> bool {
         matches!(self, StreamCodec::Vp9 | StreamCodec::Av1)
     }
 }
 
-/// Which tier of the real-time preference order an element belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CodecTier {
-    /// Fixed-function video hardware.
     Hardware,
-    /// A royalty-free software implementation (dav1d, libaom, SVT-AV1,
-    /// rav1e, libvpx).
     RoyaltyFree,
-    /// Cisco's `openh264` binary, loaded from the system at runtime.
     CiscoOpenH264,
     /// A software implementation of a patented codec that the system
     /// provides. Never shipped by Tilo; decode only, and last.
@@ -136,7 +111,6 @@ impl CodecTier {
     }
 }
 
-/// Which hardware family (or none) an element drives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CodecFamily {
     Va,
@@ -147,7 +121,6 @@ pub enum CodecFamily {
 }
 
 impl CodecFamily {
-    /// The family name used in logs and by the override variables.
     pub fn as_str(self) -> &'static str {
         match self {
             CodecFamily::Va => "va",
@@ -159,22 +132,18 @@ impl CodecFamily {
     }
 }
 
-/// One real-time encoder or decoder element.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CodecElement {
-    /// The `GStreamer` element factory name.
     pub element: &'static str,
     pub family: CodecFamily,
     pub tier: CodecTier,
 }
 
 impl CodecElement {
-    /// Whether this element runs on video hardware.
     pub fn is_hardware(&self) -> bool {
         self.tier == CodecTier::Hardware
     }
 
-    /// A one-line description for logs.
     pub fn describe(&self) -> String {
         format!(
             "{} ({}, {})",
@@ -294,7 +263,6 @@ const DECODE_AV1: &[CodecElement] = &[
     royalty_free("av1dec"),
 ];
 
-/// Real-time encoders for `codec`, in declared preference order.
 pub fn realtime_encoders(codec: StreamCodec) -> &'static [CodecElement] {
     match codec {
         StreamCodec::H264 => ENCODE_H264,
@@ -304,7 +272,6 @@ pub fn realtime_encoders(codec: StreamCodec) -> &'static [CodecElement] {
     }
 }
 
-/// Real-time decoders for `codec`, in declared preference order.
 pub fn realtime_decoders(codec: StreamCodec) -> &'static [CodecElement] {
     match codec {
         StreamCodec::H264 => DECODE_H264,
@@ -319,7 +286,6 @@ pub fn realtime_decoders(codec: StreamCodec) -> &'static [CodecElement] {
 /// export and playback paths, so one variable means one thing everywhere.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RealtimePolicy {
-    /// Hardware first, then royalty-free software, then Cisco openh264.
     Auto,
     /// Software only.
     SoftwareOnly,
@@ -328,7 +294,6 @@ pub enum RealtimePolicy {
 }
 
 impl RealtimePolicy {
-    /// The encoder policy from `TILO_MEDIA_HWENC`.
     pub fn encoder_from_env() -> Self {
         match HwEncPolicy::from_env() {
             HwEncPolicy::Auto => RealtimePolicy::Auto,
@@ -345,7 +310,6 @@ impl RealtimePolicy {
         }
     }
 
-    /// The decoder policy from `TILO_MEDIA_HWDEC`.
     pub fn decoder_from_env() -> Self {
         match HwPolicy::from_env() {
             HwPolicy::Auto => RealtimePolicy::Auto,
@@ -362,8 +326,6 @@ impl RealtimePolicy {
         }
     }
 
-    /// Ordering key; lower is tried first. The declared order is kept inside
-    /// a key by the stable sort in [`realtime_candidates`].
     fn order_key(self, e: &CodecElement) -> u8 {
         let tier = match e.tier {
             CodecTier::Hardware => 0,

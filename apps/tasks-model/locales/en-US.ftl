@@ -15,6 +15,7 @@ tasks-tracker-issues-noun = { $count ->
    *[other] issues
 }
 tasks-tracker-create = New issue
+tasks-tracker-rename = Rename issue
 tasks-tracker-create-area = New project or area
 tasks-tracker-rename-area = Rename project or area
 tasks-tracker-set-kind = Set project kind

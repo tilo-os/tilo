@@ -1,30 +1,4 @@
-//! `imager --customize-image`: the write step's Wi-Fi, hostname and owner
-//! SSH customization, applied to a raw disk image file instead of a freshly
-//! written drive, plus files for the home of the image's account.
-//!
-//! A board or VM disk is customized once, checked (booted in a VM, or
-//! mounted), and then written to as many cards as needed. The files are
-//! staged and copied onto the installed root by the same code a write uses
-//! ([`crate::handoff::stage_access_handoff`] and the write path's root
-//! probe), so a customized image and a customized card cannot drift apart.
-//!
-//! ```text
-//! sudo imager --customize-image disk.raw \
-//!     --hostname tilo-board \
-//!     --wifi-ssid studio --wifi-psk-file psk.txt \
-//!     --ssh-keys-file keys.pub \
-//!     --home-file SETUP.md
-//! ```
-//!
-//! The Wi-Fi passphrase is read from a file, never from the command line,
-//! where every process on the machine could read it. `--ssh-keys-file` holds
-//! one OpenSSH public key per line; they become key-only SSH login for the
-//! image's one login account, as an installer gives the account it creates.
-//! `--home-file` (repeatable) copies a file into that account's home under
-//! its own name. The target must be a regular raw image file (convert a
-//! qcow2 with `qemu-img convert -O raw` first); a drive is written through
-//! the wizard, which asks for typed confirmation first. Mounting the image
-//! needs root.
+//! Customizing a raw image file with the setup handoff, before it is written.
 
 use std::path::{Path, PathBuf};
 
@@ -32,7 +6,6 @@ use crate::model::InstallProfile;
 
 pub const CUSTOMIZE_IMAGE_ARG: &str = "--customize-image";
 
-/// What one `--customize-image` invocation asked for.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Request {
     image: PathBuf,
@@ -92,22 +65,18 @@ fn parse(args: &[String]) -> Result<Option<Request>, String> {
     Ok(Some(request))
 }
 
-/// The passphrase file's first line; the newline an editor adds is not part
-/// of it.
 fn read_psk(path: &Path) -> Result<String, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|error| format!("could not read {}: {error}", path.display()))?;
     Ok(text.lines().next().unwrap_or_default().to_string())
 }
 
-/// A home file's name on the image: the source file's own name.
 fn home_file_name(path: &Path) -> Result<&str, String> {
     path.file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| format!("{} has no file name", path.display()))
 }
 
-/// Refuse anything but a regular raw disk image file.
 fn check_target(image: &Path) -> Result<(), String> {
     use std::io::Read as _;
     let meta = std::fs::symlink_metadata(image)
@@ -132,7 +101,6 @@ fn check_target(image: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Stage everything `request` asks for. The caller removes the tree.
 fn stage(
     request: &Request,
     profile: &InstallProfile,
@@ -175,7 +143,6 @@ fn stage(
     Ok(staged)
 }
 
-/// Run `--customize-image` when it is on the command line.
 pub fn maybe_run(args: &[String]) -> Result<Option<i32>, Box<dyn std::error::Error>> {
     let Some(request) = parse(args)? else {
         return Ok(None);

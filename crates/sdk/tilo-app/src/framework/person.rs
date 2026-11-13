@@ -678,7 +678,7 @@ impl PersonState {
         let records = self
             .records
             .as_ref()?
-            .of_package(owner)
+            .of_app(owner)
             .map_err(|error| {
                 tracing::warn!(owner, %error, "the person's records of another app are unavailable");
             })

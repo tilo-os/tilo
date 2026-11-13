@@ -1,7 +1,6 @@
-//! Private installer migration coordinator. Source grants and credentials never
-//! enter collaborative app state. The selected data travels as a sealed Home
-//! unit, admitted at the target before Flatpak mutates the new user's
-//! installation. Originals stay intact.
+//! Private installer migration coordinator: source grants and credentials never enter
+//! collaborative state, and the selected data travels as a sealed Home unit admitted before Flatpak
+//! mutates the new user's installation. Originals stay intact.
 use super::{
     flatpak_transfer::{
         self as flatpak, InstalledRef, Runner,
@@ -34,29 +33,25 @@ mod tests;
 #[derive(Clone, Debug)]
 pub struct TransferRequest {
     pub source_home: PathBuf,
-    /// A new directory; the admitted Home unit becomes this tree.
     pub target_home: PathBuf,
     pub private_journals: PathBuf,
     pub copy_home: bool,
     pub copy_flatpak: bool,
-    /// System refs only. User refs travel in the selected home/Flatpak data.
+    /// System refs only; user refs travel in the selected home and Flatpak data.
     pub system_refs: Vec<InstalledRef>,
 }
 impl TransferRequest {
-    /// The private workspace that holds the sealed Home unit.
     fn home_workspace(&self) -> PathBuf {
         self.private_journals.join("home")
     }
 }
 
-/// The selected system applications. They always arrive as one sealed
-/// applications unit; on the same computer the unit is sealed from the
-/// reviewed original deployments when the transfer runs.
+/// Always one sealed applications unit; on the same computer it is sealed from the reviewed
+/// original deployments when the transfer runs.
 #[derive(Clone)]
 pub enum Applications {
     /// Reviewed original deployments, sealed into the private journals.
     Original(Arc<PortableFlatpakSource>),
-    /// A unit that is already admitted.
     Sealed(SealedApplications),
 }
 impl Applications {
@@ -82,7 +77,8 @@ pub struct TransferReview {
     application_recovery: bool,
     verified_applications: bool,
     phase: Arc<Mutex<Phase>>,
-    // A source mount grant stays live in the worker's cloned review until all
+    // A source mount grant stays live in the worker's cloned review until all descriptors and
+    // finalization finish, even after UI teardown.
     // file descriptors and finalization have finished, even after UI teardown.
     _source_guard: Option<Arc<dyn Send + Sync>>,
 }
@@ -92,7 +88,6 @@ struct Phase {
     attempted: bool,
     applications_complete: bool,
     sealed: Option<SealedApplications>,
-    /// The admitted Home unit and the identity of its tree at admission.
     home: Option<(SealedHome, Identity)>,
 }
 struct PhaseLease(Arc<Mutex<Phase>>);
@@ -110,7 +105,7 @@ pub struct TransferSummary {
     pub bytes: u64,
     pub links: u64,
     pub special_files: u64,
-    /// Runtime socket endpoints are recreated by apps, rather than copied.
+    /// Runtime sockets are recreated by apps, not copied.
     pub runtime_sockets: u64,
     pub system_applications: usize,
 }
@@ -133,7 +128,6 @@ impl TransferSummary {
 
 #[derive(Debug, Default)]
 pub struct TransferReport {
-    /// The Home unit was sealed and admitted at the target.
     pub admitted: bool,
     pub flatpak: flatpak::RestoreReport,
     pub cancelled: bool,
@@ -151,8 +145,7 @@ pub enum TransferEvent {
     Finished(Result<TransferReport, String>),
 }
 
-/// Review the exact home or Flatpak data, target and system refs. Nothing is
-/// sealed yet; no source is modified and no existing destination is adopted.
+/// Nothing is sealed yet; no source is modified and no existing destination is adopted.
 pub fn review(
     request: TransferRequest,
     applications: Option<Applications>,
@@ -183,15 +176,9 @@ pub fn review(
     })
 }
 
-/// Renew explicit grants and reopen the sealed Home unit, re-authenticating
-/// its package and the admitted tree. Saved phase labels or success reports
-/// are never accepted as proof.
-///
-/// # Errors
-/// Refuses changed grants/selections, a changed unit or admitted tree,
-/// missing original-app receipts, repository trust, objects, or completed
-/// application output. An interrupted signed application transaction is
-/// repaired only after the admitted user data passes verification.
+/// Renews explicit grants and reopens the sealed unit, re-authenticating its package and admitted
+/// tree; saved phase labels or success reports never count as proof. Refuses changed grants or
+/// selections, a changed unit, missing original-app receipts, repository trust, or completed output.
 pub fn recover(
     runner: &impl Runner,
     request: TransferRequest,
@@ -243,7 +230,6 @@ pub fn recover(
     })
 }
 
-/// The whole home, or only the user's Flatpak installation and app data.
 fn review_source(request: &TransferRequest) -> Result<Arc<HomeSource>, String> {
     storage::validate_target(request)?;
     let exclusions = if request.copy_home {
@@ -259,7 +245,6 @@ fn review_source(request: &TransferRequest) -> Result<Arc<HomeSource>, String> {
     .map_err(|error| error.to_string())
 }
 
-/// Reopen the Home unit an earlier attempt sealed, if there is one.
 fn reopen_home(
     request: &TransferRequest,
     applications: bool,
@@ -279,7 +264,6 @@ fn reopen_home(
     .map_err(|error| error.to_string())
 }
 
-/// System refs arrive only in a sealed unit that carries every selected app.
 fn validate_applications(
     request: &TransferRequest,
     applications: Option<&Applications>,
@@ -311,7 +295,6 @@ impl TransferReview {
     pub fn target_home(&self) -> &std::path::Path {
         &self.request.target_home
     }
-    /// Promotion can consume only this operation's admitted Home unit.
     pub fn review_promotion(
         &self,
         home: &std::path::Path,
@@ -394,9 +377,8 @@ impl TransferReview {
         .with_application_consent(self.request.copy_flatpak)
     }
 
-    /// Synchronous orchestration, useful with a fixture CLI. Native callers use
-    /// `start` to avoid blocking UI threads. Cancellation stops sealing before
-    /// anything is admitted; a sealed unit is reopened on retry.
+    /// Synchronous orchestration for fixture CLIs; native callers use `start` to keep UI threads
+    /// free. Cancellation stops sealing before anything is admitted.
     pub fn execute(
         &self,
         runner: &impl OfflineRunner,
@@ -447,8 +429,6 @@ impl TransferReview {
         Ok(report)
     }
 
-    /// The admitted Home unit: sealed from the reviewed source on first use,
-    /// reopened when an earlier attempt sealed it.
     fn home(
         &self,
         cancelled: &AtomicBool,
@@ -499,8 +479,6 @@ impl TransferReview {
         Ok(unit)
     }
 
-    /// Deploy the sealed applications unit after the admitted user data is
-    /// verified again, then checkpoint the verified output.
     fn restore_applications(
         &self,
         runner: &impl OfflineRunner,
@@ -557,8 +535,6 @@ impl TransferReview {
         Ok(())
     }
 
-    /// The admitted unit; sealed from the originals on first use and reopened
-    /// from the private journals after a restart.
     fn sealed(
         &self,
         runner: &impl OfflineRunner,
@@ -636,8 +612,6 @@ pub struct TransferWorker {
     terminal: bool,
 }
 impl TransferWorker {
-    /// Drain thread-local source leases after observing a terminal event.
-    /// Headless helpers call this before exiting; UI callers retain nonblocking Drop.
     pub fn join_finished(&mut self) -> Result<(), String> {
         if !self.terminal {
             return Err("The transfer worker has not finished".into());

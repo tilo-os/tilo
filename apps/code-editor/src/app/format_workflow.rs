@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use super::{AutoCommit, CodeApp, EditorDoc, LspStatus, TreeId};
 use ui::widget::toast::ToastKind;
 
-/// A file the language server is formatting.
 pub(crate) struct PendingFormat {
     node: TreeId,
     /// The text the server was asked about: its edits apply to this text only.
@@ -11,27 +10,19 @@ pub(crate) struct PendingFormat {
     then: AfterFormat,
 }
 
-/// What follows once a file was formatted (or the formatter said why not).
 pub(crate) enum AfterFormat {
     Nothing,
-    /// The person's Save: written unless the file changed on disk meanwhile.
     Save,
-    /// The save an effect asked for, to its own file or a new destination.
     SaveEffect(Option<PathBuf>),
 }
 
 impl CodeApp {
-    /// Whether formatting `node` is what the person wants of a save.
     fn formats_on_save(&self) -> bool {
         self.settings
             .as_ref()
             .is_some_and(|settings| settings.get().format_on_save)
     }
 
-    /// Start a save of `node`: with format on save, ask its language server
-    /// to format it first and return `None`, the save following the answer.
-    /// Otherwise hand `after` back to save now. A second save while the first
-    /// still waits on the formatter saves as the file is.
     pub(super) fn format_before_saving(
         &mut self,
         doc: &AutoCommit,
@@ -48,10 +39,6 @@ impl CodeApp {
         self.formatting.take().map(|pending| pending.then)
     }
 
-    /// Ask the language server serving `node` for the edits that format it,
-    /// `then` to follow its answer. Returns `false` when no running server
-    /// serves the file; `then` is kept in [`Self::formatting`] either way so
-    /// a caller can take it back.
     pub(super) fn request_format(
         &mut self,
         doc: &AutoCommit,
@@ -77,8 +64,6 @@ impl CodeApp {
         let Some(client) = self.lsp.as_mut().filter(|_| serving) else {
             return false;
         };
-        // The server formats the text it was last told of: tell it the
-        // latest first.
         if base != self.lsp_sent_text {
             self.lsp_version += 1;
             client.did_change(&uri, self.lsp_version, &base);
@@ -87,9 +72,6 @@ impl CodeApp {
         client.request_formatting(&uri, u32::try_from(indent).unwrap_or(4), true)
     }
 
-    /// Take up the formatter's answer: apply its edits as one text edit of
-    /// the file, unless the file changed since it was asked, then do what
-    /// was to follow. A server that stopped answers that it did not format.
     pub(super) fn apply_formatted(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if self.formatting.is_none() {
             self.formatted = None;
@@ -127,7 +109,6 @@ impl CodeApp {
         self.after_format(doc, pending.node, pending.then);
     }
 
-    /// Do what was to follow formatting `node`.
     pub(super) fn after_format(&mut self, doc: &AutoCommit, node: TreeId, then: AfterFormat) {
         match then {
             AfterFormat::Nothing => {}

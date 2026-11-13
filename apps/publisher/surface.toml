@@ -1,13 +1,15 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "publisher.profile"
 label = "App Publisher"
 version = 1
 fields = [
-  { path = "registry", type = "String" },
-  { path = "domain", type = "String" },
-  { path = "forge_account", type = "String" },
-  { path = "contact", type = "String" },
+  { path = "registry", type = "text" },
+  { path = "domain", type = "text" },
+  { path = "forge_account", type = "text" },
+  { path = "contact", type = "text" },
 ]
 

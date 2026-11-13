@@ -1,9 +1,5 @@
 //! How a terminal tab reaches the sessions it opens, and what it knows about
 //! the places they can run.
-//!
-//! A tab opens its session lazily, at its first sync, because only then does
-//! it know its record — and the record names the target. A new tab has none
-//! yet and takes the default ([`crate::target::default_target`]).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -11,44 +7,27 @@ use std::rc::Rc;
 use crate::inner::{OpenError, Requester, TerminalBackend};
 use crate::target::{EnvironmentSummary, RecentTarget, SessionTarget};
 
-/// Where this tab's session stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpenState {
-    /// No session will be opened here (headless rendering, replicas, a fixed
-    /// command).
     Fixed,
-    /// Waiting for the first sync to learn the target.
     Unopened,
-    /// A supervisor is opening the session off the UI thread.
     Opening,
-    /// A session is attached.
     Open,
     /// Another device's process, or another participant's, runs the
     /// session: the tab shows it and starts a shell of its own only when
     /// the person asks (Restart shell).
     Joined,
-    /// The device's own shell needs the person's allow; the shell is asking.
     AwaitingAllow,
-    /// The target could not be opened; the reason is shown on the tab.
     Failed(String),
-    /// No environment can be built on this device (no `env-runtime` image is
-    /// installed). The tab says so and offers the device's own shell.
     NoRuntime(String),
 }
 
-/// Whether the environments the picker and the environments panel name
-/// came from the session's shell runtime.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Directory {
-    /// Not asked yet.
     #[default]
     Unasked,
-    /// The runtime answered: the list is its, and environments can be made.
     Reached,
-    /// The runtime was asked and did not answer; why is in the log.
     Unreachable,
-    /// Nothing here manages environments: this terminal has no connection
-    /// to a shell runtime.
     NotHere,
 }
 
@@ -59,22 +38,15 @@ pub(crate) type OpenAnswer = (
 );
 
 enum Source {
-    /// Never opens a session.
     None,
-    /// The standalone app: [`TerminalBackend::open`] routes per target.
     Standalone,
-    /// Hosted in-process by the shell: the session supervisor below the
-    /// runtime directory. The first connection was handed over at
-    /// construction; later ones are made the same way the host made it.
     Hosted {
         first: Option<crate::HostedProcessServices>,
     },
-    /// Opens through a script — for tests. Behaves as a shell-hosted tab.
     #[cfg(test)]
     Scripted(Box<ScriptedOpen>),
 }
 
-/// How a scripted source answers an open.
 #[cfg(test)]
 type ScriptedOpen =
     dyn FnMut(&SessionTarget, Requester, Option<&str>) -> Result<TerminalBackend, OpenError>;
@@ -91,36 +63,22 @@ impl std::fmt::Debug for Source {
     }
 }
 
-/// The tab's session source, target and the places it can run.
 pub struct Sessions {
     source: Source,
     pending: Option<crate::async_open::PendingOpen>,
     pub state: OpenState,
-    /// The target the current (or last attempted) session runs on.
     pub target: Option<SessionTarget>,
     recent: RecentTarget,
-    /// Environments the picker offers, as last listed.
     pub environments: Vec<EnvironmentSummary>,
-    /// Whether that list came from the shell runtime.
     pub directory: Directory,
-    /// Legacy VMs the legacy VM service reports. Empty until that service
-    /// exists, which keeps them out of the picker.
     pub legacy_vms: Vec<String>,
     allow: Option<Rc<RefCell<ui::widget::HostShellAllow>>>,
     intent: Option<ui::widget::AppHostIntent>,
-    /// The person took the tab's offer of the device's own shell; opened at
-    /// the next sync.
     pub host_requested: bool,
-    /// The places a listing off the UI thread found, once it answers.
     listing: Option<std::sync::mpsc::Receiver<Listing>>,
-    /// The window the shell shows this tab in, in its own process: the
-    /// workspace the desktop put it in is the one its environments belong
-    /// to. `None` for a Terminal in a process of its own.
     window: Option<ui::hosted_window::HostedWindow>,
 }
 
-/// What the supervisor listed: the environments (or why it could not) and
-/// the legacy VMs.
 struct Listing {
     environments: Result<Vec<EnvironmentSummary>, String>,
     legacy_vms: Vec<String>,
@@ -166,7 +124,6 @@ impl Sessions {
         Self::with(Source::None, OpenState::Fixed, RecentTarget::none())
     }
 
-    /// The standalone app.
     pub fn standalone() -> Self {
         Self::with(
             Source::Standalone,
@@ -175,7 +132,6 @@ impl Sessions {
         )
     }
 
-    /// Hosted by the shell, with the first supervisor connection.
     pub fn hosted(first: crate::HostedProcessServices) -> Self {
         Self::with(
             Source::Hosted { first: Some(first) },
@@ -184,7 +140,6 @@ impl Sessions {
         )
     }
 
-    /// A real host grants discovery, without connecting on its UI thread.
     pub(crate) fn hosted_deferred() -> Self {
         Self::with(
             Source::Hosted { first: None },
@@ -193,7 +148,6 @@ impl Sessions {
         )
     }
 
-    /// A tab whose sessions open through `open` — for tests.
     #[cfg(test)]
     pub fn scripted(
         recent: RecentTarget,
@@ -207,16 +161,10 @@ impl Sessions {
         )
     }
 
-    /// Show this tab in `window`, a window the shell lent it in its own
-    /// process (`None`: a Terminal in a process of its own).
     pub(crate) fn in_window(&mut self, window: Option<ui::hosted_window::HostedWindow>) {
         self.window = window;
     }
 
-    /// The tilo workspace this Terminal is in, which the environments it
-    /// opens and lists belong to: the workspace the desktop put its window
-    /// in, read at each request for a window can move; in a process of its
-    /// own, the workspace the launcher started it in. `None` when unknown.
     pub(crate) fn workspace(&self) -> Option<String> {
         match &self.window {
             Some(window) => window.workspace(),
@@ -225,12 +173,10 @@ impl Sessions {
         .filter(|workspace| !workspace.is_empty())
     }
 
-    /// Whether this tab opens sessions at all.
     pub fn is_live(&self) -> bool {
         !matches!(self.source, Source::None)
     }
 
-    /// Whether an environment can run from here.
     pub fn environments_available(&self) -> bool {
         match self.source {
             Source::None => false,
@@ -241,25 +187,18 @@ impl Sessions {
         }
     }
 
-    /// The target a new tab opens on.
     pub fn default_target(&self) -> SessionTarget {
         crate::target::default_target(self.recent.load().as_ref(), self.environments_available())
     }
 
-    /// Remember the environment opened last in `recent` from now on.
     pub(crate) fn recent_in(&mut self, recent: RecentTarget) {
         self.recent = recent;
     }
 
-    /// Remember an environment the person opened, for the next new tab.
     pub fn remember(&self, target: &SessionTarget) {
         self.recent.remember(target);
     }
 
-    /// Open a session on `target`.
-    ///
-    /// # Errors
-    /// Returns why it did not open; see [`OpenError`].
     pub fn open(
         &mut self,
         target: &SessionTarget,
@@ -292,7 +231,6 @@ impl Sessions {
         }
     }
 
-    /// Start a hosted open on a worker; other sources retain their own routing.
     pub(crate) fn begin_open(
         &mut self,
         target: &SessionTarget,
@@ -301,7 +239,6 @@ impl Sessions {
         waker: std::sync::Arc<std::sync::Mutex<ui::WakeHandle>>,
     ) -> Option<Result<TerminalBackend, OpenError>> {
         {
-            // Cancels any superseded request before consuming another connection.
             self.pending = None;
             let workspace = self.workspace();
             if let Source::Hosted { first } = &mut self.source {
@@ -341,9 +278,6 @@ impl Sessions {
         }
     }
 
-    /// Ask the shell to put the device's own shell to the person, once.
-    /// Hosted and native tabs both use the trusted session shell; an unavailable
-    /// shell answers with a refusal.
     pub fn request_allow(&mut self) -> bool {
         #[cfg(test)]
         let scripted = matches!(self.source, Source::Scripted(_));
@@ -360,20 +294,16 @@ impl Sessions {
         false
     }
 
-    /// The person's answer to [`Self::request_allow`], once given.
     pub fn take_allow_answer(&mut self) -> Option<bool> {
         let answer = self.allow.as_ref()?.borrow().answer?;
         self.allow = None;
         Some(answer)
     }
 
-    /// The pending request for the shell, if any.
     pub fn take_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
         self.intent.take()
     }
 
-    /// Refresh the environment list from the supervisor. A failure keeps
-    /// the last list: the picker always offers the default environment.
     pub fn refresh_environments(&mut self) {
         if !self.is_live() {
             return;
@@ -394,7 +324,6 @@ impl Sessions {
                     self.directory_request(&serde_json::json!({"op": "list-environments"}));
                 self.take_listing(listed);
             }
-            // Only a shell-hosted tab reaches the runtime's directory.
             Source::Standalone => self.directory = Directory::NotHere,
             Source::None => {}
             #[cfg(test)]
@@ -402,10 +331,6 @@ impl Sessions {
         }
     }
 
-    /// [`Self::refresh_environments`] off the UI thread, for a picker that
-    /// is declared ahead of being opened (the window bar's): the listing
-    /// lands at a later [`Self::poll_environment_refresh`], and `waker`
-    /// brings that about. Only a shell-hosted tab lists anything.
     pub(crate) fn refresh_environments_in_background(
         &mut self,
         waker: std::sync::Arc<std::sync::Mutex<ui::WakeHandle>>,
@@ -437,8 +362,6 @@ impl Sessions {
         }
     }
 
-    /// Take what a listing off the UI thread found, once it answered.
-    /// Returns whether it did.
     pub(crate) fn poll_environment_refresh(&mut self) -> bool {
         let Some(receive) = self.listing.as_ref() else {
             return false;
@@ -457,9 +380,6 @@ impl Sessions {
         true
     }
 
-    /// What a listing answered: the list, or why there is none, which the
-    /// log keeps; the last list stays, for the picker always offers the
-    /// default environment.
     fn take_listing(&mut self, listed: Result<Vec<EnvironmentSummary>, String>) {
         match listed {
             Ok(list) => {
@@ -475,7 +395,6 @@ impl Sessions {
         }
     }
 
-    /// Create an environment named `name`; returns its record key.
     pub fn create_environment(&mut self, name: &str) -> Result<String, String> {
         let name = name.trim();
         if name.is_empty() {
@@ -543,7 +462,6 @@ impl Sessions {
             Source::None => {
                 return Err("environments are managed through Tilo's shell runtime".into());
             }
-            // A scripted source answers no directory, as it always has.
             #[cfg(test)]
             Source::Scripted(_) => {
                 return Err("environments are managed through Tilo's shell runtime".into());
@@ -553,16 +471,12 @@ impl Sessions {
     }
 }
 
-/// Name `workspace` in a request to the supervisor as its top-level
-/// `workspace` field; a Terminal that does not know its workspace sends
-/// none.
 pub(crate) fn with_workspace(request: &mut serde_json::Value, workspace: Option<&str>) {
     if let (Some(fields), Some(workspace)) = (request.as_object_mut(), workspace) {
         fields.insert("workspace".into(), serde_json::json!(workspace));
     }
 }
 
-/// Decode the supervisor's environment list.
 pub(crate) fn parse_directory_reply(reply: &str) -> Result<Vec<EnvironmentSummary>, String> {
     #[derive(serde::Deserialize)]
     struct Entry {
@@ -594,9 +508,6 @@ pub(crate) fn parse_directory_reply(reply: &str) -> Result<Vec<EnvironmentSummar
     }
 }
 
-/// The legacy VMs this user has, as the legacy VM service keeps them: one per
-/// guest OS, under `<data home>/tilo/legacy/<guest>/`, present once its disk
-/// exists. None until that service has made one.
 pub(crate) fn legacy_vms_under(data_home: &std::path::Path) -> Vec<String> {
     ["linux", "windows"]
         .into_iter()

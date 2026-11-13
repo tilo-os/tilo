@@ -15,22 +15,12 @@ use gstreamer_app as gst_app;
 
 use super::{AudioError, VoiceAudio, element};
 
-/// A call's output that plays into memory: the samples a device's speakers
-/// would have played, kept for whoever reads them.
 pub struct SoftwareOutput {
     audio: VoiceAudio,
     sink: gst_app::AppSink,
 }
 
 impl SoftwareOutput {
-    /// Start the software output: the same pipeline a device's call plays
-    /// through, ending in a sink that keeps its samples.
-    ///
-    /// # Errors
-    ///
-    /// [`AudioError::Unavailable`] without a usable `GStreamer` stack,
-    /// [`AudioError::Codec`] when the pipeline cannot be built, or
-    /// [`AudioError::Capacity`] without a device worker permit.
     pub fn start() -> Result<Self, AudioError> {
         gst::init().map_err(|_| AudioError::Unavailable)?;
         let pipeline = gst::Pipeline::new();
@@ -55,13 +45,10 @@ impl SoftwareOutput {
         Ok(Self { audio, sink })
     }
 
-    /// This call's own side: its capture, received frames and playout.
     pub const fn audio(&mut self) -> &mut VoiceAudio {
         &mut self.audio
     }
 
-    /// The samples played since this was last called, at 48 kHz and from
-    /// -1 to 1.
     #[must_use]
     pub fn played(&self) -> Vec<f32> {
         let mut played = Vec::new();

@@ -1120,8 +1120,7 @@ impl AppWindow {
     fn reconcile_into_pane(&mut self, composed: &UiNode) {
         let old = self.built.take();
         let reconciler = Rc::clone(&self.reconciler);
-        // What an update builds into a window that already composed is arriving (a place opened
-        // onto the desk comes in); the window's first tree shows at rest, as its first frame does.
+        // What an update builds into a composed window arrives; its first tree shows at rest.
         let _window = ui::motion::laying_out_window(old.is_some());
         if let Some(pane) = self.shell_pane() {
             let mut reconciler = reconciler.borrow_mut();
@@ -2577,10 +2576,11 @@ fn rebinding(
     node: &UiNode,
 ) -> bool {
     node.events.values().any(|event| {
-        let Some((resource, action)) = event.invokes.as_ref() else {
+        let Some(invoked) = event.invokes.as_ref() else {
             return false;
         };
-        before.holds(resource, action) != after.holds(resource, action)
+        before.holds(&invoked.resource, &invoked.action)
+            != after.holds(&invoked.resource, &invoked.action)
     }) || node
         .children
         .iter()

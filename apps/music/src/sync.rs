@@ -1,20 +1,10 @@
-//! Test-only collaboration scenarios for the library document.
-//!
-//! Music's collaborative library state is owned by the platform's canonical
-//! app document and `LocalDispatch`. The platform supplies persistence, peer
-//! replication, history, and collaboration; this application must not offer a
-//! second pairing or relay protocol. These scenarios drive the platform's
-//! fake net in unit tests only.
+//! Test-only collaboration scenarios: two replicas of the library document agreed through
+//! the platform's fake net.
 
 #[cfg(test)]
 use automerge::AutoCommit;
 
-/// Bring two replicas of the library document into agreement.
-///
-/// The platform's fake net is the transport: one device offers its replica,
-/// the net delivers, and the two are checked change for change. Music supplies
-/// no transport of its own, so a test that wants two devices says so with two
-/// names and one `FakeDocumentNet`, exactly as a production peer would.
+/// Bring two replicas into agreement through the platform's fake net.
 #[cfg(test)]
 pub(crate) fn converge(a: &mut AutoCommit, b: &mut AutoCommit) {
     use tilo_test_env::FakeDocumentNet;

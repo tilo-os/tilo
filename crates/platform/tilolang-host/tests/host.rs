@@ -1334,6 +1334,65 @@ fn the_instance_offers_an_action_directory_the_door_and_agents_browse() {
     }
 }
 
+/// The app's root record is listed at the directory's top level to an agent as to a person: its
+/// `open` changes only the caller's own window, so it discloses the record under the caller's
+/// policy rather than keeping it, and every action on it, the publisher's alone. Its level lists
+/// the actions an agent takes there.
+#[test]
+fn an_agent_lists_the_apps_root_record_and_its_actions() {
+    let directory = Rc::new(RefCell::new(Directory::default()));
+    let (mut host, mut window, _sent, _inbox, _route) =
+        running_with("ada", APP, counter(), Rc::clone(&directory));
+    settle(&mut host, &mut window);
+    let top = page(&mut host, &mut window, &directory, query());
+    let prefix = format!("tl:{APP}:root-");
+    let root = top
+        .rows
+        .iter()
+        .find(|row| row.resource.starts_with(&prefix) && row.action.is_none())
+        .unwrap_or_else(|| panic!("the root record is at the top: {:?}", top.rows))
+        .clone();
+    let visibility = root
+        .visibility
+        .as_ref()
+        .expect("a listed resource names its visibility");
+    assert!(
+        visibility.contract.discloses_resource(),
+        "the root record is disclosed only to its publisher through `{}`",
+        visibility.action
+    );
+    let level = page(
+        &mut host,
+        &mut window,
+        &directory,
+        ActionDirectoryQuery {
+            parent_resource: root.resource.clone(),
+            ..query()
+        },
+    );
+    // The broker refuses a page whose action row names another contract than its descriptor's.
+    for row in level.rows.iter().filter(|row| row.action.is_some()) {
+        let descriptor = row
+            .descriptor
+            .as_ref()
+            .expect("an action row carries its action");
+        let visibility = row
+            .visibility
+            .as_ref()
+            .expect("an action row names its visibility");
+        assert_eq!(visibility.contract, descriptor.contract, "{row:?}");
+    }
+    for action in ["open", "increment", "decrement"] {
+        assert!(
+            level.rows.iter().any(|row| {
+                row.resource == root.resource && row.action.as_deref() == Some(action)
+            }),
+            "{action} is on the root's level: {:?}",
+            level.rows
+        );
+    }
+}
+
 const NOTES: &str = "so.tilo.lang.notes";
 
 /// Where the shipped tilolang packages are.
@@ -2137,13 +2196,12 @@ fn a_change_of_any_root_no_window_made_yet_makes_that_root_first() {
         Some(&shell),
         "not the root the shell opens with"
     );
-    let hide = &bundle
-        .meta
-        .actions
-        .iter()
-        .find(|action| action.name == "hide_app_menus")
-        .expect("the shell's top bar has its actions")
-        .id;
+    // As the door publishes it: by its name.
+    let hide = "hide_app_menus";
+    assert!(
+        bundle.meta.actions.iter().any(|action| action.name == hide),
+        "the shell's top bar has its actions"
+    );
     let (mut applier, connection, sent) =
         applier_of("ada", &app, &bundle, automerge::AutoCommit::new());
     let answer = apply(
@@ -2151,7 +2209,7 @@ fn a_change_of_any_root_no_window_made_yet_makes_that_root_first() {
         &connection,
         &runtime_portal::tilolang_host::Change {
             resource: tilolang_tilo::publish::resource_id(&app, &format!("root-{shell}")),
-            action: hide.clone(),
+            action: hide.to_owned(),
             arguments: serde_json::Map::new(),
             invoker: task_invoker(),
             context: None,
@@ -2169,40 +2227,49 @@ fn a_change_of_any_root_no_window_made_yet_makes_that_root_first() {
 /// answered why: the record is never left holding, building on and keeping a change the workspace
 /// has none of. Here the surface the workspace decides the record's changes by publishes the
 /// counter's record but none of its actions.
+///
+/// The surface a process decides an app's changes by is the process's, and this test names the
+/// counter's app a surface no other test may inherit: it runs in a process of its own.
 #[test]
 fn a_change_the_workspace_refuses_is_never_kept() {
-    let (address, doc) = increment();
-    collaboration::app_surface::register_package(
-        APP,
-        b"[[resources]]\nkind = \"tl.so.tilo.lang.counter.Counter\"\nlabel = \"Counter\"\nversion = 1\n",
-    );
-    let before = doc.clone().get_heads();
-    let (mut applier, connection, sent) = applier("ada", doc);
-    let answer = apply(
-        &mut applier,
-        &connection,
-        &runtime_portal::tilolang_host::Change {
-            resource: address.resource,
-            action: address.action,
-            arguments: serde_json::Map::new(),
-            invoker: task_invoker(),
-            context: None,
-            preview: None,
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_change_the_workspace_refuses_is_never_kept",
+        || {
+            let (address, doc) = increment();
+            collaboration::app_surface::register_package(
+                APP,
+                b"[[resources]]\nkind = \"tl.so.tilo.lang.counter.Counter\"\nlabel = \"Counter\"\nversion = 1\n",
+            );
+            let before = doc.clone().get_heads();
+            let (mut applier, connection, sent) = applier("ada", doc);
+            let answer = apply(
+                &mut applier,
+                &connection,
+                &runtime_portal::tilolang_host::Change {
+                    resource: address.resource,
+                    action: address.action,
+                    arguments: serde_json::Map::new(),
+                    invoker: task_invoker(),
+                    context: None,
+                    preview: None,
+                },
+            );
+            let why = answer["failed"]
+                .as_str()
+                .unwrap_or_else(|| panic!("refused, with why: {answer}"));
+            assert!(why.contains("publishes no"), "{why}");
+            assert_eq!(
+                applier.record().doc().clone().get_heads(),
+                before,
+                "the record holds nothing of the refused change"
+            );
+            assert_eq!(
+                documents_sent(&sent),
+                0,
+                "nothing was handed to the workspace"
+            );
         },
-    );
-    let why = answer["failed"]
-        .as_str()
-        .unwrap_or_else(|| panic!("refused, with why: {answer}"));
-    assert!(why.contains("publishes no"), "{why}");
-    assert_eq!(
-        applier.record().doc().clone().get_heads(),
-        before,
-        "the record holds nothing of the refused change"
-    );
-    assert_eq!(
-        documents_sent(&sent),
-        0,
-        "nothing was handed to the workspace"
     );
 }
 
@@ -2626,41 +2693,48 @@ const TASKS: &str = "so.tilo.lang.tasks";
 
 /// A window a German person reads names another app's change by that app's own name: the names of
 /// the apps installed here arrive on the instance's connection with the workspace's people's
-/// names, and are what its history reads.
+/// names, and are what its history reads. The language the names are read in is the process's, so
+/// this test reads them in a process of its own.
 #[test]
 fn a_hosted_window_names_another_app_as_the_names_it_was_sent() {
-    use tilolang_tilo::names::Unnamed;
-    use tilolang_tilo::runtime::{NameHost as _, Principal};
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_hosted_window_names_another_app_as_the_names_it_was_sent",
+        || {
+            use tilolang_tilo::names::Unnamed;
+            use tilolang_tilo::runtime::{NameHost as _, Principal};
 
-    let today = Principal::new("app:so.tilo.lang.today".to_owned());
-    let (mut host, mut window, _sent, inbox, _route) = running("ada");
-    settle(&mut host, &mut window);
-    assert_eq!(
-        Unnamed.name(&today),
-        "Today",
-        "the words its id makes, before the session named it"
-    );
-    collaboration::history_source::authors::set_names_language("de-DE");
-    inbox.borrow_mut().push_back(CollabEvent::Context {
-        collaborators: Vec::new(),
-        permissions: Vec::new(),
-        apps: vec![collab_types::history::NamedApp {
-            id: "so.tilo.lang.today".to_owned(),
-            name: "Today".to_owned(),
-            names: [("de-DE".to_owned(), "Heute".to_owned())]
-                .into_iter()
-                .collect(),
-        }],
-    });
-    settle(&mut host, &mut window);
-    assert_eq!(
-        Unnamed.name(&today),
-        "Heute",
-        "the app's own name in the window's language"
-    );
-    assert_eq!(
-        Unnamed.name(&Principal::new("app:org.example.Editor".to_owned())),
-        "Editor",
-        "an app installed nowhere near this device reads as the words its id makes"
+            let today = Principal::new("app:so.tilo.lang.today".to_owned());
+            let (mut host, mut window, _sent, inbox, _route) = running("ada");
+            settle(&mut host, &mut window);
+            assert_eq!(
+                Unnamed.name(&today),
+                "Today",
+                "the words its id makes, before the session named it"
+            );
+            collaboration::history_source::authors::set_names_language("de-DE");
+            inbox.borrow_mut().push_back(CollabEvent::Context {
+                collaborators: Vec::new(),
+                permissions: Vec::new(),
+                apps: vec![collab_types::history::NamedApp {
+                    id: "so.tilo.lang.today".to_owned(),
+                    name: "Today".to_owned(),
+                    names: [("de-DE".to_owned(), "Heute".to_owned())]
+                        .into_iter()
+                        .collect(),
+                }],
+            });
+            settle(&mut host, &mut window);
+            assert_eq!(
+                Unnamed.name(&today),
+                "Heute",
+                "the app's own name in the window's language"
+            );
+            assert_eq!(
+                Unnamed.name(&Principal::new("app:org.example.Editor".to_owned())),
+                "Editor",
+                "an app installed nowhere near this device reads as the words its id makes"
+            );
+        },
     );
 }

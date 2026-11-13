@@ -1,4 +1,4 @@
-//! What is selected: the declarations presence publishes for it, and the sentence the status bar reads off the selection.
+//! The selection: ranges, the active cell and what copy and paste take.
 
 use super::{
     CellFormat, CellValue, ChartKind, SelectionKey, SelectionSummary, SheetsApp, Workbook, actions,
@@ -6,18 +6,11 @@ use super::{
 };
 
 impl SheetsApp {
-    /// The edits bound to where the user is — the selection, the active cell
-    /// and its sheet — as the workbook's verbs with their arguments bound:
-    /// the palette, agents and scripts invoke them through the same door as
-    /// the rest of the workbook, and each acts on the selection as it is
-    /// when they are published.
     pub(crate) fn selection_declarations(&self) -> Vec<ui::tilo_resource::ActionDecl<Workbook>> {
         self.refresh_selection_declarations();
         self.store.borrow().selection_declarations()
     }
 
-    /// Build the edits bound to the selection again when what they are built
-    /// from changed.
     fn refresh_selection_declarations(&self) {
         let key = SelectionKey {
             revision: self.revision,
@@ -34,8 +27,6 @@ impl SheetsApp {
         self.store.borrow_mut().selection = Some((key, decls));
     }
 
-    /// Hand the view what the grid shows now: the active sheet, the
-    /// currency amounts are read in and the edits bound to the selection.
     pub(super) fn share_view(&self) {
         self.refresh_selection_declarations();
         let (active, currency) = (self.active_sheet_id(), self.default_currency());
@@ -252,9 +243,6 @@ impl SheetsApp {
         decls
     }
 
-    /// The workbook as the palette, agents and scripts see it from this
-    /// surface: the resource's publication with the edits bound to the
-    /// selection and its effects.
     pub(crate) fn published(&self) -> Vec<tilo_actions::ResourceSpec> {
         use ui::tilo_resource::{Effect as _, Resource as _};
 
@@ -269,7 +257,6 @@ impl SheetsApp {
         vec![workbook]
     }
 
-    /// Select `from`..`to` as a drag over the grid would.
     #[cfg(test)]
     pub(crate) fn select_range_for_test(
         &mut self,

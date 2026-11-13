@@ -1,22 +1,5 @@
-//! The file list: the toolkit's shared file list
-//! ([`ui::widget::file_table::FileTable`]) hosting a folder's entries.
-//!
-//! The shared list is the one every list of files on the desktop is: its
-//! columns, their breakpoints, the header, the rows, the selection lift, the
-//! sort indicator, the scrollbar, keyboard and touch. Files adds only what is
-//! its own:
-//!
-//! * the name cell, which draws the file's icon or preview, its sync emblem
-//!   and its name, and leaves room for the in-place rename;
-//! * the Size column's folder counts;
-//! * the press on a row, which the file view keeps (it selects and arms the
-//!   drag that carries the row).
-//!
-//! The list lives in a [`ListSlot`] the app owns, so its scroll position,
-//! its column widths and its scroll anchor survive the app's per-change
-//! rebuild of the file view. Everything a rebuild changes (entries,
-//! selection, sort, zoom, the rename in progress) goes in through
-//! `ListSlot::sync`.
+//! The file list: the toolkit's shared table, with Files' name cell and the
+//! widths the person dragged.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -40,9 +23,6 @@ use crate::i18n::t;
 use crate::model::{Entry, SortBy, SortOrder, human_size};
 use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 
-/// What every row of one build shares: the metrics and services its name cell
-/// paints with. Rows hold it by `Rc`, so the table's column closures need
-/// capture nothing.
 pub(super) struct RowContext {
     scale: f64,
     geo: Geo,
@@ -53,7 +33,6 @@ pub(super) struct RowContext {
     rename_rect: Option<Rc<Cell<Option<Rect>>>>,
 }
 
-/// One row: an entry and the context its cells paint with.
 pub(super) struct ListRow {
     entry: Entry,
     renaming: bool,
@@ -73,8 +52,6 @@ impl FileRow for ListRow {
         self.entry.is_dir
     }
 
-    /// A file's size, or how many items a folder holds once counted (blank
-    /// until then).
     fn size_text(&self) -> String {
         if !self.entry.is_dir {
             return human_size(&self.entry);
@@ -93,7 +70,6 @@ impl FileRow for ListRow {
         self.entry.modified
     }
 
-    /// An app's kind in the Applications place.
     fn kind(&self) -> Option<String> {
         self.entry
             .app
@@ -101,8 +77,6 @@ impl FileRow for ListRow {
             .map(|app| crate::applications::kind_label(app.kind))
     }
 
-    /// The file's icon or preview with its sync emblem, then its name and,
-    /// for a conflicted file, a warning.
     fn paint_name(
         &self,
         scene: &mut Scene,
@@ -116,7 +90,6 @@ impl FileRow for ListRow {
     }
 }
 
-/// The shared list's measures, from the file view's own geometry.
 fn metrics_of(geo: &Geo, scale: f64, text_scale: f64) -> FileTableMetrics {
     FileTableMetrics {
         scale,
@@ -133,9 +106,6 @@ fn metrics_of(geo: &Geo, scale: f64, text_scale: f64) -> FileTableMetrics {
     }
 }
 
-/// The columns a pane `width` wide shows, as `(size, modified)`: whether the
-/// size is shown, and how much of the modified time (0 none, 1 the date, 2 the
-/// date and time of day).
 #[cfg(test)]
 pub(super) fn shape_columns(width: f64, geo: &Geo, scale: f64, text_scale: f64) -> (bool, u8) {
     use ui::widget::file_table::{Modified, Shape};
@@ -148,18 +118,14 @@ pub(super) fn shape_columns(width: f64, geo: &Geo, scale: f64, text_scale: f64) 
     (shape.size, modified)
 }
 
-/// What the file view reads after forwarding an event to the table.
 pub(super) struct ListOutcome {
-    /// A press landed on the header of the column with this sort key.
     pub(super) sort_key: Option<&'static str>,
 }
 
-/// The list the app keeps across rebuilds of the file view.
 #[derive(Clone)]
 pub struct ListSlot(Rc<RefCell<FileTable<ListRow>>>);
 
 impl ListSlot {
-    /// The column widths the person set by dragging an edge.
     #[must_use]
     pub fn widths(&self) -> std::collections::BTreeMap<String, u32> {
         self.0
@@ -182,7 +148,6 @@ impl ListSlot {
             .unwrap_or_default()
     }
 
-    /// Lay the columns out at the widths the person set on another launch.
     pub fn set_widths(&self, widths: &std::collections::BTreeMap<String, u32>) {
         if widths.is_empty() {
             return;
@@ -201,7 +166,6 @@ impl Default for ListSlot {
     }
 }
 
-/// What a rebuild puts into the table.
 pub(super) struct ListInputs<'a> {
     pub entries: &'a [Entry],
     pub selection: &'a SelectionModel,
@@ -219,7 +183,6 @@ pub(super) struct ListInputs<'a> {
     pub theme: &'a Theme,
 }
 
-/// The column a `SortBy` orders by.
 fn column_of(by: SortBy) -> FileColumn {
     match by {
         SortBy::Size => FileColumn::Size,
@@ -228,7 +191,6 @@ fn column_of(by: SortBy) -> FileColumn {
     }
 }
 
-/// The `SortColumn` command index of a column key (1 name, 2 size, 3 date).
 pub(super) fn sort_column(key: &str) -> Option<usize> {
     match key {
         "name" => Some(1),
@@ -238,9 +200,6 @@ pub(super) fn sort_column(key: &str) -> Option<usize> {
     }
 }
 
-/// The name cell: the file's icon or preview with its sync emblem, then its
-/// name and, for a conflicted file, a warning. (The shared list's own text
-/// cells paint the other columns.)
 fn paint_name_cell(
     row: &ListRow,
     scene: &mut Scene,
@@ -274,7 +233,6 @@ fn paint_name_cell(
 
     let name_x = lead_x + icon_px + geo.icon_label_gap;
     if row.renaming {
-        // The app draws the in-place rename editor where the name was.
         if let Some(sink) = &cx.rename_rect {
             let inset = f64::from(tokens.spacing.s1) / 2.0;
             sink.set(Some(Rect::new(
@@ -317,8 +275,6 @@ fn paint_name_cell(
 }
 
 impl ListSlot {
-    /// Put this build's entries, selection and sort into the table, making
-    /// it first if there is none or the columns changed.
     pub(super) fn sync(&self, inputs: &ListInputs<'_>) {
         let cx = Rc::new(RowContext {
             scale: inputs.scale,
@@ -339,8 +295,6 @@ impl ListSlot {
                 cx: Rc::clone(&cx),
             })
             .collect();
-        // The app hands over entries already in the order it sorted them; the
-        // list shows which column that is by.
         self.0.borrow_mut().sync(FileTableInputs {
             rows,
             selection: inputs.selection,
@@ -351,41 +305,33 @@ impl ListSlot {
         });
     }
 
-    /// Scroll back to the top (a folder was opened).
     pub fn reset_scroll(&self) {
         self.0.borrow_mut().reset_scroll();
     }
 
-    /// The table's scroll offset.
     #[must_use]
     pub fn scroll_y(&self) -> f32 {
         self.0.borrow().scroll_y()
     }
 
-    /// Scroll to `y` (clamped by the table).
     pub fn set_scroll_y(&self, y: f32) {
         self.0.borrow_mut().set_scroll_y(y);
     }
 
-    /// The farthest the list can scroll.
     #[must_use]
     pub fn max_scroll_y(&self) -> f32 {
         self.0.borrow().max_scroll_y()
     }
 
-    /// The table's laid-out rectangle.
     #[must_use]
     pub fn rect(&self) -> Rect {
         self.0.borrow().rect()
     }
 
-    /// Add the table's node under `parent`'s layout and size it to fill.
     pub(super) fn build_layout(&self, taffy: &mut TaffyTree<()>, theme: &Theme) -> Option<NodeId> {
         self.0.borrow_mut().build_layout(taffy, theme)
     }
 
-    /// Lay the table out in `node`. Returns whether the columns should change
-    /// with the new width, so the view is rebuilt.
     pub(super) fn apply_layout(&self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> bool {
         self.0.borrow_mut().apply_layout(taffy, node, origin)
     }
@@ -403,7 +349,6 @@ impl ListSlot {
             .draw(scene, transform, tr, theme, presence);
     }
 
-    /// Forward `event` to the table and report what its callbacks recorded.
     pub(super) fn handle_event(
         &self,
         event: &WindowEvent,
@@ -415,26 +360,18 @@ impl ListSlot {
         }
     }
 
-    /// What an assistive technology asked of a row since the last read: the
-    /// row it asked to open, and the row and point it asked a menu for.
     pub(crate) fn take_row_requests(&self) -> (Option<usize>, Option<(usize, Point)>) {
         self.0.borrow_mut().take_row_requests()
     }
 
-    /// Whether `at` is over the table's scrollbar, which the table keeps for
-    /// itself (a press there scrolls; a press on a row is the file view's).
     pub(super) fn in_scrollbar(&self, at: Point) -> bool {
         self.0.borrow().in_scrollbar(at)
     }
 
-    /// Show `selection` in the table (a click was just applied to the view's
-    /// own copy).
     pub(super) fn select(&self, selection: &SelectionModel) {
         self.0.borrow_mut().select(selection);
     }
 
-    /// Tell the table where the pointer is, so a press that arrives with no
-    /// move since the view was rebuilt still lands on the right row.
     pub(super) fn point_at(&self, at: Point, ctx: &mut ui::widget::EventCtx<'_>) {
         self.0.borrow_mut().point_at(at, ctx);
     }
@@ -465,24 +402,18 @@ impl ListSlot {
         self.0.borrow_mut().discard_structure_dirty();
     }
 
-    /// The header band's height as the table lays it out.
     pub(super) fn header_height(&self) -> f64 {
         self.0.borrow().header_height()
     }
 
-    /// Each visible row's rectangle by display index, clipped to the body
-    /// below the header band.
     pub(super) fn row_rects(&self) -> Vec<(usize, Rect)> {
         self.0.borrow().row_rects()
     }
 
-    /// The table's accessibility node.
     pub(super) fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         self.0.borrow().accessibility()
     }
 
-    /// Run an assistive technology's `action` on the row the semantic target
-    /// `target` names, which the table's forwarded access node addresses.
     pub(super) fn perform_semantic_action(
         &self,
         target: &str,

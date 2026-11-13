@@ -10,6 +10,7 @@ mod faces;
 pub mod frame;
 mod geom;
 mod interaction;
+pub(crate) use interaction::written_in;
 mod key;
 mod labels;
 mod layer;
@@ -98,34 +99,18 @@ pub use collab_types::presence::{
     identity_rgb, user_color,
 };
 
-/// The hue a participant wears, from who they are: a person the one their identity
-/// derives ([`crate::tokens::PresenceHue::of_identity`]), software the one what it is
-/// wears ([`crate::tokens::PresenceHue::of_agent`], the same for every run of it and
-/// every surface that draws it) — and, for software, never the hue of the person it acts
-/// for (`for_person`, its principal): an agent that would land on them, or beside them,
-/// steps round the palette ([`crate::tokens::PresenceHue::apart_from`]) so the two are
-/// told apart at a glance. A person yields a hue to nobody.
-///
-/// `id` is who the actor is, never the run it works in: an agent is named by its own
-/// identity (`agent:claude-code@box#2`), so it keeps one colour however often it comes.
-///
-/// The one lookup every surface asks — the bar's faces, the People list, a profile card,
-/// an agent's card in a window, its pointer, its text marks and carets, and the run a
-/// change is attributed to — so one actor is one colour everywhere, and no surface picks
-/// its own. `None` for software whose person the surface does not know.
+/// The hue a participant wears ([`crate::tokens::PresenceHue::of_participant`]): the one
+/// lookup every surface asks — the bar's faces, the People list, a profile card, an agent's
+/// card in a window, its marks and carets, and the run a change is attributed to — so one
+/// actor is one colour everywhere. `id` is who the actor is, never the run it works in;
+/// `for_person` is `None` for software whose person the surface does not know.
 #[must_use]
 pub fn participant_hue(
     id: &str,
     is_agent: bool,
     for_person: Option<&str>,
 ) -> crate::tokens::PresenceHue {
-    if !is_agent {
-        return crate::tokens::PresenceHue::of_identity(id);
-    }
-    let own = crate::tokens::PresenceHue::of_agent(id);
-    for_person.map_or(own, |person| {
-        own.apart_from(crate::tokens::PresenceHue::of_identity(person))
-    })
+    crate::tokens::PresenceHue::of_participant(id, is_agent, for_person)
 }
 
 /// [`participant_hue`] as the colour it travels as: what the workspace paints a
@@ -3978,3 +3963,7 @@ mod one_person_one_pointer_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "render_label_tests.rs"]
+mod render_label_tests;

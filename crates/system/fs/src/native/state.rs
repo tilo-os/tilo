@@ -1,12 +1,8 @@
-//! Durable state of the native data plane, in `meta.redb`.
-//!
-//! A restart must continue where the last run stopped without re-reading
-//! the workspace: the last capture epoch (its retained snapshot, the journal
-//! position it covers and the captured state of every path) and, for every
-//! path the daemon wrote itself, which record version it materialised and
-//! what the local inode looked like afterwards. Each epoch is persisted in
-//! one transaction after its changeset has been applied, so a crash
-//! replays at most one epoch, and replaying is idempotent.
+//! Durable state of the native data plane, in `meta.redb`: the last capture epoch
+//! and, for every path the daemon wrote itself, the record version it materialised
+//! and the inode that followed. An epoch is persisted in one transaction after its
+//! changeset is applied, so a crash replays at most one, and replaying is
+//! idempotent.
 
 use std::collections::HashMap;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -77,9 +73,9 @@ impl StoredNode {
     }
 }
 
-/// What the local inode looked like right after the daemon wrote it. A path
-/// whose inode no longer matches has been changed locally since, and a
-/// remote version never overwrites it.
+/// What the local inode looked like right after the daemon wrote it; a path whose
+/// inode no longer matches has changed locally since, and a remote version never
+/// overwrites it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalStat {
     pub ino: u64,
@@ -101,7 +97,6 @@ impl LocalStat {
     }
 }
 
-/// The record version a path of the live tree corresponds to.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent facts about one materialised path, persisted as they are"
@@ -111,22 +106,18 @@ pub struct Materialized {
     pub dir: bool,
     pub hash: Option<[u8; 32]>,
     pub size: u64,
-    /// The version's time, as the record plane stamped it.
     pub mtime_ms: u64,
-    /// Created as a placeholder (it may since have become resident).
     pub placeholder: bool,
     pub local: Option<LocalStat>,
-    /// The record this path is, so a rename moves the local file instead
-    /// of writing it again.
+    /// The record this path is, so a rename moves the local file instead of
+    /// writing it again.
     pub record: Option<[u8; 16]>,
-    /// Replicated permission bits the path had when the daemon last wrote
-    /// or published it; a local `chmod` since is a change of its own.
+    /// Replicated permission bits the path had when the daemon last wrote or
+    /// published it; a local `chmod` since is a change of its own.
     pub mode: Option<u32>,
-    /// Materialised as a symbolic link.
     pub symlink: bool,
     /// The tenancy the version was written in, for a lease-class file.
     pub fence: Option<crate::namespace::VersionFence>,
-    /// This device published the version.
     pub own: bool,
 }
 
@@ -157,7 +148,6 @@ fn decode_materialized(raw: &[u8]) -> Result<Materialized> {
     })
 }
 
-/// A write lease this device knows about, local or remote.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredLease {
     pub holder: [u8; 32],
@@ -177,11 +167,8 @@ fn path_of(key: &[u8]) -> PathBuf {
     PathBuf::from(std::ffi::OsString::from_vec(key.to_vec()))
 }
 
-/// Changes to the captured node table, persisted with an epoch.
 pub enum NodeUpdate {
-    /// Only these paths changed.
     Delta(Vec<(PathBuf, Option<NodeState>)>),
-    /// The table is replaced (after a full comparison).
     Replace(Vec<(PathBuf, NodeState)>),
 }
 
@@ -225,7 +212,6 @@ impl NativeState {
         )))
     }
 
-    /// Persists an applied epoch in one transaction.
     pub fn save_epoch(
         &self,
         next_epoch: u64,
@@ -276,8 +262,8 @@ impl NativeState {
         Ok(())
     }
 
-    /// Forgets the capture epoch (its snapshot is gone): the next run
-    /// starts with a full comparison.
+    /// Forgets the capture epoch (its snapshot is gone): the next run starts with
+    /// a full comparison.
     pub fn clear_capture(&self) -> Result<()> {
         let txn = self.db.begin_write()?;
         {
@@ -321,7 +307,6 @@ impl NativeState {
         Ok(out)
     }
 
-    /// Follows a rename: leases of `from` and below are kept under `to`.
     pub fn move_lease(&self, from: &Path, to: &Path) -> Result<()> {
         let moved: Vec<(PathBuf, StoredLease)> = self
             .leases()?

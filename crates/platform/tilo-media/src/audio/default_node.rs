@@ -1,17 +1,12 @@
-//! The default output (sink) and input (source): their level, mute flag and
-//! identity, read and changed through `wpctl`'s `@DEFAULT_AUDIO_SINK@` /
-//! `@DEFAULT_AUDIO_SOURCE@` handles.
+//! The default output (sink) and input (source): level, mute flag and identity, read
+//! and changed through `wpctl`'s `@DEFAULT_AUDIO_SINK@` and `@DEFAULT_AUDIO_SOURCE@`.
 //!
-//! Every reader and writer of the default devices (the media keys, Quick
-//! Settings, the Sound settings, screen recording) goes through here, so the
-//! command lines and the parsing of what `wpctl` prints exist once.
+//! Every reader and writer goes through here — media keys, Quick Settings, Sound
+//! settings, screen recording — so the command lines and their parsing exist once.
 
-/// One of the two default devices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DefaultNode {
-    /// The default output.
     Sink,
-    /// The default input (the microphone).
     Source,
 }
 
@@ -24,7 +19,6 @@ impl DefaultNode {
     }
 }
 
-/// A default device's level and mute flag.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VolumeState {
     /// `0.0..=1.0`. The level the device is set to, whether or not muted.
@@ -32,23 +26,18 @@ pub struct VolumeState {
     pub muted: bool,
 }
 
-/// Read `node`'s level and mute flag together: a sink at 0.60 that is muted
-/// is silent, and asking twice would race a media key pressed in between.
 pub fn volume_state(node: DefaultNode) -> Result<VolumeState, String> {
     parse_volume_state(&capture(&["get-volume", node.token()])?)
 }
 
-/// Set `node`'s level to `pct` percent, clamped to `0..=100`.
 pub fn set_volume(node: DefaultNode, pct: f32) -> Result<(), String> {
     run(&["set-volume", node.token(), &volume_arg(pct)])
 }
 
-/// Mute or unmute `node`.
 pub fn set_mute(node: DefaultNode, muted: bool) -> Result<(), String> {
     run(&["set-mute", node.token(), if muted { "1" } else { "0" }])
 }
 
-/// Toggle `node`'s mute flag.
 pub fn toggle_mute(node: DefaultNode) -> Result<(), String> {
     run(&["set-mute", node.token(), "toggle"])
 }
@@ -60,14 +49,11 @@ pub fn has_output_device() -> bool {
     capture(&["inspect", DefaultNode::Sink.token()]).is_ok_and(|out| !is_dummy_sink(&out))
 }
 
-/// `node`'s `object.serial`: the handle a capture stream's `--target` takes.
 pub fn object_serial(node: DefaultNode) -> Result<String, String> {
     let inspect = capture(&["inspect", node.token()])?;
     parse_object_serial(&inspect).ok_or_else(|| "the default device has no object serial".into())
 }
 
-/// The clamped `0.0..=1.0` fraction, formatted as `wpctl` expects it. The
-/// fraction form avoids locale-dependent `%` handling.
 fn volume_arg(pct: f32) -> String {
     let clamped = (pct.clamp(0.0, 100.0) / 100.0).clamp(0.0, 1.0);
     format!("{clamped:.2}")
@@ -91,7 +77,6 @@ fn parse_object_serial(inspect: &str) -> Option<String> {
     })
 }
 
-/// `Volume: 0.45` or `Volume: 0.45 [MUTED]`.
 fn parse_volume_state(stdout: &str) -> Result<VolumeState, String> {
     let line = stdout.lines().next().ok_or("wpctl printed nothing")?;
     let after = line
@@ -154,8 +139,6 @@ mod tests {
         assert!(parse_volume_state("not-a-line").is_err());
     }
 
-    /// Out-of-range input is clamped before it reaches `wpctl`, which would
-    /// otherwise reject it or read it as a different level.
     #[test]
     fn set_volume_clamps_out_of_range() {
         assert_eq!(volume_arg(150.0), "1.00");

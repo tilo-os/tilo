@@ -1,24 +1,6 @@
-//! Tube diagnostics: probes of the live backends, offscreen stills from
-//! live data, and a scroll benchmark. The app itself is the `tube` binary.
-//!
-//! Run with `cargo run -p tube --example probe -- <mode>`:
-//! - `--probe [Q]`: construct the live backend, run a `YouTube` search for
-//!   `Q` (default "rust programming") + trending, print what came back.
-//! - `--probe-trending`: the dedicated trending endpoint failing, then the
-//!   composed "popular" feed (view-count-sorted search).
-//! - `--probe-engine [ID]`: resolve a stream and decode moving frames through
-//!   the same shared [`media::MediaEngine`] used by the watch page.
-//! - `--live-shots DIR [Q]`: offscreen stills from live data.
-//! - `--bench-scroll [FRAMES] [--watch [--loaded]]`: time the per-frame passes
-//!   of a scrolled Home grid or watch page.
+//! Tube diagnostics: probes of the live backends, offscreen stills from live data, and a scroll
+//! benchmark. The app itself is the `tube` binary.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -43,45 +25,24 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
 
-    // `--probe-trending` — show the dedicated endpoint's error and the composed
-    // popular feed it falls back to.
     if args.iter().any(|a| a == "--probe-trending") {
         return run_probe_trending();
     }
 
-    // `--probe-engine [id]` — exercise playback through the shared media engine:
-    // resolve a stream, open a `media::MediaEngine`, and decode a sequence of
-    // frames, printing engine events and checksums.
     if let Some(id) = parse_flag_id(&args, "--probe-engine", "aqz-KE-bpKQ") {
         return run_probe_engine(&id);
     }
 
-    // `--live-shots <dir> [query]` — render offscreen stills from live data:
-    // search results with fetched thumbnails and a decoded watch frame.
-    // Requires `--features "live media"`.
     if let Some((dir, query)) = parse_live_shots_arg(&args) {
         return run_live_shots(&dir, &query);
     }
 
-    // `--probe [query]` — run a live backend query.
     if let Some(query) = parse_probe_arg(&args) {
         return run_probe(&query);
     }
 
-    // `--bench-scroll [frames]` — headless scroll-performance benchmark. Times
-    // the exact per-frame passes the live event loop runs (compute_layout /
-    // apply_layout / draw) over a large Home grid, in two modes — the pre-fix
-    // "always re-solve" baseline and the scroll-reposition fast path — and
-    // prints the numbers. No window, no GPU present (matches the TILO_UI_PERF
-    // main-thread breakdown, which excludes the render worker).
     if let Some(frames) = parse_flag_usize(&args, "--bench-scroll", 90) {
-        // `--watch` benches the watch page (full-bleed player + a long comment
-        // list) instead of the Home grid — the heaviest scroll scenario.
         let watch = args.iter().any(|a| a == "--watch");
-        // `--loaded` (with `--watch`) loads a real decoded frame into the player
-        // and pauses it, reproducing a paused-but-loaded watch page — and drives
-        // `sync` each frame, so the per-frame engine cost is measured, not just
-        // layout + draw.
         let loaded = args.iter().any(|a| a == "--loaded");
         return run_bench_scroll(frames, watch, loaded);
     }
@@ -92,8 +53,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Parse `--probe` / `--probe=<query>` / `--probe <query>`. Returns the query
-/// to probe with (default "rust programming") when the flag is present.
 fn parse_probe_arg(args: &[String]) -> Option<String> {
     const DEFAULT_Q: &str = "rust programming";
     let mut iter = args.iter().skip(1);
@@ -115,7 +74,6 @@ fn parse_probe_arg(args: &[String]) -> Option<String> {
     None
 }
 
-/// Parse `--<flag> [id]` / `--<flag>=<id>` with a default id.
 fn parse_flag_id(args: &[String], flag: &str, default: &str) -> Option<String> {
     let eq = format!("{flag}=");
     let mut iter = args.iter().skip(1);
@@ -137,10 +95,6 @@ fn parse_flag_id(args: &[String], flag: &str, default: &str) -> Option<String> {
     None
 }
 
-/// `--probe-engine [id]`: exercise playback through the shared `media::MediaEngine`
-/// — the exact path the watch page streams through. Resolves the stream the
-/// watch page plays, opens the engine, plays, and decodes a sequence of frames; prints engine events and a
-/// per-frame checksum. Exits non-zero if no frame decodes.
 #[cfg(all(feature = "live", feature = "media"))]
 #[allow(
     clippy::exit,
@@ -238,8 +192,6 @@ fn run_probe_engine(_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Parse `--live-shots <dir> [query]`. Returns the output directory and the
-/// search query (default "rust programming") to render real stills for.
 fn parse_live_shots_arg(args: &[String]) -> Option<(String, String)> {
     const DEFAULT_Q: &str = "rust programming";
     let mut iter = args.iter().skip(1);
@@ -260,8 +212,6 @@ fn parse_live_shots_arg(args: &[String]) -> Option<(String, String)> {
     None
 }
 
-/// `--probe-trending`: show `YouTube`'s dedicated trending endpoint failing,
-/// then the composed popular feed (view-count-sorted search) that replaces it.
 #[cfg(feature = "live")]
 #[allow(
     clippy::exit,
@@ -344,9 +294,6 @@ fn run_probe_trending() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// `--live-shots <dir> [query]`: render REAL offscreen stills — a search page
-/// with real `YouTube` results + fetched thumbnails, and a watch page with a real
-/// frame decoded through the shared media engine.
 #[cfg(all(feature = "live", feature = "media"))]
 #[allow(
     clippy::too_many_lines,
@@ -366,14 +313,6 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
     let backend = tube::backend::live::RustyPipeBackend::new()
         .map_err(|e| format!("rustypipe backend: {e}"))?;
 
-    // ---- Real watch page with a real decoded frame ----
-    //
-    // Rendered FIRST on purpose: the media engine's GStreamer decode must run
-    // before any offscreen `render_shot_to_png` initialises the process-wide
-    // wgpu/EGL context — that context otherwise grabs GPU/EGL resources and
-    // starves the decode pipeline, so a search render done first would leave the
-    // watch surface black. (Proven with `--probe-engine`, which decodes fine with
-    // no wgpu in the process.)
     let watch_id = "aqz-KE-bpKQ"; // Big Buck Bunny (Blender, CC-BY) — long + stable.
     println!("live-shots[watch]: metadata + rangeable stream for [{watch_id}]…");
     let video = match backend.video(watch_id) {
@@ -414,8 +353,6 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
                 live: true,
                 label: "live".into(),
             };
-            // Fetch the uploader's real avatar so the watch-page channel row shows
-            // a real photo, and prewarm it into a store.
             let wstore = tube::images::image_store();
             if let Ok(BackendResult::Channel { channel, .. }) = backend.channel(&video.channel_id) {
                 wmodel.note_channel_avatar(&channel.id, &channel.avatar_url);
@@ -446,14 +383,6 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
         }
     }
 
-    // ---- Search / home / playlist pages with thumbnails + avatars ----
-    //
-    // The search returns videos (with creator avatars), playlists and creator
-    // rows in one call, so these stills cover avatars, the
-    // Video·Playlist·Creator filter, and playlists end to end.
-
-    // Prewarm every thumbnail + avatar into one shared store so both the search
-    // and home stills paint fetched images.
     let prewarm = |store: &ui::ImageStore, urls: &[String]| {
         for u in urls {
             if !u.is_empty() {
@@ -493,10 +422,6 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
                 smodel.upsert_channel(c.clone());
             }
             smodel.reconcile_channel_avatars();
-            // The live app fills the remaining (dominant-channel) avatars via a
-            // per-channel fetch; do the same here so the still reflects what the
-            // running app converges to — fetch the channel page for the most
-            // common uploaders that still lack an avatar (bounded), and adopt it.
             {
                 use std::collections::HashMap;
                 let mut freq: HashMap<String, usize> = HashMap::new();
@@ -537,8 +462,6 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
                 label: "live".into(),
             };
 
-            // Collect every image URL the search page will paint — including the
-            // avatars now stamped onto the channel records by the fetch above.
             let mut urls: Vec<String> = Vec::new();
             for v in &items.videos {
                 urls.push(v.thumbnail_url.clone());
@@ -558,8 +481,6 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
             store.block_until_idle(Duration::from_secs(45));
             println!("  images settled: {} still pending", store.pending());
 
-            // DIAGNOSTIC: for every channel a card will read, print the record's
-            // avatar url + whether the store has it decoded at render time.
             println!("  -- render-time channel-record state --");
             for ch in &smodel.channels {
                 let decoded = store.get(&ch.avatar_url).is_some();
@@ -602,8 +523,6 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
             )?;
             println!("  wrote {}", home_png.display());
 
-            // ---- Playlist page: try each search-result playlist until one
-            // resolves (some listed playlists are stale/empty). ----
             let resolved_pl = items.playlists.iter().find_map(|p| {
                 println!("live-shots[playlist]: fetching {}…", p.id);
                 backend.playlist(&p.id).ok()
@@ -658,7 +577,6 @@ fn run_live_shots(_dir: &str, _query: &str) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-/// Shorten a URL for log lines (host + a hint), so proof output stays readable.
 #[cfg(feature = "live")]
 fn short_url(url: &str) -> String {
     if url.is_empty() {
@@ -672,8 +590,6 @@ fn short_url(url: &str) -> String {
     }
 }
 
-/// Construct the live backend, query `YouTube`, and print the response.
-/// Compiled only under `--features live`.
 #[cfg(feature = "live")]
 #[allow(
     clippy::exit,
@@ -721,7 +637,6 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // Video metadata (watch page data path).
     println!("\nprobe: video_details [{first_id}] …");
     match backend.video(&first_id) {
         Ok(BackendResult::Video(v)) => println!(
@@ -736,7 +651,6 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => eprintln!("  video_details failed: {e}"),
     }
 
-    // Real "up next" recommendations (watch-page sidebar data path).
     println!("probe: related [{first_id}] …");
     match backend.related(&first_id) {
         Ok(BackendResult::Videos(vs)) => println!(
@@ -748,7 +662,6 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => eprintln!("  related failed: {e}"),
     }
 
-    // Channel page + uploads (channel screen data path).
     println!("probe: channel_videos [{first_channel}] …");
     match backend.channel(&first_channel) {
         Ok(BackendResult::Channel { channel, uploads }) => println!(
@@ -763,7 +676,6 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => eprintln!("  channel_videos failed: {e}"),
     }
 
-    // Trending exercises the browse feed (the Home/Trending data path).
     println!("probe: trending …");
     match backend.trending() {
         Ok(BackendResult::Videos(vs)) => println!(
@@ -777,7 +689,6 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Non-live builds have no real backend compiled in.
 #[cfg(not(feature = "live"))]
 #[allow(
     clippy::unnecessary_wraps,
@@ -792,8 +703,6 @@ fn run_probe(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Parse `--flag [n]` / `--flag=<n>` into a `usize`, with `default` when the
-/// flag is present but no numeric value follows.
 fn parse_flag_usize(args: &[String], flag: &str, default: usize) -> Option<usize> {
     let eq = format!("{flag}=");
     let mut iter = args.iter().skip(1);
@@ -808,7 +717,6 @@ fn parse_flag_usize(args: &[String], flag: &str, default: usize) -> Option<usize
     None
 }
 
-/// Median of a slice of microsecond samples (sorted copy).
 fn median_us(samples: &[u128]) -> u128 {
     if samples.is_empty() {
         return 0;
@@ -830,15 +738,9 @@ fn avg_us(samples: &[u128]) -> u128 {
     }
 }
 
-/// One measured pass of [`run_bench_scroll`]'s inner `run_pass` closure: the
-/// per-frame sync/compute/apply/draw timing series (µs) and whether the pass
-/// used the scroll fast path.
 type ScrollBenchPass =
     Result<(Vec<u128>, Vec<u128>, Vec<u128>, Vec<u128>, bool), Box<dyn std::error::Error>>;
 
-/// `--bench-scroll [frames] [--watch]`: measure the per-frame main-thread cost
-/// of scrolling either a large Home grid or the watch page (full-bleed player +
-/// a long comment list), in two modes, and report the numbers.
 #[allow(
     clippy::too_many_lines,
     reason = "one timed pipeline stage per widget-cycle phase (sync, compute, apply, draw), \
@@ -860,9 +762,6 @@ fn run_bench_scroll(
     const CARDS: usize = 80;
     let (w, h) = (1280u32, 900u32);
 
-    // A large, realistic Home catalogue: grow the sample by cloning cards with
-    // fresh ids so the grid actually stresses layout (the composed live
-    // "popular" feed is this size or larger).
     let home_model = || -> TubeModel {
         let mut m = tube::sample::model();
         let base = m.videos.clone();
@@ -880,9 +779,6 @@ fn run_bench_scroll(
         m
     };
 
-    // The heaviest scroll scenario: a full-bleed player over a long comment
-    // list (the real content that makes the scroll tree deep). Grow the
-    // chosen video's comments to a realistic count.
     let watch_model = || -> TubeModel {
         let mut m = tube::sample::model();
         let id = m
@@ -909,9 +805,6 @@ fn run_bench_scroll(
     };
     let big_model = || -> TubeModel { if watch { watch_model() } else { home_model() } };
 
-    // One measured pass. `force_compute` = the pre-fix baseline (always re-solve
-    // taffy every frame). `false` = the scroll fast path (apply_layout only when
-    // nothing needs re-measuring). Returns (compute[], apply[], draw[]) in µs.
     let run_pass = |force_compute: bool| -> ScrollBenchPass {
         let theme = Theme::dark();
         let presence = PresenceCtx::empty();
@@ -926,8 +819,6 @@ fn run_bench_scroll(
         let mut app = tube::TubeApp::new()
             .with_viewport(f64::from(w), f64::from(h))
             .with_model_for_test(model);
-        // Load + pause a real (synthesized) frame so the bench measures the true
-        // per-frame cost of a paused-but-loaded watch page.
         if watch && loaded && !watch_id.is_empty() {
             app = app.with_bench_loaded_watch(&watch_id);
         }
@@ -964,8 +855,6 @@ fn run_bench_scroll(
             Ok(())
         };
 
-        // Initial full solve + layout + a warm draw (fills the Text/scene caches
-        // so the timed frames measure steady-state scroll, not first-paint).
         solve(&mut taffy, &node_map, &mut tr)?;
         widget.apply_layout(&taffy, child, Point::ORIGIN);
         {
@@ -982,15 +871,10 @@ fn run_bench_scroll(
         let mut ever_reposition_only = false;
 
         for _ in 0..frames {
-            // Sync first, exactly as the live event loop does: this pumps the
-            // media engine (pulling the freshest frame + playhead), so a loaded
-            // watch page's per-frame engine cost is measured, not just layout.
             let t = ui::time::now();
             widget.sync(&state.doc, &state.root);
             sync.push(t.elapsed().as_micros());
 
-            // Real scroll: a wheel notch routed through the widget tree, exactly
-            // as the live event loop delivers it.
             let wheel = ui::synthetic_input::mouse_wheel(0.0, -3.0);
             let mut handled = false;
             let mut focus_target = None;
@@ -1008,7 +892,6 @@ fn run_bench_scroll(
                 },
             );
 
-            // The fast path skips the solve when nothing needs re-measuring.
             let needs_measure = widget.layout_needs_measure();
             if !needs_measure {
                 ever_reposition_only = true;
@@ -1106,8 +989,6 @@ fn run_bench_scroll(
     Ok(())
 }
 
-/// Render `widget` offscreen through the live window's frame lifecycle,
-/// settled (animations finished, images loaded), and write it to `out` as PNG.
 #[cfg(all(feature = "live", feature = "media"))]
 fn render_shot_to_png(
     widget: Box<dyn Widget>,
@@ -1126,11 +1007,6 @@ fn render_shot_to_png(
     Ok(())
 }
 
-/// FNV-1a over every 97th byte of a frame — enough to tell two decoded
-/// frames apart without hashing megabytes per frame. Restored here because
-/// `refactor(tube): use the shared media engine exclusively` removed the
-/// definition and left the call site above, which left `tube`'s binary not
-/// compiling.
 #[cfg(all(feature = "live", feature = "media"))]
 fn checksum(rgba: &[u8]) -> u64 {
     let mut h: u64 = 1_469_598_103_934_665_603; // FNV-1a offset basis

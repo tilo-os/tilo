@@ -1,11 +1,7 @@
-//! The Clocks window: a view over the person's [`Clocks`]. It shows the
-//! document as it changes and changes it only through the resource's
-//! actions; what each device keeps for itself (floating clocks, the
-//! delivery ledger) is its entry in a record beside the clocks.
-//!
-//! A live window also rings what is due, hands running timers to the
-//! platform's notification scheduler, and keeps the shell's floating clock
-//! current. A capture or a past version does none of that.
+//! The Clocks window: a view over the person's [`Clocks`], changing it only
+//! through its actions; what this device keeps for itself is its entry beside it.
+//! A live window also rings what is due, hands running timers to the platform's
+//! scheduler and keeps the shell's floating clock current.
 
 use crate::locales::CATALOG;
 use crate::model::{Clocks, WeekdayKey, bounded_label};
@@ -29,25 +25,19 @@ use ui::widget::{
     Spacer, Text, TextInput, TextInputKind, TimePicker, TimeValue, Widget,
 };
 
-/// What the window shows: the person's clocks and this device's choices.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Shown {
     pub(crate) clocks: Clocks,
     pub(crate) device: OnThisDevice,
-    /// The moment wall clocks show, when a capture pins it; else the
-    /// device's clock.
     pub(crate) pinned_now: Option<chrono::DateTime<Utc>>,
     pub(crate) selected_alarm: Option<Id>,
 }
 
 impl Shown {
-    /// The present as wall clocks show it.
     fn now(&self) -> chrono::DateTime<Utc> {
         self.pinned_now.unwrap_or_else(wall_now)
     }
 
-    /// The local time of day the "Here" clock shows: a capture's pinned
-    /// moment reads the same on every machine.
     fn here(&self) -> chrono::NaiveDateTime {
         self.pinned_now.map_or_else(
             || chrono::Local::now().naive_local(),
@@ -55,8 +45,6 @@ impl Shown {
         )
     }
 
-    /// The present on this device's clock, a capture's pinned moment read as
-    /// local wall time so next-ring labels are stable too.
     fn local_now(&self) -> chrono::DateTime<chrono::Local> {
         self.pinned_now.map_or_else(chrono::Local::now, |pinned| {
             chrono::Local.from_utc_datetime(&pinned.naive_utc())
@@ -64,8 +52,6 @@ impl Shown {
     }
 }
 
-/// When `alarm` rings next, in words. A disabled alarm says so; an enabled
-/// one says "today", "tomorrow" or the weekday, then its time.
 pub(crate) fn next_ring(
     alarm: &crate::model::Alarm,
     now: chrono::DateTime<chrono::Local>,
@@ -96,7 +82,6 @@ pub(crate) fn next_ring(
     )
 }
 
-/// How the window's controls reach the resource and the device.
 #[derive(Clone)]
 pub(crate) struct Controls {
     pub(crate) actions: Actions<Clocks>,
@@ -104,21 +89,17 @@ pub(crate) struct Controls {
 }
 
 impl Controls {
-    /// A button invoking `invoke` through the door, or disabled when the
-    /// participant may not.
     fn button(&self, button: Button, invoke: ui::prelude::Invoke<Clocks>) -> Button {
         self.actions.bind_invocation(button, invoke)
     }
 
-    /// A button invoking `effect` through the door.
     fn effect(&self, button: Button, effect: &ClocksEffect) -> Button {
         self.actions.bind_effect_invocation(button, effect)
     }
 }
 
-/// A button whose press acts on this device alone: what it changes in the
-/// clocks it submits as the record's own verbs, decided there, so a guest
-/// presses it as the workspace's owner does.
+/// A press acts on this device alone: what it changes in the clocks is submitted
+/// as the record's own verbs, so a guest presses it as the owner does.
 fn button(id: &str, label: &str, f: impl FnMut() + 'static) -> Element {
     Box::new(
         Button::new(id, label)
@@ -186,8 +167,6 @@ pub(crate) fn repeat_summary(days: &BTreeSet<WeekdayKey>) -> String {
         .join(", ")
 }
 
-/// A city's time of day, and beside it the facts that place it: its day
-/// when that is not today here, and how far ahead or behind here it is.
 pub(crate) fn city_time(zone: &str, now: chrono::DateTime<Utc>) -> (String, Vec<Fact>) {
     let Ok(zone) = zone.parse::<chrono_tz::Tz>() else {
         return (
@@ -212,7 +191,6 @@ pub(crate) fn city_time(zone: &str, now: chrono::DateTime<Utc>) -> (String, Vec<
     (ui::clock::time_of_day(&there), facts)
 }
 
-/// How far a place is ahead of or behind here, in words.
 fn offset_from_here(seconds: i32) -> String {
     if seconds == 0 {
         return crate::locales::CATALOG.t("clocks-same-time");
@@ -250,9 +228,8 @@ fn offset_from_here(seconds: i32) -> String {
     }
 }
 
-/// A time zone as a place: the city, then the part of the world it is in
-/// ("New York, Americas"). The database's region is a continent or ocean,
-/// so "America" names the two continents together.
+/// A time zone as a place, "New York, Americas": the database's region is a
+/// continent or ocean, so "America" names both continents.
 fn timezone_label(zone: &str) -> String {
     let city = zone.rsplit('/').next().unwrap_or(zone).replace('_', " ");
     let region = match zone.split('/').next().unwrap_or_default() {
@@ -293,10 +270,8 @@ fn timezone_results(query: &str) -> Vec<String> {
         .collect()
 }
 
-/// The cities a world clock can be added for: a few well-known ones, or
-/// those the window's search names, less the cities already shown. The
-/// window bar's search narrows them ([`Filterable`]); the page draws no
-/// field of its own.
+/// The cities a world clock can be added for, less those already shown; the
+/// window bar's search narrows them ([`Filterable`]).
 struct CityChoices {
     query: ui::LocalState<String>,
     view: ModelView<String>,
@@ -396,8 +371,6 @@ fn world_clock_list(state: &ui::LocalState<Shown>, controls: &Controls) -> Model
             }
             for (id, clock) in s.clocks.world_clocks.iter() {
                 let (time, facts) = city_time(&clock.timezone.0, s.now());
-                // The time and Remove share one line: the card is as tall as
-                // what it says.
                 let row = Row::new()
                     .no_wrap()
                     .push(Box::new(
@@ -433,8 +406,6 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
         Column::new()
             .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Section)
-            // Adding a city is the part that needs the width; the time here
-            // stands beside it, and under it once the window is narrow.
             .push(Box::new(
                 Columns::new(Box::new(clock_card(
                     &crate::locales::CATALOG.t("clocks-add-city"),
@@ -469,11 +440,7 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
     )
 }
 
-/// The repeat-day strip, shared by the new-alarm form and the editor: the
-/// form's draft of the days, kept with its other fields until it is saved.
 fn repeat_control(selection: &ui::LocalState<BTreeSet<WeekdayKey>>, id: &'static str) -> Element {
-    // One multi-select strip: the week reads as one row, wrapping only
-    // when the form is too narrow for it.
     let days = WeekdayKey::ALL
         .into_iter()
         .map(|day| {
@@ -777,7 +744,6 @@ fn timer_card(
     let bar_remaining = remaining.clone();
     let duration_ms = timer.duration_ms;
     let bar_label = format!("{} remaining", timer.label);
-    // The bar moves with the clock, a second at a time.
     let bar = ModelView::from_document(
         move |_, _| bar_state.with(|s| bar_remaining(s) / 1_000),
         move |&seconds: &u64| {
@@ -906,10 +872,8 @@ fn timers_screen(
     controls: &Controls,
     validation_error: &ui::LocalState<Option<String>>,
 ) -> Element {
-    // Keep the components as distinct fields. A spinner row looked compact at
-    // default size but allowed its values and arrow targets to collide at 200%
-    // text, which made setting a duration unreliable with touch or a screen
-    // magnifier.
+    // One field per component: in a single spinner row the values and arrow
+    // targets collide at 200% text.
     let custom_hours = ui::LocalState::new(0.0_f64);
     let custom_minutes = ui::LocalState::new(10.0_f64);
     let custom_seconds = ui::LocalState::new(0.0_f64);
@@ -927,8 +891,7 @@ fn timers_screen(
     for preset_row in preset_specs.chunks(2) {
         let mut row = Row::new().with_padding_rhythm(None, None);
         for &(label, button_label, secs) in preset_row {
-            // A common, generous width keeps the two-column grid legible at
-            // 200% text while still fitting inside the phone content rail.
+            // A width that stays legible at 200% text inside the phone rail.
             row = row.push(Box::new(
                 controls.button(
                     Button::new(
@@ -945,8 +908,7 @@ fn timers_screen(
     }
     let list_controls = controls.clone();
     let card_state = state.clone();
-    // A timer that runs out reads "Done" and offers a restart: the cards are
-    // rebuilt when one finishes, not only when the timers change.
+    // The cards are rebuilt when a timer finishes, not only when timers change.
     let finished = |s: &Shown| {
         let now = s.now();
         s.clocks
@@ -993,9 +955,6 @@ fn timers_screen(
             },
         )
     });
-    // Duration is a related cluster, not three content cards. Shared
-    // steppers measure their digits and touch targets; the row wraps whole
-    // fields at large text rather than squeezing their editable values.
     let mut duration_fields = Row::new()
         .with_padding_rhythm(None, None)
         .with_rhythm(ui::tokens::Rhythm::Related)
@@ -1027,8 +986,6 @@ fn timers_screen(
                 )),
         ));
     }
-    // The custom timer is the form that needs the width; the quick starts
-    // stand beside it, and under it once the window is narrow.
     let setup = Columns::new(Box::new(clock_card(
         &CATALOG.t("clocks-custom-timer"),
         Box::new(
@@ -1206,14 +1163,11 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
     )
 }
 
-/// The open section.
 pub(crate) const WORLD: usize = 0;
 pub(crate) const ALARMS: usize = 1;
 pub(crate) const TIMERS: usize = 2;
 pub(crate) const STOPWATCH: usize = 3;
 
-/// The sidebar's sections, each with its own glyph so they tell apart at a
-/// glance: an hourglass counts down, a stopwatch counts up.
 pub(crate) const SECTIONS: [(usize, &str, Icon); 4] = [
     (WORLD, "clocks-section-world", Icon::Globe),
     (ALARMS, "clocks-section-alarms", Icon::AlarmClock),
@@ -1221,7 +1175,6 @@ pub(crate) const SECTIONS: [(usize, &str, Icon); 4] = [
     (STOPWATCH, "clocks-section-stopwatch", Icon::Timer),
 ];
 
-/// What the window's bar names for the open section.
 pub(crate) fn section_title(mode: usize) -> String {
     crate::locales::CATALOG.t(match mode {
         WORLD => "clocks-section-world-clocks",
@@ -1309,8 +1262,7 @@ fn surface(
             },
         )
     });
-    // Each page already owns its one content gutter. An empty notice
-    // must not add another gutter and a large section gap above its title.
+    // Each page owns its one gutter; an empty notice adds none.
     let page = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
@@ -1351,25 +1303,18 @@ fn surface(
     )
 }
 
-/// A due alert not yet shown by the platform: tag, title, body and what a
-/// click opens.
 type PendingNotification = (String, String, String, &'static str);
 
-/// The in-app due notice: its title, its body, and the alarm it is for when
-/// it can be snoozed.
 pub(crate) type DueNotice = (String, String, Option<Id>);
 
 /// How long a snoozed alarm waits before ringing again.
 pub(crate) const SNOOZE_MINUTES: u32 = 5;
 
-/// What the window and the view's effect handler share: the clocks shown
-/// with this device's choices, the due notice and the open section.
 #[derive(Clone)]
 pub(crate) struct Store {
     pub(crate) state: ui::LocalState<Shown>,
     pub(crate) device: DeviceChoices,
     pub(crate) notice: ui::LocalState<Option<DueNotice>>,
-    /// The open section: World, Alarms, Timers, Stopwatch.
     pub(crate) mode: ui::LocalState<usize>,
     /// The retained navigation projects the same mode as the content.
     pub(crate) selection: ui::LocalState<Option<String>>,
@@ -1381,14 +1326,12 @@ impl Store {
         self.selection.set(Some(mode.to_string()));
     }
 
-    /// Show `clocks`, the document as it stands.
     pub(crate) fn present(&self, clocks: &Clocks) {
         if self.state.with(|shown| shown.clocks != *clocks) {
             self.state.update(|shown| shown.clocks = clocks.clone());
         }
     }
 
-    /// Change this device's choices and show them at once.
     pub(crate) fn update_device(&self, change: impl FnOnce(&mut OnThisDevice)) {
         if let Err(error) = self.device.update(change) {
             tracing::warn!(%error, "Clocks could not keep what this device keeps");
@@ -1396,7 +1339,6 @@ impl Store {
         self.refresh_device();
     }
 
-    /// Follow a write of this device's choices from anywhere.
     fn refresh_device(&self) {
         let device = self.device.get();
         if self.state.with(|shown| shown.device != device) {
@@ -1405,26 +1347,20 @@ impl Store {
     }
 }
 
-/// The Clocks window.
 pub struct ClocksApp {
     inner: Element,
     pub(crate) store: Store,
     pub(crate) dispatcher: Dispatcher<Clocks>,
-    /// The document, followed into the store as it changes.
     document: Live<Clocks>,
     presented: Option<(u64, u64)>,
-    /// Whether this window is one someone uses, which rings, schedules and
-    /// talks to the shell.
+    /// Whether this window is one someone uses: it rings and talks to the shell.
     live: bool,
     record: Option<ui::record::RecordId>,
     opener: Option<ui::framework::OpenHere>,
-    /// Whether the section was chosen from the first state presented.
     opened: bool,
     pub(crate) last_notification: Option<(String, String, String)>,
     next_clock_tick: ui::time::Instant,
-    /// The open section's name, which the window's bar shows.
     title: ui::LocalState<String>,
-    /// The host's notifications, resolved on first use.
     notifications: Option<std::sync::Arc<dyn ui::notify::Notifier>>,
     pub(crate) pending_notifications: Vec<PendingNotification>,
     next_notification_attempt: ui::time::Instant,
@@ -1435,10 +1371,6 @@ pub struct ClocksApp {
 }
 
 impl ClocksApp {
-    /// The window over the clocks `controls` edit and `document` holds,
-    /// keeping this device's choices in `device`. Only a `live` one rings
-    /// and talks to the shell; a clicked notification of another record
-    /// opens it through `opener`.
     pub(crate) fn new(
         controls: Controls,
         device: DeviceChoices,
@@ -1509,9 +1441,8 @@ impl ClocksApp {
         app
     }
 
-    /// Show the clocks the document holds when they changed. The first
-    /// time, open the section that most likely brought the person back; a
-    /// quiet first launch begins with the at-a-glance world view.
+    /// Show the clocks when they changed; the first time, open the section that most
+    /// likely brought the person back.
     fn follow_document(&mut self) {
         let Some(clocks) = self.document.changed_since(&mut self.presented) else {
             return;
@@ -1531,12 +1462,9 @@ impl ClocksApp {
         self.store.present(&clocks);
     }
 
-    /// Retain the latest due notice in every subsequent transport snapshot.
-    ///
-    /// The shell polls a replace-in-place state file, so a one-frame zero
-    /// countdown can be overwritten by the inactive tombstone before the
-    /// shell observes it. A stable notification ID lets the producer keep the
-    /// notice attached to later tombstones while the shell deduplicates it.
+    /// Retain the latest due notice in every later snapshot: the shell polls a
+    /// replace-in-place file, so a one-frame countdown can be overwritten before it is
+    /// seen, and a stable id lets the notice ride later tombstones.
     pub(crate) fn remember_due(&mut self, event: DueEvent) {
         let native = match &event {
             DueEvent::Timer {
@@ -1577,16 +1505,14 @@ impl ClocksApp {
         }
     }
 
-    /// The host's notifications, resolved once.
     fn notifier(&mut self) -> std::sync::Arc<dyn ui::notify::Notifier> {
         self.notifications
             .get_or_insert_with(|| ui::host::current().notifications)
             .clone()
     }
 
-    /// Show due alerts the platform did not deliver itself. A host without
-    /// notifications drops them (the in-app notice and the shell still show
-    /// them); a service that failed is tried again shortly.
+    /// Show due alerts the platform did not deliver; a host without notifications
+    /// drops them, and a failed service is tried again shortly.
     fn deliver_native_notifications(&mut self) {
         if self.pending_notifications.is_empty() || ui::time::now() < self.next_notification_attempt
         {
@@ -1613,8 +1539,6 @@ impl ClocksApp {
             });
     }
 
-    /// Hand running timers to the platform's scheduler, where it keeps
-    /// notifications for an app that is not running.
     fn schedule_native_notifications(&mut self, now: chrono::DateTime<Utc>) {
         if !schedules_notifications() || ui::time::now() < self.next_schedule_attempt {
             return;
@@ -1673,7 +1597,6 @@ impl ClocksApp {
         }
     }
 
-    /// Ring what is due, and turn off the one-shot alarms that rang.
     fn ring_due(&mut self, now: chrono::DateTime<Utc>) {
         let mut delivery = self.store.device.get().delivery;
         let tick = self.store.state.with(|shown| {
@@ -1692,8 +1615,8 @@ impl ClocksApp {
         }
     }
 
-    /// Answer a control pressed on the shell's floating clock. Stopwatch
-    /// controls never fall through to a timer.
+    /// Answer a control pressed on the shell's floating clock; stopwatch controls
+    /// never fall through to a timer.
     pub(crate) fn apply_shell_command(&self, command: ShellCommand) {
         let now = wall_now();
         let timer = command.activity_id.map(ui::prelude::Id::from_raw);
@@ -1744,7 +1667,6 @@ impl ClocksApp {
         }
     }
 
-    /// The floating clock as the shell reads it.
     fn shell_snapshot(&self, now: chrono::DateTime<Utc>) -> ShellSnapshot {
         let activity = self
             .store
@@ -1784,7 +1706,6 @@ impl ClocksApp {
         snapshot
     }
 
-    /// Open the section a clicked notification names.
     pub(crate) fn activate_uri(&self, uri: &str) {
         if let Some(record) = crate::native_timers::activation_record(uri)
             && self.record.as_ref() != Some(&record)
@@ -1819,20 +1740,17 @@ impl ClocksApp {
     }
 }
 
-/// The present on the device's wall clock, as the toolkit reads it, so a
-/// test that holds the clock holds every countdown with it.
+/// The present as the toolkit reads it, so a test that holds the clock holds every
+/// countdown with it.
 pub(crate) fn wall_now() -> chrono::DateTime<Utc> {
     chrono::DateTime::from_timestamp_millis(ui::time::unix_now_ms_i64()).unwrap_or_default()
 }
 
-/// When a notification service that failed is tried again.
 fn retry_at() -> ui::time::Instant {
     let now = ui::time::now();
     now.checked_add(Duration::from_secs(5)).unwrap_or(now)
 }
 
-/// Whether the platform keeps scheduled notifications for an app that is
-/// not running.
 fn schedules_notifications() -> bool {
     !matches!(
         ui::notify::availability(ui::notify::Feature::Schedule),
@@ -1902,9 +1820,8 @@ fn clock_card(title: &str, body: Element) -> Card {
     Card::new(body).with_title(title)
 }
 
-/// Text that reads the clock. The views around it are keyed by the clocks,
-/// which stand still while time passes; this one is keyed by what it says,
-/// so the window's every tick can change it, and only it is rebuilt.
+/// Text that reads the clock: keyed by what it says, so a tick rebuilds it and
+/// nothing else.
 fn ticking_text(
     state: &ui::LocalState<Shown>,
     says: impl Fn(&Shown) -> String + 'static,
@@ -1917,8 +1834,6 @@ fn ticking_text(
     ))
 }
 
-/// The minute wall clocks show: a view of the time of day keyed by it is
-/// rebuilt as the minute turns.
 fn minute(s: &Shown) -> i64 {
     s.now().timestamp().div_euclid(60)
 }

@@ -105,8 +105,7 @@ fn groups() -> io::Result<Vec<u32>> {
     Ok(value)
 }
 fn filesystem_ids() -> (u32, u32) {
-    // SAFETY: the invalid all-ones ID cannot be installed; these calls report
-    // the CURRENT IDs. setfsuid/setfsgid return previous IDs, not success codes.
+    // SAFETY: the invalid all-ones ID cannot be installed; these calls report the CURRENT IDs.
     unsafe {
         (
             libc::setfsuid(u32::MAX).cast_unsigned(),
@@ -136,8 +135,7 @@ fn apply_filesystem_ids(uid: u32, gid: u32, groups: &[u32]) -> io::Result<()> {
     Ok(())
 }
 
-/// Nonserializable synchronous proof, minted only after exact caller FS-DAC
-/// transition. It cannot be constructed by the worker or retained past closure.
+/// Nonserializable synchronous proof, minted only after exact caller FS-DAC transition.
 pub(super) struct ProjectionFilesystemAccess {
     uid: u32,
     gid: u32,
@@ -148,8 +146,6 @@ pub(super) struct ProjectionFilesystemAccess {
 }
 impl ProjectionFilesystemAccess {
     /// Only dereference already-held descriptor paths for the two mount calls.
-    /// /proc/self/fd is owned by the effective-root task, so caller fsuid cannot
-    /// traverse it. Placement and ancestry lookup remain in the caller scope.
     pub(super) fn with_root_mount<T>(
         &self,
         mount: impl FnOnce() -> io::Result<T>,
@@ -175,8 +171,8 @@ impl ProjectionFilesystemAccess {
             }
             result
         })();
-        // Even a partial root transition or a failed mount must restore caller
-        // DAC before any further original-Home placement traversal.
+        // Even a partial root transition or a failed mount must restore caller DAC before any further
+        // original-Home placement traversal.
         apply_filesystem_ids(self.uid, self.gid, &self.groups)?;
         self.validate()?;
         result
@@ -202,11 +198,6 @@ impl ProjectionFilesystemAccess {
 }
 
 /// The signed shim is already inside the exact confined readonly namespace.
-/// `O_PATH` placement/ancestry traversal uses the original caller's DAC rights,
-/// while held-FD mount syscalls briefly restore the prior root filesystem IDs.
-/// Only the existing transient mount capabilities remain; no source contents
-/// or ambient paths are read.
-/// Root filesystem ownership is restored before the immutable claim is created.
 pub(super) fn with_source_filesystem_access<T>(
     facts: &Facts,
     project: impl FnOnce(&ProjectionFilesystemAccess) -> io::Result<T>,
@@ -221,8 +212,7 @@ pub(super) fn with_source_filesystem_access<T>(
     let before_caps = capabilities()?;
     let result = (|| {
         apply_filesystem_ids(facts.uid, facts.gid, &facts.groups)?;
-        // Changing fsuid can clear filesystem capabilities. The admitted shim
-        // has no DAC override; SETUID/SETGID/SYS_ADMIN must remain exactly held.
+        // Changing fsuid can clear filesystem capabilities.
         if capabilities()? != before_caps {
             return Err(refused("Projection capabilities changed"));
         }
@@ -239,8 +229,7 @@ pub(super) fn with_source_filesystem_access<T>(
         access.validate()?;
         result
     })();
-    // Always restore, including partial setter or projection failures. Refuse
-    // completion if restoration cannot be independently observed.
+    // Always restore, including partial setter or projection failures.
     let restored = apply_filesystem_ids(before.0, before.1, &before_groups);
     restored?;
     root()?;

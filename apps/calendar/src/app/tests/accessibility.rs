@@ -32,7 +32,6 @@ fn a_chip_dragged_to_another_day_reads_out_in_the_person_s_language() {
     );
 }
 
-/// What `action` reads out in `locale`.
 fn reads_out(h: &Harness, action: &Action, locale: &str) -> String {
     crate::resource::CATALOG.set_locale(locale);
     h.app
@@ -41,8 +40,6 @@ fn reads_out(h: &Harness, action: &Action, locale: &str) -> String {
         .1
 }
 
-/// `action` reads out as `english` on an English desktop and as `german` on a
-/// German one, under `what` the person meets it as.
 fn assert_both_languages(h: &Harness, what: &str, action: &Action, english: &str, german: &str) {
     assert_eq!(
         reads_out(h, action, "en-US"),

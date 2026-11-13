@@ -108,7 +108,6 @@ pub struct Heuristics {
     prefetch_off: Mutex<Vec<PrefetchOffHook>>,
 }
 
-/// What [`Heuristics::on_prefetch_off`] runs.
 pub type PrefetchOffHook = Box<dyn Fn() + Send + Sync>;
 
 impl Heuristics {
@@ -197,7 +196,6 @@ impl Heuristics {
         self.prefetch_off.lock_recover().push(hook);
     }
 
-    /// Whether a file was opened since the last call.
     pub fn take_opened(&self) -> bool {
         self.opened.swap(false, Ordering::AcqRel)
     }
@@ -310,7 +308,6 @@ impl Heuristics {
         }
     }
 
-    /// Called when a directory is listed.
     pub fn on_readdir(&self, _ino: u64) {}
 }
 
@@ -411,9 +408,9 @@ mod tests {
         endpoint.close().await;
     }
 
-    /// #4224. The policy monitor sleeps until a file is opened: the first
-    /// open after a quiet interval wakes it, and opens are reported once
-    /// per interval however many there were.
+    /// The policy monitor sleeps until a file is opened: the first open after a
+    /// quiet interval wakes it, and opens are reported once per interval however
+    /// many there were.
     #[tokio::test]
     async fn an_open_wakes_the_policy_monitor() {
         let endpoint = Endpoint::builder(presets::Minimal)

@@ -1,6 +1,6 @@
-//! Pure decoding of the PowerShell Storage-cmdlet snapshot (`Get-Disk`,
-//! `Get-Partition`, `Get-PartitionSupportedSize`, the Shell BitLocker
-//! property) and the disk-kind policy derived from it.
+//! Pure decoding of the PowerShell Storage-cmdlet snapshot (`Get-Disk`, `Get-Partition`,
+//! `Get-PartitionSupportedSize`, the Shell BitLocker property) and the disk-kind policy derived from
+//! it.
 
 use serde_json::Value;
 
@@ -16,8 +16,8 @@ pub enum PartitionStyle {
 }
 
 impl PartitionStyle {
-    /// `Get-Disk` emits the formatted name (`GPT`) when cast to string and the
-    /// CIM integer otherwise; accept both.
+    /// `Get-Disk` emits the formatted name (`GPT`) when cast to string and the CIM integer otherwise;
+    /// accept both.
     fn from_json(value: Option<&Value>) -> Self {
         match value {
             Some(Value::Number(n)) => match n.as_u64() {
@@ -37,7 +37,6 @@ impl PartitionStyle {
     }
 }
 
-/// `MSFT_Disk.BusType`, normalised to a lowercase name without spaces.
 pub fn bus_type_name(value: Option<&Value>) -> String {
     const NAMES: [&str; 20] = [
         "unknown",
@@ -83,12 +82,11 @@ pub fn bus_type_name(value: Option<&Value>) -> String {
     }
 }
 
-/// Buses whose disk the firmware itself boots from and that Windows exposes
-/// as one plain physical disk. Everything else — RAID/RST, Storage Spaces,
-/// removable media, VHD(X) native boot, network disks — fails closed.
+/// Buses whose disk the firmware itself boots from and that Windows exposes as one plain physical
+/// disk. Everything else (RAID/RST, Storage Spaces, removable media, VHD(X) native boot, network
+/// disks) fails closed.
 const SUPPORTED_BUSES: [&str; 7] = ["nvme", "sata", "ata", "sas", "scsi", "virtual", "ufs"];
 
-/// GPT types that mean the disk is not a plain basic disk.
 const LDM_METADATA_TYPE: &str = "5808c8aa-7e8f-42e0-85d2-e1e90434cfb3";
 const LDM_DATA_TYPE: &str = "af9b60a0-1431-4f62-bc68-3311714a69ad";
 const STORAGE_SPACES_TYPE: &str = "e75caf8f-f680-4cee-afa3-b001e56efc2d";
@@ -116,9 +114,7 @@ pub struct SnapshotPartition {
     pub guid: Option<String>,
     pub gpt_type: Option<String>,
     pub drive_letter: Option<char>,
-    /// Holds the running Windows (`C:`).
     pub is_boot: bool,
-    /// The ESP Windows booted from.
     pub is_system: bool,
 }
 
@@ -128,18 +124,15 @@ pub struct SnapshotSystem {
     pub offset: u64,
     pub size: u64,
     pub guid: Option<String>,
-    /// `Get-PartitionSupportedSize`; `None` when the cmdlet failed.
     pub size_min: Option<u64>,
     pub size_max: Option<u64>,
 }
 
-/// One consistent PowerShell view of the system disk.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub disk: SnapshotDisk,
     pub system: SnapshotSystem,
     pub partitions: Vec<SnapshotPartition>,
-    /// Shell `System.Volume.BitLockerProtection` of the system volume.
     pub bitlocker_protection: Option<u64>,
 }
 
@@ -167,8 +160,6 @@ fn guid_field(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(Value::as_str).and_then(normalize_guid)
 }
 
-/// `[string]$partition.DriveLetter` is `"C"`, `""`, or a NUL character when
-/// no letter is assigned.
 fn drive_letter(v: &Value) -> Option<char> {
     let text = v.get("DriveLetter")?.as_str()?;
     let mut chars = text.chars().filter(|c| *c != '\0' && !c.is_whitespace());
@@ -184,8 +175,6 @@ fn items(value: Option<&Value>) -> Vec<&Value> {
     }
 }
 
-/// Decode the snapshot script's JSON. Missing identity fields are errors;
-/// only the shrink bounds and the BitLocker property may be absent.
 pub fn parse_snapshot(json: &Value) -> Result<Snapshot, String> {
     let disk = json.get("Disk").ok_or("snapshot has no Disk")?;
     let system = json.get("System").ok_or("snapshot has no System")?;
@@ -235,8 +224,8 @@ pub fn parse_snapshot(json: &Value) -> Result<Snapshot, String> {
     })
 }
 
-/// Why this disk cannot host staging, or `None` when it is a plain basic GPT
-/// boot disk. `NotGpt` is reported separately by the caller.
+/// Why this disk cannot host staging, or `None` when it is a plain basic GPT boot disk; `NotGpt` is
+/// reported separately by the caller.
 pub fn unsupported_reason(snapshot: &Snapshot) -> Option<String> {
     let disk = &snapshot.disk;
     if !disk.is_boot {
@@ -263,9 +252,8 @@ pub fn unsupported_reason(snapshot: &Snapshot) -> Option<String> {
     None
 }
 
-/// Fallback [`Disk`] when the layout IOCTL is unavailable: usable bounds are
-/// derived for the standard 128-entry array (identical to what Windows itself
-/// writes), so the planner's 1 MiB margins still hold.
+/// Fallback [`Disk`] when the layout IOCTL is unavailable: bounds are derived for the standard
+/// 128-entry array, which is what Windows itself writes, so the planner's 1 MiB margins still hold.
 pub fn disk_from_snapshot(snapshot: &Snapshot) -> Result<Disk, String> {
     let disk = &snapshot.disk;
     if disk.style != PartitionStyle::Gpt {
@@ -318,9 +306,8 @@ pub fn disk_from_snapshot(snapshot: &Snapshot) -> Result<Disk, String> {
     })
 }
 
-/// Require the Storage-cmdlet view to describe exactly the disk the native
-/// layout IOCTL returned. Two independent readers that disagree mean the
-/// partition map is in flux; nothing is planned against it.
+/// Requires the Storage-cmdlet view to describe exactly the disk the layout IOCTL returned; two
+/// independent readers that disagree mean the partition map is in flux, so nothing is planned.
 pub fn cross_check(disk: &Disk, snapshot: &Snapshot) -> Result<(), String> {
     let from_snapshot = disk_from_snapshot(snapshot)?;
     if from_snapshot.id != disk.id
@@ -345,8 +332,7 @@ pub fn cross_check(disk: &Disk, snapshot: &Snapshot) -> Result<(), String> {
     Ok(())
 }
 
-/// The partition holding the running Windows and the ESP it booted from; the
-/// adapter refuses to write, resize (other than C:) or delete either.
+/// The adapter refuses to write, resize (other than C:) or delete either.
 pub fn protected_partitions(snapshot: &Snapshot) -> Vec<String> {
     snapshot
         .partitions
@@ -357,20 +343,16 @@ pub fn protected_partitions(snapshot: &Snapshot) -> Vec<String> {
         .collect()
 }
 
-/// Shell `System.Volume.BitLockerProtection` values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BitlockerState {
-    /// Not encrypted, not encryptable, or encrypted with protection off
-    /// (suspended, or device encryption still waiting for activation).
+    /// Not encrypted, not encryptable, or encrypted with protection off (suspended, or device
+    /// encryption still waiting for activation).
     Unprotected,
-    /// Encrypted with active protectors: firmware changes need a suspend.
     Protected,
-    /// Encryption or decryption in progress: the volume cannot be resized.
     Converting,
-    /// Locked (never true for the running Windows volume, but fail closed).
     Locked,
-    /// The property was unavailable or had an undocumented value. Treated as
-    /// protected; the elevated remedy re-reads the authoritative status.
+    /// Unavailable or undocumented. Treated as protected; the elevated remedy re-reads the
+    /// authoritative status.
     Unknown,
 }
 

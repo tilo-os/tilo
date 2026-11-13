@@ -1,7 +1,6 @@
-//! Canonical sync-storage accounting and conservative local hydration eviction.
-//!
-//! This authority reasons over CRDT node identities and content hashes, never
-//! host paths.  Consequently symlinks cannot escape the workspace namespace.
+//! Canonical sync-storage accounting and conservative local hydration eviction. It
+//! reasons over CRDT node identities and content hashes, never host paths, so
+//! symlinks cannot escape the workspace namespace.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -29,18 +28,18 @@ pub struct StorageAuthority {
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
     dirty: Arc<Mutex<crate::fs::WriteStages>>,
-    /// Settings shares the same durable authority as FUSE.  In particular,
-    /// it never treats a daemon-lifetime hydration source as durability.
+    /// Settings shares the same durable authority as FUSE, and never treats a
+    /// daemon-lifetime hydration source as durability.
     availability: Option<Arc<Mutex<AvailabilityRegistry>>>,
     eviction_queue: Option<Arc<tokio::sync::Mutex<EvictionQueue>>>,
     eviction: Arc<tokio::sync::Mutex<()>>,
     workspace: String,
-    /// The person's prefetch switch and cache budget; `None` answers the
-    /// policy requests with an error.
+    /// The person's prefetch switch and cache budget; `None` answers policy
+    /// requests with an error.
     cache_policy: Option<Arc<crate::cache_policy::CachePolicies>>,
 }
 
-/// Serve the narrow storage protocol.  The caller owns socket placement and
+/// Serve the narrow storage protocol. The caller owns socket placement and
 /// permissions; no document bytes or mutation operations are exposed here.
 pub async fn serve(listener: tokio::net::UnixListener, authority: StorageAuthority) {
     loop {
@@ -49,8 +48,6 @@ pub async fn serve(listener: tokio::net::UnixListener, authority: StorageAuthori
         };
         let authority = authority.clone();
         tokio::spawn(async move {
-            // A close, a malformed or oversized frame, or a failed write
-            // ends the connection.
             while let Ok(Some(request)) = STORAGE_FRAMING
                 .read_value_async::<_, StorageRequest>(&mut stream)
                 .await
@@ -104,7 +101,6 @@ struct FileBlobs {
     state: SyncedFileState,
 }
 
-/// A live file as seen through the namespace, before residency is looked up.
 struct LogicalFile {
     identity: String,
     inode: u64,
@@ -136,15 +132,14 @@ impl StorageAuthority {
         }
     }
 
-    /// Answer the cache-policy requests from `policies`.
     #[must_use]
     pub fn with_cache_policy(mut self, policies: Arc<crate::cache_policy::CachePolicies>) -> Self {
         self.cache_policy = Some(policies);
         self
     }
 
-    /// The policy in force, after replacing it with `set` if given. Setting
-    /// a smaller budget evicts at once, so it runs off the async workers.
+    /// The policy in force, after replacing it with `set` if given. A smaller budget
+    /// evicts at once, so it runs off the async workers.
     async fn cache_policy(&self, set: Option<runtime_fs::storage::CachePolicy>) -> StorageResponse {
         let Some(policies) = self.cache_policy.clone() else {
             return StorageResponse::Error("this mount keeps no cache policy".into());
@@ -161,7 +156,6 @@ impl StorageAuthority {
         }
     }
 
-    /// The live files the namespace knows about, filtered to regular files.
     fn logical_files(&self) -> Vec<LogicalFile> {
         let mut ns = self.namespace.lock_recover();
         ns.live_node_ids()
@@ -187,9 +181,9 @@ impl StorageAuthority {
             .collect()
     }
 
-    /// The accounting entry for one logical file: content-less files (never
-    /// written) report their logical size as already hydrated; the rest ask
-    /// the hydrator for real residency.
+    /// The accounting entry for one logical file: content-less files (never written)
+    /// report their logical size as already hydrated; the rest ask the hydrator for
+    /// real residency.
     async fn file_blobs(
         &self,
         file: LogicalFile,
@@ -230,9 +224,9 @@ impl StorageAuthority {
             };
         };
         let residence = self.hydrator.residency(hash).await;
-        // A signed `ReplicaAckV1` persisted in AvailabilityRegistry is the
-        // only durability proof Settings may project. Hydrator peer/source
-        // state is intentionally only transport telemetry and resets at exit.
+        // A signed `ReplicaAckV1` persisted in AvailabilityRegistry is the only
+        // durability proof Settings may project; Hydrator peer/source state is
+        // transport telemetry and resets at exit.
         let durable = record.is_some_and(has_fresh_signed_ack);
         let in_flight =
             residence.in_flight || record.is_some_and(|record| record.transfer.phase.is_active());
@@ -269,11 +263,9 @@ impl StorageAuthority {
         let online = !self.hydrator.known_peers().is_empty();
         let dirty = self.dirty_inodes();
         let records = self.records();
-        // One captured registry generation and one superset history catalog
-        // serve every row. A failed/changed catalog yields no reclaimable UI
-        // rows rather than re-planning files independently.
-        // Only rows that can plausibly be allowed enter the expensive exact
-        // payload catalog.  The coordinator still adds every resident, pinned,
+        // One captured registry generation and one superset history catalog serve
+        // every row. Only rows that can plausibly be allowed enter the expensive
+        // exact payload catalog; the coordinator still adds every resident, pinned
         // and retained root needed to prove shared-chunk safety.
         let target_ids = snapshot_candidate_ids(&logical, &dirty, &records, unix_now_ms());
         let plans = match self.coordinator() {
@@ -322,9 +314,8 @@ impl StorageAuthority {
         Ok(())
     }
 
-    /// What this device holds of the workspace, split by what losing the
-    /// device would cost (`classify`). It is answered to the person's own
-    /// devices, so it carries counts and never a path.
+    /// What this device holds of the workspace, split by what losing the device
+    /// would cost (`classify`), as counts and never a path.
     pub async fn residency(&self) -> ResidencySummary {
         let logical = self.logical_files();
         let dirty = self.dirty_inodes();
@@ -343,7 +334,6 @@ impl StorageAuthority {
                 .map(|file| file.inode)
                 .collect()
         };
-        // The same receipts the cache budget gives up content for first.
         let held_elsewhere = self
             .availability
             .as_ref()
@@ -390,15 +380,13 @@ impl StorageAuthority {
         }
     }
 
-    /// Drop the workspace's cache: the content this device fetched from
-    /// another one and keeps only to open it again quickly. What is being
-    /// written or fetched right now stays; pinned and local-only content is
-    /// never cache. A dropped file downloads again when it is opened.
+    /// Drop the workspace's cache: the content this device fetched from another one
+    /// and keeps only to open it again quickly. What is being written or fetched
+    /// right now stays; pinned and local-only content is never cache.
     ///
     /// # Errors
     ///
-    /// Returns an error when `workspace` is not this one or an entry's
-    /// removal cannot be recorded.
+    /// `workspace` is not this one, or an entry's removal cannot be recorded.
     pub async fn free_cache(&self, workspace: &str) -> Result<CacheFreed> {
         self.check_workspace(workspace)?;
         let _exclusive = self.eviction.lock().await;
@@ -417,13 +405,12 @@ impl StorageAuthority {
         tokio::task::spawn_blocking(move || drop_cached(&files, &keys)).await?
     }
 
-    /// Keep the whole workspace on this device ("Keep offline" on its root),
-    /// or stop keeping it. Pinned content is fetched in the background.
+    /// Keep the whole workspace on this device ("Keep offline" on its root), or stop
+    /// keeping it. Pinned content is fetched in the background.
     ///
     /// # Errors
     ///
-    /// Returns an error when `workspace` is not this one, or the policy
-    /// cannot be recorded.
+    /// `workspace` is not this one, or the policy cannot be recorded.
     pub fn keep_here(&self, workspace: &str, keep: bool) -> Result<()> {
         self.check_workspace(workspace)?;
         let registry = self
@@ -446,10 +433,10 @@ impl StorageAuthority {
 
     /// # Errors
     ///
-    /// Safe eviction uses the durable, exact-version record plane.  It can
-    /// queue while offline only when a fresh persisted signed receipt already
-    /// proves an eligible replica; it never promotes a live Hydrator peer to
-    /// durability and never directly deletes a blob.
+    /// Safe eviction uses the durable, exact-version record plane. It can queue
+    /// while offline only when a fresh persisted signed receipt already proves an
+    /// eligible replica; it never promotes a live Hydrator peer to durability and
+    /// never directly deletes a blob.
     pub async fn evict(&self, selected: Vec<EvictionSelection>) -> Result<EvictionReport> {
         let _exclusive = self.eviction.lock().await;
         let mut report = EvictionReport::default();
@@ -532,10 +519,9 @@ impl StorageAuthority {
                 None,
                 Some(expected_hash),
                 move |plan, existing_request, queue, registry, catalog, now_ms| {
-                    // `write` establishes dirtiness before it can publish a
-                    // replacement namespace revision. Holding both guards
-                    // therefore prevents either local or remote mutation from
-                    // slipping between token validation and backend GC.
+                    // `write` establishes dirtiness before it can publish a replacement
+                    // namespace revision, so holding both guards keeps local and remote
+                    // mutation out between token validation and backend GC.
                     let dirty = dirty.lock_recover();
                     let mut namespace = namespace.lock_recover();
                     validate_live_eviction_token(
@@ -606,8 +592,7 @@ fn app_from_path(path: &str) -> Option<String> {
 
 /// Whether another device proved it holds this content.
 ///
-/// Nothing acknowledges replicas since the tree became the record, so no
-/// file's bytes are known to be held elsewhere by another device: Settings
+/// Nothing acknowledges replicas since the tree became the record, so Settings
 /// offers only the destructive release, and says so.
 fn has_fresh_signed_ack(_record: &RecordAvailability) -> bool {
     false
@@ -617,48 +602,35 @@ fn has_fresh_signed_ack_at(_record: &RecordAvailability, _now: u64) -> bool {
     false
 }
 
-/// What one file's bytes here are, by what losing this device would cost.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Holding {
-    /// Kept by the person's choice, and held elsewhere too.
     Pinned,
-    /// Kept, and held elsewhere too.
     Replicated,
-    /// Held by no other device this one knows of.
     OnlyHere,
-    /// Fetched from elsewhere; dropped again when space is short.
     Cache,
 }
 
-/// What [`classify`] knows of one file on this device.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independent fact from its own source, not a state machine"
 )]
 #[derive(Clone, Copy, Debug, Default)]
 struct FileFacts {
-    /// Its bytes on this device.
     local_bytes: u64,
-    /// It has changes not yet saved as a version.
     unsaved: bool,
-    /// The person keeps it here ("Keep offline", itself or a folder above).
     pinned: bool,
-    /// The content store holds it as cache.
     cached: bool,
-    /// Another device signed a receipt for its current version
-    /// ([`AvailabilityRegistry::held_elsewhere`]). An expired one counts: a
-    /// content id is immutable, and this only says where else the bytes are,
-    /// it never permits dropping them (safe eviction asks for fresh ones).
+    /// Another device signed a receipt for its current version. An expired one
+    /// counts: a content id is immutable, and this only says where else the bytes
+    /// are, it never permits dropping them.
     acknowledged: bool,
-    /// Its bytes arrived from a peer while this daemon ran.
     fetched: bool,
 }
 
-/// Where a file's bytes here stand. Another device is known to hold it when
-/// it signed a receipt for the current version, or when the bytes came from
-/// a peer (cache, or fetched in this run); without either, and while it has
-/// unsaved changes, it is only here, pinned or not, because that is what a
-/// wiped device would lose. `None` when it has no bytes here.
+/// Where a file's bytes here stand. Another device is known to hold it when it
+/// signed a receipt for the current version, or when the bytes came from a peer
+/// (cache, or fetched in this run); without either, and while it has unsaved
+/// changes, it is only here, pinned or not. `None` when it has no bytes here.
 fn classify(facts: &FileFacts) -> Option<Holding> {
     if facts.local_bytes == 0 {
         return None;
@@ -690,7 +662,6 @@ fn add_to(split: &mut ResidencySplit, facts: &FileFacts) {
     *total = total.saturating_add(bytes);
 }
 
-/// Whether "Keep offline" is set on the inode `ino` or a folder above it.
 fn kept_by_policy(
     ns: &mut Namespace,
     ino: u64,
@@ -714,7 +685,6 @@ fn kept_by_policy(
     false
 }
 
-/// Deepest folder nesting [`kept_by_policy`] walks.
 const MAX_POLICY_DEPTH: usize = 4096;
 
 /// Remove the cached entries among `keys` from the content store's file
@@ -759,9 +729,9 @@ fn snapshot_candidate_ids(
         .collect()
 }
 
-/// Verify the live namespace token at the destructive authorization boundary,
-/// after all catalog I/O.  Availability/history can lag namespace CRDT
-/// application, so neither is a substitute for this check.
+/// Verify the live namespace token at the destructive authorization boundary, after
+/// all catalog I/O. Availability and history can lag namespace CRDT application, so
+/// neither is a substitute for this check.
 fn validate_live_eviction_token<Stage>(
     namespace: &mut Namespace,
     dirty: &HashMap<u64, Stage>,
@@ -837,8 +807,6 @@ mod tests {
         assert!(closed.is_none());
     }
 
-    /// Settings' client sets and reads the cache policy through the socket,
-    /// and the daemon applies it to the predictive worker and the cache.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_cache_policy_is_set_and_read_through_the_socket() {
         use runtime_fs::storage::{CachePolicy, MIN_CACHE_BUDGET_BYTES, StorageClient};
@@ -915,8 +883,6 @@ mod tests {
         ));
     }
 
-    /// Bytes another device is known to hold are kept, cache or pinned;
-    /// the rest, and anything unsaved, are only here, pinned or not.
     #[test]
     fn local_bytes_are_split_by_what_losing_the_device_costs() {
         let held = |facts: FileFacts| FileFacts {
@@ -999,7 +965,6 @@ mod tests {
         assert_eq!(split.total_bytes(), 80);
     }
 
-    /// Freeing the cache removes cached entries and nothing kept.
     #[test]
     fn freeing_the_cache_drops_only_cached_entries() {
         let dir = tempfile::tempdir().unwrap();
@@ -1023,9 +988,6 @@ mod tests {
         assert!(area.entry(&local).is_some() && area.entry(&pinned).is_some());
     }
 
-    /// Through the storage socket's authority: a workspace's residency, its
-    /// cache freed, and the whole of it kept here, each refused for a
-    /// workspace this device does not mount.
     #[tokio::test]
     async fn the_authority_reports_frees_and_keeps_a_workspace() {
         use iroh::endpoint::{Endpoint, presets};
@@ -1037,8 +999,6 @@ mod tests {
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
         ));
-        // Three large files, stored the way an authored write stores them;
-        // one is then cache, as if it had been fetched.
         let size = crate::content::FILE_BACKED_MIN + 1;
         let mut hashes = Vec::new();
         let mut inodes = Vec::new();
@@ -1277,8 +1237,6 @@ mod tests {
                 )
             };
 
-            // This is the exact lease held by `prepare_with_handoff` while it
-            // persists the request and performs backend tag release.
             let dirty_lease = dirty.lock().unwrap();
             let mut namespace_lease = namespace.lock().unwrap();
             assert!(

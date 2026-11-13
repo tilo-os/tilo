@@ -1,5 +1,3 @@
-//! What a Notion export becomes: the tables it holds, as CSV.
-
 use std::io::Write as _;
 
 use super::*;
@@ -8,7 +6,6 @@ fn localized() {
     ui::i18n::I18nManager::init("en-US");
 }
 
-/// A zip holding `files`, in the order given.
 fn archive(files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut buffer = std::io::Cursor::new(Vec::new());
     {

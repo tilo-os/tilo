@@ -1,10 +1,4 @@
-//! Trusted Tilo release catalog and verified medium download/cache.
-//!
-//! The catalog is embedded into each platform-signed Imager package at build
-//! time. In a genuinely signed distribution, changing catalog bytes requires
-//! replacing that signed application. Local development embedding alone is not
-//! cryptographic release evidence.  Both the compressed transport and
-//! expanded disk image are SHA-256 checked before the image becomes selectable.
+//! The trusted Tilo release catalogue, and downloading a medium whose bytes it verified.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -68,9 +62,6 @@ enum TargetPolicyLayout {
     BundleV1,
 }
 
-/// A small, signed bundle of the exact target UKI and its generation-bound
-/// PCR prediction. It lets a preparation host review the destination's boot
-/// policy without mounting the live installer image.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TargetPolicyMetadata {
@@ -188,7 +179,6 @@ impl MediaProvenance {
     }
 }
 
-/// A local, non-replicated update from the verified release fetch worker.
 #[derive(Clone, Debug)]
 pub enum DownloadEvent {
     Downloading { received: u64, total: u64 },
@@ -196,8 +186,6 @@ pub enum DownloadEvent {
     Expanding { written: u64, total: u64 },
 }
 
-/// Cancellation narrows the authority of this process-local network job. The
-/// partial archive remains in the cache so a later attempt resumes safely.
 #[derive(Clone, Debug, Default)]
 pub struct DownloadControl(Arc<AtomicBool>);
 
@@ -211,9 +199,6 @@ impl DownloadControl {
     }
 }
 
-/// A selection obtained only from this build's embedded catalog. Authentication
-/// depends on a genuinely signed build; development embedding is not a signature.
-/// This type cannot become a whole-disk `Source` or a media download request.
 #[derive(Debug)]
 pub struct InternalRelease {
     metadata: InternalMetadata,
@@ -252,9 +237,6 @@ impl InternalRelease {
         self.metadata.manifest_size
     }
 
-    /// Bind the exact received bytes to the embedded selection before parsing.
-    /// A later downloader must retain existing origin/length rules; this method
-    /// performs no transport, staging, execution or device access.
     pub fn verify_manifest(
         &self,
         bytes: &[u8],
@@ -474,18 +456,12 @@ fn media_releases(catalog: Catalog, arch: &str) -> Vec<TiloRelease> {
         .collect()
 }
 
-/// The 64-bit architectures the release catalog may describe. A catalog
-/// entry naming anything else is refused; see
-/// [`unqualified_architecture`] for the ones Tilo can never run on.
 pub const SUPPORTED_ARCHITECTURES: [&str; 2] = ["x86_64", "aarch64"];
 
-/// The catalogue key prefix that states each architecture boundary; the
-/// reasons themselves live in [`unqualified_architecture`].
 pub const ARCHITECTURE_UNSUPPORTED: &str = "installer-preview-target-architecture-unsupported";
 
 type ArchitectureBoundary = (&'static str, fn(&str) -> bool);
 
-/// The architectures Tilo refuses outright, and how to recognise them.
 const UNQUALIFIED: [ArchitectureBoundary; 3] = [
     (
         "installer-preview-target-architecture-unsupported-processor-size",
@@ -501,28 +477,6 @@ const UNQUALIFIED: [ArchitectureBoundary; 3] = [
     ),
 ];
 
-/// Why `architecture` cannot run Tilo, as a catalogue key, or `None` when the
-/// release catalog may describe it.
-///
-/// Three boundaries are refused here, before any catalog entry or report is
-/// looked at:
-///
-/// - **32-bit** (`i686`, `i386`, `armv7hl`, `armv7l`): Tilo needs a 64-bit
-///   address space with 4 GiB or more of RAM. Automerge documents and the
-///   file store are unbounded in size, and the browser runtime and image
-///   model are built for 64-bit only, so a process that cannot map more than
-///   4 GiB cannot open a large workspace.
-/// - **Big-endian** (`s390x`, `ppc64`): every format Tilo stores, hashes and
-///   exchanges — Automerge documents and their sync messages, Iroh content
-///   hashes, blob envelopes, registry manifests — is little-endian or
-///   byte-as-written, so a big-endian host is a different serialization
-///   contract rather than a different target triple.
-/// - **SPARC** (`sparc64`): no current Vulkan compute driver, so neither the
-///   compositor nor the toolkit can draw.
-///
-/// 64-bit little-endian architectures Tilo has not built or boot-tested
-/// (`riscv64`, `ppc64le`) are not refused as impossible; they have no catalog
-/// entry yet, which the target page states instead.
 #[must_use]
 pub fn unqualified_architecture(architecture: &str) -> Option<&'static str> {
     UNQUALIFIED
@@ -549,10 +503,6 @@ fn is_sparc(architecture: &str) -> bool {
     matches!(architecture, "sparc" | "sparc64")
 }
 
-/// The selected target policy for `architecture`, if the embedded catalog
-/// publishes one. An empty selection is honest: source preparation then
-/// defers sensitive capture instead of claiming TPM protection it cannot prove.
-/// The download and the bundle review belong to the platform backend.
 pub fn bundled_target_policy_for_arch(
     architecture: &str,
 ) -> Result<Option<staging_handoff_model::prepared::TargetPolicyBundle>, String> {
@@ -589,22 +539,10 @@ pub fn bundled_target_policy_for_arch(
     }))
 }
 
-/// Media selections for the computer this build runs on.
-///
-/// Authentication depends on the signature of the build. A medium prepared for
-/// another computer selects that computer's architecture through
-/// [`bundled_releases_for_arch`]; the host architecture is not a constraint on
-/// what the verified catalog may offer.
 pub fn bundled_releases() -> Result<Vec<TiloRelease>, String> {
     releases_for_host(BUNDLED_CATALOG, crate::host::architecture())
 }
 
-/// Media selections for `architecture` from the embedded, verified catalog.
-///
-/// This is the selection a medium prepared for another computer uses. It never
-/// falls back to the preparation host's architecture: an architecture without
-/// a verified payload yields an empty selection, so the interface can say so
-/// instead of writing a medium that cannot start there.
 pub fn bundled_releases_for_arch(architecture: &str) -> Result<Vec<TiloRelease>, String> {
     releases_for_arch(BUNDLED_CATALOG, architecture)
 }
@@ -629,17 +567,10 @@ fn releases_for_arch(catalog_json: &str, architecture: &str) -> Result<Vec<TiloR
     Ok(media_releases(catalog, architecture))
 }
 
-/// Internal selections stay separate from the ordinary media downloader.
-/// No released entries exist until actual reviewed artifacts are published.
-/// # Errors
-/// Rejects any invalid embedded catalog entry before host filtering.
 pub fn bundled_internal_releases() -> Result<Vec<InternalRelease>, String> {
     bundled_internal_releases_for_arch(std::env::consts::ARCH)
 }
 
-/// Internal installer selections for `architecture`, not for the preparing
-/// host. A medium prepared for another computer resolves its own target
-/// architecture here; no fallback to the host architecture exists.
 pub fn bundled_internal_releases_for_arch(
     architecture: &str,
 ) -> Result<Vec<InternalRelease>, String> {
@@ -659,12 +590,6 @@ pub fn bundled_internal_releases_for_arch(
         .collect())
 }
 
-/// The catalog internal releases resolve against: the embedded one, or, in
-/// builds that allow staging test overrides (debug, or compiled with
-/// `TILO_IMAGER_STAGING_TEST_OVERRIDES=1`), the file named by
-/// `TILO_STAGING_TEST_CATALOG`. The loop-device harness uses it to name its
-/// synthetic bundle; release builds never read it, and the file passes the
-/// same `parse_catalog` validation as the embedded catalog.
 fn internal_catalog_text() -> Result<std::borrow::Cow<'static, str>, String> {
     if crate::setup::staging::helper::test_overrides_allowed() {
         if let Some(path) = std::env::var_os("TILO_STAGING_TEST_CATALOG") {
@@ -870,8 +795,6 @@ fn download_archive_observed(
         return Ok(());
     }
 
-    // One ranged attempt may be followed by one clean full request when the
-    // server ignores Range or returns a response that cannot safely be joined.
     for _ in 0..2 {
         let resume = partial_size > 0;
         let mut request = client.get(url);
@@ -901,8 +824,6 @@ fn download_archive_observed(
         }
 
         if resume && response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
-            // The remote object no longer agrees with the cached offset. Retry
-            // once from zero; the final digest still authenticates the result.
             fs::remove_file(archive_part)
                 .map_err(|error| format!("Could not restart the partial download: {error}"))?;
             partial_size = 0;
@@ -910,8 +831,6 @@ fn download_archive_observed(
         }
 
         if resume && response.status() != reqwest::StatusCode::OK {
-            // Preserve a valid partial across transient server errors. No bytes
-            // from an unrecognized response are ever appended to it.
             return response
                 .error_for_status()
                 .map(|_| ())
@@ -933,8 +852,6 @@ fn download_archive_observed(
             }
             return Err("The Tilo installer download has an unexpected size.".into());
         }
-        // A 200 response to a ranged request means Range was ignored. Truncate
-        // first, then safely consume that response as the new complete file.
         let mut archive = File::create(archive_part)
             .map_err(|error| format!("Could not create the download cache: {error}"))?;
         let downloaded =
@@ -954,8 +871,6 @@ fn download_archive_observed(
     Err("The Tilo installer server did not honor a safe download restart.".into())
 }
 
-/// Download, verify and expand `release`, telling `notify` how far it is.
-/// Blocks; run it off the UI thread. `control` stops it between chunks.
 pub fn verified_image_observed(
     release: &TiloRelease,
     control: &DownloadControl,
@@ -1075,7 +990,6 @@ fn source_for(release: &TiloRelease, image: &Path) -> Result<Source, String> {
     Ok(source)
 }
 
-/// Zstandard frames back to back, decoded as `zstd --decompress` reads them.
 struct ZstdFrames<R> {
     source: R,
     frame: ruzstd::decoding::FrameDecoder,
@@ -1204,7 +1118,6 @@ mod tests {
             assert!(bundled_releases().is_ok());
         }
 
-        // Phase `native_arm64_host_selects_only_arm64_media_regardless_of_imager_build`.
         {
             let releases =
                 releases_for_host(&catalog_with_both_architectures(), Ok(Some("aarch64"))).unwrap();
@@ -1214,7 +1127,6 @@ mod tests {
             assert_eq!(releases[0].image_sha256, "b".repeat(64));
         }
 
-        // Phase `native_x86_64_host_selects_only_x86_64_media`.
         {
             let releases =
                 releases_for_host(&catalog_with_both_architectures(), Ok(Some("x86_64"))).unwrap();
@@ -1222,7 +1134,6 @@ mod tests {
             assert_eq!(releases[0].name, "Tilo x86_64");
         }
 
-        // Phase `native_arm64_host_does_not_fall_back_when_only_x86_media_is_published`.
         {
             let mut catalog: serde_json::Value =
                 serde_json::from_str(&catalog_with_both_architectures()).unwrap();
@@ -1246,7 +1157,6 @@ mod tests {
             );
         }
 
-        // Phase `arm64_selection_preserves_catalog_metadata_validation`.
         {
             let catalog = catalog_with_both_architectures();
             for invalid in [
@@ -1259,8 +1169,6 @@ mod tests {
         }
     }
 
-    /// A medium prepared for another computer selects that computer's
-    /// architecture from the verified catalog, never the preparation host's.
     #[test]
     fn another_computers_architecture_selects_its_own_verified_payload() {
         let catalog = catalog_with_both_architectures();
@@ -1272,17 +1180,11 @@ mod tests {
         assert_eq!(x86.len(), 1);
         assert_eq!(x86[0].architecture, "x86_64");
 
-        // The embedded catalog is validated for the target architecture even
-        // when this build runs elsewhere.
         assert!(bundled_releases_for_arch("aarch64").is_ok());
         assert!(bundled_releases_for_arch("x86_64").is_ok());
-        // An architecture Tilo cannot run on is refused; one it has not built
-        // for yet has no entry.
         assert!(bundled_releases_for_arch("i686").is_err());
         assert!(bundled_releases_for_arch("riscv64").unwrap().is_empty());
 
-        // A missing target payload stays empty rather than falling back to
-        // the preparation host's architecture.
         let mut only_x86: serde_json::Value = serde_json::from_str(&catalog).unwrap();
         only_x86["releases"]
             .as_array_mut()
@@ -1294,15 +1196,11 @@ mod tests {
                 .is_empty()
         );
 
-        // Every entry is validated before the target filter, including a
-        // corrupt payload for another architecture.
         let mut corrupt: serde_json::Value = serde_json::from_str(&catalog).unwrap();
         corrupt["releases"][1]["archive_sha256"] = serde_json::json!("not-a-digest");
         assert!(releases_for_arch(&corrupt.to_string(), "x86_64").is_err());
     }
 
-    /// The receiving helper resolves an internal installer bundle for the
-    /// target architecture the medium names, never for the preparing host.
     #[test]
     fn internal_selection_follows_the_target_architecture() {
         let entries = ["x86_64", "aarch64"].map(|arch| {
@@ -1446,7 +1344,6 @@ mod tests {
         catalog
     }
 
-    /// Hardware variants, legacy catalogs and v2 profiles.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1496,7 +1393,6 @@ mod tests {
             assert_eq!(releases[0].hardware_profile, "generic");
         }
 
-        // Phase `v2_requires_safe_explicit_unique_profiles_and_bound_provenance`.
         {
             for invalid in [
                 serde_json::Value::Null,
@@ -1563,7 +1459,6 @@ mod tests {
         }
     }
 
-    /// Digest validation, verified source identity and redirect checks.
     #[test]
     fn release_sources_keep_strict_digests_identity_and_trusted_redirects() {
         {
@@ -1623,7 +1518,6 @@ mod tests {
         }
     }
 
-    /// Range resume, restart and oversized partials.
     #[test]
     fn release_download_resumes_only_valid_ranges() {
         {
@@ -1735,7 +1629,6 @@ mod tests {
         }
     }
 
-    /// Transient failures, progress reporting and cancellation.
     #[test]
     fn release_download_failures_and_cancellation_keep_the_partial() {
         {
@@ -1839,7 +1732,6 @@ mod internal_catalog_tests {
     fn catalog(entry: Value) -> String {
         json!({"schema":1,"tag":"imager-vtest","releases":[entry]}).to_string()
     }
-    /// Legacy media, internal purpose, unknown fields and published packages.
     #[test]
     fn internal_catalog_entries_parse_strictly_and_separately_from_media() {
         {
@@ -1869,9 +1761,6 @@ mod internal_catalog_tests {
             }
         }
 
-        // Phase `loop_harness_catalog_shape_is_a_valid_catalog`.
-        // The catalog `os/tests/staging_helper_loop.sh` writes for its synthetic
-        // bundle (via `TILO_STAGING_TEST_CATALOG`) must pass the real parser.
         {
             let mut entry = internal(b"{}");
             entry["release_id"] = json!("loop-test");
@@ -1968,7 +1857,6 @@ mod internal_catalog_tests {
             _ => panic!("internal entry became media"),
         }
     }
-    /// Internal entry binding, selection mismatches and strict profiles.
     #[test]
     fn internal_entries_bind_manifest_bytes_release_and_architecture() {
         {
@@ -2032,9 +1920,7 @@ mod internal_catalog_tests {
             );
             for (field, bad) in [
                 ("layout", json!("whole-disk-image")),
-                // Schema-1 manifests are retired; so are the catalog tags naming them.
                 ("layout", json!("internal-bundle-v1")),
-                // Only the exact purpose names an internal installer.
                 ("purpose", json!("internal-installer")),
                 ("manifest_size", json!(65537)),
                 ("manifest_sha256", json!("A".repeat(64))),
@@ -2059,15 +1945,12 @@ mod internal_catalog_tests {
                 .collect(),
         )
     }
-    /// Catalog records keep their JSON object representation: a positional
-    /// array, an object-shaped tag or a duplicated key never parses.
     #[test]
     fn catalog_representation_requires_objects_string_tags_and_unique_keys() {
         let bytes = crate::setup::internal_bundle::tests::bytes(
             &crate::setup::internal_bundle::tests::fixture(),
         );
 
-        // The catalog itself must be an object.
         let raw = catalog(media());
         assert!(parse_catalog(&raw).is_ok());
         let value: Value = serde_json::from_str(&raw).unwrap();
@@ -2093,10 +1976,8 @@ mod internal_catalog_tests {
                 parse_catalog(&catalog(entry.clone())).is_ok(),
                 "case {case}"
             );
-            // The entry must be an object, not a positional record.
             let array = positional_record(&entry, fields);
             assert!(parse_catalog(&catalog(array)).is_err(), "case {case}");
-            // Purpose and layout must be strings, not object-shaped tags.
             let accepted: Vec<_> = ["purpose", "layout"]
                 .into_iter()
                 .filter(|field| {
@@ -2111,7 +1992,6 @@ mod internal_catalog_tests {
             );
         }
 
-        // Duplicate keys are not collapsed into one.
         for entry in [media(), internal(&bytes)] {
             let raw = catalog(entry);
             assert!(parse_catalog(&raw).is_ok());

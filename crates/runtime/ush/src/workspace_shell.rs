@@ -1,33 +1,16 @@
-//! A hosted workspace's shell, run on the workspace's host.
+//! A hosted workspace's shell, run on the workspace's host: one shell per Terminal session,
+//! running a command line the way a device's session runs what is typed at its prompt.
 //!
-//! A workspace whose host serves it (tilo.sh) has no device of the person's
-//! running its Terminal sessions: its shell lives with the workspace, beside
-//! the host's hosted-VM service. [`WorkspaceShells`] keeps one shell per
-//! Terminal session there and runs a command line in it, the way a device's
-//! Terminal session runs what is typed at its prompt:
+//! ush's own commands (`ls`, `cat`, `grep`, `echo`) run in-process on the workspace's
+//! directory and cost nothing; the file-changing ones are the environment's file actions,
+//! checked against its one grant and keeping what they replace; any other program (`cargo`,
+//! `npm`, `python`) runs in the workspace's jailed VM through [`HostedPrograms`], metered
+//! per second, and a host that runs no VMs says which tier the program needs.
 //!
-//! - ush's own commands (`ls`, `cat`, `grep`, `echo`, …) run in-process, on
-//!   the workspace's own directory on the host, and cost nothing;
-//! - the file-changing ones (`cp`, `mv`, `rm`, a `>` redirect) are the
-//!   environment's file actions, checked against its one grant (the
-//!   workspace's directory) and carried out keeping what they replace;
-//! - any other program (`cargo`, `npm`, `python`) runs in the workspace's own
-//!   jailed VM through [`HostedPrograms`], metered per second, with the
-//!   workspace's directory shared at the same path. A host that runs no VMs
-//!   runs none, and the shell says which tier the program needs.
-//!
-//! A session's shell keeps its working directory and variables from one
-//! command to the next. What a command printed comes back whole (standard
-//! output and error, in the order written), up to [`MAX_OUTPUT`], with how it
-//! ended and, when the host refused it a VM, the host's typed refusal: the
-//! words ush already gives an agent, and the steps that let it through.
-//!
-//! A command that runs for minutes is not silent while it does: a caller
-//! that passes [`Seen`] is shown what it printed so far, each time that
-//! grew. [`Stopping`] is the other way: it ends the command as the person's
-//! Ctrl+C does, in the shell (a loop, a `sleep`, the next command of a
-//! script), and in the VM (the running program is killed), and the run comes
-//! back [`cancelled`](ShellRun::cancelled).
+//! A shell keeps its working directory and variables between commands. Output comes back
+//! whole and in order up to [`MAX_OUTPUT`], with how the command ended and, when the host
+//! refused it a VM, the host's typed refusal. A caller passing [`Seen`] is shown output as it
+//! grows, and [`Stopping`] ends a command as Ctrl+C does, in the shell and in the VM.
 
 use std::collections::HashMap;
 use std::io;
@@ -47,28 +30,18 @@ use crate::file_actions::{FileAction, Recoverable};
 use crate::hosted_vm::{HostedPrograms, HostedTarget, shares_of};
 use crate::policy::Policy;
 
-/// The most a run's output keeps; past it the newest bytes are dropped and
-/// the run says it was cut.
 pub const MAX_OUTPUT: usize = 1 << 20;
 
-/// What the workspace's VM is called on its host: one per workspace.
 const ENVIRONMENT: &str = "default";
 
-/// How one command line went.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellRun {
-    /// The command line, as run.
     pub command: String,
-    /// The directory it ran in.
     pub cwd: String,
     /// Its exit status: 126 when the host refused what it needed.
     pub exit: i32,
-    /// What it printed, standard output and error as written.
     pub output: Vec<u8>,
-    /// It printed more than [`MAX_OUTPUT`].
     pub truncated: bool,
-    /// It was stopped before it ended: a person's Ctrl+C, or an agent's
-    /// cancel of the run it asked for.
     pub cancelled: bool,
     pub started_ms: i64,
     pub ended_ms: i64,
@@ -76,14 +49,12 @@ pub struct ShellRun {
     pub refusal: Option<Refusal>,
 }
 
-/// The shells of the workspaces one host serves.
 pub struct WorkspaceShells {
     /// Each workspace's content and kept files, and its directory unless
     /// [`Self::with_files`] says where it is, below here.
     state: PathBuf,
     /// Where each workspace's files are, when not below `state`.
     files_of: Option<Box<FilesOf>>,
-    /// Where Linux programs run, when this host runs them.
     vms: Option<HostedTarget>,
     /// The hosted-VM service the workspaces' Browser starts on, when it is
     /// not the one the environment names.
@@ -91,10 +62,8 @@ pub struct WorkspaceShells {
     sessions: Mutex<HashMap<(String, String), Shared>>,
 }
 
-/// Where a workspace's files are on this host.
 type FilesOf = dyn Fn(&str) -> PathBuf + Send + Sync;
 
-/// Who pays for a workspace's VM, and its size, when the one asking says.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Payer {
     pub account: String,
@@ -110,14 +79,10 @@ pub type Seen<'a> = &'a (dyn Fn(&RunOutput) + Sync);
 /// wait or a running program ends within a fraction of a second.
 pub type Stopping<'a> = &'a (dyn Fn() -> bool + Sync);
 
-/// How often a running command's output is looked at for [`Seen`].
 const SEEN_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// How often [`Stopping`] is looked at: often enough that a cancel feels
-/// immediate, seldom enough to cost nothing.
 const STOP_EVERY: std::time::Duration = std::time::Duration::from_millis(25);
 
-/// One session's shell, which its runs take turns in.
 type Shared = Arc<Mutex<Session>>;
 
 struct Session {
@@ -126,14 +91,10 @@ struct Session {
     captured: ush_shell::io::Captured,
     notices: ush_shell::io::Captured,
     refused: Arc<Mutex<Option<Refusal>>>,
-    /// Whether the caller asked the command now running to stop: what the
-    /// shell reads as the person's Ctrl+C.
     stopped: Arc<AtomicBool>,
 }
 
 impl WorkspaceShells {
-    /// Shells keeping each workspace's files under `state`, running Linux
-    /// programs in `vms` when given.
     #[must_use]
     pub fn new(state: impl Into<PathBuf>, vms: Option<HostedTarget>) -> Self {
         Self {
@@ -145,8 +106,6 @@ impl WorkspaceShells {
         }
     }
 
-    /// The same shells, each workspace's working in the directory `files_of`
-    /// names: its files as this host holds them, a member's synced replica.
     #[must_use]
     pub fn with_files(
         mut self,
@@ -156,14 +115,11 @@ impl WorkspaceShells {
         self
     }
 
-    /// Shells under `state`, running Linux programs in the VMs the host's
-    /// environment names ([`HostedTarget::from_env`]).
     #[must_use]
     pub fn from_env(state: impl Into<PathBuf>) -> Self {
         Self::new(state, HostedTarget::from_env())
     }
 
-    /// Whether this host runs Linux programs in VMs.
     #[must_use]
     pub fn runs_programs(&self) -> bool {
         self.vms.is_some()
@@ -178,8 +134,6 @@ impl WorkspaceShells {
         self
     }
 
-    /// Where this host's hosted-VM service listens, when it runs one: the
-    /// workspaces' VMs, which run their programs and their Browser, are its.
     #[must_use]
     pub fn hosted_socket(&self) -> Option<PathBuf> {
         self.browsers
@@ -187,7 +141,6 @@ impl WorkspaceShells {
             .or_else(|| self.vms.as_ref().map(|target| target.socket.clone()))
     }
 
-    /// The size the workspaces' VMs run at.
     #[must_use]
     pub fn hosted_size(&self) -> legacy_vm::hosted::size::VmSize {
         self.vms
@@ -196,7 +149,6 @@ impl WorkspaceShells {
             .unwrap_or_default()
     }
 
-    /// The directory `workspace`'s shells work in: its files on this host.
     #[must_use]
     pub fn files(&self, workspace: &str) -> PathBuf {
         self.files_of.as_ref().map_or_else(
@@ -385,9 +337,6 @@ impl Session {
         }
     }
 
-    /// [`Self::run_script`](Shell::run_script), with `stopped` kept up to
-    /// date from `stopping` while it runs and `seen` shown the output as it
-    /// grows.
     fn run_watched(
         &mut self,
         command: &str,
@@ -425,7 +374,6 @@ impl Session {
     }
 }
 
-/// A workspace id as one directory name.
 fn safe(workspace: &str) -> String {
     workspace
         .chars()
@@ -443,8 +391,6 @@ fn now_ms() -> i64 {
     i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX)
 }
 
-/// The workspace's directory as the shell's environment: one grant, and its
-/// file actions carried out there, keeping what they replace.
 struct Files {
     grants: Vec<CapOverride>,
     kept: Recoverable,
@@ -472,8 +418,6 @@ impl Environment for Files {
     }
 }
 
-/// What the host offers the shell besides files and programs: its clock,
-/// and whether the person asked the command to stop.
 struct HostPlace {
     stopped: Arc<AtomicBool>,
 }

@@ -217,3 +217,18 @@ reason = "the page and its runtime, one build, pass it as a kebab-case name with
 file = "crates/session/client/src/way_in.rs"
 enum = "Failed"
 reason = "the page names the way that failed to its own runtime, one build, as a kebab-case string within one call (wayInAfter); it is never stored or sent: `member-busy` and `reconnect-busy` go because a tab waits for the person's one device key instead of failing on it"
+
+[[break]]
+file = "crates/collab/collab-types/src/event.rs"
+enum = "ChannelEvent"
+reason = "no byte of the governance log is kept or sent: the document path that validates ops in production is `validate_admitted_inbound_op`, driven by the certified device join and the workspace's live roster, and nothing writes or replays a ChannelEvent; the settings update goes with the channel record it changed"
+
+[[break]]
+file = "crates/collab/collab-types/src/identity.rs"
+enum = "Claim"
+reason = "`MemberOf` named a space, which no longer exists, and no attestation is kept or sent: the production path admits an op from the certified device join and the workspace's live roster, never from claims"
+
+[[break]]
+file = "crates/collab/tilo-peer-state/src/members/op.rs"
+enum = "MembershipOpCommand"
+reason = "the operations are kept under a new key prefix (`members_v3`): a workspace reads no operation stored under the old one, so no bytes written in the old layout are ever decoded as this enum"

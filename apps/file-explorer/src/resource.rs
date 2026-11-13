@@ -1,15 +1,7 @@
-//! Files as a resource: the person's bookmarked places and the filesystem
-//! changes made from Files.
-//!
-//! The document holds the places (pinned in the sidebar), in order, and the
-//! queue of filesystem changes ([`FileExplorer::ops`]): each is a verb that
-//! queues a [`FileOp`] for the device whose disk it changes, which carries it
-//! out and settles it with what it changed. Undoing one queues its revert
-//! the same way. How a window shows folders (list or grid, sort, item size,
-//! hidden files) is the person's [`FilesPreferences`], which follow them to
-//! their other devices and are never seen by collaborators. The folder a
-//! window shows, its listing and selection are the window's own; its other
-//! work is effects on the live rows its view publishes.
+//! Files as a resource: the bookmarked places and the filesystem changes made
+//! from any Files window, each change queued for the device whose disk it
+//! touches. How a window shows folders is the person's [`FilesPreferences`],
+//! shared on every device; the folder a window shows is its own.
 
 use std::rc::Rc;
 
@@ -31,16 +23,11 @@ use crate::file_ops::{Change, FileOp};
 use crate::files_app::{FileExplorerWidget, FilesState, Ran};
 use crate::model::{SortBy, SortOrder, ViewMode};
 
-/// How many carried-out filesystem changes the document keeps, so recent
-/// ones can still be undone.
 const KEPT_OPS: usize = 64;
 
-/// The most entries one move or copy takes.
 pub(crate) const MAX_MOVE_ENTRIES: usize = 256;
 
-/// The most text one written file holds. The text is kept in the document
-/// with the change until it is pruned, so it is bounded well below a
-/// document's size.
+/// The most text one written file holds; the text stays in the document with the change.
 pub(crate) const MAX_WRITE_BYTES: usize = 256 * 1024;
 
 /// One bookmarked place, stored as [`crate::places`] names it so it means
@@ -54,22 +41,13 @@ pub struct Bookmark {
 }
 
 impl FileExplorer {
-    /// What search finds of the document itself: nothing of its own. Its
-    /// places are found as the window lists them, each with its folder
-    /// ([`crate::search_provider::PlacesSearch`]), and the folder's entries
-    /// as the window shows them; a second row for each place would only
-    /// repeat them.
+    /// Files' own document has nothing to find: its places and entries are found as the window lists them.
     fn search(_: &Self) -> Vec<ui::tilo_resource::SearchEntry> {
         Vec::new()
     }
 }
 
 impl FileExplorer {
-    /// What a read of Files answers: the pinned places and the filesystem
-    /// changes asked for, each with the device that carries it out and how
-    /// it settled. It is the document every window shares, so an agent finds
-    /// Files and its verbs through it; the folder a window shows is that
-    /// window's own and is not in it.
     fn read_content(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         if item.is_some() {
             return Err("Files is read whole".into());
@@ -96,7 +74,6 @@ impl FileExplorer {
 }
 
 impl Bookmark {
-    /// The folder's name, never its stored form ([`crate::places::name`]).
     fn name(&self) -> String {
         crate::places::name(&self.place.0)
     }
@@ -144,15 +121,11 @@ pub struct FileTask {
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 pub struct FileExplorer {
     /// The bookmarked places, in order.
-    ///
-    /// Each is stored under an id derived from the place, so two people
-    /// pinning the same folder pin it once.
     pub places: Collection<Bookmark>,
     /// Filesystem changes, each settled by its device with what it changed.
     pub ops: Outbox<FileTask, Vec<Change>>,
 }
 
-/// The id a bookmark of `place` is stored under.
 #[must_use]
 pub fn bookmark_id(place: &str) -> Id {
     let digest = Sha256::digest(place.as_bytes());
@@ -162,7 +135,6 @@ pub fn bookmark_id(place: &str) -> Id {
     ))
 }
 
-/// `entry` of the folder `folder`: a name in it, or an absolute path.
 fn entry_path(folder: &str, entry: &str) -> Result<String, Refusal> {
     let entry = entry.trim();
     if entry.is_empty() {
@@ -182,8 +154,6 @@ fn entry_path(folder: &str, entry: &str) -> Result<String, Refusal> {
         .to_string())
 }
 
-/// The paths of `entries` of `folder`: at least one, at most
-/// [`MAX_MOVE_ENTRIES`].
 fn entry_paths(folder: &str, entries: &[String]) -> Result<Vec<String>, Refusal> {
     if entries.is_empty() || entries.len() > MAX_MOVE_ENTRIES {
         return Err(Refusal::new(format!(
@@ -215,8 +185,6 @@ fn file_name(name: NonBlank) -> Result<String, Refusal> {
     Ok(name.into_string())
 }
 
-/// Queue `op` for `device` to carry out, forgetting the oldest settled
-/// changes beyond [`KEPT_OPS`].
 fn queue(
     cx: &mut ActionCx,
     ops: &mut Outbox<FileTask, Vec<Change>>,
@@ -231,8 +199,6 @@ fn queue(
     Ok(())
 }
 
-/// Record the native transfer `receipt` names, settled at once. Recorded
-/// again while it is taken back (a redo), it asks the host to make it again.
 fn record_native(
     cx: &mut ActionCx,
     ops: &mut Outbox<FileTask, Vec<Change>>,
@@ -267,7 +233,6 @@ fn record_native(
         ops.prune(KEPT_OPS);
         return Ok(());
     }
-    // The latest settled step of this transfer says whether it is in effect.
     let latest = ops
         .entries()
         .filter_map(|(id, entry)| Some((id, entry.settled.as_ref()?)))
@@ -305,14 +270,9 @@ fn record_native(
     read_content = FileExplorer::read_content
 )]
 impl FileExplorer {
-    // Every verb names what it changes outright: the device, absolute paths,
-    // a stored place. Agents and scripts pass those; a person acts on what
-    // the window shows, through these verbs bound to it (the folder shown,
-    // the selection, an entry's row: `bound_declarations` and
-    // `row_declarations` below). So the verbs themselves are listed for
-    // agents only, and only the bound ones a person can take now are rows.
+    // Every verb names what it changes: the device, absolute paths, a stored
+    // place. A person acts through the bound verbs, so these are for agents.
 
-    /// Pin a folder to the Favorites in the sidebar.
     #[action(
         keywords = "bookmark, pin folder, favourite, favorite",
         label = "files-menu-add-favourite",
@@ -339,7 +299,6 @@ impl FileExplorer {
         Ok(())
     }
 
-    /// Unpin a folder from the Favorites.
     #[action(label = "files-menu-remove-favourite", icon = "x", audience = "agents")]
     pub fn remove_bookmark(
         &mut self,
@@ -352,7 +311,6 @@ impl FileExplorer {
             .ok_or_else(|| Refusal::new("the folder is not a favourite"))
     }
 
-    /// Create a folder.
     #[action(keywords = "mkdir, make directory, create folder, new directory, add folder", label = "files-shortcuts-new-folder", undo = Self::revert_queued, icon = "folder-plus", audience = "agents")]
     pub fn new_folder(
         &mut self,
@@ -369,7 +327,6 @@ impl FileExplorer {
         queue(cx, ops, device, op)
     }
 
-    /// Rename an entry.
     #[action(keywords = "change name, rename file", label = "files-shortcuts-rename", undo = Self::revert_queued, icon = "pencil", audience = "agents")]
     pub fn rename(
         &mut self,
@@ -387,7 +344,6 @@ impl FileExplorer {
         queue(cx, ops, device, op)
     }
 
-    /// Move entries to Trash; undo puts them back.
     #[action(keywords = "delete, remove, bin, recycle bin, throw away", label = "files-shortcuts-trash", undo = Self::revert_queued, icon = "trash-2", audience = "agents")]
     pub fn trash(
         &mut self,
@@ -425,7 +381,6 @@ impl FileExplorer {
     }
 
     /// Copy entries into a folder; a copy whose name is taken gets a free
-    /// one.
     #[action(undo = Self::revert_queued, icon = "copy", audience = "agents")]
     pub fn copy_into(
         &mut self,
@@ -480,7 +435,6 @@ impl FileExplorer {
     }
 
     /// Import independent local copies from a cloud account; undo removes
-    /// only the local outputs recorded by the transfer.
     #[action(undo = Self::revert_queued, icon = "cloud-download", audience = "agents")]
     pub fn cloud_import(
         &mut self,
@@ -556,11 +510,7 @@ impl FileExplorer {
 
     /// Write a file
     ///
-    /// Writes text as a new text file in a folder (Markdown, plain text,
-    /// CSV, HTML, code), as given. A PDF or a document (`.docx`, `.odt`,
-    /// `.rtf`) is Writer's: write Markdown here and convert it with Writer's
-    /// `convert-file`. With `replace`, a file of that name goes to Trash
-    /// first; undo puts it back and takes the new one away.
+    /// Text as given: Markdown where a document app owns the format.
     #[action(undo = Self::revert_queued, icon = "file-text", audience = "agents")]
     pub fn write_file(
         &mut self,
@@ -596,10 +546,7 @@ impl FileExplorer {
 
     /// Compress
     ///
-    /// Packs entries, folders with all they hold, into one archive in the
-    /// folder that holds them, under a free name: zip by default, which
-    /// opens everywhere, or tar compressed with zstd, which keeps
-    /// permissions and is smaller. Undo moves the archive to Trash.
+    /// Entries and the folders they fill, packed into one archive under a free name beside them.
     #[action(undo = Self::revert_queued, icon = "archive", audience = "agents")]
     pub fn compress(
         &mut self,
@@ -650,13 +597,6 @@ impl FileExplorer {
         queue(cx, ops, device, op)
     }
 
-    /// Extract an archive
-    ///
-    /// Extracts a zip, 7z or tar archive (plain, .gz, .xz, .zst or .bz2)
-    /// into a folder: as the one folder the archive holds at its top, or
-    /// else into a new folder named after the archive. Nothing lands
-    /// outside that folder; links pointing out, device files and setuid
-    /// bits are refused. Undo moves the extracted folder to Trash.
     #[action(id = "extract", label = "files-archive-extract", undo = Self::revert_queued, icon = "folder-open", audience = "agents")]
     pub fn extract(
         &mut self,
@@ -700,8 +640,6 @@ impl FileExplorer {
     }
 
     /// Record a paste the native clipboard host already carried out, so it
-    /// is in history and undoable like any change: undo asks the host to
-    /// take back exactly what it transferred.
     #[action(
         id = "record-clipboard-transfer",
         undo = Self::revert_queued,
@@ -720,7 +658,6 @@ impl FileExplorer {
     }
 
     /// Record a restore from Trash the native host already carried out, so
-    /// it is in history and undoable.
     #[action(id = "record-trash-restore", undo = Self::revert_queued, icon = "rotate-ccw", audience = "agents")]
     pub fn record_restore(
         &mut self,
@@ -734,7 +671,6 @@ impl FileExplorer {
     }
 
     /// Take back a filesystem change: the device that made it compensates
-    /// what it recorded, in reverse order.
     #[action(item = ops, undo = Self::revert_queued, icon = "undo-2", audience = "agents")]
     pub fn revert(
         &mut self,
@@ -755,7 +691,6 @@ impl FileExplorer {
 }
 
 impl FileExplorer {
-    /// A new document's places: [`crate::places::DEFAULT_PLACES`].
     fn with_default_places() -> Self {
         let mut files = Self::default();
         for place in crate::places::DEFAULT_PLACES {
@@ -774,7 +709,6 @@ impl FileExplorer {
         Some(Self::REVERT.with(undoing.minted.first()?.clone()))
     }
 
-    /// The bookmarked places, in order.
     #[must_use]
     pub fn bookmarks(&self) -> Vec<String> {
         self.places
@@ -783,9 +717,6 @@ impl FileExplorer {
             .collect()
     }
 
-    /// The verb that queues `op` for `device`; none for a native transfer,
-    /// which only its receipt records, or for an op naming an entry by
-    /// blank text, which no verb takes (the window never makes one).
     pub(crate) fn queueing(device: &str, op: FileOp) -> Option<Invoke<Self>> {
         let device = device.to_owned();
         Some(match op {
@@ -868,7 +799,6 @@ impl FileExplorer {
         })
     }
 
-    /// The verb that queues an archive operation for `device`.
     fn archive_queueing(device: String, op: FileOp) -> Option<Invoke<Self>> {
         Some(match op {
             FileOp::Compress {
@@ -904,23 +834,14 @@ impl FileExplorer {
     }
 }
 
-/// How the person likes folders shown, on every device they use.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FilesPreferences {
-    /// `list` or `grid`.
     pub view: String,
-    /// `name`, `size`, `type` or `modified`.
     pub sort: String,
-    /// `ascending` or `descending`.
     pub order: String,
-    /// The item size step ([`crate::config::zoom_scale`]).
     pub zoom: i32,
-    /// Whether dotfiles are listed.
     pub hidden: bool,
-    /// The width of each column the person set by dragging its edge, by
-    /// column key, in whole pixels. A column never resized keeps the width
-    /// the list gives it.
     pub widths: std::collections::BTreeMap<String, u32>,
 }
 
@@ -987,7 +908,6 @@ pub(crate) fn parse_sort_order(token: &str) -> SortOrder {
     }
 }
 
-/// Framework app: the files window is a view of [`FileExplorer`].
 pub struct FileExplorerShell;
 
 impl ResourceApp for FileExplorerShell {
@@ -997,7 +917,6 @@ impl ResourceApp for FileExplorerShell {
     const TITLE: &'static str = "Files";
     const TITLE_KEY: &'static str = "files-app-title";
     const ICON: Option<&'static str> = Some("file-explorer");
-    /// A folder to open (`file-explorer ~/Documents`).
     const ARGUMENTS: usize = 1;
     const FILE_HISTORY: Option<FileHistory> = Some(FileHistory {
         title: "Selected file",
@@ -1013,9 +932,6 @@ impl ResourceApp for FileExplorerShell {
         >()];
 
     fn view(cx: &mut ViewCx<FileExplorer>) -> Element {
-        // Mounted in the shell, Files starts where the shell says and opens
-        // documents through the shell's services; in its own process, at
-        // the person's home.
         let lent = cx.take_lent::<crate::StartupInputs>();
         let services = cx.take_lent::<crate::files_app::HostedFileServices>();
         #[cfg(feature = "samples")]
@@ -1041,7 +957,6 @@ impl ResourceApp for FileExplorerShell {
         (1200, 720)
     }
 
-    /// A capture browses folders written for it, never the machine's own.
     #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<FileExplorer>) {
         crate::scenarios::prepare(fixture);
@@ -1052,8 +967,6 @@ impl ResourceApp for FileExplorerShell {
     }
 }
 
-/// The native transfer `task` takes back (`false`) or makes again (`true`),
-/// when it reverts a step of one.
 fn native_compensation(state: &FileExplorer, task: &FileTask) -> Option<(String, bool)> {
     let FileOp::Revert { op } = &task.op else {
         return None;
@@ -1066,8 +979,6 @@ fn native_compensation(state: &FileExplorer, task: &FileTask) -> Option<(String,
     })
 }
 
-/// Carry out `task` on this device, given the record as it stands: a revert
-/// waits until the change it takes back is carried out.
 fn reverting_changes(state: &FileExplorer, task: &FileTask) -> Result<Option<Vec<Change>>, String> {
     Ok(match &task.op {
         FileOp::Revert { op } => {
@@ -1107,12 +1018,9 @@ fn validate_import_destination(destination: &ImportDestination) -> Result<(), Re
     Ok(())
 }
 
-/// Longest an agent's change waits to be attributed before writing anyway:
-/// the host answers at once, so this only bounds a host that went away.
+/// How long an agent's change waits to be attributed before it is written anyway.
 const WRITE_ATTRIBUTION_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Whether `op` runs on a worker with progress and Cancel: a copy, a move
-/// into an existing folder, an extraction or a packing.
 fn runs_tracked(op: &FileOp) -> bool {
     matches!(
         op,
@@ -1123,8 +1031,6 @@ fn runs_tracked(op: &FileOp) -> bool {
     )
 }
 
-/// A copy, move, extraction or packing on a worker: its progress reaches
-/// the caller's job and the window, and the caller's cancel stops it.
 fn carry_out_tracked(
     task: &FileTask,
     reverting: Option<&[Change]>,
@@ -1152,8 +1058,6 @@ fn carry_out_tracked(
     ))
 }
 
-/// Carry out `task` on a worker once the host answered its attribution:
-/// whatever it answered, the writes go ahead.
 fn carry_out_attributed(
     (task, reverting, attribution): (
         FileTask,
@@ -1245,20 +1149,13 @@ fn carry_out_cloud(
     })
 }
 
-/// The files `window` shows, as a view of the resource: the state it
-/// shares with the view answers [`FilesEffect`]s and carries out this
-/// device's queued filesystem work, and publishes the listing's rows, the
-/// edits bound to them and what the explorer finds for the search.
 fn files_view(cx: &ViewCx<FileExplorer>, mut window: FileExplorerWidget) -> Element {
     let state = window.shared();
-    // A search hit, or an agent's `open`, shows the row it names.
     cx.on_open(state.borrow().opener());
     attach_files(cx, &mut state.borrow_mut());
     window.follow(cx.live().clone());
     answer_effects(cx, &state);
     {
-        // A capture stages its scenario on the window's next sync, once it
-        // is laid out.
         let staged = Rc::clone(&state);
         cx.on_stage(move |scenario| {
             staged.borrow_mut().stage_on_next_sync(scenario);
@@ -1277,24 +1174,15 @@ fn files_view(cx: &ViewCx<FileExplorer>, mut window: FileExplorerWidget) -> Elem
     );
     cx.publishing(
         Publishes::new()
-            // The listing's entries, remote accounts, nearby transfers and
-            // a failed listing's retry.
             .live_rows(move || rows.borrow().published_live_rows())
             .live_row(move |id| row.borrow().published_row(id).map(LiveRow::from_resource))
-            // Rename, move and trash the entry a row shows, through the
-            // queue.
             .row_edits(move |row| edits.borrow().entry_declarations(row))
-            // The places, the mount's collaborative records and the remote
-            // file accounts: what the explorer holds, not the document.
             .search_entries(move || entries.borrow().search_entries_shown())
-            // A document chosen here opens in its own app.
             .host_intents(move || intents.borrow_mut().take_host_intent()),
         Box::new(window),
     )
 }
 
-/// Show what the launch named, and carry out this device's queued
-/// filesystem changes for `files`.
 fn attach_files(cx: &ViewCx<FileExplorer>, files: &mut FilesState) {
     if let Some(source) = cx.file_history() {
         files.show_file_history_in(source);
@@ -1302,9 +1190,6 @@ fn attach_files(cx: &ViewCx<FileExplorer>, files: &mut FilesState) {
     if let Some(argument) = cx.launch_arguments().first() {
         files.open_launch_argument(argument);
     }
-    // Each device carries out the filesystem changes queued for it, and
-    // records what it changed; a change asked for here runs under the
-    // invocation that asked, which completes once it settled.
     let native = files.native_undo_queue();
     let ops = carry_out_queued(cx, native);
     files.attach_framework(
@@ -1316,8 +1201,6 @@ fn attach_files(cx: &ViewCx<FileExplorer>, files: &mut FilesState) {
     );
 }
 
-/// The filesystem changes queued for this device, carried out here; a
-/// clipboard Undo or Redo goes to the clipboard host through `native`.
 fn carry_out_queued(
     cx: &ViewCx<FileExplorer>,
     native: Rc<std::cell::RefCell<Vec<crate::files_app::UndoRequest>>>,
@@ -1352,16 +1235,9 @@ fn carry_out_queued(
                             |(), answer, _| Ok(answer),
                         ));
                     }
-                    // An agent's change names the paths it writes before
-                    // writing them, so their versions record the agent,
-                    // for its person; the host takes who acted from its
-                    // own custody of the invocation.
                     let attribution =
                         cx.attribute_writes(task.op.written_paths(reverting.as_deref()));
                     if runs_tracked(&task.op) || attribution.is_some() {
-                        // Copies and moves can take minutes: off the UI
-                        // thread, with progress and Cancel. So is a
-                        // change waiting for its attribution.
                         let work = (task, reverting, attribution);
                         return Ok(cx.thread(
                             move |progress| carry_out_attributed(work, &progress),
@@ -1370,7 +1246,6 @@ fn carry_out_queued(
                     }
                     return Ok(carry_out(&task, reverting.as_deref()));
                 };
-                // The host acts for the invocation that asked for it.
                 let invocation = cx
                     .invocation()
                     .ok_or("the clipboard host acts only for the change's own invocation")?;
@@ -1409,8 +1284,6 @@ fn carry_out_queued(
     })
 }
 
-/// Answer [`FilesEffect`]s from the shared `state`, and publish their
-/// availability as it says.
 fn answer_effects(cx: &ViewCx<FileExplorer>, state: &Rc<std::cell::RefCell<FilesState>>) {
     let answer = Rc::clone(state);
     let status = Rc::clone(state);
@@ -1421,8 +1294,6 @@ fn answer_effects(cx: &ViewCx<FileExplorer>, state: &Rc<std::cell::RefCell<Files
         if host_person_only(&effect) && !ui::bound_dispatch::host_person_invocation_permitted() {
             return Err("Only the host's person may access their private cloud accounts".into());
         }
-        // A handed-over file answers with its content, which the next step
-        // takes by address.
         if let FilesEffect::HandOver { file } = &effect {
             return Effected::content(&files.hand_over(file)?);
         }
@@ -1450,8 +1321,6 @@ fn answer_effects(cx: &ViewCx<FileExplorer>, state: &Rc<std::cell::RefCell<Files
     .status(move || status.borrow().effect_statuses());
 }
 
-/// Settle the Undos the clipboard host carried out before it could
-/// answer, from its recovery receipt.
 fn recovery_reply(cx: &mut ui::framework::EffectCx<FileExplorer>) -> ui::framework::EffectReply {
     cx.reply_then(|(), output, cx| {
         let value = output.value.ok_or("clipboard recovery receipt absent")?;
@@ -1462,9 +1331,6 @@ fn recovery_reply(cx: &mut ui::framework::EffectCx<FileExplorer>) -> ui::framewo
                 .clone(),
         )
         .map_err(|error| error.to_string())?;
-        // An Undo the host carried out before it could answer
-        // (a restart, a killed process) is settled from its
-        // durable receipt.
         let recovered: Vec<(Id, String)> = cx.live().with(|state| {
             state
                 .ops
@@ -1488,8 +1354,6 @@ fn recovery_reply(cx: &mut ui::framework::EffectCx<FileExplorer>) -> ui::framewo
     })
 }
 
-/// Record what the clipboard host transferred or restored, from its
-/// receipt.
 fn receipt_reply(
     cx: &mut ui::framework::EffectCx<FileExplorer>,
     state: Rc<std::cell::RefCell<FilesState>>,
@@ -1524,8 +1388,6 @@ fn receipt_reply(
 }
 
 impl FilesState {
-    /// Pin the folder shown to the Favorites, or unpin it; rename or trash
-    /// what the person selected; change the files of the folder shown.
     pub(crate) fn bound_declarations(&self) -> Vec<ActionDecl<FileExplorer>> {
         let mut declarations = Vec::new();
         if let Some(place) = self.current_place() {
@@ -1553,9 +1415,6 @@ impl FilesState {
     }
 }
 
-/// Whether `effect` is the local person's alone: their cloud accounts,
-/// transfers, drives and apps, not every collaborator's who may edit the
-/// workspace's files.
 fn host_person_only(effect: &FilesEffect) -> bool {
     matches!(
         effect,

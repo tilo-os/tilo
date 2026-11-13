@@ -159,15 +159,47 @@ impl<W: EditsText, R: Resource<State = R> + Model> TextControl<W, R> {
             dispatch: None,
             locate: Box::new(move |doc| text_at(doc, &segments)),
             splice: Box::new(move |dispatch, edits, edit| {
-                let edit = match edit {
-                    TextEdit::Splice { at, delete, insert } => path.splice(at, delete, insert),
-                    TextEdit::ReplaceText { text } => path.replace(text),
-                };
-                dispatch.submit_now(edits, edit)
+                dispatch.submit_now(edits, edit_at(&path, edit))
             }),
             bound: None,
             stored: String::new(),
         }
+    }
+}
+
+/// `edit` of the text field at `path`, as the field edit it is.
+pub(crate) fn edit_at<R>(path: &Path<R, String>, edit: TextEdit) -> tilo_resource::Edit<R> {
+    match edit {
+        TextEdit::Splice { at, delete, insert } => path.splice(at, delete, insert),
+        TextEdit::ReplaceText { text } => path.replace(text),
+    }
+}
+
+/// `input` showing the record's text field at `path` as the document holds
+/// it ([`TextInput::bound_at`]): who wrote each run, a collaborator's edit
+/// under the caret, the carets of people editing the same field, and what an
+/// invocation writes there, named as its text anchor names it — the field
+/// (`title`) in the item that holds it (an issue's id; empty for the
+/// record's own).
+pub(crate) fn bound_field(input: TextInput, path: Vec<Segment>) -> TextInput {
+    let region = path.iter().rev().find_map(|segment| match segment {
+        Segment::Field(key) => Some(key.clone()),
+        _ => None,
+    });
+    let block = path.iter().rev().find_map(|segment| match segment {
+        Segment::Item(id) => Some(id.to_string()),
+        _ => None,
+    });
+    let presence = path
+        .iter()
+        .map(|segment| ui_core::presence::PathSegment::Field(segment.to_string()))
+        .collect();
+    let input = input
+        .with_presence_path(presence)
+        .bound_at(move |doc| text_at(doc, &path));
+    match region {
+        Some(region) => input.with_written_at(region, block.unwrap_or_default()),
+        None => input,
     }
 }
 

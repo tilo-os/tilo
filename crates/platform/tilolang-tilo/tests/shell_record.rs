@@ -977,34 +977,39 @@ fn notice_shown(r: &Replica, key: &str, body: &str, origin: &str) {
         .expect("the session writes its own notice on the desk");
 }
 
-/// What the desk's banner says under its title, as the desk lays it out: the message the banner
-/// carries on a roomy desk, else the row's secondary line on a compact one.
-fn banner_line_of(r: &Replica) -> String {
+/// What the desk's banner shows under its title, as the desk lays it out: the notice's body and
+/// sender, each where the layout shows it — the message and the source the banner carries on a
+/// roomy desk, else the row's secondary line and meta.
+fn banner_line_of(r: &Replica) -> (Option<String>, Option<String>) {
+    fn text(props: &std::collections::BTreeMap<String, Value>, key: &str) -> Option<String> {
+        match props.get(key) {
+            Some(Value::Text(text)) if !text.is_empty() => Some(text.clone()),
+            _ => None,
+        }
+    }
     let mut view = desk_view(r);
     // A desk with room for the toolkit's banner: the width a display's window has.
     view.set_space("", tilolang_runtime::Space::from_rem(90.0, 50.0));
     view.poll_patches().unwrap();
-    if let Some(banner) = nodes(&view, "ui.Banner").first()
-        && let Some(Value::Text(message)) = banner.props.get("message")
-    {
-        return message.clone();
+    if let Some(banner) = nodes(&view, "ui.Banner").first() {
+        return (
+            text(&banner.props, "message"),
+            text(&banner.props, "source"),
+        );
     }
     let row = nodes(&view, "ui.ListRow")
         .into_iter()
-        .find(|row| row.props.contains_key("secondary"))
+        .find(|row| row.props.contains_key("title"))
         .unwrap_or_else(|| panic!("the desk shows the notice: {:?}", view.tree()));
-    match row.props.get("secondary") {
-        Some(Value::Text(secondary)) => secondary.clone(),
-        other => panic!("the notice's line is text: {other:?}"),
-    }
+    (text(&row.props, "secondary"), text(&row.props, "meta"))
 }
 
-/// The banner's line is every part the notice has, joined once: the session's own notice — one
-/// with no app behind it — says what it says and trails no separator, an app's notice says what
-/// it says and then who sent it, and one that says nothing is its sender alone. A part that is
-/// not there is not a part, never an empty one joined in.
+/// The banner shows the parts the notice has, each once and where it belongs: the session's own
+/// notice — one with no app behind it — says what it says and names no sender, an app's notice
+/// says what it says and names who sent it, and one that says nothing is its sender alone. A part
+/// that is not there is not a part, never an empty one shown.
 #[test]
-fn a_banners_line_joins_only_the_parts_the_notice_has() {
+fn a_banner_shows_the_parts_the_notice_has() {
     let mut r = workspace();
     r.commit();
     notice_shown(
@@ -1016,23 +1021,26 @@ fn a_banners_line_joins_only_the_parts_the_notice_has() {
     r.commit();
     assert_eq!(
         banner_line_of(&r),
-        "It is open now, with everything its people keep in it.",
-        "a notice with no sender trails no separator"
+        (
+            Some("It is open now, with everything its people keep in it.".to_owned()),
+            None
+        ),
+        "a notice with no sender names none"
     );
 
     notice_shown(&r, "n-app", "From Ada", "Mail");
     r.commit();
     assert_eq!(
         banner_line_of(&r),
-        "From Ada — Mail",
-        "what it says, then who sent it"
+        (Some("From Ada".to_owned()), Some("Mail".to_owned())),
+        "what it says, and who sent it"
     );
 
     notice_shown(&r, "n-empty", "", "Mail");
     r.commit();
     assert_eq!(
         banner_line_of(&r),
-        "Mail",
+        (None, Some("Mail".to_owned())),
         "a notice that says nothing is its sender alone"
     );
 }

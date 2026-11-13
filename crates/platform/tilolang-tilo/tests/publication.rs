@@ -185,6 +185,34 @@ fn native_spec(id: &str) -> ActionSpec {
         .unwrap()
 }
 
+/// A caller at the door lists and calls a tilolang action by its name, as it does a native verb,
+/// with its typed parameters and its label; what is stored of it keeps its id.
+#[test]
+fn an_action_is_published_by_its_name() {
+    let meta = shapes();
+    for name in ["resize", "pin", "remove"] {
+        let ours = tilolang_spec(&meta, name);
+        let native = native_spec(name);
+        assert_eq!(ours.id, native.id, "{name}");
+        assert_eq!(
+            ours.params()
+                .iter()
+                .map(|param| (&param.name, &param.ty))
+                .collect::<Vec<_>>(),
+            native
+                .params()
+                .iter()
+                .map(|param| (&param.name, &param.ty))
+                .collect::<Vec<_>>(),
+            "{name}"
+        );
+        assert!(!ours.action_type().label.is_empty(), "{name}");
+        let declared = meta.action_published_as(name).unwrap();
+        assert_eq!(declared.name, name);
+        assert_ne!(declared.id, name, "stored by its id");
+    }
+}
+
 #[test]
 fn an_enum_parameter_is_published_as_its_cases() {
     let meta = shapes();
@@ -299,16 +327,15 @@ fn the_surface_says_what_the_published_spec_says() {
         .unwrap();
     let native = tilo_resource::surface::surface_of::<Shelf>();
     for name in ["resize", "pin", "remove"] {
-        let action = meta
+        // The generated surface names each verb by the action's id, as a change's claim does; a
+        // native app's verbs have no other id than the name it publishes them by.
+        let id = &meta
             .actions
             .iter()
             .find(|action| action.name == name)
-            .unwrap();
-        let verb = shelf
-            .verbs
-            .iter()
-            .find(|verb| verb.id == action.id)
-            .unwrap();
+            .unwrap()
+            .id;
+        let verb = shelf.verbs.iter().find(|verb| verb.id == *id).unwrap();
         let theirs = native.verbs.iter().find(|verb| verb.id == name).unwrap();
         assert_eq!(verb.destructive, theirs.destructive, "{name}");
         let spec = tilolang_spec(&meta, name);
@@ -400,7 +427,11 @@ fn a_resource_lists_the_views_that_show_it() {
     // A view and the action that opens it name each other: the default view through the
     // resource's own `open`, which shows it; another through an action of its own.
     assert_eq!(first.open_action, "open");
-    assert_eq!(second.open_action, open_with_id(&compact));
+    assert_eq!(
+        second.open_action,
+        open_with_id("compact"),
+        "by the view's name"
+    );
     let opens = shelf
         .actions
         .iter()

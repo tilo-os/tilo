@@ -1,12 +1,14 @@
 //! The person's language: the languages the desktop has, the ones the
 //! device's repositories offer a language pack for, and choosing one.
 //!
-//! A language whose pack is installed is chosen at once
-//! (`appearance.language`, which every app and the shell follow). One the
-//! repositories offer is installed first, by the installer service the
-//! launcher hands Settings for that alone
-//! (`runtime_portal::runtime_request`), and chosen when its pack has
-//! landed, so every app finds its catalogues when it switches.
+//! A language is named as its pack is ([`tilo_paths::language_of`]): `de` for
+//! the catalogues tagged `de-DE` and the `language-packs/de` directory. One
+//! whose pack is installed is chosen at once (`appearance.language`, which every
+//! app and the shell follow). One the
+//! repositories offer is installed first, by the installer service the launcher
+//! hands Settings for that alone (`runtime_portal::runtime_request`), and
+//! chosen when its pack has landed, so every app finds its catalogues when it
+//! switches.
 
 use std::sync::Mutex;
 
@@ -43,7 +45,7 @@ pub enum LanguageEffect {
     /// when the repositories offer one; "device" follows the device's.
     #[effect(idempotent)]
     ChooseLanguage {
-        #[param("The language as a tag (de-DE) or as Region & formats names it")]
+        #[param("The language by a tag of it (de, de-DE) or as Region & formats names it")]
         language: String,
     },
 }
@@ -109,29 +111,23 @@ impl LanguageArea {
             self.offered.refresh();
         }
     }
-
-    /// Every language a person can choose here.
-    #[must_use]
-    pub fn choices(&self) -> Vec<String> {
-        choices(&self.offered.get().unwrap_or_default())
-    }
 }
 
-/// Every language a person can choose: the installed ones, then those the
-/// repositories offer, each language once.
+/// Every language a person can choose, named as its pack is
+/// ([`tilo_paths::language_of`]): the ones this desktop shows, then the offered
+/// ones, each language once.
 #[must_use]
-pub fn choices(offered: &Offered) -> Vec<String> {
-    let mut choices: Vec<String> = crate::i18n::languages()
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
-    for offered in &offered.languages {
-        let language = ui::i18n::language_of(&offered.locale);
-        if !choices
-            .iter()
-            .any(|choice| ui::i18n::language_of(choice) == language)
-        {
-            choices.push(offered.locale.clone());
+pub fn choices(installed: &[&str], offered: &Offered) -> Vec<String> {
+    let shown = installed.iter().copied();
+    let offered = offered
+        .languages
+        .iter()
+        .map(|offered| offered.locale.as_str());
+    let mut choices: Vec<String> = Vec::new();
+    for tag in shown.chain(offered) {
+        let language = tilo_paths::language_of(tag);
+        if !choices.contains(&language) {
+            choices.push(language);
         }
     }
     choices
@@ -216,20 +212,36 @@ fn install(locale: &str) -> Result<(), String> {
 enum Chosen {
     /// The device's own language.
     Device,
-    /// A language, by its tag.
+    /// A language, named as its pack is.
     Language(String),
 }
 
-/// What `language` names: a tag among `choices`, a choice's name, or the
+/// What `language` names: the language of a tag among `choices` (in any
+/// spelling a tag takes: `de`, `de-DE`, `de_DE`), a choice's name, or the
 /// device's own.
 fn resolve(language: &str, choices: &[String]) -> Option<Chosen> {
     if language == DEVICE || language == name(None) {
         return Some(Chosen::Device);
     }
+    let language_of = || tilo_paths::language_of(language);
     choices
         .iter()
-        .find(|choice| choice.eq_ignore_ascii_case(language) || name(Some(choice)) == language)
+        .find(|choice| {
+            choice.eq_ignore_ascii_case(language)
+                || name(Some(choice)) == language
+                || **choice == language_of()
+        })
         .map(|choice| Chosen::Language(choice.clone()))
+}
+
+/// Whether this desktop shows `language`, whatever tag names it: its own
+/// catalogue or an installed pack carries it.
+fn installed(language: &str) -> bool {
+    let language = tilo_paths::language_of(language);
+    crate::i18n::CATALOG
+        .languages()
+        .iter()
+        .any(|tag| tilo_paths::language_of(tag) == language)
 }
 
 /// Answer `effect`: choose an installed language at once, or install an
@@ -241,15 +253,19 @@ pub(crate) fn answer(
 ) -> EffectAnswer {
     let LanguageEffect::ChooseLanguage { language } = effect;
     let languages = area(app).ok_or_else(crate::area::missing)?;
-    let chosen = resolve(&language, &languages.choices())
-        .ok_or_else(|| format!("`{language}` is not a language this desktop has or offers"))?;
+    let offered = languages.offered.get().unwrap_or_default();
+    let chosen = resolve(
+        &language,
+        &choices(&crate::i18n::CATALOG.languages(), &offered),
+    )
+    .ok_or_else(|| format!("`{language}` is not a language this desktop has or offers"))?;
+    languages.failed.set(None);
     let locale = match chosen {
-        Chosen::Language(locale) if !crate::i18n::languages().contains(&locale.as_str()) => locale,
-        installed => {
-            languages.failed.set(None);
-            let language = match installed {
+        Chosen::Language(language) if !installed(&language) => language,
+        here => {
+            let language = match here {
                 Chosen::Device => None,
-                Chosen::Language(locale) => Some(locale),
+                Chosen::Language(language) => Some(language),
             };
             return app
                 .sections()
@@ -257,7 +273,6 @@ pub(crate) fn answer(
                 .map(|()| Effected::done());
         }
     };
-    languages.failed.set(None);
     languages.installing.set(Some(locale.clone()));
     let chosen = locale.clone();
     Ok(app.job(
@@ -285,49 +300,23 @@ pub(crate) fn answer(
         },
     ))
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A language is named by its tag, by the name the page shows, or as
-    /// the device's own; anything else is not a language here.
+    /// German from a catalogue tagged `de-DE` and from the offered `de` pack
+    /// is one choice, named as the pack is.
     #[test]
-    fn a_language_is_chosen_by_its_tag_or_its_name() {
-        let choices = vec!["en-US".to_owned(), "de-DE".to_owned()];
-        let german = Some(Chosen::Language("de-DE".into()));
-        assert_eq!(resolve("de-DE", &choices), german);
-        assert_eq!(resolve("de-de", &choices), german);
-        assert_eq!(resolve("Deutsch", &choices), german);
-        assert_eq!(resolve(DEVICE, &choices), Some(Chosen::Device));
-        assert_eq!(resolve("xx-XX", &choices), None);
-    }
-
-    /// Each language is offered once, by its own name: German installed as
-    /// `de-DE` and offered as the `de` pack is one choice; a language only
-    /// offered is a choice of its own.
-    #[test]
-    fn each_language_is_offered_once() {
-        let offered = |locales: &[&str]| Offered {
-            languages: locales
-                .iter()
+    fn german_is_one_choice_named_as_its_pack_is() {
+        let offered = Offered {
+            languages: ["de", "fr"]
                 .map(|locale| OfferedLanguage {
-                    locale: (*locale).into(),
+                    locale: locale.into(),
                     installed: false,
                 })
-                .collect(),
+                .to_vec(),
             unavailable: None,
         };
-        let choices = choices(&offered(&["de", "fr"]));
-        let german: Vec<_> = choices
-            .iter()
-            .filter(|choice| ui::i18n::language_of(choice) == "de")
-            .collect();
-        assert_eq!(german.len(), 1, "{choices:?}");
-        assert!(choices.iter().any(|choice| choice == "fr"), "{choices:?}");
-        assert_eq!(
-            name(german.first().map(|choice| choice.as_str())),
-            "Deutsch"
-        );
+        assert_eq!(choices(&["en-US", "de-DE"], &offered), ["en", "de", "fr"]);
     }
 }

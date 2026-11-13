@@ -235,7 +235,9 @@ fn governance_grant(peer: &StatePeer, id: &str, action: &str) -> tilo_action_pol
         tilo_action_policy::roles::governance_action(peer.workspace_id(), action),
         KindSet::OUTSIDE,
         Answer::Allow,
-        tilo_action_policy::Subject::person("another-person"),
+        tilo_action_policy::Subject::person(hex::encode(
+            crate::admission_tests::other_owner().1.user_public_key,
+        )),
     )
 }
 

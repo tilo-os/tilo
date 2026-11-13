@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.containers@b42312555d9f57f9";
+export const SURFACE = "so.tilo.containers@5426b1fbca56758c";
 
 export interface CreateDraft {
   name: string;

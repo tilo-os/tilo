@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tube@fdb44416bbb8c189";
+export const SURFACE = "so.tilo.tube@352bce080225ba43";
 
 export interface Reply {
   comment: string;

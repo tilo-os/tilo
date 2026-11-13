@@ -15,9 +15,6 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 fn assert_default_main_stack() {
     use std::io::{Read, Seek, SeekFrom};
 
-    // This regression runs the actual application, whose main thread does not
-    // inherit libtest's larger worker stack. Keep it sensitive to excess launch
-    // temporaries instead of hiding them with a larger linker stack reserve.
     let mut image = std::fs::File::open(tilo_test_env::package_binary!("pdf-viewer")).unwrap();
     let mut word = [0; 2];
     image.read_exact(&mut word).unwrap();
@@ -47,8 +44,6 @@ fn assert_default_main_stack() {
     );
 }
 
-/// The pdfium library the reader would find on this host, resolved before the
-/// child's environment is isolated.
 fn host_pdfium() -> Option<std::path::PathBuf> {
     if let Some(path) = std::env::var_os("TILO_PDFIUM_LIB").filter(|path| !path.is_empty()) {
         return Some(path.into());
@@ -90,8 +85,6 @@ fn run(root: &Path, name: &str, source: &Path, extra: Vec<Value>) -> (Value, Val
         std::fs::create_dir_all(&directory).unwrap();
         command.env(key, directory);
     }
-    // The isolated HOME hides a per-user pdfium install, and opening a PDF
-    // requires the native engine, so hand the host's library over explicitly.
     if let Some(pdfium) = host_pdfium() {
         command.env("TILO_PDFIUM_LIB", pdfium);
     }
@@ -145,8 +138,6 @@ fn run(root: &Path, name: &str, source: &Path, extra: Vec<Value>) -> (Value, Val
     )
 }
 
-/// The items of a dumped collection, keyed by their ids; none when the
-/// record has not stored the collection yet.
 fn entries(collection: &Value) -> Vec<&Value> {
     collection
         .as_object()
@@ -160,8 +151,6 @@ fn mark_kind(annotation: &Value) -> String {
     mark["kind"].as_str().unwrap_or_default().to_owned()
 }
 
-/// Every semantic node named after the first page's canvas, wherever the
-/// inspection nests it.
 fn find_canvas<'a>(node: &'a Value, found: &mut Vec<&'a Value>) {
     if node["name"] == "Page 1 of 3" && node.get("bounds").is_some() {
         found.push(node);

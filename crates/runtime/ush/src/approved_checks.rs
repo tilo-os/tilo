@@ -14,7 +14,6 @@ pub use execution::{
 };
 pub use reports::{CheckReport, CheckReportRefusal, ReportedCheckEvent, ReportedCheckPhase};
 
-/// Full project-host identity supplied by the admitted resource host.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectBinding {
@@ -25,7 +24,6 @@ pub struct ProjectBinding {
     pub resource: String,
 }
 
-/// Aggregate CPU bandwidth, memory, process, wall and capture bounds.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CheckLimits {
@@ -33,7 +31,6 @@ pub struct CheckLimits {
     pub memory_bytes: u64,
     pub processes: u32,
     pub wall_seconds: u32,
-    /// Each output stream has this ceiling; exceeding it fails the job.
     pub output_bytes: usize,
 }
 
@@ -67,18 +64,13 @@ pub struct ApprovedCheck {
     pub id: String,
     pub binding: ProjectBinding,
     pub checkout: PathBuf,
-    /// Unique writable build/artifact directory mounted at /project/target.
     pub build: PathBuf,
-    /// Dedicated private working directory, outside source and build.
     pub scratch: PathBuf,
     pub runtime_binary: PathBuf,
     pub images: Vec<CheckImage>,
-    /// Absolute guest program followed by fixed arguments; no shell shaping.
     pub command: Vec<String>,
-    /// Fixed host-reviewed environment overlays. No target-directory override.
     pub environment: Vec<(String, String)>,
     pub limits: CheckLimits,
-    /// Optional host-reviewed phase vocabulary; empty disables stderr reports.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reported_phases: Vec<ReportedCheckPhase>,
 }
@@ -231,14 +223,12 @@ impl ApprovedCheck {
     }
 }
 
-/// A host-created registry scoped to one admitted project. No global ID lookup.
 pub struct ApprovedChecks {
     binding: ProjectBinding,
     checks: BTreeMap<String, ApprovedCheck>,
 }
 
 impl ApprovedChecks {
-    /// Construct from trusted host configuration, refusing foreign bindings.
     pub fn new(binding: ProjectBinding, checks: Vec<ApprovedCheck>) -> Result<Self, String> {
         if checks.len() > 128 {
             return Err("too many approved project checks".into());
@@ -270,12 +260,6 @@ impl ApprovedChecks {
         self.run_with_reports(binding, id, authority, |_| {})
     }
 
-    /// Run the same owned check with bounded informational command reports.
-    /// Reports cannot determine execution success, cleanup or evidence validity.
-    /// The callback runs on the existing host worker after a fresh custody check.
-    ///
-    /// # Errors
-    /// Returns the same binding, authority and supervision failures as [`Self::run`].
     pub fn run_with_reports(
         &self,
         binding: &ProjectBinding,

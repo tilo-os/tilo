@@ -8,6 +8,7 @@ use super::{
     now_ns, workspace,
 };
 use collab_types::signer::DeviceSigner;
+use tilo_action_policy::Change;
 
 impl PeerGovernance<'_> {
     /// The sandbox capabilities the workspace's governance grants its apps.
@@ -368,20 +369,16 @@ impl PeerGovernance<'_> {
             .ok_or("workspace governance missing")?;
         let workspace = &self.peer.core.workspace;
         let held = crate::members::ops(doc);
-        let rows = crate::members::rows(doc, workspace);
         let mut said = vec![format!(
-            "{} membership operations; log {}; owner {:?}",
+            "{} membership operations; owner {:?}",
             held.len(),
-            if crate::members::starts(doc, workspace) {
-                "started"
-            } else {
-                "not started"
-            },
-            rows.owner
+            crate::members::replay(doc, workspace).owner
         )];
         for op in held.values() {
             let command = match &op.command {
-                crate::members::MembershipOpCommand::Genesis { .. } => "genesis".to_owned(),
+                crate::members::MembershipOpCommand::Admit { person, .. } => {
+                    format!("admission of {}", hex::encode(person))
+                }
                 crate::members::MembershipOpCommand::Governance { rows } => {
                     format!("governance of {} rows", rows.len())
                 }
@@ -396,12 +393,6 @@ impl PeerGovernance<'_> {
                 op.at_ns
             ));
         }
-        let log = crate::members::replay(doc, workspace);
-        said.extend(
-            crate::members::differences(&log, &rows)
-                .into_iter()
-                .map(|line| format!("  log against rows: {line}")),
-        );
         Ok(said)
     }
     /// Authority-authored collaborator projection. The structural owner is
@@ -736,8 +727,17 @@ impl PeerGovernanceMut<'_> {
         {
             crate::governance::AdmissionOutcome::AlreadyApplied => Ok(false),
             crate::governance::AdmissionOutcome::Applied { .. } => {
+                // The workspace's owner is not one of its members: they hold
+                // it from its beginning, and their device's certificate is
+                // what admits it.
+                let admit = (cert.user_public_key != self.peer.core.owner).then(|| {
+                    crate::members::MembershipOpCommand::Admit {
+                        invite: redemption.join().invite_id(),
+                        person: cert.user_public_key,
+                    }
+                });
                 self.peer
-                    .write_governance(document.into(), &before, key, now)
+                    .write_membership(document.into(), &before, key, now, admit)
             }
         }
     }
@@ -898,21 +898,52 @@ impl PeerGovernanceMut<'_> {
         self.peer
             .set_member(user_public_key, role.into(), false, key, now)
     }
-    /// Make a governed collaborator an administrator of the workspace: an Editor
-    /// holding every governance action
-    /// ([`tilo_action_policy::roles::administrator_grant`]).
+    /// Hold the person `user_public_key` as a member of the workspace at
+    /// `role`, an administrator or not, before any device of theirs is
+    /// admitted here: someone a deployment's operator names as an owner while
+    /// the workspace waits for them to join. Their device is admitted when it
+    /// joins, and they hold what this record says from then on.
     ///
     /// # Errors
     ///
-    /// As [`Self::set_member_role`].
+    /// Returns an error if the change is not `key`'s device's to make, the
+    /// person is the workspace's own owner, or governance cannot be updated.
+    pub fn declare_member(
+        self,
+        user_public_key: [u8; 32],
+        role: crate::join::MemberRole,
+        administrator: bool,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.peer
+            .declare_member(user_public_key, role.into(), administrator, key, now)
+    }
+
+    /// Make a person an administrator of the workspace: a member as an Editor,
+    /// holding every governance action
+    /// ([`tilo_action_policy::roles::administrator_grant`]), whether one of
+    /// their devices has joined yet or not. A declaration made before they
+    /// arrive is governance like any other, so it is here when they do and
+    /// after a restart.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the change is not `key`'s device's to make, the
+    /// person is the workspace's own owner, or governance cannot be updated.
     pub fn set_member_administrator(
         self,
         user_public_key: [u8; 32],
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.peer
-            .set_member(user_public_key, Role::Editor, true, key, now)
+        self.declare_member(
+            user_public_key,
+            crate::join::MemberRole::Editor,
+            true,
+            key,
+            now,
+        )
     }
     /// Name the admitted person `user_public_key` `name` in the workspace: the
     /// name every reader of [`PeerGovernance::governed_members`] shows for
@@ -988,8 +1019,7 @@ impl PeerGovernanceMut<'_> {
             return Ok(false);
         };
         let workspace = self.peer.core.workspace.as_str();
-        let policy = doc.policy();
-        let grants = &policy.grants;
+        let grants = &doc.workspace_policy(workspace).grants;
         let mut rewritten = grants
             .iter()
             .filter(|grant| {
@@ -1042,22 +1072,19 @@ impl PeerGovernanceMut<'_> {
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer.require_member_writer(key, now)?;
-        let mut doc = self
+        let doc = self
             .peer
             .core
             .workspace_doc
             .clone()
             .ok_or("workspace governance missing")?;
-        let before = doc.get_heads();
-        let grants = governed_map(&doc, "grants")?;
-        doc.set_actor(self.peer.workspace_actor_of(key));
-        for id in ids {
-            if doc.get(&grants, id.as_str()).map_err(err)?.is_some() {
-                doc.delete(&grants, id.as_str()).map_err(err)?;
-            }
-        }
-        doc.commit();
-        self.peer.write_governance(doc, &before, key, now)
+        let held = &doc.workspace_policy(&self.peer.core.workspace).grants;
+        let changes: Vec<Change> = ids
+            .iter()
+            .filter(|id| held.iter().any(|grant| grant.id == **id))
+            .map(|id| Change::Revoke(id.clone()))
+            .collect();
+        self.peer.write_changes(doc, changes, key, now)
     }
     /// Write grants a member's device decided, such as those an assigned
     /// grant set expands to, keyed by their ids.
@@ -1073,15 +1100,14 @@ impl PeerGovernanceMut<'_> {
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer.require_member_writer(key, now)?;
-        let mut doc = self
+        let doc = self
             .peer
             .core
             .workspace_doc
             .clone()
             .ok_or("workspace governance missing")?;
-        let before = doc.get_heads();
-        let map = governed_map(&doc, "grants")?;
-        doc.set_actor(self.peer.workspace_actor_of(key));
+        let held = &doc.workspace_policy(&self.peer.core.workspace).grants;
+        let mut changes = Vec::new();
         for grant in grants {
             if grant.id.as_str().trim().is_empty()
                 || grant.node.workspace_id() != Some(self.peer.core.workspace.as_str())
@@ -1091,15 +1117,16 @@ impl PeerGovernanceMut<'_> {
                     grant.id
                 ));
             }
-            doc.put(
-                &map,
-                grant.id.as_str(),
-                automerge::ScalarValue::Bytes(serde_json::to_vec(grant).map_err(err)?),
-            )
-            .map_err(err)?;
+            match held.iter().find(|kept| kept.id == grant.id) {
+                Some(kept) if kept == grant => continue,
+                // A grant kept under the id it had with different terms is one
+                // revoked and given again.
+                Some(_) => changes.push(Change::Revoke(grant.id.clone())),
+                None => {}
+            }
+            changes.push(Change::Grant(grant.clone()));
         }
-        doc.commit();
-        self.peer.write_governance(doc, &before, key, now)
+        self.peer.write_changes(doc, changes, key, now)
     }
     /// Remove a governed collaborator and their grants; someone removing
     /// themselves also takes their own devices' rows.
@@ -1125,28 +1152,24 @@ impl PeerGovernanceMut<'_> {
             .clone()
             .ok_or("workspace governance missing")?;
         let person = hex::encode(user_public_key);
-        let members = governed_map(&doc, "members")?;
-        let grants = governed_map(&doc, "grants")?;
-        let personal = doc
-            .policy()
-            .grants
-            .iter()
-            .filter(|grant| grant.subject == Subject::Person(person.clone()))
-            .map(|grant| grant.id.as_str().to_owned())
-            .collect::<Vec<_>>();
-        let member = doc.get(&members, person.as_str()).map_err(err)?.is_some();
-        if !member && personal.is_empty() {
+        let policy = doc.workspace_policy(&self.peer.core.workspace);
+        // Removing a member takes every grant naming them with them; someone
+        // who is no member loses the grants that still name them.
+        let changes: Vec<Change> = if policy.members.contains_key(&person) {
+            vec![Change::RemoveMember { person }]
+        } else {
+            policy
+                .grants
+                .iter()
+                .filter(|grant| grant.subject == Subject::Person(person.clone()))
+                .map(|grant| Change::Revoke(grant.id.clone()))
+                .collect()
+        };
+        if changes.is_empty() {
             return Ok(false);
         }
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));
-        if member {
-            doc.delete(&members, person.as_str()).map_err(err)?;
-            crate::state::delete_member_joined(&mut doc, &person)?;
-        }
-        for id in personal {
-            doc.delete(&grants, id.as_str()).map_err(err)?;
-        }
         // Someone who leaves takes their own devices off the workspace with
         // them: the rows that admit a device go, so no key of theirs stays
         // named here. Another person's devices stay until whoever may remove
@@ -1172,7 +1195,13 @@ impl PeerGovernanceMut<'_> {
             }
         }
         doc.commit();
-        self.peer.write_governance(doc, &before, key, now)
+        self.peer.write_membership(
+            doc,
+            &before,
+            key,
+            now,
+            Some(crate::members::MembershipOpCommand::Project { changes }),
+        )
     }
 }
 

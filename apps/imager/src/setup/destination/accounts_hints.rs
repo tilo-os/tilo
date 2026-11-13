@@ -1,4 +1,5 @@
 //! Installer form adapter for the canonical encrypted private hint format.
+
 use super::accounts_view::{AccountsForm, FormError};
 use imager_backend::destination::online_accounts::SymmetricKey;
 pub use imager_backend::destination::online_accounts::hints::{SealedHints, open, seal};
@@ -20,9 +21,6 @@ impl std::fmt::Display for HintsError {
 impl std::error::Error for HintsError {}
 
 impl AccountsForm {
-    /// Authenticate offline suggestions without authorizing or signing in.
-    /// The fresh selection/read generation is separate from the artifact's
-    /// fixed ciphertext binding, so re-selecting the same export rejects late results.
     pub fn accept_password_hints(
         &self,
         source: &str,
@@ -39,8 +37,6 @@ impl AccountsForm {
         self.accept_hints(source, hints).map_err(HintsError::Form)
     }
 
-    /// This does not select a source or grant consent. The existing form gate
-    /// also rejects authenticated late results from a previous selection.
     pub fn accept_encrypted_hints(
         &self,
         source: &str,
@@ -52,8 +48,6 @@ impl AccountsForm {
     }
 }
 
-// Passwords use the same masked, external buffer as the local login secret.
-// Only a bounded control signal crosses the private queue; no password action exists.
 use crate::setup::strings::t;
 use imager_backend::destination::windows_hint_source::Source;
 
@@ -165,8 +159,6 @@ impl AccountsForm {
 
 type HintResult =
     Result<Vec<imager_backend::destination::online_accounts::hints::AccountHint>, PromptState>;
-/// Owns the accepted media identity and one private read generation. Decrypted
-/// hints cannot survive skip, a profile change or departure from Accounts.
 #[derive(Default)]
 pub(crate) struct WindowsReview {
     expected: Option<Expectation>,
@@ -220,8 +212,6 @@ impl WindowsReview {
         form.prompt(PromptState::Hidden);
     }
     pub(crate) fn sync(&mut self, form: &AccountsForm) {
-        // A password beyond any real one is refused as it is typed, and never
-        // kept.
         let oversized = form
             .windows
             .password

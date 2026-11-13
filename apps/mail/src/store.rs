@@ -13,11 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::Message;
 
-/// The layout of a kept file. A file of another version is fetched again.
 const VERSION: u32 = 1;
 
-/// How many messages are kept per account: the newest ones. More stay on
-/// the server and come back as the list scrolls to them.
 pub(crate) const KEEP: usize = 5_000;
 
 #[derive(Serialize, Deserialize)]
@@ -26,23 +23,16 @@ struct Kept {
     messages: Vec<Message>,
 }
 
-/// Where fetched mail is kept, or nowhere (a capture, a past version, a
-/// host without an app cache).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Store {
     root: Option<PathBuf>,
-    /// The one thread that writes, in the order the writes were asked for,
-    /// so a later sync's file is never overwritten by an earlier one's.
     writer: std::sync::Arc<std::sync::OnceLock<Option<Sender<Write>>>>,
 }
 
-/// A file to write: an account's mail (`Some`), or nothing (`None`, to
-/// remove it), and the attachment files that go with it.
 type Write = (PathBuf, Option<Vec<Message>>, Vec<(PathBuf, Vec<u8>)>);
 type Sender<T> = std::sync::mpsc::Sender<T>;
 
 impl Store {
-    /// Keep mail under `root`.
     pub(crate) fn at(root: PathBuf) -> Self {
         Self {
             root: Some(root),
@@ -50,7 +40,6 @@ impl Store {
         }
     }
 
-    /// Keep nothing.
     pub(crate) fn nowhere() -> Self {
         Self::default()
     }
@@ -100,8 +89,6 @@ impl Store {
         Some(root.join(format!("{}.json", file_stem(account))))
     }
 
-    /// The mail kept for `account`, oldest first as it was written; none
-    /// when nothing (or nothing readable) is kept.
     pub(crate) fn load(&self, account: &str) -> Vec<Message> {
         let Some(path) = self.file(account) else {
             return Vec::new();
@@ -126,10 +113,6 @@ impl Store {
         }
     }
 
-    /// Keep `messages` as `account`'s mail, the newest [`KEEP`] of them,
-    /// written on a worker thread so the window never waits for the disk.
-    /// Attachment bytes not kept yet are kept beside it; the returned
-    /// `(message, attachment index)` pairs are kept from now on.
     pub(crate) fn save(
         &self,
         account: &str,
@@ -160,7 +143,6 @@ impl Store {
         newly_kept
     }
 
-    /// Where attachment `index` of `account`'s message `message` is kept.
     fn attachment_file(
         &self,
         account: &str,
@@ -171,8 +153,6 @@ impl Store {
         Some(folder.join(format!("{message}.{index}")))
     }
 
-    /// The bytes of attachment `index` of `account`'s message `message`, as
-    /// kept on this device.
     pub(crate) fn attachment(
         &self,
         account: &str,
@@ -182,7 +162,6 @@ impl Store {
         std::fs::read(self.attachment_file(account, message, index)?).ok()
     }
 
-    /// Forget what is kept for `account` (the account was removed).
     pub(crate) fn forget(&self, account: &str) {
         if let Some(path) = self.file(account)
             && let Some(writer) = self.writer()
@@ -192,7 +171,6 @@ impl Store {
     }
 }
 
-/// The file names of the attachments `messages` keep.
 fn attachment_names(messages: &[Message]) -> std::collections::HashSet<String> {
     messages
         .iter()
@@ -207,8 +185,6 @@ fn attachment_names(messages: &[Message]) -> std::collections::HashSet<String> {
         .collect()
 }
 
-/// Remove every file in `folder` but the `kept` ones: attachments of mail
-/// that fell out of what is kept, or was removed from its server.
 fn prune(folder: &Path, kept: &std::collections::HashSet<String>) -> std::io::Result<()> {
     let entries = match std::fs::read_dir(folder) {
         Ok(entries) => entries,
@@ -260,14 +236,11 @@ fn write(path: &Path, messages: Vec<Message>) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    // Written beside and moved over, so a crash never leaves half a file.
     let partial = path.with_extension("json.partial");
     std::fs::write(&partial, bytes)?;
     std::fs::rename(&partial, path)
 }
 
-/// A file name for an account: its address with anything a file name
-/// should not carry replaced.
 fn file_stem(account: &str) -> String {
     account
         .chars()
@@ -342,7 +315,6 @@ mod tests {
         });
         assert!(loaded[0].attachments[0].is_downloadable());
 
-        // Mail that is no longer kept takes its attachment files with it.
         assert!(store.save("me@x.example", vec![message(2)]).is_empty());
         ui::testing::wait_until("the attachment to go with its mail", || {
             store.attachment("me@x.example", id, 0).is_none()

@@ -7,7 +7,6 @@ use code_editor::CodeEditorShell;
 use ui::framework::testing::TestApp;
 use ui::portal::PortalOutcome;
 
-/// A project folder with a source file and a folder in it.
 fn project_folder() -> std::io::Result<tempfile::TempDir> {
     let folder = tempfile::tempdir()?;
     std::fs::create_dir(folder.path().join("src"))?;
@@ -16,8 +15,6 @@ fn project_folder() -> std::io::Result<tempfile::TempDir> {
     Ok(folder)
 }
 
-/// Click the sidebar's Open folder, shown while no project is open, where
-/// the person sees it: the button its accessibility node names.
 fn click_open_folder(app: &mut TestApp<CodeEditorShell>) {
     let harness = app.harness();
     let bounds = harness
@@ -84,7 +81,6 @@ fn a_picker_that_cannot_open_is_told_in_plain_words() {
     app.settle();
 
     let said = format!("Couldn't open a folder. {reason}");
-    // Code says what it was doing, then what happened and what to do.
     tilo_test_env::wait_until(format!("Code to say {said:?}"), || {
         app.settle();
         shows(&mut app, &said)

@@ -225,3 +225,36 @@ fn a_window_revealed_while_its_neighbour_narrows_keeps_the_strips_gutter() {
         );
     }
 }
+
+/// A window standing beside a lone one at the default width floats as a card again: the lone
+/// window gives up the card's room and keeps it, standing alone beside the card, rather than
+/// taking the strip back under it.
+#[test]
+fn a_window_floated_from_beside_a_lone_one_leaves_it_clear_of_the_card() {
+    let display = 1280.0;
+    let mut row = lone_window_on(display);
+    // Beside it, a window narrow enough that both stand at their widths: nothing is shared.
+    let mut beside = make_group(200, &[2]);
+    beside.set_width(WindowWidth::Fraction(300));
+    row.insert_group(beside, 1);
+    relayout_strip(&mut row, display);
+    relayout_strip(&mut row, display);
+    assert_eq!(row.groups[0].width(), WindowWidth::Normal);
+
+    let card = 320.0 + 2.0 * crate::widget::FLOAT_CARD_ROOM;
+    assert!(row.share_with_floating_neighbour(200, card));
+    let mut floats = HashMap::new();
+    floats.insert(
+        200,
+        vello::kurbo::Rect::new(display - card, 300.0, display, 776.0),
+    );
+    row.set_floats(floats);
+    relayout_strip(&mut row, display);
+    relayout_strip(&mut row, display);
+    let (_, _, right) = row.group_canvas_spans()[0];
+    assert!(
+        right <= display - card + 0.5,
+        "the window stands clear of the card ({card} px at the edge): {:?}",
+        row.group_canvas_spans()
+    );
+}

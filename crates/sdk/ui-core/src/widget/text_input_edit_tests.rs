@@ -653,6 +653,51 @@ fn a_bound_text_is_only_read_and_edits_wait_for_the_owner() {
     assert_eq!(input.take_dirty().as_deref(), Some("Project Atlas"));
 }
 
+/// A field bound to a document's text shows who wrote each run of it, as a note's body does: the
+/// writer's own runs are read from the text's `author` marks, neighbouring runs of one author
+/// merged into one, in byte ranges the field's geometry uses.
+#[test]
+fn a_bound_text_reads_who_wrote_each_run() {
+    use automerge::marks::{ExpandMark, Mark};
+
+    let _settled = crate::motion::testing::settled();
+    let mut document = AutoCommit::new();
+    let title = document
+        .put_object(&automerge::ROOT, "title", ObjType::Text)
+        .unwrap();
+    document.splice_text(&title, 0, 0, "héllo there").unwrap();
+    document
+        .mark(
+            &title,
+            Mark::new("author".to_owned(), ScalarValue::Str("ada".into()), 0, 5),
+            ExpandMark::None,
+        )
+        .unwrap();
+    document
+        .mark(
+            &title,
+            Mark::new(
+                "author".to_owned(),
+                ScalarValue::Str("agent:helper".into()),
+                6,
+                11,
+            ),
+            ExpandMark::None,
+        )
+        .unwrap();
+    let mut input = TextInput::local();
+    input.bind_text(title);
+    input.sync(&document, &automerge::ROOT);
+    assert_eq!(
+        input.authored,
+        vec![
+            (0..6, "ada".to_string()),
+            (7..12, "agent:helper".to_string())
+        ],
+        "each run is its author's, in bytes of what the field shows",
+    );
+}
+
 #[test]
 fn touch_owns_text_selection_until_release() {
     // Motion reads at its end: this test checks the resting frame.

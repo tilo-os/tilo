@@ -750,6 +750,15 @@ dispatch. This works on every target; native windows keep the threads.
 the awaited pipelines is compiled, so the browser can bound a stalled compile
 without failing one that is slow but still finishing pipelines.
 
+## `vendor/vello_encoding/src/glyph.rs`, `glyph_cache.rs`, `vendor/vello/src/scene.rs`: one outline draw
+
+`vello_encoding::draw_outline(outline, settings, pen)` draws a glyph's outline
+into a `&mut dyn OutlinePen`. The glyph cache, the colour glyphs' clips and
+Tilo's own pens (the CPU rasterizer's, the text renderer's ink bounds) all draw
+through it, so skrifa's outline interpreters (`glyf`, `CFF` and their hinting)
+are compiled once rather than once per pen type, which in the browser's start
+module was the whole interpreter again for each of five pens.
+
 ## zlink-macros
 
 `vendor/zlink-macros` is crates.io `zlink-macros` 0.7.0 (checksum

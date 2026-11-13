@@ -1,15 +1,10 @@
-//! Tube's copy, through the toolkit's Fluent catalogues.
-//!
-//! The catalogue is embedded, so a live window, a `--shots` capture and a
-//! test resolve the same strings with no file I/O. The language is the
-//! desktop's one answer — the person's language, else the system locale; a
-//! message a locale lacks falls back to `en-US`.
+//! Tube's copy, through the toolkit's Fluent catalogues. The catalogue is embedded, so a live
+//! window, a `--shots` capture and a test resolve the same strings with no file I/O.
 
 use ui::i18n::ArgValue;
 
 ui::embedded_catalog!(pub fn, ["de-DE", "en-US"]);
 
-/// One named variable for [`t_args`].
 pub fn arg<V: Into<ArgValue>>(name: &str, value: V) -> (&str, ArgValue) {
     (name, value.into())
 }
@@ -47,9 +42,6 @@ mod tests {
     }
 }
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source beside
-/// it, so a device set to German reads a German window.
 #[cfg(test)]
 mod german_catalogue_tests {
     use super::CATALOG;

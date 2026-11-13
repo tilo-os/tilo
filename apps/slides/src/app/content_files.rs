@@ -18,9 +18,6 @@ impl Store {
         content: &str,
         cx: &EffectCx<DeckRecord>,
     ) -> EffectAnswer {
-        // What the caller named: the content's reference, as it is (its key
-        // is case-sensitive), or the bare reference a plan that carried the
-        // content gives.
         let reference = ui::tilo_actions::named_reference(content).ok_or_else(|| {
             format!("`{content}` names no content: give `tilo.content:<reference>`")
         })?;

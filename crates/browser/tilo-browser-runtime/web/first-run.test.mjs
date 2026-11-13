@@ -138,6 +138,21 @@ test('the click copies exactly the prompt shown, inside the click, and only then
   assert.deepEqual(last('offer')[2].code, NEXT);
 });
 
+test('the code is followed before the clipboard holds it: the host knows it when an agent asks', async () => {
+  // The host keeps a code only from its tab's first follow (tilo-relay's login
+  // codes), and the prompt is on the clipboard the moment the click returns: an
+  // agent handed it at once asks for a code the host must already have.
+  const askedAtCopy = [];
+  let codes = null;
+  const {run, copied} = fixture({copy: text => { askedAtCopy.push(codes.made[0].asked); copied.push(text); return Promise.resolve(); }});
+  codes = maker(fakeCode());
+  run.offerSetup(codes.make);
+  await settle();
+  await run.copy();
+  assert.deepEqual(askedAtCopy, [1], 'the host was asked where the code is before the clipboard had the prompt');
+  assert.deepEqual(copied, [setupPrompt(CODE)], 'the prompt went to the clipboard');
+});
+
 test('a click before the page has a code copies nothing and says what it waits for', async () => {
   const {run, last, names, copied} = fixture({site: 'https://tilo.sh'});
   assert.equal(await run.copy(), false);

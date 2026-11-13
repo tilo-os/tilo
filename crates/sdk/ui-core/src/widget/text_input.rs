@@ -35,8 +35,10 @@ use crate::widget::control_size::ControlSize;
 use crate::widget::mention_picker::MentionCandidate;
 use crate::widget::text_completion::{CompletionKey, CompletionList, TextCompletion};
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
-use automerge::{AutoCommit, ObjId, ReadDoc};
+use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_resource::TextEdit;
+use tilo_resource::text::splice_between;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::BlendMode;
@@ -90,6 +92,10 @@ mod input;
 
 #[path = "text_input_written.rs"]
 mod written;
+
+#[path = "text_input_report.rs"]
+mod report;
+use report::Edited;
 
 /// Outline a field whose content was refused (a wrong password) in the
 /// danger colour, over the field's own edge at the control radius.
@@ -271,6 +277,9 @@ enum DragUnit {
 
 type TextChangeCallback = Box<dyn FnMut(&str)>;
 
+/// Finds the text object a field shows in the document a sync reads.
+type LocateText = Box<dyn Fn(&AutoCommit) -> Option<ObjId>>;
+
 /// Complete committed-text runs for an unmasked single line. Decorations use
 /// byte ranges in that same text; IME insertion remaps them only for display.
 #[derive(Clone, Debug, Default)]
@@ -320,6 +329,10 @@ pub struct TextInput {
     change: Option<(String, String)>,
     /// What the field held before that change, when it is known: what it wrote is the rest.
     change_before: Option<String>,
+    /// Who wrote each run of the bound text, as its own document records it: byte ranges of
+    /// `text` and the writer's id. Drawn in the writer's colour, one's own runs left plain, the
+    /// marks a body's paragraphs carry ([`crate::widget::BlockEditor`]) in a field.
+    authored: Vec<(std::ops::Range<usize>, String)>,
     is_focused: bool,
     /// Paint-only suppression for drag previews; focus, selection and IME remain intact.
     caret_paint_suppressed: bool,
@@ -376,7 +389,7 @@ pub struct TextInput {
     /// App-local notification hook. The comparison value prevents cursor,
     /// selection, and IME-preedit events from repeating the last edit.
     on_change: Option<TextChangeCallback>,
-    action: Option<ActionEmitter<String>>,
+    action: Option<ActionEmitter<Edited>>,
     last_notified_text: String,
     /// Typed process-local model mirrored in both directions during the
     /// ordinary widget sync/event lifecycle.
@@ -441,6 +454,12 @@ pub struct TextInput {
     /// local for the owner to submit ([`Self::take_dirty`]); how
     /// `BlockEditor` binds text nested inside a `List`.
     bound_text: Option<ObjId>,
+    /// Finds the text object to show in the document each sync reads: a record's text field,
+    /// wherever the record keeps it now ([`Self::bound_at`]).
+    locate_text: Option<LocateText>,
+    /// The region and block an invocation's text anchor names this field's characters by
+    /// (`title` of issue `7d2b`): what it writes here is drawn as its writer's, with its caret.
+    written_at: Option<(String, String)>,
     /// Where the document stood, and what the field showed, when it last
     /// read the bound text: a sync over an unchanged document reads nothing.
     adopted: Option<preparation::Adopted>,
@@ -833,6 +852,7 @@ impl TextInput {
             invalid: false,
             change: None,
             change_before: None,
+            authored: Vec::new(),
             is_focused: false,
             caret_paint_suppressed: false,
             host_shows_text: false,
@@ -879,6 +899,8 @@ impl TextInput {
             gutter_text_scale: 1.0,
             plain: false,
             bound_text: None,
+            locate_text: None,
+            written_at: None,
             adopted: None,
             local_author: None,
             align: TextAlign::Left,
@@ -1009,6 +1031,23 @@ impl TextInput {
     pub fn clear_text_binding(&mut self) {
         self.repaint = true;
         self.bound_text = None;
+        self.authored.clear();
+    }
+
+    /// Show no authored runs of the bound text: its owner draws them (a body's line, whose
+    /// [BlockEditor](crate::widget::BlockEditor) paints each run in its writer's colour), so a
+    /// field that is that line's text does not tint them a second time.
+    pub(crate) fn clear_authored(&mut self) {
+        if !self.authored.is_empty() {
+            self.repaint = true;
+            self.authored.clear();
+        }
+    }
+
+    /// Who wrote each run of the bound text, as byte ranges of it and the writer's id: what the
+    /// field draws in each writer's colour.
+    pub fn authored_runs(&self) -> &[(std::ops::Range<usize>, String)] {
+        &self.authored
     }
 
     /// For `BlockEditor` to match local blocks to doc list elements by object identity.
@@ -1023,21 +1062,72 @@ impl TextInput {
     ) -> Result<(), crate::view::ThawError> {
         let obj = self
             .bound_text
-            .as_ref()
+            .clone()
             .ok_or_else(|| crate::view::ThawError::State("text is not bound".into()))?;
-        let seen = preparation::Adopted::of(state, obj, &self.text);
+        let seen = preparation::Adopted::of(state, &obj, &self.text);
         if self.adopted.as_ref() == Some(&seen) {
             return Ok(());
         }
         let text = state
-            .text(obj)
+            .text(&obj)
             .map_err(|e| crate::view::ThawError::State(e.to_string()))?;
+        // A collaborator's change moves the caret and selection with the text around them,
+        // as typing there would: what the person here was about to type stays where they were.
+        let (anchor, caret) = (self.core.anchor(), self.core.caret());
+        let (anchor, caret) = (
+            written::through_change(&self.text, &text, anchor),
+            written::through_change(&self.text, &text, caret),
+        );
         // Showing the document's text is not a user edit.
-        self.adopt_model_text(text);
+        self.adopt_model_text(text.clone());
+        if !self.core.has_preedit() {
+            self.core.set_selection(anchor, caret);
+        }
+        self.adopt_authored(state, &obj, &text);
         self.clamp_to_text();
         self.last_notified_text.clone_from(&self.text);
         self.adopted = Some(seen.showing(&self.text));
         Ok(())
+    }
+
+    /// Who wrote each run of the bound text `obj`, as the document records it: the `author`
+    /// marks over it, merged where neighbouring runs name the same person (Automerge splits a
+    /// mark wherever a concurrent edit landed inside it), as byte ranges of `text`.
+    fn adopt_authored(&mut self, state: &AutoCommit, obj: &ObjId, text: &str) {
+        let mut authored: Vec<(std::ops::Range<usize>, String)> = state
+            .marks(obj)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|mark| mark.name.as_str() == AUTHOR_MARK)
+            .filter_map(|mark| {
+                let ScalarValue::Str(author) = &mark.value else {
+                    return None;
+                };
+                let start = byte_of_char(text, mark.start);
+                let end = byte_of_char(text, mark.end);
+                (start < end).then(|| (start..end, author.to_string()))
+            })
+            .collect();
+        authored.sort_by_key(|(range, _)| (range.start, range.end));
+        let mut merged: Vec<(std::ops::Range<usize>, String)> = Vec::with_capacity(authored.len());
+        for (range, author) in authored {
+            // A run of the same author that starts inside the one before it is
+            // that run: Automerge split one mark where an edit landed inside it.
+            let joins = merged.last().is_some_and(|(last, same)| {
+                *same == author
+                    && last.end.partial_cmp(&range.start) != Some(std::cmp::Ordering::Less)
+            });
+            match merged.last_mut() {
+                Some((last, _)) if joins => {
+                    last.end = last.end.max(range.end);
+                }
+                _ => merged.push((range, author)),
+            }
+        }
+        if self.authored != merged {
+            self.repaint = true;
+            self.authored = merged;
+        }
     }
 
     /// Replace text read from model state without reporting a user edit.
@@ -1731,50 +1821,23 @@ impl TextInput {
     /// an exported action with the complete current string as input.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
-        self.action = Some(ActionEmitter::new(binding));
+        self.action = Some(ActionEmitter::new(
+            binding.map_input(|edited: Edited| edited.after),
+        ));
         self
     }
 
-    fn notify_user_change(&mut self, physical_text: bool) {
-        if !self.dirty || self.last_notified_text == self.text {
-            return;
-        }
-        self.report_change(physical_text);
-    }
-
-    /// Tell the field's listeners what it holds now — the action it is bound to, the field's own
-    /// state, and its change verb (or callback) — and record what was told.
-    ///
-    /// The one writer of [`Self::last_notified_text`] once a field is built: every path that
-    /// reports an edit comes through here, so the text a listener hears is the text the field
-    /// records as told, and a path that set the field's text itself (a programmatic seed, a
-    /// document's own value) records it without telling anyone by not calling this at all.
-    /// Callers decide whether what they report is a person's edit ([`Self::notify_user_change`],
-    /// which asks the dirty mark) or a state the person's own action caused (an entry letting go
-    /// of what it sent).
-    fn report_change(&mut self, physical_text: bool) {
-        self.last_notified_text.clone_from(&self.text);
-        if let Some(action) = &mut self.action {
-            let _ = crate::bound_dispatch::with_physical_text(physical_text, || {
-                action.emit(self.text.clone())
-            });
-        }
-        // The field's own state stays the one a bound local edit reads: an
-        // action publishing the text does not stand in for it.
-        self.publish_local_state();
-        if let Some(verb) = &mut self.change_verb {
-            verb.emit(self.text.clone());
-            return;
-        }
-        if let Some(callback) = self.on_change.as_mut() {
-            callback(&self.text);
-        }
-    }
-
-    fn publish_local_state(&mut self) {
-        if let Some(binding) = &mut self.local_state {
-            binding.publish(&self.text);
-        }
+    /// Route each committed edit through `binding` as the splice it is ([`TextEdit::Splice`]):
+    /// where it writes, what it removes and what it inserts, so the write names its range (its
+    /// writer's caret and tint) and typing on in one word continues one undo step.
+    #[must_use]
+    pub fn on_text_edit(mut self, binding: tilo_actions::ActionBinding<TextEdit>) -> Self {
+        self.action = Some(ActionEmitter::new(binding.map_input(
+            |Edited { before, after }: Edited| {
+                splice_between(&before, &after).unwrap_or(TextEdit::ReplaceText { text: after })
+            },
+        )));
+        self
     }
 
     /// Insert `s` at the caret as the user's edit, reporting it once as any typed edit is: a host
@@ -5501,6 +5564,15 @@ impl Widget for TextInput {
             // The edit marked its own measurement when it landed.
             self.dirty = false;
         }
+        if let Some(locate) = &self.locate_text {
+            let located = locate(state);
+            if located != self.bound_text {
+                match located {
+                    Some(obj) => self.bind_text(obj),
+                    None => self.clear_text_binding(),
+                }
+            }
+        }
         if self.bound_text.is_some() {
             let _ = self.adopt_bound_text(state);
         }
@@ -6914,3 +6986,11 @@ mod touch_tests;
 mod component;
 pub use component::TextInputProps;
 mod completion;
+
+/// `char_index` as a byte offset of `text`: Automerge marks count characters, the field's
+/// geometry counts bytes. Clamps to the end.
+fn byte_of_char(text: &str, char_index: usize) -> usize {
+    text.char_indices()
+        .nth(char_index)
+        .map_or(text.len(), |(byte, _)| byte)
+}

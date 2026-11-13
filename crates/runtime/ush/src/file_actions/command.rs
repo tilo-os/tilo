@@ -1,10 +1,9 @@
-//! A file command line, carried out: `cp a b` read into its action, made
-//! absolute against the directory it was typed in, and invoked on the
-//! environment through the broker inside a guest, or carried out with the
-//! person's own permissions outside one (the host's shell has no record).
+//! A file command line, carried out: `cp a b` read into its action, made absolute against
+//! the directory it was typed in, and invoked on the environment through the broker
+//! inside a guest, or carried out with the person's own permissions outside one.
 //!
-//! The `cp` a guest's `PATH` finds and the `cp` the session's shell runs
-//! in-process are this one function, so they cannot answer differently.
+//! The `cp` a guest's `PATH` finds and the one the session's shell runs in-process are
+//! this one function, so they cannot answer differently.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -13,39 +12,26 @@ use crate::broker::{Request, Response};
 
 use super::{FileAction, Recoverable, anchored, cli, perform};
 
-/// One command line a shell ran, as History groups what it changed.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RunGroup {
     pub id: String,
-    /// The command line.
     pub label: String,
 }
 
-/// The kind of group a shell's run is in History: one undo takes all of it
-/// back. The same name as `collaboration`'s `steps::COMMAND_RUN`.
 pub const COMMAND_RUN: &str = "command-run";
 
-/// Where a file command answers: its output and its errors, and the
-/// broker of the guest it runs in, when it runs in one.
 pub struct Io<'a> {
     pub out: &'a mut dyn Write,
     pub err: &'a mut dyn Write,
-    /// The guest's broker socket; `None` outside a guest.
     pub broker: Option<&'a Path>,
-    /// Where what an action replaces is kept outside a guest.
     pub recoverable: PathBuf,
-    /// Whether the broker's progress lines are shown (on a terminal).
     pub progress: bool,
 }
 
-/// Run the file command `name` with `args` typed in `cwd`. Answers its
-/// status.
 pub fn run(name: &str, args: &[String], cwd: &Path, io: &mut Io<'_>) -> i32 {
     run_within(name, args, cwd, None, io)
 }
 
-/// [`run`], as part of the shell's run `run`: History groups what it
-/// changes under that run.
 pub fn run_within(
     name: &str,
     args: &[String],
@@ -64,7 +50,6 @@ pub fn run_within(
     }
 }
 
-/// Carry out `action` for the command `name`.
 pub fn run_action(name: &str, action: FileAction, json: bool, cwd: &Path, io: &mut Io<'_>) -> i32 {
     act(name, action, json, cwd, None, io)
 }
@@ -120,8 +105,6 @@ fn act(
                     .map(|()| 1)
                     .map_err(|error| error.to_string())
             }),
-        // The host's own shell names no content by reference: its verbs
-        // carry what they write.
         action => perform(
             action,
             &policy,

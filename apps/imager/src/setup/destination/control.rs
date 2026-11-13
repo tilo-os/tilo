@@ -1,11 +1,4 @@
-//! What a wizard control does when it is used.
-//!
-//! A control names the effect it runs, with its arguments. Using it queues
-//! that one [`Press`]; the [`crate::setup::destination::installer_app::InstallerApp`]
-//! takes the queue and runs each press through its own door — the effect's
-//! availability now, the typed confirmation phrase, then the handler —
-//! exactly as the console and the palette reach the same effects. A control
-//! holds no wizard state and never writes the document.
+//! Wizard controls, and the presses they queue.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -15,25 +8,21 @@ use ui::tilo_resource::Effect as _;
 
 use super::effects::DestinationEffect;
 
-/// One use of a control: the effect it runs.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Press {
     pub effect: DestinationEffect,
 }
 
 impl Press {
-    /// A press of `effect`.
     pub fn new(effect: DestinationEffect) -> Self {
         Self { effect }
     }
 }
 
-/// The presses the wizard's controls queued and the wizard has not run yet.
 #[derive(Clone, Default)]
 pub struct Presses(Rc<RefCell<VecDeque<Press>>>);
 
 impl Presses {
-    /// A control that queues `press` here each time it is used.
     pub fn control(&self, press: Press) -> Control {
         Control {
             queue: self.clone(),
@@ -41,24 +30,17 @@ impl Presses {
         }
     }
 
-    /// The oldest press not run yet.
     pub fn take(&self) -> Option<Press> {
         self.0.borrow_mut().pop_front()
     }
 }
 
-/// A toolkit control whose uses fire wizard [`Control`]s: a disk's row, a
-/// choice's segments. The toolkit widget draws and handles it; the
-/// inventory names the published action each use runs, so a control is
-/// listed as the effect it is, never as an anonymous callback.
 pub struct Bound {
     inner: ui::widget::Element,
     bindings: Vec<ui::widget::ControlBindingMetadata>,
-    /// The control Enter and Space use while the widget has focus.
     keys: Option<Control>,
 }
 
-/// Whether `event` presses Enter or Space: what uses a focused control.
 pub fn is_activation_key(event: &winit::event::WindowEvent) -> bool {
     use winit::event::{ElementState, KeyEvent, WindowEvent};
     use winit::keyboard::{Key, NamedKey};
@@ -76,7 +58,6 @@ pub fn is_activation_key(event: &winit::event::WindowEvent) -> bool {
 }
 
 impl Bound {
-    /// `inner`, whose uses fire `controls`, each listed under its control id.
     pub fn new<'a>(
         inner: ui::widget::Element,
         controls: impl IntoIterator<Item = (String, &'a Control)>,
@@ -91,9 +72,6 @@ impl Bound {
         }
     }
 
-    /// Enter and Space on the focused widget use `control` and are consumed,
-    /// so the wizard's own Enter (advance the step) never acts past a
-    /// focused control.
     #[must_use]
     pub fn activated_by_keys(mut self, control: &Control) -> Self {
         self.keys = Some(control.clone());
@@ -133,13 +111,10 @@ impl ui::widget::Decorator for Bound {
 }
 
 impl ui::widget::controls::ActionControls for Bound {
-    /// The press the control queued: the control's own published action, which a decorator's
-    /// default walk skips (it forwards to the widget's children).
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         ui::widget::controls::take_control_invocation(&mut *self.inner)
     }
 
-    /// The control's action is available where its own resource publishes it.
     fn refresh_control_action_availability(
         &mut self,
         allowed: &std::collections::HashSet<ui::tilo_actions::ActionAddress>,
@@ -152,7 +127,6 @@ impl ui::widget::controls::ActionControls for Bound {
     }
 }
 
-/// What one control does when used: queue its press.
 #[derive(Clone)]
 pub struct Control {
     queue: Presses,
@@ -160,17 +134,14 @@ pub struct Control {
 }
 
 impl Control {
-    /// Queue this control's press.
     pub fn fire(&self) {
         self.queue.0.borrow_mut().push_back(self.press.clone());
     }
 
-    /// The effect this control runs.
     pub fn effect(&self) -> &DestinationEffect {
         &self.press.effect
     }
 
-    /// The control's inventory entry: bound to its published effect.
     pub fn metadata(&self, control_id: &str) -> ui::widget::ControlBindingMetadata {
         let effect = &self.press.effect;
         ui::widget::ControlBindingMetadata {
@@ -179,8 +150,6 @@ impl Control {
         }
     }
 
-    /// A control that queues into a queue of its own, for a widget's own
-    /// tests: the returned queue holds whatever the control fired.
     #[cfg(test)]
     pub fn detached(effect: DestinationEffect) -> (Self, Presses) {
         let presses = Presses::default();

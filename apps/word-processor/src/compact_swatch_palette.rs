@@ -1,7 +1,5 @@
-//! Compact Writer palette popover built around the shared swatch-grid widget.
-//!
-//! This owns only local presentation state and returns a typed choice; the
-//! editor remains the single place that turns that choice into a document action.
+//! The compact palette popover around the shared swatch grid: local presentation
+//! state and a typed choice, which the editor turns into a document action.
 
 use std::collections::HashMap;
 
@@ -23,7 +21,6 @@ use winit::keyboard::{Key, NamedKey};
 use crate::num;
 use ui::widget::DrawChild;
 
-/// Swatches per row of the grid.
 const COLUMNS: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,7 +37,6 @@ pub(super) enum PaletteChoice {
 
 pub(super) struct PaletteRequest<'a> {
     pub(super) kind: PaletteKind,
-    /// The swatch of the colour in use, shown selected.
     pub(super) selected: Option<usize>,
     pub(super) colors: &'a [[u8; 3]],
     pub(super) labels: Vec<String>,
@@ -48,7 +44,6 @@ pub(super) struct PaletteRequest<'a> {
     pub(super) clear_label: String,
     pub(super) anchor: Point,
     pub(super) host: Rect,
-    /// The theme the panel is laid out in until it is next drawn.
     pub(super) theme: &'a Theme,
 }
 
@@ -126,9 +121,6 @@ impl CompactSwatchPalette {
             .and_then(Widget::accessibility)
             .map(|picker| {
                 use ui::a11y::{AccessNode, AccessState, Role};
-                // The popover is a named group around the reusable list and
-                // its Writer-specific clear/default footer. Keeping the
-                // picker as its own child preserves its collection semantics.
                 AccessNode::new(Role::Group)
                     .with_name(self.title.clone())
                     .with_bounds(self.rect)
@@ -170,9 +162,6 @@ impl CompactSwatchPalette {
         None
     }
 
-    /// Give a palette descendant real semantic focus before the editor's
-    /// general document-focus fallback runs. This keeps AT, keyboard, and
-    /// pointer focus state aligned without treating a swatch as a mutation.
     pub(super) fn focus_target(
         &mut self,
         target: &str,
@@ -196,9 +185,6 @@ impl CompactSwatchPalette {
         false
     }
 
-    /// Size and place the panel: a title line, the shared swatch grid and
-    /// the clear action, each separated by the panel's sibling rhythm, kept
-    /// inside `host` next to `anchor`.
     fn layout(&mut self, anchor: Point, host: Rect, theme: &Theme) {
         let Some(picker) = self.picker.as_mut() else {
             return;
@@ -390,7 +376,6 @@ impl CompactSwatchPalette {
     }
 }
 
-/// The document colour of swatch `index`, as the RGB triple a mark stores.
 fn swatch_rgb(picker: &ColorSwatchPicker, index: usize) -> Option<[u8; 3]> {
     let rgba = picker.swatch(index)?.color.to_rgba8();
     Some([rgba.r, rgba.g, rgba.b])

@@ -1,47 +1,7 @@
-//! Photos — view a photograph, adjust it, and get the result out.
-//!
-//! A viewer with a small set of edits:
-//!
-//!   * **Open** an image through the host XDG portal chooser (never a bespoke
-//!     dialog), or from a path on the command line.
-//!   * **Display** it fit to the window — contain-scaled, so a photograph
-//!     larger than the viewport is scaled down rather than cropped by the
-//!     frame. Scroll to zoom, drag to pan.
-//!   * **Adjust** it: quarter turns either way, and a crop of whatever the
-//!     viewport is currently framing. Both change the pixels.
-//!   * **Get it out**: copy the edited pixels to the system clipboard, or save
-//!     them as a PNG beside the original.
-//!
-//! # Where state lives
-//!
-//! A photograph is its original plus what was done to it. Importing puts the
-//! original's bytes in the app's content store (`tilo-content`, a handle the
-//! app is given at startup) and records an `ImportPhoto` action naming them by
-//! hash; every edit after that is a `SetEdits` action replayed onto that
-//! original. The CRDT holds the hash, small metadata and the edits in force
-//! (`doc`); it never holds the pixels, and a rendered edit (Copy, Save, the
-//! export operation) is an output that never replaces the original. The decode
-//! and the render live in the app instance, because an automerge change big
-//! enough to carry a photograph is dropped by the sync transport and freezes
-//! every peer's replica permanently.
-//!
-//! # The shape of the surface
-//!
-//! [`actions`] publishes the open photograph as a `Resource` whose edits are
-//! `ActionSpec`s, addressed by stable id. A caller with no display can list
-//! what is open and act on it without a coordinate ever entering the picture.
-//!
-//! [`PhotosShell`] is the framework app every host launches. The live app
-//! starts **empty**; the `--shots` scenarios ([`sample`]) show generated test
-//! patterns that exist only on that path.
+//! Photos — view a photograph, adjust it, and get the result out. A viewer with a small set of
+//! edits: * **Open** an image through the host XDG portal chooser (never a bespoke dialog), or from
+//! a path on the command line.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -63,15 +23,11 @@ pub mod analysis;
 pub mod app;
 pub mod derived;
 mod files;
-/// Bounded, cancellation-aware real-file discovery and metadata ingestion.
 pub mod import;
 pub mod library_analysis;
 pub mod model;
 pub mod people;
 pub mod pixels;
-/// Offline-capable place grouping and map projection shared by the timeline
-/// surface and resource/action routing. This module deliberately has no tile
-/// client, so opening a Photos location never leaks it to a network provider.
 pub mod places;
 pub mod reference;
 pub mod resource;
@@ -84,10 +40,6 @@ mod timeline_projection;
 pub use app::PhotosApp;
 pub use model::{Edits, LocationProvenance, OpenImage, PhotoLocation, Rect01};
 
-/// Import a Camera portable-media reference into Photos without ever trusting
-/// a machine-local path.  The content is read, verified against the reference,
-/// from `store` first; missing bytes are an actionable refusal rather than a
-/// phantom library entry.
 pub fn camera_import_photo(
     media_id: &str,
     name: &str,
@@ -97,8 +49,6 @@ pub fn camera_import_photo(
         .strip_prefix("media:blake3:")
         .filter(|reference| tilo_content::valid_reference(reference))
         .ok_or_else(|| crate::strings::tr("photos-camera-error-identity"))?;
-    // The store verifies what it reads against the address, and opens sealed
-    // content with the reference's key; content that fails reads as absent.
     let bytes = store
         .read(reference)
         .ok_or_else(|| crate::strings::tr("photos-camera-error-not-here"))?;
@@ -169,8 +119,6 @@ mod camera_import_tests {
     }
 }
 
-/// The library a test's document holds, read and written whole, as the
-/// framework reads it and as a change writes it.
 #[cfg(test)]
 pub(crate) mod test_doc {
     use automerge::{AutoCommit, ROOT};
@@ -178,8 +126,6 @@ pub(crate) mod test_doc {
 
     use crate::model::{Edits, LibraryPhoto, OpenImage, PhotoLibrary};
 
-    /// A new library's document, started the way a new record is: the
-    /// resource's initial state at its current storage version.
     pub(crate) fn new_doc() -> AutoCommit {
         let mut doc = AutoCommit::new();
         PhotoLibrary::initialize(&mut doc).expect("a new library initializes");
@@ -190,14 +136,12 @@ pub(crate) mod test_doc {
         PhotoLibrary::read(doc).expect("the library reads")
     }
 
-    /// Make `doc` hold `library`, writing what differs.
     pub(crate) fn set_library(doc: &mut AutoCommit, library: &PhotoLibrary) {
         library
             .write_fields(doc, &ROOT)
             .expect("the library writes");
     }
 
-    /// Add the photograph `image` to `doc`'s library; its id.
     pub(crate) fn put_image(doc: &mut AutoCommit, image: &OpenImage) -> String {
         let photo = LibraryPhoto::from_image(image.clone());
         let id = photo.id.clone();
@@ -211,12 +155,10 @@ pub(crate) mod test_doc {
         library(doc).photo(id).cloned()
     }
 
-    /// The edits of photograph `id`; untouched when it is not there.
     pub(crate) fn photo_edits(doc: &AutoCommit, id: &str) -> Edits {
         photo(doc, id).map(|photo| photo.edits).unwrap_or_default()
     }
 
-    /// Give photograph `id` `edits`.
     pub(crate) fn set_photo_edits(doc: &mut AutoCommit, id: &str, edits: Edits) {
         let mut library = library(doc);
         if let Some(photo) = library.photo_mut(id) {

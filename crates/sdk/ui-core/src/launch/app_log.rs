@@ -16,7 +16,7 @@ pub(super) fn init_app_log() {
     let prefix = app_log_prefix(
         environment
             .identity
-            .package_id
+            .app_id
             .as_deref()
             .or(environment.identity.app_name.as_deref()),
         environment.identity.continuity_instance.as_deref(),

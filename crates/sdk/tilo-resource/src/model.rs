@@ -1540,6 +1540,11 @@ fn splice_changed_span(
             let deleted =
                 isize::try_from(deleted).map_err(|_| ModelError::invalid("text too long"))?;
             doc.splice_text(text, position, deleted, inserted)?;
+            // The characters written are the writer's, as a plain text edit's are: a field's
+            // stored text carries who wrote each run, so a collaborator's and an agent's words
+            // show in their colour wherever the text is read.
+            crate::text::mark_authored(doc, text, position, inserted)
+                .map_err(|error| ModelError::invalid(error.to_string()))?;
         }
         _ => doc.update_text(text, new)?,
     }

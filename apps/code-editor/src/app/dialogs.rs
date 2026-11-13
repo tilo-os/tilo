@@ -1,13 +1,5 @@
-//! The editor's questions: "this file changed on disk", "save changes before
-//! closing?", and why code help is unavailable. The first two are decisions
-//! the user makes — silently choosing for them loses somebody's work. They are
-//! the toolkit's immediate modal sheet ([`ModalSheet`]): it paints, hit-tests
-//! and answers, the editor says what is asked.
-//!
-//! The sheet is painted in the window's top layer ([`Widget::draw_overlay`]),
-//! over the whole window, so its scrim covers the sidebar and the tabs too.
-//! Enter takes the answer that keeps everyone's work, Escape cancels, and Tab
-//! walks the answers.
+//! The editor's questions: "this file changed on disk", "save changes before closing?", and why code
+//! help is unavailable.
 
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -19,8 +11,6 @@ use winit::event::WindowEvent;
 
 use super::{CloseChoice, CodeApp, ConflictChoice};
 
-/// Which question is on screen. A conflict outranks a close prompt: it is the
-/// reason a save did not land.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Question {
     Conflict,
@@ -28,8 +18,6 @@ pub(super) enum Question {
     CodeHelp,
 }
 
-/// What one question says, in the order its answers are indexed: the safe
-/// default first, the answer that changes nothing last.
 pub(super) struct Wording {
     pub(super) title: String,
     pub(super) body: String,
@@ -39,7 +27,6 @@ pub(super) struct Wording {
     pub(super) dismissable: bool,
 }
 
-/// One answer of a question, as its button says it.
 pub(super) struct Answer {
     label: String,
     weight: Weight,
@@ -84,7 +71,6 @@ impl Answer {
 }
 
 impl CodeApp {
-    /// The question waiting for an answer, if any.
     pub(super) fn question(&self) -> Option<Question> {
         if self.conflict.is_some() {
             Some(Question::Conflict)
@@ -133,7 +119,6 @@ impl CodeApp {
         }
     }
 
-    /// Paint the open question over the whole `window`.
     pub(super) fn draw_question(
         &mut self,
         scene: &mut Scene,
@@ -163,9 +148,6 @@ impl CodeApp {
         );
     }
 
-    /// Resolve the open question from a keypress or a click on one of its
-    /// answers. Always consumes the event: nothing else may act on the file
-    /// until the question is answered.
     pub(super) fn handle_question(
         &mut self,
         question: Question,

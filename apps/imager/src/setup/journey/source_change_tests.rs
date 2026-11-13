@@ -105,8 +105,6 @@ fn open_preparation(app: &mut App, home: &Path) {
             && v["portable_preparation"]["prepared"] == true
     });
 }
-/// Answers the actual unscoped host chooser used by the installer, rather
-/// than the separate scoped-chooser interception fixture.
 struct RecognizedHomePicker(PathBuf);
 impl ui::host::FilePicker for RecognizedHomePicker {
     fn pick(&self, request: ui::PickRequest) -> ui::PortalChannel {
@@ -170,9 +168,6 @@ fn changed_document_has_published_recovery_and_fresh_review_preserves_identity_a
         return;
     }
     use std::os::unix::fs::PermissionsExt;
-    // Exercise the live-source contract on the actor's private tmpfs. Ext4/XFS
-    // intentionally defer Home inventory until original-system offline boot,
-    // so they cannot exercise a changed live inventory or its byte summary.
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().canonicalize().unwrap();
     let home = root.join("home");
@@ -219,8 +214,6 @@ fn changed_document_has_published_recovery_and_fresh_review_preserves_identity_a
         .unwrap();
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
-    // Another-device media has no local disk-allocation decision. The live
-    // route proceeds straight to Review, where source custody is consumed.
     wait(&mut app, |v| {
         v["page"] == "review" && v["restart"]["checking"] == false
     });

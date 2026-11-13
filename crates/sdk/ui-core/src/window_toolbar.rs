@@ -391,6 +391,10 @@ pub struct LocationAvatar {
     /// Software, not a person: the agent mark.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub agent: bool,
+    /// The colour the app paints them in, so the face here is the one its content shows them
+    /// with. `None`: the one their identity derives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hue: Option<crate::tokens::PresenceHue>,
     /// Whether they are here: the badge on the face. `None`: not known, no badge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presence: Option<LocationPresence>,

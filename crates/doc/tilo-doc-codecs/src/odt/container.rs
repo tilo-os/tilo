@@ -3,12 +3,10 @@
 
 use crate::package::ZipPackage;
 
-/// Build a minimal valid `.odt` body for self-contained tests (no `LibreOffice` dependency).
 pub(crate) fn minimal_odt(body_xml: &str) -> Vec<u8> {
     minimal_odt_styled("", body_xml)
 }
 
-/// As [`minimal_odt`], with explicit `office:automatic-styles` content.
 pub(crate) fn minimal_odt_styled(styles_xml: &str, body_xml: &str) -> Vec<u8> {
     let content = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>

@@ -78,7 +78,6 @@ fn title_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Body).strong()
 }
 
-/// The quieter lines a banner carries: what sent it, above the title, and its message under.
 fn caption_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Caption)
 }
@@ -88,9 +87,7 @@ fn well(theme: &Theme) -> Color {
     theme.tokens.colors.surfaces.raised
 }
 
-/// What an immediate-mode [`Banner::paint`] shows: severity, leading icon,
-/// what sent it, title, optional message, up to two actions and whether it
-/// offers a dismiss control.
+/// Input to [`Banner::paint`].
 #[derive(Clone, Debug)]
 pub struct BannerContent<'a> {
     pub kind: BannerKind,
@@ -99,7 +96,7 @@ pub struct BannerContent<'a> {
     /// The line under the title, in words the caller resolved (a catalogue's
     /// copy) rather than a literal.
     pub message: Option<Cow<'a, str>>,
-    /// What sent it: the app's name, above the title.
+    /// The app's name, shown above the title.
     pub source: Option<&'a str>,
     pub dismissible: bool,
     /// The banner's one main action ("Try again", "Restore").
@@ -135,14 +132,12 @@ impl<'a> BannerContent<'a> {
         self
     }
 
-    /// What sent it, above the title.
     #[must_use]
     pub fn with_source(mut self, source: Option<&'a str>) -> Self {
         self.source = source;
         self
     }
 
-    /// The sender's line as it is drawn: a sender that names nothing shows no line.
     fn source_line(&self) -> Option<&'a str> {
         self.source.filter(|source| !source.is_empty())
     }
@@ -200,7 +195,7 @@ struct Geometry {
     icon: Rect,
     text: Point,
     text_width: f32,
-    /// The sender's line above the title, with the gap under it: 0 when it names none.
+    /// Height of the source line and its gap; 0 without one.
     source_h: f64,
     title_h: f64,
     action: Option<Rect>,
@@ -338,7 +333,7 @@ fn geometry_with(
     };
     let dismiss = content.dismissible.then(|| {
         let x1 = width - m.pad_x;
-        // The dismiss control centres on the title line, under the sender's.
+        // Centred on the title line.
         let cy = if beside {
             height / 2.0
         } else {
@@ -377,15 +372,13 @@ fn paint_well(ctx: &mut PaintCtx<'_>, rect: Rect) {
 #[derive(Clone, Copy, Debug)]
 struct BodyPlace {
     icon: Rect,
-    /// The top of the text: the sender's line, where there is one, else the title.
     text: Point,
     text_width: f32,
-    /// The sender's line above the title, with the gap under it.
+    /// Height of the source line and its gap; 0 without one.
     source_h: f64,
     title_h: f64,
 }
 
-/// Paint the icon, sender, title and message of `content` at `place`.
 fn paint_body(ctx: &mut PaintCtx<'_>, content: &BannerContent<'_>, place: BodyPlace) {
     let BodyPlace {
         icon: icon_rect,
@@ -550,7 +543,7 @@ pub struct BannerNotice {
     pub title: String,
     pub message: Option<String>,
     pub icon: Option<Icon>,
-    /// What sent it: the app's name, above the title. An empty one shows no line.
+    /// The app's name, shown above the title.
     pub source: Option<String>,
 }
 
@@ -589,7 +582,6 @@ impl BannerNotice {
         self.icon = Some(icon);
         self
     }
-    /// What sent it, above the title.
     #[must_use]
     pub fn source(mut self, source: impl Into<String>) -> Self {
         self.source = Some(source.into());
@@ -867,8 +859,7 @@ impl Banner {
         self
     }
 
-    /// What sent it: the app's name, in a caption line above the title. An empty one shows no
-    /// line.
+    /// The app's name, shown above the title.
     #[must_use]
     pub fn with_source(mut self, source: impl Into<String>) -> Self {
         self.body.notice.source = Some(source.into());
@@ -1527,8 +1518,6 @@ impl Widget for Banner {
         if let Some(id) = &self.id {
             node = node.with_semantic_key(id.clone());
         }
-        // What it says, and who sent it: a reader announces the sender with the message rather
-        // than only showing it above the title.
         let source = self.body.content().source_line().map(str::to_owned);
         let description = match (source, &notice.message) {
             (Some(source), Some(message)) => Some(format!("{source}. {message}")),

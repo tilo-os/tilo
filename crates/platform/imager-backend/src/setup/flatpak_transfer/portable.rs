@@ -1,5 +1,5 @@
-//! Offline, signed system applications carried separately from the source home.
-//! Mutable user app data remains in the Home package; restoration never launches apps.
+//! Offline, signed system applications carried separately from the source home; mutable user app
+//! data stays in the Home package, and restoration never launches apps.
 use super::{Installation, InstalledRef, Remote, Runner};
 use crate::setup::{
     migration::{PinnedDirectory, changed},
@@ -36,8 +36,8 @@ pub use native::{CancellableOfflineRunner, NativeOfflineRunner};
 pub use restore::ApplicationImport;
 pub use stage::{Applications, Expectation, StageGrant, StagedApplications};
 
-/// Reuse the export planner's installed dependency closure for capacity review.
-/// These descriptive refs grant neither export nor source access.
+/// The export planner's installed dependency closure, for capacity review only: these refs grant
+/// neither export nor source access.
 pub fn review_selected_dependencies(
     runner: &impl Runner,
     home: &Path,
@@ -75,15 +75,14 @@ pub fn review_selected_dependencies(
     Ok(required)
 }
 
-/// The OSTree boundary is distinct from Flatpak and always receives a held,
-/// re-attested repository grant. Commands contain no shell interpolation.
+/// The OSTree boundary is distinct from Flatpak and always receives a held, re-attested repository
+/// grant; commands contain no shell interpolation.
 pub trait OfflineRunner: Runner {
     /// Export an independently reviewed subset without changing its source.
     fn export_offline_subset(&self, _grant: &SubsetExportGrant<'_>) -> Result<bool, String> {
         Ok(false)
     }
-    /// # Errors
-    /// Refuses unavailable OSTree, invalid repositories or failed verification.
+    /// Errors when the tool is unavailable or fails.
     fn ostree(&self, repository: &Path, arguments: &[String]) -> Result<String, String>;
     /// Verify retained raw extra-data against exact signed commit metadata.
     fn verify_extra_data(&self, _repository: &Path, _commit: &str) -> Result<u64, String> {
@@ -118,8 +117,7 @@ pub struct ApplicationsManifest {
     pub app_state: Vec<AppState>,
 }
 impl ApplicationsManifest {
-    /// # Errors
-    /// Refuses malformed refs, ambiguous installations or undeclared trust.
+    /// Errors when the schema, selection or deployment list is out of bounds.
     pub fn validate(&self) -> io::Result<()> {
         if !matches!(self.schema, 1 | 2)
             || (self.selected.is_empty() && !self.user_state)
@@ -248,8 +246,8 @@ impl OriginalInstallation {
         self.pin.validate()
     }
 }
-/// Explicit source consent retains original installations and signing metadata.
-/// No root path is accepted from an unauthenticated portable manifest.
+/// Explicit source consent retains original installations and signing metadata; no root path is
+/// accepted from an unauthenticated portable manifest.
 #[cfg(any(
     feature = "capture-worker",
     all(test, feature = "native-capture-qualification")
@@ -269,11 +267,10 @@ pub struct PortableFlatpakSource {
     selected_state: Option<selected_state::SelectedState>,
 }
 impl PortableFlatpakSource {
-    /// The reviewed selected apps.
     pub fn selected(&self) -> &[InstalledRef] {
         &self.selected
     }
-    /// Conservative full-original-repo bound, not a claim of minimal subset size.
+    /// A conservative full repository bound, not a claim of a minimal subset.
     #[cfg(any(
         feature = "capture-worker",
         all(test, feature = "native-capture-qualification")
@@ -339,8 +336,8 @@ impl PortableFlatpakSource {
             .sealed_bound()
             .ok_or_else(|| changed("Sealed application bound overflows"))?;
         self.validate()?;
-        // Stage + independent authenticated extraction + untrusted signature
-        // verification may coexist. Never assume local-pull hardlinks.
+        // Staging, independent authenticated extraction and untrusted signature verification may
+        // coexist, so never assume local-pull hardlinks.
         let staging_bytes = plaintext_bytes
             .checked_mul(3)
             .ok_or_else(|| changed("Independent application verification storage overflows"))?;
@@ -351,7 +348,6 @@ impl PortableFlatpakSource {
             limits,
         })
     }
-    /// Authentication and exact protected source selection proof, no target install.
     #[cfg(feature = "capture-worker")]
     pub fn verify_sealed(
         &self,
@@ -472,7 +468,7 @@ impl PortableFlatpakSource {
         }
         Ok(())
     }
-    /// Original authority for pending export only, never final content proof.
+    /// Original authority for a pending export only, never final content proof.
     pub fn validate_pending_offline_scope(
         &self,
         plan: &crate::setup::migration_handoff::Plan,
@@ -520,8 +516,7 @@ impl PortableFlatpakSource {
         }
         self.home_pin.validate()
     }
-    /// # Errors
-    /// Refuses user refs, source changes, unsigned remotes and ambiguous app origins.
+    /// Errors when the granted repository, selection or pending authority does not hold.
     pub fn review(
         runner: &impl Runner,
         home: &Path,
@@ -529,8 +524,7 @@ impl PortableFlatpakSource {
     ) -> Result<Arc<Self>, String> {
         Self::review_selection(runner, home, selected, false)
     }
-    /// Review exactly selected user or system refs and their app data after explicit
-    /// app inclusion consent. Whole-Home callers must use the legacy no-state review.
+    /// Whole-Home callers must use the legacy no-state review.
     pub fn review_selected_state(
         runner: &impl Runner,
         home: &Path,
@@ -608,8 +602,8 @@ impl PortableFlatpakSource {
         review.validate().map_err(|e| e.to_string())?;
         Ok(review)
     }
-    /// Closed reviewed dependencies come from the protected original intent;
-    /// boot never rediscovers a different runtime, extension or latest commit.
+    /// Closed reviewed dependencies come from the protected original intent; boot never rediscovers a
+    /// different runtime, extension or latest commit.
     pub(in crate::setup) fn review_closed_original(
         runner: &super::SourceScopedRunner<NativeOfflineRunner>,
         inventory: &super::HandoffInventory,
@@ -728,8 +722,7 @@ impl PortableFlatpakSource {
         review.validate().map_err(|error| error.to_string())?;
         Ok(review)
     }
-    /// # Errors
-    /// Refuses any changed original installation or deployment/signing metadata.
+    /// Errors when the sealed unit fails to authenticate.
     pub fn validate(&self) -> io::Result<()> {
         self.home_pin.validate()?;
         if let Some(state) = &self.selected_state {
@@ -807,8 +800,8 @@ fn capture_installation(
         .iter()
         .filter(|remote| remote.installation == scope)
     {
-        // Unrelated unsigned remotes are not selected authority; refuse only if
-        // the actual exported dependency closure needs such a remote.
+        // Unrelated unsigned remotes are not selected authority; refuse only when the exported
+        // dependency closure needs such a remote.
         if let Ok(bytes) = super::extract_remote_definition(remote, path) {
             remotes.push((remote.clone(), bytes));
         }

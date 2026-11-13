@@ -1,28 +1,11 @@
-//! The composited-frame producer for the preview canvas.
+//! What the preview shows at the playhead: the source clip, its grade, the fade
+//! and opacity envelope and the transition flash, computed without a device.
 //!
-//! Given the project and a playhead time, this computes a [`CompositedFrame`]
-//! — a small, render-agnostic description of what the preview should show:
-//! the source clip, its colour grade (brightness/contrast/saturation), the
-//! fade/opacity envelope, and the transition flash. The widget layer
-//! ([`crate::app`]) turns that into Vello fills.
-//!
-//! ## Real vs. gated decode
-//!
-//! Two ways the canvas can be filled:
-//!
-//!   * **Representative frame (default / `--shots`)** — no decoder. The
-//!     frame is synthesised from clip *metadata* (palette + grade), so the
-//!     preview is deterministic and needs no media pipeline. This is what
-//!     the headless CI box and screenshots use.
-//!   * **Real decode (`--features decode`)** — the GPU compositor fills each
-//!     layer with the decoded picture from [`crate::gpu::MediaFrameSource`].
-//!     If the bytes aren't hydrated yet (a projected reference on a fresh
-//!     collaborator) the layer falls back to the representative frame — the
-//!     editor never blocks on hydration.
-//!
-//! The colour math here is the single source of truth for *both* the
-//! representative gradient and (eventually) a real shader, so the grade you
-//! see in the offline preview matches the graded export.
+//! The colour math here is the single source of truth for the representative
+//! frame and for the export, so a capture, the canvas and an exported frame agree.
+//! Under `--features decode` the compositor fills the layers with decoded
+//! pictures; a reference whose bytes are not hydrated falls back to the
+//! representative frame, so the editor never blocks on hydration.
 
 use crate::model::{
     Clip, ClipEffect, ClipId, EffectKind, Filters, MediaId, MediaKind, Project, TextSource, Track,
@@ -30,8 +13,6 @@ use crate::model::{
 };
 use crate::param::Param;
 
-/// A normalised RGB triple in 0..1. Render-agnostic so the math is testable
-/// without a GPU.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rgb {
     pub r: f64,
@@ -50,8 +31,8 @@ impl Rgb {
     pub fn luma(&self) -> f64 {
         0.2126 * self.r + 0.7152 * self.g + 0.0722 * self.b
     }
-    /// Apply a per-clip [`Filters`] grade. Brightness scales, contrast
-    /// pivots around mid-grey, saturation lerps toward/away from luma.
+    /// Brightness scales, contrast pivots around mid-grey, saturation lerps toward
+    /// or away from luma.
     #[must_use]
     pub fn graded(self, filters: &Filters) -> Rgb {
         let bright = Filters::gain(filters.brightness);
@@ -68,23 +49,20 @@ impl Rgb {
         b = luma + (b - luma) * sat;
         Rgb::new(r, g, b)
     }
-    /// Scale toward black by `gain` (the fade/opacity envelope).
     #[must_use]
     pub fn faded(self, gain: f64) -> Rgb {
         let g = gain.clamp(0.0, 1.0);
         Rgb::new(self.r * g, self.g * g, self.b * g)
     }
 
-    /// Apply an ordered stack of [`ClipEffect`]s, in list order, after the grade.
+    /// In list order, after the grade.
     #[must_use]
     pub fn with_effects(self, effects: &[ClipEffect]) -> Rgb {
         effects.iter().fold(self, apply_effect)
     }
 
-    /// Push the colour through a clip's tone curve — the same table the
-    /// shader looks up, evaluated directly. Sits between the grade and the
-    /// effect stack, exactly where the compositor puts it, so this
-    /// representative colour and the composited frame agree about order.
+    /// The same table the shader looks up, between the grade and the effect
+    /// stack, where the compositor puts it.
     #[must_use]
     pub fn with_curve(self, curve: &crate::curve::Curve) -> Rgb {
         if curve.is_identity() {
@@ -95,7 +73,6 @@ impl Rgb {
     }
 }
 
-/// Blend `a` toward `b` by `t` (0..1).
 fn lerp(a: Rgb, b: Rgb, t: f64) -> Rgb {
     let t = t.clamp(0.0, 1.0);
     Rgb::new(
@@ -105,8 +82,7 @@ fn lerp(a: Rgb, b: Rgb, t: f64) -> Rgb {
     )
 }
 
-/// Apply one [`ClipEffect`] to a colour. The single source of truth for both the
-/// representative preview and the (gated) export, so the look matches.
+/// The one place an effect's look is defined, for both preview and export.
 fn apply_effect(c: Rgb, e: &ClipEffect) -> Rgb {
     let a = e.amount.clamp(0.0, 1.0);
     match e.kind {
@@ -123,46 +99,31 @@ fn apply_effect(c: Rgb, e: &ClipEffect) -> Rgb {
         EffectKind::Invert => lerp(c, Rgb::new(1.0 - c.r, 1.0 - c.g, 1.0 - c.b), a),
         EffectKind::Warm => Rgb::new(c.r + a * 0.16, c.g + a * 0.04, c.b - a * 0.16),
         EffectKind::Cool => Rgb::new(c.r - a * 0.16, c.g + a * 0.04, c.b + a * 0.16),
-        // A flat representative colour has no spatial extent, so a vignette
-        // reads as a gentle overall darkening here; the real spatial falloff
-        // lands in the (gated) shader/export.
+        // A flat colour has no spatial extent, so a vignette reads as a gentle
+        // overall darkening here; the spatial falloff is the shader's.
         EffectKind::Vignette => lerp(c, Rgb::new(0.0, 0.0, 0.0), a * 0.4),
     }
 }
 
-/// The transition flash overlaid on a clip's head, as a colour + alpha the
-/// widget paints over the frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Flash {
     pub white: bool,
     pub alpha: f64,
 }
 
-/// What the preview canvas should render at the playhead.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CompositedFrame {
-    /// No clip under the playhead — letterbox only.
     Empty,
-    /// A clip is visible. The widget paints a representative grade unless a
-    /// real decoded frame is supplied (see `decoded`).
     Clip {
         media: MediaId,
-        /// The clip's base palette colour, already graded + faded — what a
-        /// flat representative frame fills.
         base: Rgb,
-        /// Combined fade-in/out × opacity envelope in 0..1.
         envelope: f64,
-        /// Optional transition flash at the head.
         flash: Option<Flash>,
-        /// `true` when a real decoded picture is available (decode feature
-        /// + hydrated bytes). The widget blits it instead of the gradient.
         decoded: bool,
     },
 }
 
-/// Compute the composited frame at `playhead`. Pure — no decoding, no I/O.
-/// The `decoded` flag is always `false` here; `decode_frame` sets it when
-/// the decode feature resolves real bytes.
+/// Pure: no decoding, no I/O; `decoded` is always `false` here.
 pub fn composite(project: &Project, playhead: f64) -> CompositedFrame {
     let Some(clip) = project.top_video_clip_at(playhead) else {
         return CompositedFrame::Empty;
@@ -182,8 +143,7 @@ pub fn composite(project: &Project, playhead: f64) -> CompositedFrame {
     }
 }
 
-/// The head-transition flash for `clip` at `playhead`, if any. A dissolve /
-/// fade flashes white, a dip flashes black; both decay over 0.6s.
+/// A dissolve or fade flashes white, a dip black; both decay over 0.6 s.
 fn transition_flash(clip: &Clip, playhead: f64) -> Option<Flash> {
     if clip.transition == Transition::None {
         return None;
@@ -199,9 +159,8 @@ fn transition_flash(clip: &Clip, playhead: f64) -> Option<Flash> {
     })
 }
 
-/// A deterministic base colour per palette slot, in linear 0..1. Mirrors
-/// the theme palette indices used by `clip_color` so the representative
-/// frame agrees with the timeline clip body.
+/// Mirrors the palette indices `clip_color` uses, so the frame agrees with the
+/// clip body.
 pub fn palette_rgb(palette: u8) -> Rgb {
     match palette % 7 {
         0 => Rgb::new(0.30, 0.55, 0.95),
@@ -214,21 +173,14 @@ pub fn palette_rgb(palette: u8) -> Rgb {
     }
 }
 
-/// The source time (seconds into the media) the preview must decode for the
-/// clip under the playhead.
-///
-/// This is the clip's own time map — see [`Clip::source_time`] — which
-/// folds in the playback rate and direction, so a 2× clip advances through
-/// its source twice as fast and a reversed one runs backwards.
+/// The clip's own time map ([`Clip::source_time`]), so playback rate and
+/// direction are already folded in.
 pub fn source_time_for(clip: &Clip, playhead: f64) -> f64 {
     clip.source_time(playhead)
 }
 
-/// Rasterize the composited representative frame at `playhead` into a tightly
-/// packed `width*height*4` RGBA buffer — the **same** grade / fade / transition
-/// math the preview canvas shows, so a `gst` export encodes exactly what the
-/// timeline previews. Pure, so the export pipeline can push these straight into
-/// an `appsrc`.
+/// The same grade, fade and transition maths the canvas shows, in a tightly
+/// packed `width*height*4` RGBA buffer, so an export encodes what was previewed.
 pub fn render_rgba(project: &Project, playhead: f64, width: u32, height: u32) -> Vec<u8> {
     let w = width.max(1) as usize;
     let h = height.max(1) as usize;
@@ -251,8 +203,6 @@ pub fn render_rgba(project: &Project, playhead: f64, width: u32, height: u32) ->
             let mut px = match bands {
                 None => black,
                 Some(base) => {
-                    // Mirror draw_preview: darkened base, a lighter upper band,
-                    // and a darker mid band.
                     let mut c = lerp(base, black, 0.18);
                     if yf < 0.5 {
                         c = lerp(c, lerp(base, Rgb::new(1.0, 1.0, 1.0), 0.18), 0.55);
@@ -263,11 +213,9 @@ pub fn render_rgba(project: &Project, playhead: f64, width: u32, height: u32) ->
                     c
                 }
             };
-            // Fade/opacity envelope dims toward black.
             if env < 0.999 {
                 px = lerp(px, black, 1.0 - env);
             }
-            // Transition flash.
             if let Some(f) = flash {
                 let target = if f.white {
                     Rgb::new(1.0, 1.0, 1.0)
@@ -287,20 +235,11 @@ pub fn render_rgba(project: &Project, playhead: f64, width: u32, height: u32) ->
     buf
 }
 
-// ---------------------------------------------------------------------------
-// Layer plan — what the GPU compositor actually draws.
-// ---------------------------------------------------------------------------
-
-/// The transition length a clip falls back to when it has not been given
-/// one of its own.
-///
-/// Re-exported from the model so callers that only speak to the preview —
-/// tests, the export's frame maths — have one name for it. The effective
-/// length for a particular clip is [`Clip::transition_len`], which honours
-/// its `transition_duration` and never lets a ramp outlast the footage.
+/// Re-exported so callers that only speak to the preview have one name for it.
+/// The effective length for a clip is [`Clip::transition_len`], which honours
+/// `transition_duration` and never lets a ramp outlast the footage.
 pub use crate::model::DEFAULT_TRANSITION_SECS as TRANSITION_SECS;
 
-/// Which way a [`Transition::Wipe`] travels across the frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WipeDir {
     LeftToRight,
@@ -310,7 +249,6 @@ pub enum WipeDir {
 }
 
 impl WipeDir {
-    /// Index the shader switches on.
     pub fn index(self) -> u32 {
         match self {
             WipeDir::LeftToRight => 0,
@@ -321,68 +259,44 @@ impl WipeDir {
     }
 }
 
-/// A geometric reveal: the incoming layer is drawn only where the wipe
-/// edge has already passed, with a soft (feathered) boundary.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Wipe {
     pub dir: WipeDir,
-    /// 0 = nothing revealed, 1 = fully revealed.
     pub progress: f64,
     /// Half-width of the feathered edge, as a fraction of the frame.
     pub softness: f64,
 }
 
-/// One picture in the composite stack: a source sampled at a point in
-/// time, graded, effected, and blended over everything beneath it.
+/// A source sampled at a point in time, graded, effected and blended over what
+/// is beneath it.
 ///
-/// A transition is *not* a special case here — it is expressed as the
-/// alpha (and optional [`Wipe`] mask) of the incoming layer plus, where
-/// the outgoing clip is needed, an extra layer beneath it. That is what
-/// makes a dissolve sample both clips: the A side is a real layer.
+/// A transition is no special case: it is this layer's alpha (and [`Wipe`] mask)
+/// plus, where the outgoing clip is needed, the A side as a real layer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Layer {
     pub clip: ClipId,
     pub media: MediaId,
-    /// Seconds into the source media this layer samples.
     pub source_time: f64,
-    /// Palette slot, used for the representative fill when no source
-    /// texture resolves (hermetic `--shots`, un-hydrated bytes).
     pub palette: u8,
     pub filters: Filters,
-    /// The tone curve, sampled at this instant. Baked into a lookup table
-    /// by the compositor; identity on a clip nobody has graded, which is
-    /// what lets that clip take no lookup at all.
     pub curve: crate::curve::Curve,
     pub effects: Vec<ClipEffect>,
     /// Uniform coverage in 0..1: fade envelope × clip opacity ×
     /// transition weight.
     pub alpha: f64,
-    /// Geometric mask, when this layer is wiping in.
     pub wipe: Option<Wipe>,
-    /// Colour key, sampled at this instant. Inactive on a clip that has
-    /// never been keyed, which is the overwhelming majority.
     pub key: crate::model::ChromaKey,
-    /// Shape mask, sampled at this instant. `MaskShape::None` unless the
-    /// clip carries one.
     pub mask: crate::model::Mask,
-    /// Where the picture sits in the frame, sampled at this instant so an
-    /// animated move or scale is already resolved by the time the
-    /// compositor sees it.
     pub transform: Transform,
-    /// Whether this layer's source texture carries meaningful alpha (a
-    /// title, or an image with transparency). Decoded video is opaque, and
-    /// honouring its alpha channel unconditionally would make a decoder
-    /// that leaves it at zero render nothing at all.
+    /// A title or an image can carry alpha; decoded video is opaque, and honouring
+    /// its alpha unconditionally would make a decoder that leaves it at zero
+    /// render nothing at all.
     pub source_alpha: bool,
-    /// For a title, the text to draw. The compositor rasterises it rather
-    /// than asking the frame source for a picture, so a title renders with
-    /// no decoder at all — the same in a hermetic capture as in the live
-    /// editor.
+    /// A title is rasterised by the compositor rather than decoded, so it renders
+    /// the same in a capture as in the live editor.
     pub title: Option<TextSource>,
 }
 
-/// The transition active on `clip` at `playhead`, as (kind, progress in
-/// 0..1). `None` once the transition has run out, or for a hard cut.
 pub fn active_transition(clip: &Clip, playhead: f64) -> Option<(Transition, f64)> {
     if clip.transition == Transition::None {
         return None;
@@ -398,11 +312,8 @@ pub fn active_transition(clip: &Clip, playhead: f64) -> Option<(Transition, f64)
     Some((clip.transition, (into / dur).clamp(0.0, 1.0)))
 }
 
-/// Build a layer for `clip` sampled at absolute time `at`.
-///
 /// Every animatable value is read through [`Clip::param_at`] at `at`, so a
-/// keyframed grade, scale or effect intensity is already a plain number by
-/// the time it reaches the GPU.
+/// keyframed grade, scale or intensity is a plain number before the GPU.
 struct LayerSample {
     at: f64,
     source_time: f64,
@@ -431,26 +342,16 @@ fn layer_at(clip: &Clip, sample: LayerSample) -> Layer {
     }
 }
 
-/// Where the outgoing clip is sampled during a transition. When the cut
-/// abuts (A ends exactly where B starts) the playhead is already past
-/// A's out-point, so A holds on its last frame; when the clips overlap,
-/// A keeps playing.
+/// `Clip::source_time` holds the result inside `[in, out]`, which is the "hold on
+/// the last frame" an abutting cut needs, and honours the outgoing clip's speed.
 fn outgoing_source_time(a: &Clip, playhead: f64) -> f64 {
-    // `Clip::source_time` already holds the result inside `[in, out]`,
-    // which is exactly the "hold on the last frame" behaviour an abutting
-    // cut needs, and it honours the outgoing clip's own speed.
     a.source_time(playhead)
 }
 
-/// Build the composite stack at `playhead`: every visible clip on every
-/// visible video track, ordered **bottom → top** (V1 beneath V2), each
-/// with its own grade, effect chain and blend weight.
-///
-/// Pure: no decoding, no GPU, no I/O — so the whole layering, envelope
-/// and transition model is unit-testable without a device.
+/// Every visible clip on every visible video track, bottom to top, each with its
+/// grade, effect chain and blend weight. Pure, so the whole layering, envelope
+/// and transition model is testable without a device.
 pub fn plan_layers(project: &Project, playhead: f64) -> Vec<Layer> {
-    // Solo wins over mute: while any video track is soloed, only soloed
-    // video tracks are seen, and a muted one among them stays hidden.
     let soloing = project
         .tracks
         .iter()
@@ -460,8 +361,8 @@ pub fn plan_layers(project: &Project, playhead: f64) -> Vec<Layer> {
         .iter()
         .filter(|t| t.kind == TrackKind::Video && !t.muted && (!soloing || t.solo))
         .collect();
-    // Bottom → top: V1 (index 1) is drawn first, V2 over it. `locked` is
-    // an editing lock, not a visibility one, so it never hides a layer.
+    // Bottom to top: V1 is drawn first. `locked` is an edit lock, not a
+    // visibility one.
     video.sort_by_key(|a| a.index);
 
     let mut out = Vec::new();
@@ -471,18 +372,12 @@ pub fn plan_layers(project: &Project, playhead: f64) -> Vec<Layer> {
     out
 }
 
-/// The clip a transition on `c` dissolves *from*, if there is one.
+/// The clip a transition on `c` dissolves from: whatever sits immediately before
+/// it, and only if it actually reaches the cut. A clip after a **gap** must not
+/// composite its last frame underneath an unrelated dissolve.
 ///
-/// A transition is a property of the incoming clip's head, so the outgoing
-/// side is whatever sits immediately before it — but only if it actually
-/// reaches the cut. Taking the previous clip unconditionally meant a clip
-/// preceded by a **gap** composited that earlier clip's last frame at full
-/// alpha underneath it: footage the timeline shows ending seconds ago,
-/// reappearing under a dissolve it has nothing to do with.
-///
-/// Abutting is compared with a tolerance rather than exactly, because clip
-/// edges are seconds in floating point and a trim that lands a frame short
-/// should still dissolve.
+/// Abutting is compared with a tolerance, because clip edges are seconds in
+/// floating point and a trim that lands a frame short should still dissolve.
 fn outgoing_neighbour<'a>(clips: &[&'a Clip], i: usize) -> Option<&'a Clip> {
     // Half a frame at 30fps: closer than a person can place an edge, and far
     // enough that a real gap never passes.
@@ -494,9 +389,6 @@ fn outgoing_neighbour<'a>(clips: &[&'a Clip], i: usize) -> Option<&'a Clip> {
 
 fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Layer>) {
     let clips = project.clips_on(track.id);
-    // A predecessor drawn *by* a transition must not also be drawn as an
-    // ordinary layer, or a dip-to-black would be painted over at full
-    // strength by its own A side.
     let mut claimed: Vec<ClipId> = Vec::new();
     for (i, c) in clips.iter().enumerate() {
         if c.covers(playhead)
@@ -507,15 +399,12 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
         }
     }
 
-    // Whether a clip's picture carries its own alpha: a title always does,
-    // and so can an image. Decoded video does not.
+    // A title or an image carries its own alpha; decoded video does not.
     let has_alpha = |c: &Clip| {
         project
             .media(c.media)
             .is_some_and(|m| matches!(m.kind, MediaKind::Text | MediaKind::Image))
     };
-    // A title's text, for the compositor to raster. Only a Text source has
-    // one, so every other clip resolves its picture the usual way.
     let title_of = |c: &Clip| {
         project
             .media(c.media)
@@ -527,8 +416,6 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
         if !c.covers(playhead) || claimed.contains(&c.id) {
             continue;
         }
-        // Opacity goes through the animation door, so a keyframed fade is
-        // just a different number here — no second path.
         let base = (c.envelope(playhead) * c.param_at(Param::Opacity, playhead)).clamp(0.0, 1.0);
         let t_in = source_time_for(c, playhead);
         let alpha_src = has_alpha(c);
@@ -551,7 +438,6 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
             out.push(mk(base, None));
             continue;
         };
-        // The A side, sampled where the outgoing clip is at this instant.
         let a_layer = |alpha: f64| {
             prev.map(|a| {
                 layer_at(
@@ -614,15 +500,8 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn preview_composite_picks_clips_and_applies_grade_and_effects() {
-        // Case `a_gap_before_a_dissolve_leaves_the_earlier_clip_out_of_it`:
-        // A clip separated by a gap is not dragged into the next clip's
+        // A clip after a gap must not be dragged into the next clip's
         // dissolve.
-        //
-        // The A side used to be `clips[i - 1]` unconditionally. With a gap
-        // before the incoming clip, that composited the earlier clip's frozen
-        // last frame at full alpha underneath it — footage the timeline shows
-        // as having ended seconds ago, reappearing under an unrelated
-        // transition.
         {
             use crate::model::{MediaItem, MediaKind, Project, Track, TrackKind, Transition};
 
@@ -647,7 +526,6 @@ mod tests {
             let early = p.add_clip(track, media, 0.0).unwrap();
             p.clip_mut(early).unwrap().out_point = 4.0;
 
-            // A deliberate gap: the next clip starts well after the first ends.
             let late = p.add_clip(track, media, 20.0).unwrap();
             {
                 let c = p.clip_mut(late).unwrap();
@@ -666,8 +544,6 @@ mod tests {
                 "a clip that ended at 4s must not be composited under a dissolve at 20s: {layers:?}",
             );
 
-            // And the abutting case still dissolves, so the guard did not simply
-            // switch transitions off.
             p.clip_mut(late).unwrap().start = 4.0;
             let layers = plan_layers(&p, 4.3);
             assert!(
@@ -681,7 +557,6 @@ mod tests {
         }
         {
             let p = sample_project();
-            // At t=21..27 the sunset insert on V2 overlays the V1 spine.
             match composite(&p, 23.0) {
                 CompositedFrame::Clip { media, .. } => {
                     let top = p.top_video_clip_at(23.0).unwrap();
@@ -730,7 +605,6 @@ mod tests {
                 "no effects leaves the colour unchanged"
             );
             let g = c.with_effects(&[ClipEffect::new(EffectKind::Grayscale)]);
-            // Grayscale pulls the channels strongly toward luma (near-equal).
             assert!(
                 (g.r - g.g).abs() < 0.12 && (g.g - g.b).abs() < 0.12,
                 "grayscale converges the channels: {g:?}",
@@ -745,8 +619,6 @@ mod tests {
         {
             use crate::model::{ClipEffect, EffectKind};
             let mut p = sample_project();
-            // The drone open (clips[0]) carries seeded effects; strip them and prove
-            // adding a grayscale effect desaturates its composite base.
             let cid = p.clips[0].id;
             p.clip_mut(cid).unwrap().clear_effects();
             let CompositedFrame::Clip { base: before, .. } = composite(&p, 6.0) else {
@@ -776,7 +648,6 @@ mod tests {
         }
         {
             let p = sample_project();
-            // V2 sunset dissolves in at t=21.
             let CompositedFrame::Clip { flash: early, .. } = composite(&p, 21.05) else {
                 panic!()
             };
@@ -815,12 +686,10 @@ mod tests {
                 gain_db: 0.0,
                 pan: 0.0,
             });
-            // Clip placed at timeline 5s, sourcing in_point=3s.
             let cid = p.add_clip(tid, mid, 5.0).unwrap();
             p.clip_mut(cid).unwrap().in_point = 3.0;
             p.clip_mut(cid).unwrap().out_point = 13.0;
             let clip = p.clip(cid).unwrap();
-            // Playhead 5s (clip head) → source 3s; playhead 9s → source 7s.
             assert!((source_time_for(clip, 5.0) - 3.0).abs() < 1e-9);
             assert!((source_time_for(clip, 9.0) - 7.0).abs() < 1e-9);
         }
@@ -829,20 +698,16 @@ mod tests {
     #[test]
     fn render_rgba_paints_the_graded_clip_opaque() {
         let p = sample_project();
-        // Inside the graded drone open (brighter than a neutral clip elsewhere).
         let buf = render_rgba(&p, 5.0, 32, 18);
         assert_eq!(buf.len(), 32 * 18 * 4);
         assert!(
             buf.chunks(4).all(|px| px[3] == 255),
             "every pixel is opaque"
         );
-        // Not a uniform black frame — the composited clip contributes colour.
         let any_colour = buf.chunks(4).any(|px| px[0] > 8 || px[1] > 8 || px[2] > 8);
         assert!(any_colour, "the graded clip renders visible colour");
     }
 
-    /// Two abutting clips on one video track, plus an optional second
-    /// track above. Returns (project, track ids).
     fn stacked_project() -> (Project, crate::model::TrackId, crate::model::TrackId) {
         use crate::model::{MediaKind, Project, Track, TrackKind};
         use uuid::Uuid;
@@ -890,12 +755,10 @@ mod tests {
             gain_db: 0.0,
             pan: 0.0,
         });
-        // V1: two abutting clips, cut at 5s.
         let a = p.add_clip(v1, m1, 0.0).unwrap();
         p.clip_mut(a).unwrap().out_point = 5.0;
         let b = p.add_clip(v1, m2, 5.0).unwrap();
         p.clip_mut(b).unwrap().out_point = 5.0;
-        // V2: an insert over the second half.
         let c = p.add_clip(v2, m3, 6.0).unwrap();
         p.clip_mut(c).unwrap().out_point = 4.0;
         (p, v1, v2)
@@ -913,7 +776,6 @@ mod tests {
     fn layer_plan_stacks_tracks_and_samples_source_time() {
         {
             let (p, v1, v2) = stacked_project();
-            // At t=7 both tracks are covered: V1's second clip and V2's insert.
             let layers = plan_layers(&p, 7.0);
             assert_eq!(
                 layers.len(),
@@ -932,7 +794,6 @@ mod tests {
             let layers = plan_layers(&p, 7.0);
             assert_eq!(layers.len(), 1, "the muted track contributes nothing");
             assert_eq!(p.clip(layers[0].clip).unwrap().track, p.tracks[0].id);
-            // Locking is an edit lock, not a visibility one.
             p.tracks[idx].muted = false;
             p.tracks[idx].locked = true;
             assert_eq!(
@@ -977,7 +838,6 @@ mod tests {
             let cid = p.clips_on(v1)[1].id;
             p.clip_mut(cid).unwrap().in_point = 2.0;
             p.clip_mut(cid).unwrap().out_point = 7.0;
-            // Playhead 1s into a clip cut at 2s → 3s of source.
             let layers = plan_layers(&p, 6.0);
             let l = layers.iter().find(|l| l.clip == cid).unwrap();
             assert!(
@@ -1010,7 +870,6 @@ mod tests {
             assert_eq!(l.filters.brightness, 0.7);
             assert_eq!(l.effects.len(), 1);
             assert_eq!(l.effects[0].kind, EffectKind::Sepia);
-            // 1s into a 2s fade at half opacity.
             assert!(
                 (l.alpha - 0.25).abs() < 1e-9,
                 "envelope × opacity: {}",
@@ -1035,8 +894,7 @@ mod tests {
     )]
     fn transitions_plan_distinct_bounded_layer_stacks() {
         {
-            // The heart of the fix: a transition is two layers, so both clips
-            // are sampled. The old flash sampled neither.
+            // A transition is two layers, so both clips are sampled.
             let (mut p, v1, _) = stacked_project();
             let incoming = p.clips_on(v1)[1].id;
             let outgoing = p.clips_on(v1)[0].id;
@@ -1128,8 +986,6 @@ mod tests {
                 .expect("the incoming clip carries a wipe mask");
             assert!((w.progress - 0.5).abs() < 0.02, "halfway across: {w:?}");
             assert!(w.softness > 0.0, "the edge is feathered: {w:?}");
-            // The incoming clip is fully opaque *within* the revealed region —
-            // a wipe is geometry, not a cross-fade.
             assert!((layers[1].alpha - 1.0).abs() < 1e-9);
         }
         {
@@ -1196,7 +1052,6 @@ mod tests {
             let incoming = p.clips_on(v1)[1].id;
             p.clip_mut(incoming).unwrap().transition = Transition::CrossDissolve;
 
-            // Unset: the default ramp, half-mixed at half of it.
             let at_default_mid = 5.0 + TRANSITION_SECS * 0.5;
             let default_mid = plan_layers(&p, at_default_mid);
             assert!(
@@ -1205,7 +1060,6 @@ mod tests {
                 default_mid[1].alpha
             );
 
-            // A longer ramp: the same instant is now only a quarter of the way in.
             p.clip_mut(incoming).unwrap().transition_duration = TRANSITION_SECS * 2.0;
             let slower = plan_layers(&p, at_default_mid);
             assert!(
@@ -1213,7 +1067,6 @@ mod tests {
                 "a longer transition is less far along at the same instant: {}",
                 slower[1].alpha,
             );
-            // ...and it is still running where the default one had finished.
             assert!(
                 plan_layers(&p, 5.0 + TRANSITION_SECS * 1.5).len() == 2,
                 "the outgoing clip is still underneath past the default length",

@@ -15,9 +15,8 @@ pub fn sample_document() -> Doc {
     crate::resource::document_of(&sample_project())
 }
 
-/// Named parameters for a deterministic demo clip placement. Source and
-/// timeline times sit beside normalized values, so positional arguments would
-/// make accidental transposition far too easy.
+/// Source and timeline times sit beside normalised values, so positional arguments would make
+/// accidental transposition too easy.
 struct DemoPlacement {
     track: Uuid,
     media: Uuid,
@@ -162,10 +161,7 @@ fn demo_clips(media: &DemoMedia, tracks: &DemoTracks) -> Vec<Clip> {
     clips
 }
 
-/// A short documentary-style cut: drone B-roll under an interview, an
-/// overlaid logo and a sunset insert with a dissolve, narration on A1 and
-/// an ambient bed on A2. Built deterministically so screenshots are
-/// stable across runs.
+/// Built deterministically so screenshots are stable across runs.
 pub fn sample_project() -> Project {
     let mut p = Project::new("Coastline_Doc_v3");
     // A cut this far along has a format: it is 1080p at 30, and the next clip

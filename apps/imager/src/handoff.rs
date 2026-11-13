@@ -1,11 +1,7 @@
-//! Wi-Fi, SSH login keys, and identity written onto a target root by the
-//! setup machine.
+//! Wi-Fi, SSH login keys and identity, written onto the disk an install writes.
 //!
-//! The collaborative install profile records the network name and whether to
-//! enroll. The passphrase, the login keys, and the human root secret never
-//! enter that profile.
-//! Enrollment certifies a new device key; the root secret stays on the machine
-//! that already holds it. The privileged writer only copies a prepared tree.
+//! The profile records the network name and whether to enroll; the passphrase, the
+//! login keys and the human root secret never enter it.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
@@ -16,35 +12,26 @@ use sha2::{Digest, Sha256};
 use crate::model::InstallProfile;
 use crate::profile::PROFILE_BLOCK_SIZE;
 
-/// Fixed header immediately before the secret-free profile block. The payload
-/// sits directly before this header, in the slack after the image bytes.
 pub const SETUP_HANDOFF_HEADER_SIZE: u64 = 4096;
 pub const SETUP_HANDOFF_MAGIC: &str = "TILO_SETUP_HANDOFF_V1";
 
-/// Where this machine's identity lives while it sets up another system.
 pub struct LocalIdentity<'a> {
     pub identity_dir: &'a Path,
     pub system: &'a tilo_user_identity::IdentityPaths,
     pub home_peers: &'a Path,
 }
 
-/// Prepared etc/var tree the privileged writer copies onto an installed disk.
 #[derive(Clone, Debug)]
 pub struct StagedHandoff {
     pub root: PathBuf,
 }
 
 impl StagedHandoff {
-    /// Temporary directory holding `etc/` and `var/` for the target.
     pub fn path(&self) -> &Path {
         &self.root
     }
 }
 
-/// Build the Wi-Fi connection and enrolled identity under a temporary tree.
-///
-/// Signing happens here, on the setup machine. The returned tree is secret
-/// material for the target and must only be readable by the elevated writer.
 pub fn stage_setup_handoff(
     profile: &InstallProfile,
     wifi_psk: &str,
@@ -66,14 +53,6 @@ pub fn stage_setup_handoff(
     Ok(Some(StagedHandoff { root }))
 }
 
-/// Stage Wi-Fi, owner SSH keys and the chosen hostname without enrolling an
-/// identity.
-///
-/// Any piece may be absent. Only enrollment needs this machine's identity,
-/// so a write that joins a network, names the machine or carries the
-/// owner's keys works on a setup machine that has none. `name_target` is
-/// false for installer media, whose installed system takes its name from
-/// the embedded profile instead.
 pub fn stage_access_handoff(
     profile: &InstallProfile,
     wifi_psk: &str,
@@ -115,24 +94,13 @@ pub fn stage_access_handoff(
     Ok(Some(StagedHandoff { root }))
 }
 
-/// Path of the owner SSH keys inside a handoff tree, one key per line.
-///
-/// The installer applies this request only when it installs a development
-/// image, as key-only owner login for the account it creates. A production
-/// install refuses it instead of opening SSH. A disk that already carries
-/// its account gets the same login from the write
-/// ([`block_devices::installed_root`]).
 pub const BRINGUP_SSH_KEY: &str = "etc/tilo/bringup-ssh.pub";
 
-/// The hostname the operator chose, or `None` while the profile still has
-/// the default, so a written disk keeps the name its image gives it.
 pub(crate) fn chosen_hostname(profile: &InstallProfile) -> Option<&str> {
     let hostname = profile.hostname.trim();
     (!hostname.is_empty() && hostname != crate::model::DEFAULT_HOSTNAME).then_some(hostname)
 }
 
-/// Name the target. Tilo images announce their hostname over mDNS (Avahi),
-/// so this is also the `<hostname>.local` a headless machine is reached at.
 fn write_hostname(root: &Path, hostname: &str) -> Result<(), String> {
     if !install_profile_model::valid_hostname(hostname) {
         return Err(
@@ -147,8 +115,6 @@ fn write_hostname(root: &Path, hostname: &str) -> Result<(), String> {
     set_mode(&path, 0o644).map_err(|error| error.to_string())
 }
 
-/// Files for the home of the account a written disk already has, staged
-/// under this directory of the handoff tree by name.
 pub const ACCOUNT_HOME_FILES: &str = "account-home";
 
 /// A file name the account's home can take: one path component, not hidden,
@@ -162,7 +128,6 @@ pub(crate) fn home_file_name_is_safe(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
-/// Stage `contents` to land as `name` in the home of the disk's account.
 pub fn stage_account_home_file(root: &Path, name: &str, contents: &[u8]) -> Result<(), String> {
     if !home_file_name_is_safe(name) {
         return Err(format!(
@@ -182,7 +147,6 @@ pub fn stage_account_home_file(root: &Path, name: &str, contents: &[u8]) -> Resu
     set_mode(&path, 0o644).map_err(|error| error.to_string())
 }
 
-/// Add the owner SSH keys to a staged tree. No keys add nothing.
 pub fn install_bringup_ssh_key(root: &Path, ssh_public_keys: &str) -> Result<(), String> {
     let Some(line) = bringup_ssh_key_lines(ssh_public_keys)? else {
         return Ok(());
@@ -195,7 +159,6 @@ pub fn install_bringup_ssh_key(root: &Path, ssh_public_keys: &str) -> Result<(),
     set_mode(&path, 0o644).map_err(|error| error.to_string())
 }
 
-/// The most owner keys one request carries.
 const MAX_BRINGUP_SSH_KEYS: usize = 16;
 
 const REFUSED_SSH_KEY: &str =
@@ -242,8 +205,6 @@ fn bringup_ssh_key_line(text: &str) -> Result<String, String> {
     ) {
         return Err(REFUSED.into());
     }
-    // The wire encoding starts with the type name again. A blob whose name
-    // differs, or that is not base64 at all, is not this key.
     let wire = base64::engine::general_purpose::STANDARD
         .decode(blob)
         .map_err(|_| REFUSED.to_string())?;
@@ -279,8 +240,6 @@ fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     }
 }
 
-/// Place the profile's Wi-Fi connection and, when requested, this machine's
-/// person onto `root` as a new device.
 pub fn apply_setup_handoff(
     root: &Path,
     profile: &InstallProfile,
@@ -333,10 +292,6 @@ fn write_install_purpose(root: &Path, profile: &InstallProfile) -> Result<(), St
     .map_err(|error| error.to_string())
 }
 
-/// Copy a staged etc/var tree onto a mounted Tilo root partition.
-///
-/// Looks for the deployment's `/etc` and the stateroot's `/var` the same way
-/// the disk image builder does.
 pub fn install_staged_onto_mounted_root(mnt: &Path, staged: &Path) -> io::Result<()> {
     let etc = first_existing(&[
         glob_one(mnt, "state/deploy/*/etc")?,
@@ -382,10 +337,6 @@ pub fn install_staged_onto_mounted_root(mnt: &Path, staged: &Path) -> io::Result
     )
 }
 
-/// Write the staged tree into the slack between the image and the profile block.
-///
-/// A live installer medium has no installed root yet. The installer extracts
-/// this payload and copies it onto the disk it installs.
 pub fn embed_setup_handoff(
     device: &Path,
     image_len: u64,
@@ -475,12 +426,6 @@ fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
     Ok(())
 }
 
-/// Escape a value for a NetworkManager keyfile.
-///
-/// NetworkManager keeps surrounding quotes as part of the SSID and the
-/// password, so a quoted `studio` looks for a network named `"studio"` and
-/// never associates. GLib only needs a backslash escaped, and a leading
-/// space written as `\s`.
 fn nm_keyfile_value(value: &str) -> String {
     let rest = value.trim_start_matches(' ');
     let mut escaped = "\\s".repeat(value.len() - rest.len());
@@ -511,11 +456,6 @@ fn write_wifi_connection(root: &Path, ssid: &str, psk: &str) -> Result<(), Strin
     let path = dir.join("tilo-setup.nmconnection");
     let ssid = nm_keyfile_value(ssid);
     let psk = nm_keyfile_value(psk);
-    // No `permissions` key: an empty value can read as a user restriction
-    // that never autoconnects, while a missing key is system-wide. The fixed
-    // uuid is the one profile this handoff ever writes. NetworkManager's
-    // default retry limit blocks the profile after four failures, which
-    // strands a machine whose access point came up late; 0 keeps trying.
     let body = format!(
         "[connection]\nid=tilo-setup\nuuid=3f1c0a6e-7b2d-4e59-9c18-6a4d2b8e0f71\ntype=wifi\nautoconnect=true\nautoconnect-retries=0\n\n[wifi]\nmode=infrastructure\nssid={ssid}\n\n[wifi-security]\nkey-mgmt=wpa-psk\npsk={psk}\n\n[ipv4]\nmethod=auto\n\n[ipv6]\nmethod=auto\n"
     );
@@ -578,9 +518,6 @@ fn refuse_human_root_secret(staged_var: &Path) -> io::Result<()> {
     }
 }
 
-/// Copy regular files and directories. Symlinks are skipped on the source
-/// side and replaced on the target side, so the copy never writes through a
-/// link planted on either disk.
 fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     if !fs::symlink_metadata(from)?.is_dir() {
         return Err(io::Error::other("handoff source is not a real directory"));
@@ -613,8 +550,6 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Verify every destination component before copying, including pre-existing
-/// directories; create_dir_all alone follows an image's planted parent link.
 fn ensure_copy_directory(root: &Path, relative: &Path) -> io::Result<()> {
     let mut current = root.to_path_buf();
     for component in std::iter::once(None).chain(relative.components().map(Some)) {
@@ -657,7 +592,6 @@ fn walkdir(root: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-/// Default locations for this machine's identity material.
 pub fn local_identity_from_env() -> Result<LocalIdentity<'static>, String> {
     use std::sync::OnceLock;
     static SYSTEM: OnceLock<tilo_user_identity::IdentityPaths> = OnceLock::new();
@@ -754,8 +688,6 @@ mod tests {
         assert_eq!(nm_keyfile_value("  lead"), "\\s\\slead");
         let media = String::from_utf8(profile.to_media_profile_json().unwrap()).unwrap();
         assert!(!media.contains("correct-horse"));
-        // The device's name is a preference the media carries; the
-        // passphrase never is.
         assert!(media.contains("\"device_label\":\"orange-pi\""));
         let paths = tilo_user_identity::IdentityPaths::under(dir.path().join("var/lib/tilo"));
         assert!(
@@ -882,7 +814,6 @@ mod tests {
         assert!(bytes.windows(11).any(|window| window == b"wifi-secret"));
     }
 
-    /// An obviously synthetic key: a well-formed ed25519 encoding of zeros.
     const TEST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA test@example";
 
     #[test]
@@ -934,7 +865,6 @@ mod tests {
             &format!("{TEST_KEY}\nnot a key"),
             "no-pty ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             "ssh-ed25519 not-base64!",
-            // An RSA type name over an ed25519 encoding.
             "ssh-rsa AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         ] {
             assert!(validate_bringup_ssh_key(bad).is_err(), "{bad}");
@@ -960,8 +890,6 @@ mod tests {
         let staged = stage_access_handoff(&named, "", "", true).unwrap().unwrap();
         let hostname = staged.path().join("etc/hostname");
         assert_eq!(fs::read_to_string(&hostname).unwrap(), "tilo-board\n");
-        // Windows has no mode bits; the staged tree is written to the target
-        // as these bytes, so the Unix check covers what Windows stages too.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

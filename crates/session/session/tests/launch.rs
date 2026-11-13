@@ -1058,6 +1058,7 @@ fn apps_in(session: &Session, workspace: &str) -> Vec<String> {
             .filter(|held| held.id().to_string() == workspace)
             .flat_map(tilo_desktop_model::Workspace::tabs)
             .filter_map(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile))
+            .map(String::from)
             .collect()
     })
 }

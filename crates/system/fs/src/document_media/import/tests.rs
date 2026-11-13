@@ -269,9 +269,6 @@ async fn import_checks_roots_and_whole_selection_bounds_before_publication() {
     );
 }
 
-/// A request is written under the keys it was first stored under; one written
-/// while the fields were named for the workspace still reads. The owner action
-/// it names is the same, so its approval still covers it.
 #[test]
 fn a_request_names_its_scopes_under_the_stored_keys() {
     let (request, _) = action(vec!["ab".repeat(32)], 1024);

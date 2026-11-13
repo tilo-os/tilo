@@ -15,7 +15,6 @@ use crate::SlidesShell;
 use crate::actions::replace_deck_action;
 use crate::model::{Deck, DeckLook, PaletteKind, Slide};
 
-/// The window most tests use.
 pub(super) const WINDOW: (u32, u32) = (1280, 800);
 
 pub(super) struct Bench {
@@ -23,13 +22,10 @@ pub(super) struct Bench {
 }
 
 impl Bench {
-    /// The editor at `window` over `deck`, opened on its first slide with
-    /// nothing selected.
     pub(super) fn open(deck: &Deck, window: (u32, u32)) -> Self {
         Self::open_as(deck, window, ui::permissions::Role::Owner)
     }
 
-    /// [`Self::open`] for a participant holding `role`.
     pub(super) fn open_as(deck: &Deck, window: (u32, u32), role: ui::permissions::Role) -> Self {
         let mut app = TestApp::<SlidesShell>::new().expect("the app opens");
         app.invoke(Invoke::apply(&replace_deck_action(deck)).expect("the deck encodes"))
@@ -46,8 +42,6 @@ impl Bench {
         bench
     }
 
-    /// The editor over the sample deck at the usual window, opened on its
-    /// first slide.
     pub(super) fn sample() -> Self {
         Self::open(&crate::model::seed_deck(), WINDOW)
     }
@@ -56,8 +50,6 @@ impl Bench {
         Self::open(&deck_of(vec![slide]), WINDOW)
     }
 
-    /// Run `visit` on the editor, then a frame: whatever it submitted is
-    /// applied, and the deck it shows follows.
     pub(super) fn with<O>(&mut self, visit: impl FnOnce(&mut SlidesApp) -> O) -> O {
         self.app
             .harness()
@@ -65,18 +57,14 @@ impl Bench {
             .expect("the editor is mounted")
     }
 
-    /// Read the editor.
     pub(super) fn read<O>(&mut self, read: impl FnOnce(&SlidesApp) -> O) -> O {
         self.with(|editor| read(editor))
     }
 
-    /// One frame with no input: the host applies what was submitted and the
-    /// editor syncs and draws.
     pub(super) fn frame(&mut self) {
         self.with(|_| ());
     }
 
-    /// Give the editor keyboard focus, as clicking into it does.
     pub(super) fn focus(&mut self) {
         self.app
             .harness()
@@ -84,7 +72,6 @@ impl Bench {
             .expect("the editor takes focus");
     }
 
-    /// Hand the window `event`, as the event loop does.
     pub(super) fn send(&mut self, event: &WindowEvent) {
         self.app.harness().send(event);
     }
@@ -105,19 +92,15 @@ impl Bench {
         self.app.harness().click_at(p.x, p.y);
     }
 
-    /// Press `key` (a named key like `"Enter"`, `"ArrowLeft"`, or a
-    /// character), as [`ui::headless::FrameHarness::key`] spells it.
     pub(super) fn key(&mut self, key: &str) {
         self.app.harness().key(key);
     }
 
-    /// Press and release the named key `key`.
     pub(super) fn named(&mut self, key: NamedKey) {
         self.send(&key_event(Key::Named(key), None, ElementState::Pressed));
         self.send(&key_event(Key::Named(key), None, ElementState::Released));
     }
 
-    /// Press `key` while holding `modifiers` (`"ctrl"`, `"shift"`, ...).
     pub(super) fn chord(&mut self, modifiers: &[&str], key: &str) {
         let held: Vec<String> = modifiers.iter().map(|m| (*m).to_owned()).collect();
         self.app.harness().set_modifiers(&held);
@@ -159,8 +142,6 @@ pub(super) fn release_ev() -> WindowEvent {
     ui::synthetic_input::mouse_release()
 }
 
-/// A key event as the window delivers it: `logical` pressed or released,
-/// typing `text`.
 pub(super) fn key_event(logical: Key, text: Option<&str>, state: ElementState) -> WindowEvent {
     let event =
         ui::synthetic_input::key_event(logical, text.map(winit::keyboard::SmolStr::new), state);

@@ -676,20 +676,9 @@ pub fn next_policy_change(
                 .filter_map(|bytes| tilo_peer_state::workspace::identity_row(bytes).ok())
                 .filter_map(|row| row.device_cert.expires_at_ns)
                 .map(second);
-            let capabilities = governance
+            let capabilities = tilo_peer_state::members::replay_declared(document)
                 .grants
-                .iter()
-                .filter_map(|(member, bytes)| {
-                    serde_json::from_slice::<tilo_action_policy::Grant>(bytes)
-                        .inspect_err(|error| {
-                            tracing::warn!(
-                                %error,
-                                %member,
-                                "a grant does not read back; its deadline is unknown"
-                            );
-                        })
-                        .ok()
-                })
+                .into_iter()
                 .filter_map(|grant| match grant.lifetime {
                     tilo_action_policy::Lifetime::Until(ms) => Some(ms.div_ceil(1_000)),
                     _ => None,

@@ -1,6 +1,4 @@
-//! Preparation stays alive across the installer-to-media-writer transition.
-//! Prepared setup is ciphertext; optional home export retains its password in
-//! private zeroizing custody until the streaming writer finishes.
+//! Preparation that stays alive across the installer-to-media handoff.
 #[path = "prepared_media/delivery_retirement.rs"]
 pub(in crate::setup) mod delivery_retirement;
 #[cfg(test)]
@@ -120,7 +118,6 @@ pub(crate) struct Delivery {
     task: Option<TaskProgress>,
     shown_phase: Option<ui::framework::JobProgress>,
 }
-/// Raw-writer admission checks only retirement for this exact target identity.
 pub(crate) fn pending_target(stable_id: &str) -> bool {
     delivery_retirement::pending(&format!("target:{stable_id}"))
 }
@@ -128,7 +125,6 @@ pub(crate) fn finish_target(stable_id: &str) -> io::Result<()> {
     delivery_retirement::finish_pending(&format!("target:{stable_id}"))
 }
 impl Delivery {
-    /// Final host cleanup after frames stop; regular close admission defers instead.
     pub(crate) fn finish_close(&mut self) -> io::Result<()> {
         if let Some(cancel) = &self.cancel {
             cancel.store(true, Ordering::Release);
@@ -251,7 +247,6 @@ impl Delivery {
         self.home_receipt = None;
         self.state = "waiting-for-filesystem";
     }
-    /// Only a verified pending inbox delivery permits the boot continuation.
     pub(crate) fn awaiting_original_boot(&self) -> bool {
         self.state == "awaiting-offline-export"
             && self.receipt.is_none()
@@ -315,9 +310,6 @@ impl Delivery {
             .as_ref()
             .is_some_and(|artifact| artifact.requires_original_export())
     }
-    /// Producer continuation after the selected image has been written and
-    /// verified. The owned mount and private media admission stay in one worker
-    /// until delivery, readback and unmount have all finished.
     pub(crate) fn start_awaiting_offline_export_automatic(
         &mut self,
         review: Arc<offline::OfflineMediaReview>,
@@ -473,8 +465,6 @@ impl Delivery {
                 self.state = "delivered";
             }
             Ok(Delivered::AwaitingOfflineExport(pending)) => {
-                // This is a receipt for the SMALL SETUP ONLY. No Home receipt
-                // or completed-media outcome is implied by its existence.
                 if self.artifact.as_ref().is_none_or(|artifact| {
                     artifact.pending_original_declaration().as_ref() != Some(&pending.declaration)
                 }) {
@@ -552,7 +542,6 @@ pub(crate) struct Controller {
     capacity_review: Arc<Mutex<Option<(String, super::super::staging::plan::Plan)>>>,
 }
 impl Controller {
-    /// A gated unprivileged worker exercises the real cancel and join path.
     #[cfg(test)]
     pub(super) fn start_cancellation_fixture(
         &mut self,
@@ -657,9 +646,6 @@ impl Controller {
         let task = TaskProgress::new();
         self.task = Some(task.clone());
         self.worker = Some(receiver);
-        // No caller supplies a Plan or disk. The canonical elevated probe
-        // rediscovers this namespace's system disk; registration separately
-        // reattests the actual original source against the computed plan.
         self.joined = Some(std::thread::spawn(move || {
             let result = (|| {
                 task.report("installer-media-phase-review")?;
@@ -695,8 +681,6 @@ impl Controller {
                             io::Error::other("Actual source capacity cannot hold preparation")
                         })?;
                         let operation = uuid::Uuid::new_v4().to_string();
-                        // Preserve the exact observed plan/nonces before any
-                        // fallible actual registration, including on retry.
                         *held = Some((operation.clone(), plan.clone()));
                         (operation, plan)
                     }
@@ -713,8 +697,6 @@ impl Controller {
                     reservation,
                     &task.cancel,
                 )?;
-                // A completed registration cannot turn changed geometry into
-                // a ready export, even if its ciphertext was already produced.
                 let current =
                     super::super::staging::capacity_probe::review_with_cancel(&task.cancel);
                 imager_backend::migration::check_cancel(&task.cancel)?;
@@ -854,8 +836,6 @@ impl Controller {
                 Some(Err("installer-service-session-reconnect"))
             }
             Err(error) => {
-                // Preserve the worker's cause in test output; the public surface
-                // deliberately exposes only the localized, non-secret error key.
                 #[cfg(test)]
                 eprintln!("installer media preparation failed: {error}");
                 #[cfg(not(test))]
@@ -1008,8 +988,6 @@ impl HomePreparation {
         Ok(receipt.clone())
     }
 }
-/// This result deliberately has no Home expectation or ready state.
-/// Its ciphertext still requires the native offline exporter before installation.
 pub(in crate::setup) struct AwaitingOfflineExport {
     pub setup: DeliveryReceipt,
     pub declaration: prepared_setup::OriginalSelectionPlan,
@@ -1253,8 +1231,6 @@ impl PreparedMedia {
             .as_ref()
             .map(|intent| {
                 let plan = intent.for_media()?;
-                // Whole-Home Copy stays in the retained native intent until the
-                // actual staging operation is registered and password-sealed.
                 if plan.categories.home
                     && plan.home_policy
                         == imager_backend::setup::migration_handoff::HomePolicy::Copy
@@ -1277,8 +1253,6 @@ impl PreparedMedia {
                 && source.home_policy
                     == imager_backend::setup::migration_handoff::HomePolicy::AccessReadWrite
         }) {
-            // Original writable Files consent is independent of Apps copying.
-            // The canonical owner/root exchange binds even a Files-only setup.
             manifest.units.set_retained_caller(Some(
                 retained
                     .as_ref()
@@ -1374,8 +1348,6 @@ impl PreparedMedia {
             cancel,
             &mut |progress| work.progress.archive(progress),
         )?;
-        // Authenticate before permitting any media mutation, not only when the
-        // target later tries to import it. The held descriptor binds the bytes.
         work.progress.report("installer-media-phase-verify")?;
         let delivery = PreparedSetupDelivery::review(&package, password.as_bytes(), cancel)?;
         let expectation = delivery.expectation();
@@ -1420,8 +1392,6 @@ impl PreparedMedia {
         let home_reservation = home
             .as_ref()
             .map(|source| {
-                // Zero is unassigned private preparation state, never an
-                // authenticated export budget or a completed archive estimate.
                 if source.original_only() {
                     Ok(0)
                 } else {
@@ -1495,8 +1465,6 @@ impl PreparedMedia {
     fn capacity_with_home(&self, home: u64) -> io::Result<u64> {
         [
             self.sealed_bytes,
-            // Offline completion retains the immutable pending parent while
-            // publishing a separately encrypted amended setup, never another Home.
             if self.requires_original_export() {
                 offline::amended_setup_reservation()?
             } else {
@@ -1619,8 +1587,6 @@ impl PreparedMedia {
         grant.validate_pending(declaration.media(), &self.expectation)?;
         Ok(AwaitingOfflineExport { setup, declaration })
     }
-    /// Export exactly the reviewed ciphertext through a held private parent.
-    /// This publishes no installation authority; consumers authenticate it again.
     fn export_belongings(
         &self,
         destination: &std::path::Path,
@@ -1657,8 +1623,6 @@ impl PreparedMedia {
         if let Some(source) = &self.retained {
             source.validate_artifact_destination(&parent)?;
         }
-        // The atomic no-replacement publication also stays under the held
-        // directory, even if a same-user actor changes a pathname ancestor.
         temporary
             .persist_noclobber(held_parent.join(name))
             .map_err(|error| error.error)?;
@@ -1834,8 +1798,6 @@ impl PreparedMedia {
                 ));
             }
             if home.receipt.is_none() && home.source.immutable_capture() {
-                // Actual transfer begins with the latest approved contents, not
-                // the epoch inspected during earlier personal setup steps.
                 let latest = home.source.review_latest(cancel)?;
                 let reservation = latest.sealed_reservation()?;
                 let total = self.capacity_with_home(reservation)?;
@@ -1853,9 +1815,6 @@ impl PreparedMedia {
                 previous.release_capture();
             }
             home.source.validate()?;
-            // Generations may share the Home lease while their authenticated
-            // setup/browser packages differ. Never subtract a shared latest
-            // reservation from a generation's older cached total.
             self.reserved_data_bytes.store(
                 self.capacity_with_home(home.reservation)?,
                 Ordering::Release,
@@ -1890,8 +1849,6 @@ impl PreparedMedia {
     pub(in crate::setup) fn native_is_other_device(&self) -> bool {
         self.other_device.is_some()
     }
-    /// Export the exact held ciphertext for the source handoff. The caller
-    /// keeps the generated password; this never exposes it.
     pub(crate) fn copy_ciphertext(&self, output: &mut std::fs::File) -> io::Result<()> {
         let cancel = AtomicBool::new(false);
         self.delivery
@@ -1914,7 +1871,6 @@ impl PreparedMedia {
             .deliver_or_verify_reporting(grant, cancel, observer)
     }
     fn home_projection(&self) -> Option<serde_json::Value> {
-        // Drop the Home mutex before taking preview: refresh uses Home→preview.
         let original_only = self
             .home
             .as_ref()
@@ -2135,9 +2091,6 @@ impl PreparedMedia {
     pub(in crate::setup) fn staging_artifact(
         &self,
     ) -> io::Result<super::super::staging::prepared_setup::PreparedArtifact> {
-        // UI-side artifact projection checks range custody only. Independent
-        // byte rereads run on the download worker before creating the actual
-        // stage request, and on media writers at final write admission.
         self.review_recovery()?;
         if self.requires_original_export() {
             return Err(io::Error::other(
@@ -2216,8 +2169,6 @@ fn prepare_mail(
     let mut handoffs = Vec::with_capacity(selection.profiles.len());
     for (reviewed, selected) in &selection.profiles {
         imager_backend::migration::check_cancel(cancel)?;
-        // The source is re-read through its pinned profile and revalidated
-        // before any byte enters the package.
         let artifact =
             PasswordSealedThunderbird::seal(reviewed, selected, password, binding.as_bytes())
                 .map_err(|_| io::Error::other("Selected mail could not be prepared"))?;
@@ -2435,8 +2386,6 @@ mod tests {
             operation.clone(),
         )
         .unwrap();
-        // A deterministic user-authenticated request fixture; kernel source
-        // authority is qualified only by the opt-in GPT-backed native test.
         let source: imager_backend::setup::migration_handoff::Plan = serde_json::from_value(serde_json::json!({
             "schema": 1, "operation_id": operation,
             "categories": {"home": true, "flatpak": false, "accounts": false},
@@ -2468,8 +2417,6 @@ mod tests {
             1024 * 1024,
         )
         .unwrap();
-        // Build genuine authenticated pending ciphertext. The fixture supplies
-        // the proposed reseal boundary; it does not simulate physical media.
         let value = Arc::get_mut(&mut artifact).unwrap();
         value
             .manifest
@@ -2527,8 +2474,6 @@ mod tests {
             .reserved_data_bytes
             .store(admitted, Ordering::Release);
         let mut delivery = Delivery::with_artifact(artifact.clone());
-        // Existing reviewed allocation already includes Home: defer it, never
-        // add a second copy of the same Home reservation.
         assert_eq!(delivery.reserved_data_bytes(), admitted);
         assert_eq!(
             delivery.writer_key(),
@@ -2556,8 +2501,6 @@ mod tests {
         assert!(delivery.pending());
         assert!(!delivery.failed());
         assert!(delivery.requires_data_partition());
-        // Actual authenticated pending ciphertext cannot be mistaken for the
-        // completed delivery protocol by a retry or manual-output action.
         assert_eq!(
             delivery.start_automatic(),
             Err("installer-original-grant-required")
@@ -2572,8 +2515,6 @@ mod tests {
             artifact.capacity_with_home(1024 * 1024).unwrap()
         );
         assert!(delivery.awaiting_original_boot());
-        // A state label or a receipt for different bytes cannot authorize the
-        // user's boot continuation, even while the declaration remains pending.
         let original_hash = delivery
             .awaiting_setup_receipt
             .as_ref()
@@ -3186,8 +3127,6 @@ mod tests {
         let target = config.join("identity");
         std::fs::create_dir(&target).unwrap();
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
-        // The actual helper requires the caller's quarantine parent to be a
-        // private grant, independently of the delivered package's private home.
         let quarantines = tempfile::Builder::new()
             .permissions(std::fs::Permissions::from_mode(0o700))
             .tempdir_in(&root)
@@ -3255,9 +3194,6 @@ mod tests {
             source_key
         );
         std::fs::write(&primary, &persona).unwrap();
-        // A conflicting pre-existing key must be refused, never replaced or
-        // accepted by generating a substitute identity. Exact retries above
-        // exercise the canonical same-key import rather than a test fallback.
         let key = device.join("device-private/keypair.bin");
         let mut conflicting = source_key.clone();
         conflicting[0] ^= 1;

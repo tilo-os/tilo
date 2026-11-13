@@ -977,8 +977,9 @@ struct WorkspacesInner {
     /// build on history it no longer has
     /// ([`unbuildable_windows::missing_history`]), by workspace.
     unbuildable_windows: std::sync::Mutex<HashMap<String, u64>>,
-    /// The workspaces listed as public workspaces, and how lively each is.
-    listings: listing::Listings,
+    /// When each workspace was last written to, and a ping after each door
+    /// that changed: the directory's own, beside the doors' governance.
+    directory: listing::Directory,
     /// Whether the records its workspaces hold in the clear are sealed: only once
     /// the host's operator decided it (the relay's `reseal`).
     #[cfg(feature = "agents")]
@@ -1180,7 +1181,6 @@ impl Workspaces {
         // A workspace a host made keeps the certificate it made it with: a host
         // renamed since serves with the record's own, verified.
         let host = host_serving(host, &dir);
-        let listings = listing::Listings::open(&dir);
         let workspaces = Arc::new(device_plane::WorkspacesMap::default());
         let (plane, jobs) = device_plane::plane(Arc::clone(&workspaces), host.key.clone());
         let store =
@@ -1208,7 +1208,7 @@ impl Workspaces {
                 queued_writes: std::sync::Mutex::default(),
                 session_carriers: session_carry::SessionCarriers::default(),
                 unbuildable_windows: std::sync::Mutex::default(),
-                listings,
+                directory: listing::Directory::default(),
                 #[cfg(feature = "agents")]
                 resealing: std::sync::atomic::AtomicBool::new(false),
                 hosting: crate::hosted::Hosting::new(host.clone()),
@@ -1921,7 +1921,7 @@ impl Workspaces {
         .await
         .map_err(|error| error.to_string())?;
         let mut runtime = runtime_state.lock().await;
-        let public = self.inner.listings.is_public(&workspace);
+        let public = Self::door_of(governed).is_listed();
         runtime.store.set_records_when_opened(public);
         // This relay's workspace authority governs the workspace: never auto-enrol,
         // even if the workspace was autobound before the authority took it.

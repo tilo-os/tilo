@@ -2,10 +2,9 @@
 //! artwork shows it, for the magic wand and selecting by colour, and the
 //! picture's subject and edges (`crate::subject`).
 //!
-//! Like `set-reference` reading a file where the action is authored, such an
-//! action is resolved to plain geometry before it is applied, so every
-//! replica applies (and history records) the same area. The canvas tells
-//! this module what it shows each time it is presented the artwork.
+//! Such an action is resolved to plain geometry before it is applied, so
+//! every replica applies the same area; the canvas tells this module what it
+//! shows each time it is presented the artwork.
 #![allow(
     clippy::arithmetic_side_effects,
     reason = "pixel indices are bounded by the picture's size, and kurbo's float geometry does not overflow"
@@ -67,18 +66,13 @@ pub fn read(art: &Artwork) {
     LATEST.with_borrow_mut(|latest| *latest = Some(Rc::new(art.clone())));
 }
 
-/// What to find by colour.
 #[derive(Clone, Debug, Default)]
 pub struct ColourQuery {
-    /// Start at the colour here (the magic wand).
     pub at: Option<Point>,
-    /// Or find this colour, `[r, g, b]`.
     pub colour: Option<[u8; 3]>,
     /// `0..=1`.
     pub tolerance: f64,
-    /// Also like colour that does not touch the start.
     pub everywhere: bool,
-    /// See only these layers.
     pub layers: Option<Vec<String>>,
     /// Find it only inside this area: the selection, when the wand takes
     /// from it or keeps only what is in it, or the bucket fills inside it.
@@ -138,7 +132,6 @@ pub fn colour_query(find: &FindArea, art: &Artwork) -> Result<Option<ColourQuery
     }))
 }
 
-/// Run `look` with what the canvas shows.
 pub fn with_sight<T>(
     look: impl FnOnce(&mut Renderer, &mut TextRenderer, &Artwork) -> Result<T, String>,
 ) -> Result<T, String> {
@@ -188,24 +181,20 @@ pub struct ColourSearch {
     /// The look asked for, once the pictures it must see are decoded; `None`
     /// until then.
     looking: Option<Looking>,
-    /// The glance the first look takes.
     sight: Option<Glance>,
 }
 
-/// A picture the search is waiting for.
 struct Looking {
     pixels: ui::offscreen::pixels::PixelsRequest,
     sight: Glance,
 }
 
-/// What a look sees: `view` at `scale` pixels per unit.
 struct Glance {
     view: Rect,
     scale: f64,
     /// Closer, it may only find what the first look found, and the pixels
     /// about its edge.
     near: Option<Region>,
-    /// What the first look found, once this is the closer look.
     first: Option<Region>,
 }
 
@@ -292,7 +281,6 @@ impl ColourSearch {
     }
 }
 
-/// Ask for the picture `sight` sees, showing what `query` looks at.
 fn ask(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
@@ -305,8 +293,6 @@ fn ask(
         bare: query.layers.is_some(),
         ..Options::default()
     };
-    // Colour is found in the pictures themselves, never in the placeholder
-    // the canvas shows while a just-opened photo is still being decoded.
     let patient = std::mem::replace(&mut renderer.pictures.patient, true);
     let drawing = crate::view_ops::drawing(sight.view, sight.scale, options.bare, |scene, to| {
         renderer.draw(art, scene, to, text, &options);
@@ -405,7 +391,6 @@ fn find_in(
     .traced(to_cells.inverse()))
 }
 
-/// The area `find` found as the selection it makes, with its options.
 pub fn found(find: &FindArea, found: &Region, matte: Option<crate::model::Matte>) -> Select {
     Select {
         d: Some(path_data(&found.to_path())),

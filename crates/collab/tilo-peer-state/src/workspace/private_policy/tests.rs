@@ -1,5 +1,4 @@
 use super::*;
-use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Role, Subject, TreePath};
 fn editor_grant(workspace: &str) -> Grant {
     Grant::new(
@@ -12,25 +11,33 @@ fn editor_grant(workspace: &str) -> Grant {
     )
 }
 fn fixture() -> crate::StatePeer {
-    let (mut peer, _, _, _, _) = crate::admission_tests::seeded();
+    let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
     let mut workspace = peer.admitted_workspace().unwrap().clone();
-    let caps = workspace.get(ROOT, "grants").unwrap().unwrap().1;
-    for (index, at) in [8_u64, 7, 7, 3].into_iter().enumerate() {
-        let grant = editor_grant(peer.workspace_id())
-            .with_lifetime(Lifetime::Until(at.saturating_mul(1000)));
-        workspace
-            .put(
-                &caps,
-                index.to_string(),
-                ScalarValue::Bytes(serde_json::to_vec(&grant).unwrap()),
-            )
-            .unwrap();
-    }
+    let owner = peer
+        .certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == key.verifying_key().to_bytes())
+        .unwrap();
+    let changes = [8_u64, 7, 7, 3]
+        .into_iter()
+        .enumerate()
+        .map(|(index, at)| {
+            let mut grant = editor_grant(peer.workspace_id())
+                .with_lifetime(Lifetime::Until(at.saturating_mul(1000)));
+            grant.id = tilo_action_policy::GrantId::new(format!("editor-reads-{index}"));
+            tilo_action_policy::Change::Grant(grant)
+        })
+        .collect();
+    let before = workspace.get_heads();
+    crate::members::op::tests_support::sign_into(
+        &mut workspace,
+        &(key.clone(), owner),
+        crate::state::now_ns(now),
+        changes,
+    );
     workspace.commit();
-    // Genuine admitted legacy source; this prerequisite tests reader mechanics.
-    let (_, key, _, _, now) = crate::admission_tests::seeded();
     let changes = workspace
-        .get_changes(&[])
+        .get_changes(&before)
         .iter()
         .map(|c| c.raw_bytes().to_vec())
         .collect();
@@ -66,4 +73,3 @@ fn shared_private_policy_matches_existing_exact_revision_and_expiry_order() {
     );
     assert_eq!(result.expiries, vec![3, 7, 8]);
 }
-mod parity;

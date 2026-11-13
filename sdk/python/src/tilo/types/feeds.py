@@ -78,7 +78,7 @@ class Outline(TypedDict):
 
 class Library(Resource):
     """Feeds — `feeds.library`."""
-    __surface__ = "so.tilo.feeds@29a254263539388d"
+    __surface__ = "so.tilo.feeds@a405395fdcfa75c6"
     folders: list[Folder]
     feeds: list[Feed]
     articles: list[Article]

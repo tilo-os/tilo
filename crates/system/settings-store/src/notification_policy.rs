@@ -1,14 +1,11 @@
-//! Shared notification-delivery policy.
-//!
-//! The compositor enforces this record; Personal Settings only edits it. App
-//! keys are verified package/application ids supplied by the launcher caller
-//! map, never the sender-controlled freedesktop `app_name` string.
+//! Shared notification-delivery policy: the compositor enforces it, Personal Settings only edits
+//! it. App keys are verified package or application ids supplied by the launcher caller map, never
+//! the sender-controlled freedesktop `app_name` string.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// The settings section the policy lives in.
 pub const SECTION: &str = "notifications";
 
 #[cfg_attr(feature = "model", derive(tilo_resource::Model))]
@@ -72,7 +69,6 @@ pub struct FocusSchedule {
     pub allow_priority: bool,
 }
 
-/// The last minute of a day.
 #[cfg(feature = "model")]
 const MINUTE_OF_DAY_MAX: u16 = 24 * 60 - 1;
 
@@ -101,8 +97,6 @@ impl Default for FocusSchedule {
 }
 
 impl FocusSchedule {
-    /// The minute after local midnight the current focus period ends, or
-    /// `None` when no bounded period is active (off, or all day).
     pub fn active_until(self, minute: u16, weekday_from_monday: u8) -> Option<u16> {
         let end = self.end_minute.min(1439);
         (self.active_at(minute, weekday_from_monday) && self.start_minute.min(1439) != end)
@@ -132,9 +126,6 @@ impl FocusSchedule {
     }
 }
 
-// Independent, user-facing notification toggles, not a state machine — and this
-// document's JSON shape and field names are load-bearing across `shell`, so folding
-// them into a bitflags type ripples well outside this crate.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent notification toggles serialised by field name; consumers in other \
@@ -180,9 +171,6 @@ impl Default for NotificationPolicy {
     }
 }
 
-// Independent facets of "should this notification show right now", each derived by a
-// different rule — not a state machine, and `shell` reads them by field to decide what to
-// render.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent derived notification facets read by field in `shell`"
@@ -199,8 +187,6 @@ pub struct EffectiveNotificationPolicy {
 }
 
 impl NotificationPolicy {
-    /// The one persisted Do Not Disturb switch. The shell's palette action and
-    /// Quick Settings tile write it here; Personal Settings edits the same key.
     pub fn save_do_not_disturb(on: bool) -> std::io::Result<()> {
         crate::update_section(SECTION, Self::do_not_disturb_values(on))
     }
@@ -223,7 +209,6 @@ impl NotificationPolicy {
             .unwrap_or_default()
     }
 
-    /// The policy in `document`, an already loaded settings document.
     #[must_use]
     pub fn from_document(document: &serde_json::Map<String, serde_json::Value>) -> Self {
         let section = match document.get(SECTION) {
@@ -287,9 +272,6 @@ impl NotificationPolicy {
 mod tests {
     use super::*;
 
-    /// The Do Not Disturb switch quick settings and the person's settings
-    /// both write is one saved key, and the policy the session judges each
-    /// arrival by reads it back.
     #[test]
     fn the_do_not_disturb_switch_is_one_saved_key_the_policy_reads_back() {
         use crate::SettingsSource as _;

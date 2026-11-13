@@ -17,9 +17,6 @@ fn write_deck(path: &std::path::Path, deck: &Deck) {
     std::fs::write(path, bytes).unwrap();
 }
 
-/// Run `effect` with the host's chooser answering `chosen`, as Ctrl+O and
-/// Ctrl+S do, confirmed where it asks; the chooser's requests and the
-/// effect's answer.
 fn through_the_chooser(
     bench: &mut Bench,
     chosen: PortalOutcome,
@@ -138,13 +135,10 @@ fn opening_presentations_preserves_cdata_text() {
     }
 }
 
-/// ODP and `PowerPoint` files open through the chooser as one undoable
-/// change; failures change nothing and are said.
 #[test]
 fn presentation_files_open_and_save_through_the_chooser() {
     let directory = tempfile::tempdir().unwrap();
 
-    // Case `a_saved_odp_opens_as_the_same_deck_in_one_undo_step`.
     {
         let deck = crate::model::seed_deck();
         let path = directory.path().join("roundtrip.odp");
@@ -177,7 +171,6 @@ fn presentation_files_open_and_save_through_the_chooser() {
         assert_eq!(bench.deck(), before, "undo puts the previous deck back");
     }
 
-    // Case `app_routes_powerpoint`.
     {
         let deck = crate::model::seed_deck();
         let path = directory.path().join("roundtrip.pptx");
@@ -191,7 +184,6 @@ fn presentation_files_open_and_save_through_the_chooser() {
         assert_eq!(opened.slides.len(), deck.slides.len());
     }
 
-    // Case `a_cancelled_choice_opens_nothing`.
     {
         let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
         let before = bench.deck();
@@ -201,7 +193,6 @@ fn presentation_files_open_and_save_through_the_chooser() {
         assert_eq!(bench.deck(), before);
     }
 
-    // Case `a_file_that_is_no_presentation_is_said_and_changes_nothing`.
     {
         let path = directory.path().join("broken.odp");
         std::fs::write(&path, b"not a zip").unwrap();
@@ -218,7 +209,6 @@ fn presentation_files_open_and_save_through_the_chooser() {
         assert_eq!(bench.deck(), before, "a failed open changes nothing");
     }
 
-    // Case `saving_through_the_chooser_writes_the_deck_as_odp`.
     {
         let out = directory.path().join("chosen.odp");
         let mut bench = Bench::sample();
@@ -238,7 +228,6 @@ fn presentation_files_open_and_save_through_the_chooser() {
         );
     }
 
-    // Case `ensure_odp_ext_appends_when_missing`.
     {
         assert_eq!(
             ensure_odp_ext(std::path::Path::new("/x/talk"))
@@ -255,8 +244,6 @@ fn presentation_files_open_and_save_through_the_chooser() {
     }
 }
 
-/// Open and Save As with a path reach the files named, as an agent or a
-/// script asks; Read answers with the deck as text.
 #[test]
 fn open_save_as_and_read_reach_the_files_named() {
     let directory = tempfile::tempdir().unwrap();
@@ -301,7 +288,6 @@ fn open_save_as_and_read_reach_the_files_named() {
         "read answers with the deck's outline"
     );
 
-    // Opening replaces the shared deck for everyone: it asks first.
     assert!(
         bench
             .app
@@ -313,8 +299,6 @@ fn open_save_as_and_read_reach_the_files_named() {
     );
 }
 
-/// A reveal from the palette or an agent shows the exact slide and element,
-/// its words selected for editing.
 #[test]
 fn a_brokered_text_reveal_restores_the_slide_element_and_selection() {
     let mut bench = Bench::sample();
@@ -361,8 +345,6 @@ fn a_brokered_text_reveal_restores_the_slide_element_and_selection() {
     });
 }
 
-/// A restore while the notes are open shows the restored notes, and typing
-/// goes on in them.
 #[test]
 fn a_restore_rebinds_the_notes_being_edited() {
     let mut s = Slide::new(Layout::Blank);
@@ -383,7 +365,6 @@ fn a_restore_rebinds_the_notes_being_edited() {
         bench.read(|app| app.notes.control().value().to_owned()),
         "LIVE Selected notes"
     );
-    // History's restore rewrites the deck as it was.
     bench.app.merge_peer_edit(|doc| {
         let past = doc.fork_at(&selected).unwrap();
         let deck = <crate::deck::Deck as ui::tilo_resource::Resource>::read(&past).unwrap();
@@ -403,8 +384,6 @@ fn a_restore_rebinds_the_notes_being_edited() {
     assert_eq!(bench.deck().slides[0].notes, "Selected notes!");
 }
 
-/// When the slide whose notes are open goes away, the notes editor closes
-/// rather than typing into another slide's notes.
 #[test]
 fn notes_of_a_deleted_slide_stop_being_edited() {
     let mut first = Slide::new(Layout::Blank);
@@ -429,7 +408,6 @@ fn notes_of_a_deleted_slide_stop_being_edited() {
     });
 }
 
-/// A collaborator's slide inserted before the one shown leaves it shown.
 #[test]
 fn the_slide_shown_stays_shown_when_a_collaborator_inserts_before_it() {
     let mut bench = Bench::sample();
@@ -446,7 +424,6 @@ fn the_slide_shown_stays_shown_when_a_collaborator_inserts_before_it() {
     });
 }
 
-/// The text of `part` in the zip package at `path`.
 fn package_part(path: &std::path::Path, part: &str) -> String {
     use std::io::Read;
     let mut archive = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
@@ -459,8 +436,6 @@ fn package_part(path: &std::path::Path, part: &str) -> String {
     text
 }
 
-/// A text box whose words outgrew it is written as tall as the canvas shows
-/// it, marked to fit its text; the box's own height stays its least.
 #[test]
 fn a_saved_box_is_as_tall_as_its_words_show_it() {
     let mut slide = Slide::new(Layout::Blank);
@@ -509,7 +484,6 @@ fn a_saved_box_is_as_tall_as_its_words_show_it() {
         .and_then(|rest| rest.split("cm\"").next())
         .and_then(|cm| cm.parse::<f64>().ok())
         .unwrap();
-    // The page is 25.4 cm wide.
     let per_unit = 25.4 / SLIDE_W;
     assert!(
         (height / per_unit - shown).abs() < 1.0,
@@ -528,8 +502,6 @@ fn a_saved_box_is_as_tall_as_its_words_show_it() {
     );
 }
 
-/// Bulleted and numbered lists are written as lists, so they open as lists
-/// again here and elsewhere.
 #[test]
 fn lists_survive_saving_and_opening() {
     use ui::widget::{BlockContent, BlockKind};

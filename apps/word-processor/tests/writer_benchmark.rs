@@ -1,29 +1,3 @@
-//! The Writer agent benchmark: one fixed task, done twice against one
-//! checked-in reference, then exported and reopened.
-//!
-//! The task is a short field report — two headings, a paragraph with a bold
-//! phrase, a two-item bullet list and a closing paragraph with an italic
-//! date ([`REFERENCE`]).
-//!
-//! - The **typed arm** is an agent. It reads Writer's published actions and
-//!   drives the document only through them, by id with JSON arguments, as
-//!   the agent [`AGENT`]: the bound-action door that the control socket's
-//!   `actions invoke`, the MCP bridge and the palette all reach.
-//! - The **input arm** is computer use. It clicks into the page it was shown
-//!   and types and presses keys — the control socket's `click`, `type`, `key`
-//!   and `modifiers` vocabulary — and reads nothing but the frame.
-//!
-//! Each arm is graded from the document the system owns, never from what
-//! the arm reports. The typed arm's result is then saved as DOCX and as PDF
-//! with Writer's own Save As and reopened the way a person opens them: the
-//! DOCX launched in Writer, the PDF opened in the PDF viewer's engine. What
-//! comes back is inspected for structure, text, formatting and pixels.
-//!
-//! Every qualification lands in a receipt (written to the path in
-//! `TILO_WRITER_BENCHMARK_RECEIPT` when it is set), and any that did not
-//! pass fails the test, naming what was observed. Nothing the benchmark did
-//! not observe is in the receipt as a pass.
-
 use std::path::Path;
 
 use tilo_doc::DocSnapshot;
@@ -33,15 +7,11 @@ use word_processor::framework::WordProcessorApp;
 
 type App = TestApp<WordProcessorApp>;
 
-/// Who the typed arm acts as, and the person it acts for.
 const AGENT: &str = "agent:writer-benchmark";
 const PERSON: &str = "owner";
-/// The agent's own caret and selection in the document: its presence.
 const PARTICIPANT: &str = "writer-benchmark";
 const DOCUMENT: &str = "word-processor.document";
 
-/// One paragraph of the reference: its kind, heading level or list kind,
-/// text, and the phrases that carry each inline format.
 struct Expected {
     kind: &'static str,
     level: Option<i64>,
@@ -50,7 +20,6 @@ struct Expected {
     marks: &'static [(&'static str, &'static str)],
 }
 
-/// The accepted reference: what both arms are asked to produce.
 const REFERENCE: [Expected; 6] = [
     Expected {
         kind: "heading",
@@ -96,23 +65,12 @@ const REFERENCE: [Expected; 6] = [
     },
 ];
 
-/// The inline formats the reference is graded on; authorship and other
-/// bookkeeping marks are not formatting.
 const FORMATS: [&str; 4] = ["strong", "em", "underline", "strike"];
 
-/// The share of a frame's pixels two renders of one document may differ in
-/// (a channel off by more than [`PIXEL_TOLERANCE`]) and still be one picture.
-/// Two renders of the report with the caret in one place are identical; one
-/// italic date of ten characters lost is 0.036% (see
-/// `a_page_missing_one_format_is_not_the_same_picture`), so 0.01% leaves
-/// room for antialiasing and none for a lost format.
 const MAX_FRAME_DIFFERENCE: f64 = 0.0001;
 const PIXEL_TOLERANCE: u8 = 48;
-/// The least share of the frame six paragraphs of text change from a blank
-/// document's.
 const MIN_DRAWN: f64 = 0.005;
 
-/// One qualification: whether it passed and what was observed.
 struct Qualification {
     id: &'static str,
     passed: bool,
@@ -159,7 +117,6 @@ impl Receipt {
     }
 }
 
-/// The document as the system holds it.
 fn snapshot(app: &App) -> DocSnapshot {
     app.read_document(|doc| {
         let containers = word_processor::model::open(doc).unwrap();
@@ -167,7 +124,6 @@ fn snapshot(app: &App) -> DocSnapshot {
     })
 }
 
-/// One paragraph as graded: everything [`Expected`] names, read back.
 #[derive(Debug, PartialEq, Eq)]
 struct Graded {
     kind: String,
@@ -231,7 +187,6 @@ fn expected() -> Vec<Graded> {
         .collect()
 }
 
-/// Whether `snapshot` is the reference, paragraph by paragraph.
 fn matches_reference(snapshot: &DocSnapshot) -> Result<String, String> {
     let got = graded(snapshot);
     let want = expected();
@@ -263,9 +218,6 @@ fn agent() -> ActionInvoker {
         .with_participant(ParticipantId::new(PARTICIPANT).unwrap())
 }
 
-/// The agent's plan: published action ids and their JSON arguments, in
-/// order. It names no paragraph ids and no coordinates — it types at its
-/// caret and finds the phrases it formats.
 fn plan() -> Vec<(&'static str, serde_json::Value)> {
     use serde_json::json;
     let paragraph = |kind: &str, extra: serde_json::Value| {
@@ -303,7 +255,6 @@ fn plan() -> Vec<(&'static str, serde_json::Value)> {
     ]
 }
 
-/// Invoke every step of `plan` as the agent, and answer the refusals.
 fn run(app: &mut App, plan: &[(&'static str, serde_json::Value)]) -> Vec<String> {
     let mut refused = Vec::new();
     for (id, arguments) in plan {
@@ -315,8 +266,6 @@ fn run(app: &mut App, plan: &[(&'static str, serde_json::Value)]) -> Vec<String>
     refused
 }
 
-/// The typed arm, start to finish: discover, then act. Answers the app it
-/// drove.
 fn typed_arm(receipt: &mut Receipt) -> App {
     let mut app = open();
     let surface = app.agent_surface();
@@ -400,9 +349,6 @@ fn typed_arm(receipt: &mut Receipt) -> App {
     app
 }
 
-/// Type `text` the way a keyboard does: a space is the space bar, so what
-/// Writer does at a word boundary (autoformat, autocorrect) happens here
-/// as it does for a person.
 fn keyboard(app: &mut App, text: &str) {
     for (index, word) in text.split(' ').enumerate() {
         if index > 0 {
@@ -418,8 +364,6 @@ fn press(app: &mut App, key: &str, times: usize) {
     }
 }
 
-/// Select the `phrase` that ends `trailing` characters before the caret,
-/// and press `shortcut` with Ctrl held.
 fn format_phrase(app: &mut App, phrase: &str, trailing: usize, shortcut: &str) {
     press(app, "Left", trailing);
     app.harness().set_modifiers(&["shift".to_owned()]);
@@ -430,8 +374,6 @@ fn format_phrase(app: &mut App, phrase: &str, trailing: usize, shortcut: &str) {
     app.harness().key("End");
 }
 
-/// The input arm: a click into the page, then keys. Markdown prefixes make
-/// the headings and the list, Ctrl+B and Ctrl+I the formats.
 fn input_arm(receipt: &mut Receipt) -> App {
     let mut app = open();
     let page = app
@@ -441,8 +383,6 @@ fn input_arm(receipt: &mut Receipt) -> App {
         .copied()
         .expect("the editor is on screen");
     let started = std::time::Instant::now();
-    // Into the empty body, well below the page header: a click there puts
-    // the caret in the document's only paragraph.
     app.harness()
         .click_at(page.center().x, page.y0 + page.height() * 0.6);
     keyboard(&mut app, &format!("# {}", REFERENCE[0].text));
@@ -455,12 +395,9 @@ fn input_arm(receipt: &mut Receipt) -> App {
     keyboard(&mut app, &format!("- {}", REFERENCE[3].text));
     app.harness().key("Enter");
     keyboard(&mut app, REFERENCE[4].text);
-    // Enter on an empty list item ends the list.
     press(&mut app, "Enter", 2);
     keyboard(&mut app, REFERENCE[5].text);
     format_phrase(&mut app, "3 November", ".".len(), "i");
-    // Back to where a document opens with the caret, so the frame shows
-    // what was typed rather than where typing stopped.
     press(&mut app, "Up", REFERENCE.len());
     app.harness().key("Home");
     app.settle();
@@ -475,7 +412,6 @@ fn input_arm(receipt: &mut Receipt) -> App {
     app
 }
 
-/// The share of pixels that differ between two frames of one size.
 fn frame_difference(left: &[u8], right: &[u8]) -> Result<f64, String> {
     if left.len() != right.len() || left.is_empty() {
         return Err(format!(
@@ -500,9 +436,6 @@ fn frame_difference(left: &[u8], right: &[u8]) -> Result<f64, String> {
     Ok(differing as f64 / (left.len() / 4) as f64)
 }
 
-/// The share of pixels that are not the frame's ground (its most common
-/// colour): where something — text, a caret, a control — is drawn, in any
-/// theme.
 fn ink(rgba: &[u8]) -> f64 {
     let mut counts = std::collections::HashMap::<&[u8], usize>::new();
     for pixel in rgba.chunks_exact(4) {
@@ -533,8 +466,6 @@ fn ink(rgba: &[u8]) -> f64 {
     share
 }
 
-/// Keep `app`'s frame as `name.png` in `TILO_WRITER_BENCHMARK_FRAMES`, when
-/// it is set, for a person to look at.
 fn keep_frame(app: &mut App, name: &str) {
     if let Some(directory) = std::env::var_os("TILO_WRITER_BENCHMARK_FRAMES") {
         let directory = Path::new(&directory);
@@ -544,8 +475,6 @@ fn keep_frame(app: &mut App, name: &str) {
     }
 }
 
-/// Keep a copy of an exported file in `TILO_WRITER_BENCHMARK_FRAMES`, when
-/// it is set.
 fn keep_file(path: &Path) {
     if let (Some(directory), Some(name)) = (
         std::env::var_os("TILO_WRITER_BENCHMARK_FRAMES"),
@@ -584,8 +513,6 @@ fn open() -> App {
     App::new().unwrap()
 }
 
-/// Save As through the published action, confirmed by the person as the
-/// host's prompt for a destructive file write asks them to.
 fn save_as(app: &mut App, path: &Path) -> Result<u64, String> {
     app.call_confirmed(
         "save-as",
@@ -622,9 +549,6 @@ fn docx_export(app: &mut App, path: &Path, receipt: &mut Receipt) -> Result<Stri
     }
 }
 
-/// Every reference paragraph's text in `page`, in order. Whitespace is not
-/// compared: a PDF places glyphs, and where a text layer infers a space
-/// between two of them (`1 8` for a kerned `18`) is the reader's guess.
 fn text_in_order(page: &str) -> Result<String, String> {
     let squashed = |text: &str| text.split_whitespace().collect::<String>();
     let page = squashed(page);
@@ -662,8 +586,6 @@ fn pdf_checks(app: &mut App, path: &Path, receipt: &mut Receipt) {
         }
         return;
     }
-    // The PDF viewer's own engine, the one it opens a file with on every
-    // platform this runs on.
     let opened = std::fs::read(path)
         .map_err(|error| error.to_string())
         .and_then(|bytes| {
@@ -728,10 +650,8 @@ fn pdf_checks(app: &mut App, path: &Path, receipt: &mut Receipt) {
     receipt.record("pdf.inline_formats", formats);
 }
 
-/// What is read back from the PDF, each a qualification.
 const PDF_READS: [&str; 3] = ["pdf.reopened_text", "pdf.page_pixels", "pdf.inline_formats"];
 
-/// The first page of `pdf`, rendered 600 pixels wide.
 fn pdf_page(pdf: &tilo_pdf::Document) -> Result<Vec<u8>, String> {
     let size = pdf.page_size(0).ok_or_else(|| "no first page".to_owned())?;
     pdf.render(0, &tilo_pdf::RenderOptions::fit_width(size, 600))
@@ -739,8 +659,6 @@ fn pdf_page(pdf: &tilo_pdf::Document) -> Result<Vec<u8>, String> {
         .map_err(|error| error.to_string())
 }
 
-/// `document` exported to PDF directly and rendered: the control the
-/// exported file is compared with.
 fn render_pdf(document: &DocSnapshot) -> Result<Vec<u8>, String> {
     let bytes = tilo_doc_pdf::render_pdf(document, &tilo_content::NoContent)
         .map_err(|error| error.to_string())?;
@@ -750,9 +668,6 @@ fn render_pdf(document: &DocSnapshot) -> Result<Vec<u8>, String> {
     pdf_page(&pdf)
 }
 
-/// Each formatted phrase shows in the PDF: the exported page is the page of
-/// the document as it is, and is not the page of the document without that
-/// one format.
 fn pdf_formats(
     exported: &tilo_pdf::Document,
     document: &DocSnapshot,
@@ -915,8 +830,6 @@ fn a_document_that_misses_the_reference_is_not_qualified() {
     );
 }
 
-/// The pixel comparison sees a lost format: the report without its italic
-/// date is not the same picture as the report.
 #[test]
 fn a_page_missing_one_format_is_not_the_same_picture() {
     let mut whole = open();

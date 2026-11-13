@@ -1,11 +1,9 @@
-//! The toolbar row: navigation, the address field, the commands a person uses
-//! on every page, and one overflow menu for the rest.
+//! The toolbar row: navigation, the address field, the commands a person uses on every
+//! page, and one overflow menu for the rest.
 //!
-//! The row keeps the primary commands as icon buttons. Everything else (find,
-//! zoom, Picture in Picture, history pause, developer tools, protection,
-//! private window, settings) is a row of the trailing More button's menu
-//! ([`MenuButton`]). In a compact window the site information, bookmark and
-//! library commands join them: nothing is ever hidden, only moved.
+//! The row keeps the primary commands as icon buttons; everything else is a row of the
+//! trailing More button's menu ([`MenuButton`]). In a compact window the site information,
+//! bookmark and library commands join them: nothing is hidden, only moved.
 
 use ui::prelude::Resource;
 
@@ -20,29 +18,25 @@ use ui::widget::{
 
 use super::{BrowserWidget, URL_INPUT_ID};
 
-/// The overflow menu's control, the anchor of the transient notes that point
-/// at the commands inside it.
+/// The overflow menu's control, the anchor of the transient notes that point at the
+/// commands inside it.
 pub(super) const OVERFLOW_ID: &str = "browser.overflow";
 
-/// A resource action a menu row or a row hover action asks for. The widget
-/// drains the queue in `sync`, so the request travels the same canonical
-/// action path as the keyboard shortcut for it.
+/// A resource action a menu row or a row hover action asks for, drained in `sync` so it
+/// travels the same canonical path as the keyboard shortcut for it.
 pub(super) type ResourceCommand = (String, String);
 
-/// The toolbar's and its menu's copy, from the browser's catalogue.
 fn t(key: &str) -> String {
     crate::resource::CATALOG.t(key)
 }
 
 impl BrowserWidget {
-    /// A closure that queues `action` of `resource` for the next `sync`.
     pub(super) fn queue_command(&self, resource: &str, action: &str) -> impl FnMut() + 'static {
         let queue = self.pending_commands.clone();
         let command = (resource.to_owned(), action.to_owned());
         move || queue.update(|commands| commands.push(command.clone()))
     }
 
-    /// Run what menu rows and row actions queued since the last sync.
     pub(super) fn run_pending_commands(&mut self) -> bool {
         let commands = self.pending_commands.with(|queue| !queue.is_empty());
         if !commands {
@@ -57,7 +51,6 @@ impl BrowserWidget {
         true
     }
 
-    /// The resource and action a press of the library button performs.
     pub(super) fn library_command(&self) -> (&'static str, &'static str) {
         if self.show_library {
             (crate::resource::Browser::KIND, "show-page")
@@ -66,7 +59,6 @@ impl BrowserWidget {
         }
     }
 
-    /// The resource and action a press of the settings row performs.
     pub(super) fn settings_command(&self) -> (&'static str, &'static str) {
         if self.show_settings {
             (crate::resource::Browser::KIND, "show-page")
@@ -75,9 +67,9 @@ impl BrowserWidget {
         }
     }
 
-    /// The bookmark command: into the person's own library when the window
-    /// keeps one, as the star and Ctrl+D do; otherwise the hosted document
-    /// edit, or the canonical action when the widget stands alone.
+    /// The bookmark command: into the person's own library when the window keeps one, as
+    /// the star and Ctrl+D do; otherwise the hosted document edit, or the canonical action
+    /// when the widget stands alone.
     fn bookmark_command(&self) -> Box<dyn FnMut()> {
         if self.person_bookmarks.is_some() {
             Box::new(self.queue_command("browser.page", "bookmark-personal-page"))
@@ -94,8 +86,8 @@ impl BrowserWidget {
         }
     }
 
-    /// The overflow menu: a More button whose menu holds every command the
-    /// row has no icon for.
+    /// The overflow menu: a More button whose menu holds every command the row has no icon
+    /// for.
     fn overflow_menu(&self) -> MenuButton {
         // A menu row runs the same `FnMut` command a toolbar button would.
         fn row(label: &str, command: impl FnMut() + 'static) -> MenuItem {
@@ -187,7 +179,6 @@ impl BrowserWidget {
             .aligned(PanelAlign::Trailing)
     }
 
-    /// The whole toolbar row.
     pub(super) fn build_toolbar(&self, theme: &Theme) -> Box<dyn Widget> {
         let back = self.bind_button(
             Button::icon_only("browser.back", Icon::ArrowLeft, &t("browser-back"))
@@ -226,14 +217,12 @@ impl BrowserWidget {
             "browser.page",
             if loading { "stop" } else { "reload" },
         );
-        // window-bar: fallback, the bar's location is the address while it hosts the window
         let address = TextInput::from_state(&self.address)
             .with_kind(TextInputKind::Url)
             .with_id(URL_INPUT_ID)
             .with_accessible_name(t("browser-address"))
             .with_placeholder(t("browser-address-placeholder"))
-            // The go button: while the field is edited, it commits it as
-            // Enter does (`BrowserWidget::handle_event` takes the submit).
+            // The go button: while the field is edited, it commits it as Enter does.
             .with_trailing_accessory(Icon::ArrowRight, &t("browser-go"), AccessoryAction::Submit);
 
         let mut row = Row::new()
@@ -246,9 +235,8 @@ impl BrowserWidget {
             row = row.push(Box::new(self.site.launcher()));
         }
         if self.browsing_mode.is_private() {
-            // With the toolbar's tint (`draw`), what marks a private
-            // window, in compact chrome too; its tooltip says what that
-            // means.
+            // With the toolbar's tint (`draw`), what marks a private window, in compact
+            // chrome too; its tooltip says what that means.
             row = row.push(Box::new(
                 Chip::new(t("browser-private"))
                     .with_id("browser.private-indicator")
@@ -304,9 +292,10 @@ impl BrowserWidget {
             let (resource, action) = self.library_command();
             row = row.push(Box::new(
                 self.bind_button(
+                    // The library's own mark, as in the window bar's slots.
                     Button::icon_only(
                         "browser.library",
-                        Icon::History,
+                        Icon::Layers,
                         &t(if self.show_library {
                             "browser-library-close"
                         } else {
@@ -320,8 +309,8 @@ impl BrowserWidget {
             ));
         }
         if let Some(status) = self.capabilities.toolbar_status() {
-            // Like every other command in the row, an icon; the state it
-            // reports is its name and tooltip.
+            // Like every other command in the row, an icon; the state it reports is its
+            // name and tooltip.
             let button = Button::icon_only("browser.download-status", Icon::Download, &status)
                 .tooltip(&status);
             row = row.push(Box::new(self.bind_button(

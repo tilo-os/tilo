@@ -1,7 +1,6 @@
-//! The inbound-op validation pipeline, implementing the validation steps
-//! specified in `docs/security/spaces-channels-and-roles.md`.
-//! Each step has a dedicated [`ValidationError`] variant so callers can
-//! pattern-match the failure and surface a precise reason in the audit log.
+//! The inbound-op validation pipeline. Each step has a dedicated
+//! [`ValidationError`] variant so callers can pattern-match the failure and
+//! surface a precise reason in the audit log.
 //!
 //! The validator is pure: it takes a [`ChannelState`] snapshot and a
 //! `SignedOp`, and returns `Ok(())` or a structured error. The only side
@@ -151,8 +150,8 @@ pub enum ValidationError {
     },
 }
 
-/// The room a [`ChannelState::default`] names, until a host sets its own.
-pub const DEFAULT_ROOM: &str = "channel";
+/// The workspace a [`ChannelState::default`] names, until a host sets its own.
+pub const DEFAULT_WORKSPACE: &str = "workspace";
 
 /// The validator's snapshot of a channel.
 ///
@@ -194,14 +193,14 @@ pub struct ChannelState {
     /// resources the record's changes are decided against.
     pub artifact_kinds: HashMap<ArtifactId, String>,
 
-    /// The room this channel is, as the tree names it.
+    /// The workspace this state belongs to, as the tree names it.
     pub room: String,
 
     /// The app surfaces changes are decided against by their claims;
     /// without a source, a change is decided as an edit of its record.
     pub surfaces: crate::receipt::Surfaces,
 
-    /// The room's grants, role presets included. Step 5 decides with them.
+    /// The workspace's grants, role presets included. Step 5 decides with them.
     pub grants: Vec<Grant>,
 
     /// Per-artifact classification override, composed with the channel floor
@@ -250,9 +249,9 @@ impl Default for ChannelState {
             artifact_apps: HashMap::new(),
             artifact_records: HashMap::new(),
             artifact_kinds: HashMap::new(),
-            room: DEFAULT_ROOM.to_owned(),
+            room: DEFAULT_WORKSPACE.to_owned(),
             surfaces: crate::receipt::Surfaces::default(),
-            grants: roles::workspace_role_grants(DEFAULT_ROOM, &Subject::Role(Role::Owner)),
+            grants: roles::workspace_role_grants(DEFAULT_WORKSPACE, &Subject::Role(Role::Owner)),
             artifact_classifications: HashMap::new(),
             channel_min_clearance: None,
             last_seq_per_author: HashMap::new(),

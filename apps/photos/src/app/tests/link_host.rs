@@ -1,9 +1,8 @@
-//! The test doubles the suite needs to act through the app's real interfaces: an
-//! action host that answers in-process, and a clipboard that remembers what was
-//! put on it. They live apart so a test reads as what it checks.
+//! The test doubles the suite needs to act through the app's real interfaces: an action host that
+//! answers in-process, and a clipboard that remembers what was put on it. They live apart so a test
+//! reads as what it checks.
 
 use super::*;
-/// The workspace's host behind the door, announcing a web entry for links.
 pub(super) fn link_host() -> tilo_actions::remote::TestHost {
     tilo_actions::remote::TestHost::new()
         .with_catalogue(|_, query| {
@@ -79,7 +78,6 @@ fn share_copies_the_open_photographs_link() {
     );
 }
 
-/// A PNG of `width` by `height` pixels.
 fn photo_png(width: u32, height: u32) -> Vec<u8> {
     let rgba = (0..width * height * 4)
         .map(|index| u8::try_from(index % 251).expect("a byte"))
@@ -87,14 +85,6 @@ fn photo_png(width: u32, height: u32) -> Vec<u8> {
     pixels::encode_png(&pixels::Rgba::new(width, height, rgba).expect("an image")).expect("a PNG")
 }
 
-/// Making thumbnails is published as an offloadable transform of the
-/// thumbnails package, and its local run makes exactly what that package's
-/// entrypoint makes on another device: content named twice is one input.
-///
-/// The library's photographs are sealed: the store holds ciphertext, and
-/// what names a picture is the reference that opens it. The run reads each
-/// one through that reference, so it thumbnails the picture — a run that
-/// read a plain address would read ciphertext.
 #[test]
 fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint() {
     let spec = <PhotosEffect as ui::tilo_resource::Effect>::specs()
@@ -170,9 +160,6 @@ fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint
     assert_eq!(made, expected, "byte for byte the entrypoint's thumbnails");
 }
 
-/// A picture that is not an image makes no thumbnail of its own while the
-/// rest still do, and the failure names the picture's content; a path is
-/// never content.
 #[test]
 fn make_thumbnails_fails_only_the_picture_that_is_not_an_image() {
     let store = tilo_content::ContentStore::memory().sealing();
@@ -241,10 +228,6 @@ fn the_empty_library_open_button_asks_the_host_chooser() {
     assert_eq!(asked[0].title(), tr("photos-open-title"));
 }
 
-/// The sidebar is the window shell's list, declared from the library: the
-/// destinations with the Timeline's and Favorites' counts, then the albums
-/// under their heading; what is shown is the chosen row, and a row the
-/// person chooses opens what it names.
 #[test]
 fn the_sidebar_declares_the_librarys_places_and_opens_the_chosen_one() {
     use ui::chrome::NavCount;
@@ -301,7 +284,6 @@ fn the_sidebar_declares_the_librarys_places_and_opens_the_chosen_one() {
         "an album stands in the icon's place by its cover or initials"
     );
 
-    // The person chooses the album in the shell's list.
     let shell = ui::widget::NavShell::new()
         .sidebar(Box::new(
             ui::widget::NavList::new(Vec::new()).fed_by(&app.state().chrome.places),
@@ -335,10 +317,6 @@ fn the_sidebar_declares_the_librarys_places_and_opens_the_chosen_one() {
     );
 }
 
-/// The album panel never hides the way to fill an empty library: where the
-/// timeline keeps its readable width beside it, it docks; narrower, it rises
-/// as a sheet from the window's foot and the empty state's Open stands in the
-/// part above it.
 #[test]
 fn the_album_panel_leaves_an_empty_librarys_open_in_view() {
     let _settled = ui::motion::testing::settled();
@@ -393,9 +371,6 @@ fn the_album_panel_leaves_an_empty_librarys_open_in_view() {
     }
 }
 
-/// Photos opened in a narrow window draws its timeline on the first frame,
-/// as it does when a wide window narrows, with its places listed for the
-/// screen behind Back.
 #[test]
 fn photos_opened_narrow_draws_its_grid_on_the_first_frame() {
     for viewport in [(1280, 800), (420, 800)] {
@@ -425,9 +400,6 @@ fn photos_opened_narrow_draws_its_grid_on_the_first_frame() {
     }
 }
 
-/// In a narrow window the album editor rises as a sheet at half height, and
-/// the timeline above it stays live: a press on a photograph there adds it
-/// to the album, or takes it out.
 #[test]
 fn a_narrow_album_editor_leaves_the_timeline_above_it_live() {
     let _settled = ui::motion::testing::settled();
@@ -436,7 +408,6 @@ fn a_narrow_album_editor_leaves_the_timeline_above_it_live() {
         (420, 800),
     )
     .expect("the album editor captures");
-    // A narrow window shows one pane: the timeline, under the editor.
     app.with_widget(|shell: &mut ui::widget::NavShell| {
         shell.show(ui::widget::NavPane::Content);
     })
@@ -475,8 +446,6 @@ fn a_narrow_album_editor_leaves_the_timeline_above_it_live() {
     );
 }
 
-/// What takes Back's step: the window bar's Back, Escape, or the system's
-/// back gesture.
 #[derive(Clone, Copy, Debug)]
 enum BackInput {
     Bar,
@@ -484,9 +453,6 @@ enum BackInput {
     Gesture,
 }
 
-/// In a narrow window Back, Escape and the system's back gesture each take
-/// the album editor's sheet down from the whole window to half, and from
-/// half or peeking put the editor away, before anything navigates.
 #[test]
 fn back_lowers_or_puts_away_the_narrow_album_editor_before_it_goes_anywhere() {
     use ui::widget::SheetDetent;

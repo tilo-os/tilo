@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use tilo_seal::SymmetricKey;
 
 use super::*;
-use crate::app::AppId;
+use crate::app::CallerId;
 use crate::store::{KeySource, Locked, NewItem};
 
 struct Fixed;
@@ -83,7 +83,7 @@ async fn a_locked_keyring_is_retried_and_an_unlocked_one_imported_exactly_once()
     );
     assert_eq!(*source.asked.lock().unwrap(), 2);
 
-    let system = AppId::parse("binary:/usr/bin/chromium").unwrap();
+    let system = CallerId::parse("binary:/usr/bin/chromium").unwrap();
     let found = restarted
         .search(
             &system,

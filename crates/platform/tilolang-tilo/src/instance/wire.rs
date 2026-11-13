@@ -29,6 +29,14 @@ pub struct Case {
 /// The resource and the field an action toggles.
 pub type Toggled = Option<(ResourceRef, String)>;
 
+/// What an event runs: the resource, the action as the app publishes it there (its name), and
+/// the id the app declares that action under.
+pub struct Invoked {
+    pub resource: ResourceRef,
+    pub action: String,
+    pub declared: String,
+}
+
 /// What a conversion reads beside the tree.
 pub struct Convert<'a> {
     pub names: &'a dyn NameHost,
@@ -38,8 +46,8 @@ pub struct Convert<'a> {
     pub cases: &'a dyn Fn(&str) -> Vec<Case>,
     /// The resource and field the event `event` of the node `key` toggles, when it does.
     pub toggles: &'a dyn Fn(&str, &str) -> Toggled,
-    /// The resource and the action the event `event` of the node `key` runs, when it runs one.
-    pub invokes: &'a dyn Fn(&str, &str) -> Toggled,
+    /// What the event `event` of the node `key` runs, when it runs an action on a resource.
+    pub invokes: &'a dyn Fn(&str, &str) -> Option<Invoked>,
     /// How a reference in rich text reads for the person reading.
     pub embeds: &'a dyn Fn(&Reference) -> InlineView,
     /// What a reference the text projects shows of its own content, one level deep: asked for
@@ -87,8 +95,12 @@ impl Convert<'_> {
                 .map(|event| {
                     let toggles = (self.toggles)(&node.key, event)
                         .map(|(target, field)| (target.id_string(), field));
-                    let invokes = (self.invokes)(&node.key, event)
-                        .map(|(target, action)| (target.id_string(), action));
+                    let invokes =
+                        (self.invokes)(&node.key, event).map(|invoked| wire::Invocation {
+                            resource: invoked.resource.id_string(),
+                            action: invoked.action,
+                            declared: invoked.declared,
+                        });
                     (event.clone(), wire::Event { toggles, invokes })
                 })
                 .collect(),

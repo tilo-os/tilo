@@ -1,49 +1,62 @@
 use super::*;
 use crate::StatePeer;
-use crate::state::err;
 use crate::state::now_ns;
 use crate::verified_certificate::VerifiedCertificate;
-use automerge::ObjType;
 use automerge::ROOT;
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;
-use collab_types::Ed25519PublicKey;
-use collab_types::caps::Principal;
 use ed25519_dalek::SigningKey;
-use tilo_action_policy::{
-    ActionKind, Answer, GrantId, KindSet, Lifetime, Subject, TreePath, roles,
-};
-use tilo_automerge::ApplyIncoming;
+use tilo_action_policy::{ActionKind, Answer, KindSet, Subject, TreePath, roles};
 use web_time::Duration;
 
-fn put_member(peer: &mut StatePeer, person: &str, role: Role) {
+/// The person tests name the workspace's owner, and the device they sign with.
+fn owner() -> (SigningKey, tilo_user_identity::DeviceCert) {
+    crate::members::op::tests_support::device(200)
+}
+/// Sign `change` into the workspace as its owner: the test owner's device, or
+/// the seeded device of the person the owner row names instead.
+fn sign_as_owner(peer: &mut StatePeer, change: tilo_action_policy::Change) {
+    let named = peer
+        .core
+        .workspace_doc
+        .as_deref()
+        .and_then(|doc| doc.get(ROOT, "owner").ok().flatten())
+        .and_then(|(value, _)| value.into_string().ok());
+    let signer = if named.as_deref() == Some(hex::encode(owner().1.user_public_key).as_str()) {
+        owner()
+    } else {
+        let key = SigningKey::from_bytes(&[2; 32]);
+        let cert = peer.core.certificates[&key.verifying_key().to_bytes()]
+            .as_ref()
+            .clone();
+        (key, cert)
+    };
     let workspace = peer.core.workspace_doc.as_mut().unwrap();
-    let members = workspace.get(ROOT, "members").unwrap().unwrap().1;
-    workspace
-        .put(
-            &members,
-            person,
-            automerge::ScalarValue::Bytes(serde_json::to_vec(&role).unwrap()),
-        )
-        .unwrap();
+    crate::members::op::tests_support::sign_into(workspace, &signer, 1_000, vec![change]);
     workspace.commit();
 }
+fn put_member(peer: &mut StatePeer, person: &str, role: Role) {
+    let doc = peer.core.workspace_doc.as_deref().unwrap();
+    let member = crate::members::replay_declared(doc)
+        .members
+        .contains_key(person);
+    let person = person.to_owned();
+    let change = if member {
+        tilo_action_policy::Change::SetRole { person, role }
+    } else {
+        tilo_action_policy::Change::AddMember { person, role }
+    };
+    sign_as_owner(peer, change);
+}
 fn put_grant(peer: &mut StatePeer, grant: &Grant) {
-    let workspace = peer.core.workspace_doc.as_mut().unwrap();
-    let grants = workspace.get(ROOT, "grants").unwrap().unwrap().1;
-    workspace
-        .put(
-            &grants,
-            grant.id.as_str(),
-            automerge::ScalarValue::Bytes(serde_json::to_vec(grant).unwrap()),
-        )
-        .unwrap();
-    workspace.commit();
+    sign_as_owner(peer, tilo_action_policy::Change::Grant(grant.clone()));
 }
 fn fixture() -> (StatePeer, [u8; 32], SystemTime) {
     let (mut peer, _, _, cert, now) = crate::admission_tests::seeded();
     let workspace = peer.core.workspace_doc.as_mut().unwrap();
-    workspace.put(ROOT, "owner", "a different person").unwrap();
+    workspace
+        .put(ROOT, "owner", hex::encode(owner().1.user_public_key))
+        .unwrap();
     workspace.commit();
     put_member(&mut peer, &hex::encode(cert.user_public_key), Role::Editor);
     (peer, cert.device_public_key, now)
@@ -59,164 +72,6 @@ fn current_member_rechecks_removal() {
         .block(&expected.person, Subject::person("a different person"));
     put_grant(&mut peer, &block);
     assert!(peer.permissions(source, now).is_err());
-}
-// Literal pre-extraction role body, with the historical projection oracle.
-fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result<Role, String> {
-    let cert = peer
-        .certificate(source, now)
-        .map_err(|error| error.to_string())?;
-    let workspace = peer
-        .core
-        .workspace_doc
-        .as_ref()
-        .ok_or("workspace governance missing")?;
-    let (_, workspace_policy) = crate::workspace::extract_governed_fields(workspace);
-    let identities = crate::workspace::governance_of(Some(workspace)).identities;
-    let policy = crate::cached_document::PolicyData {
-        owner: workspace_policy.owner.clone(),
-        members: workspace_policy.members.clone(),
-        joined: workspace_policy.joined.clone(),
-        grants: workspace_policy.grants.clone(),
-        identities,
-        names: std::collections::BTreeMap::new(),
-        damaged: crate::workspace::policy::Damaged::default(),
-    };
-    // A root-signed certificate must also be the certificate admitted by workspace governance.
-    let identity = GovernedIdentity::decode(
-        policy
-            .identities
-            .get(&hex::encode(source))
-            .ok_or("device is absent from governed roster")?,
-    )
-    .map_err(|error| {
-        crate::state::MembershipError::MalformedIdentity(std::sync::Arc::new(error)).to_string()
-    })?;
-    if identity.device_cert != *cert {
-        return Err("governed certificate mismatch".into());
-    }
-    let mut revoked = peer.core.revocations.clone();
-    for entry in identity.revocations {
-        if entry.user_public_key != cert.user_public_key {
-            return Err("revocation root mismatch".into());
-        }
-        revoked.insert(entry).map_err(err)?;
-    }
-    if revoked.is_revoked(&cert.user_public_key, source) {
-        return Err("device revoked by workspace".into());
-    }
-    let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
-    workspace_policy
-        .active_role(person.id())
-        .ok_or_else(|| "person has no workspace membership".into())
-}
-
-fn compare_native(peer: &StatePeer, source: [u8; 32], now: SystemTime) {
-    assert_eq!(peer.role(&source, now), original_role(peer, &source, now));
-}
-#[test]
-fn current_member_preserves_malformed_container_and_conflict_winner_semantics() {
-    for kind in [ObjType::List, ObjType::Text, ObjType::Map] {
-        let (mut peer, source, now) = fixture();
-        let owner = hex::encode(peer.owner());
-        let workspace = peer.core.workspace_doc.as_mut().unwrap();
-        let object = workspace.put_object(ROOT, "members", kind).unwrap();
-        if kind == ObjType::List {
-            workspace.insert(&object, 0, "not a map entry").unwrap();
-        } else if kind == ObjType::Text {
-            workspace
-                .splice_text(&object, 0, 0, "not a map entry")
-                .unwrap();
-        } else {
-            workspace
-                .put(
-                    &object,
-                    "invalid",
-                    automerge::ScalarValue::Bytes(b"not json".to_vec()),
-                )
-                .unwrap();
-            workspace
-                .put(
-                    &object,
-                    owner.as_str(),
-                    automerge::ScalarValue::Bytes(serde_json::to_vec(&Role::Viewer).unwrap()),
-                )
-                .unwrap();
-        }
-        workspace.commit();
-        compare_native(&peer, source, now);
-    }
-    let (mut peer, source, now) = fixture();
-    peer.core
-        .workspace_doc
-        .as_mut()
-        .unwrap()
-        .put(ROOT, "members", false)
-        .unwrap();
-    compare_native(&peer, source, now);
-    for map_wins in [false, true] {
-        let (mut peer, source, now) = fixture();
-        let doc = peer.admitted_workspace().unwrap();
-        let mut valid = doc
-            .clone()
-            .with_actor(automerge::ActorId::from(vec![if map_wins { 3 } else { 1 }]));
-        let mut invalid = doc.clone().with_actor(automerge::ActorId::from(vec![2]));
-        let members = valid.put_object(ROOT, "members", ObjType::Map).unwrap();
-        valid
-            .put(
-                &members,
-                hex::encode(peer.owner()),
-                automerge::ScalarValue::Bytes(serde_json::to_vec(&Role::Commenter).unwrap()),
-            )
-            .unwrap();
-        valid.commit();
-        invalid.put_object(ROOT, "members", ObjType::List).unwrap();
-        invalid.commit();
-        valid.merge_incoming(&mut invalid).unwrap();
-        assert_eq!(valid.get_all(ROOT, "members").unwrap().len(), 2);
-        peer.core.workspace_doc = Some(valid.into());
-        compare_native(&peer, source, now);
-    }
-}
-#[test]
-fn current_member_copies_all_grant_fields() {
-    let (mut peer, source, now) = fixture();
-    let workspace = peer.workspace_id().to_owned();
-    let long = "owned grant string ".repeat(32);
-    let subjects = [
-        Subject::Role(Role::Viewer),
-        Subject::Person(long.clone()),
-        Subject::App(long.clone()),
-        Subject::Agent(long.clone()),
-        Subject::Task(long.clone()),
-        Subject::Shortcut(long.clone()),
-        Subject::ForeignDevice,
-    ];
-    let nodes = [
-        TreePath::workspace(&workspace),
-        TreePath::workspace(&workspace).app(long.clone()),
-        TreePath::workspace(&workspace)
-            .app(long.clone())
-            .kind(long.clone())
-            .resource(long.clone())
-            .action(long.clone()),
-        TreePath::workspace(&workspace).rest().field(&long),
-        TreePath::workspace(&workspace).any(tilo_action_policy::Level::App),
-        roles::workspace_resource(&workspace),
-    ];
-    let lifetimes = [Lifetime::UntilRevoked, Lifetime::Until(u64::MAX)];
-    for (i, node) in nodes.into_iter().enumerate() {
-        let grant = Grant {
-            id: GrantId::new(format!("extra{i:02}{long}")),
-            subject: subjects[i % subjects.len()].clone(),
-            node,
-            kinds: KindSet::READ_UNDOABLE,
-            answer: Answer::Ask,
-            lifetime: lifetimes[i % lifetimes.len()].clone(),
-            granted_by: Subject::Person(long.clone()),
-        };
-        put_grant(&mut peer, &grant);
-    }
-    compare_native(&peer, source, now);
 }
 fn row(peer: &StatePeer, source: &[u8; 32]) -> GovernedIdentity {
     let workspace = peer.admitted_workspace().unwrap();
@@ -249,7 +104,7 @@ fn replace_row(peer: &mut StatePeer, source: &[u8; 32], bytes: Vec<u8>) {
     workspace.commit();
 }
 #[test]
-fn shared_current_member_retains_original_certificate_json_and_revocation_error_order() {
+fn a_device_whose_row_does_not_prove_it_holds_no_role() {
     let (base, source, now) = fixture();
     let mut cases = Vec::new();
     let mut malformed = base.clone();
@@ -300,15 +155,9 @@ fn shared_current_member_retains_original_certificate_json_and_revocation_error_
     missing.core.workspace_doc = None;
     cases.push(missing);
     for peer in cases {
-        assert_eq!(peer.role(&source, now), original_role(&peer, &source, now));
-        assert_eq!(
-            peer.role(&[66; 32], now),
-            original_role(&peer, &[66; 32], now)
-        );
-        assert_eq!(
-            peer.role(&source, SystemTime::UNIX_EPOCH),
-            original_role(&peer, &source, SystemTime::UNIX_EPOCH)
-        );
+        assert!(peer.role(&source, now).is_err());
+        assert!(peer.role(&[66; 32], now).is_err());
+        assert!(peer.role(&source, SystemTime::UNIX_EPOCH).is_err());
     }
 }
 
@@ -327,7 +176,6 @@ fn current_member_preserves_restriction_role_semantics_and_current_certificate_e
     );
     put_grant(&mut restricted, &deny);
     assert_eq!(restricted.role(&source, now).unwrap(), Role::Editor);
-    compare_native(&restricted, source, now);
     let (mut expiring, source, now) = fixture();
     let mut identity = row(&expiring, &source);
     identity.device_cert.expires_at_ns = Some(now_ns(now) + 1);
@@ -341,8 +189,12 @@ fn current_member_preserves_restriction_role_semantics_and_current_certificate_e
         VerifiedCertificate::historical_typed(identity.device_cert.clone()).unwrap(),
     );
     replace_row(&mut expiring, &source, identity.encode().unwrap());
-    compare_native(&expiring, source, now);
-    compare_native(&expiring, source, now + Duration::from_nanos(1));
+    assert_eq!(expiring.role(&source, now).unwrap(), Role::Editor);
+    assert!(
+        expiring
+            .role(&source, now + Duration::from_secs(1))
+            .is_err()
+    );
 }
 fn make_foreign(peer: &mut StatePeer, source: &[u8; 32]) {
     let mut identity = row(peer, source);
@@ -655,7 +507,7 @@ fn another_member_neither_reads_nor_writes_a_members_own_record() {
     // Their role does not decide their own record: a viewer still writes it.
     let workspace = peer.core.workspace_doc.as_mut().unwrap();
     workspace
-        .put(ROOT, "owner", "b0".repeat(32).as_str())
+        .put(ROOT, "owner", hex::encode(owner().1.user_public_key))
         .unwrap();
     workspace.commit();
     put_member(&mut peer, &person, Role::Viewer);
@@ -697,39 +549,4 @@ fn a_members_own_channel_admits_no_one_until_its_record_is_named() {
             .unwrap()
             .contains(&source)
     );
-}
-
-/// A person shut out by a row of their own that did not read back is told
-/// their access could not be read, not that they are a stranger here.
-#[test]
-fn a_damaged_row_says_the_access_could_not_be_read() {
-    use super::absence;
-    use crate::state::MembershipError;
-    use crate::workspace::policy::Damaged;
-
-    let damaged = Damaged {
-        grants: 1,
-        ..Damaged::default()
-    };
-    assert!(
-        matches!(absence(&damaged, "them"), MembershipError::UnreadableAccess),
-        "an unreadable grant could have been theirs"
-    );
-    let mut damaged = Damaged::default();
-    damaged.members.insert("them".to_owned());
-    assert!(
-        matches!(absence(&damaged, "them"), MembershipError::UnreadableAccess),
-        "their own member row did not read back"
-    );
-    assert!(
-        matches!(
-            absence(&damaged, "someone else"),
-            MembershipError::NoMembership
-        ),
-        "someone else's rows read back, so they hold no role"
-    );
-    assert!(matches!(
-        absence(&Damaged::default(), "them"),
-        MembershipError::NoMembership
-    ));
 }

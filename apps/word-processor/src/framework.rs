@@ -1,18 +1,7 @@
-//! The word processor as a framework app: the document resource is rich text,
-//! and its view is the editor's window — its own page layout, input and
-//! chrome.
-//! Images, tables and headings are children of that resource, so the framework
-//! publishes them on the same door as the document.
-//!
-//! What the framework adds without the editor writing it: record storage and
-//! sync, permission-checked edits (a viewer's keystrokes are refused before
-//! they reach the document), per-author undo with typing grouped by word,
-//! attributed history and a History mode drawn by the editor's real page
-//! layout, presence keyed to paragraphs, and search over the outline.
-//!
-//! The editor reads the document through the framework's incrementally
-//! maintained [`RichTextState`](tilo_document::RichTextState): a keystroke refreshes its paragraph, and
-//! only the paragraphs around the viewport are ever read.
+//! The word processor as a framework app: the document resource is rich text, its
+//! view is the editor's window, and images, tables and headings are its children. The
+//! framework adds storage and sync, permission-checked edits, per-author undo, history
+//! and presence; the editor reads the document through its incremental state.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -30,7 +19,6 @@ use crate::effects::WordProcessorEffect;
 pub use crate::model::Document;
 use crate::widget::Editor;
 
-/// The import of the file `input` names, as one action.
 fn import(input: &LaunchInput<'_>) -> Vec<Invoke<Document>> {
     let Some(file) = input.file() else {
         return Vec::new();
@@ -41,7 +29,6 @@ fn import(input: &LaunchInput<'_>) -> Vec<Invoke<Document>> {
         .cloned()
         .unwrap_or_else(tilo_content::ContentStore::memory);
     match crate::import_action(file.bytes(), format, &content) {
-        // The file's text and the comments it brought, as one step.
         Ok(action) => Invoke::edit(&crate::model::edit(&action))
             .map(|import| vec![Invoke::group([import, Document::ADOPT_COMMENTS.invoke()])])
             .unwrap_or_default(),
@@ -52,8 +39,6 @@ fn import(input: &LaunchInput<'_>) -> Vec<Invoke<Document>> {
     }
 }
 
-/// The media types of the files the word processor opens: every format it
-/// imports (PDF and EPUB are export-only).
 const OPENS: &[&str] = &[
     "application/vnd.oasis.opendocument.text",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -65,8 +50,6 @@ const OPENS: &[&str] = &[
     "text/rtf",
 ];
 
-/// The screenshot scenarios: each stages the document through its actions
-/// and the editor's view state where it lives.
 const SCENARIOS: &[&str] = &[
     "styles",
     "comments",
@@ -98,7 +81,6 @@ impl ResourceApp for WordProcessorApp {
         let window = WordProcessorWidget::new();
         let editor = window.editor();
         attach(&mut editor.borrow_mut(), cx);
-        // Shown at once, so the editor has a caret before its first frame.
         let window = window.following(cx.live().clone());
         {
             let editor = Rc::clone(&editor);
@@ -110,14 +92,12 @@ impl ResourceApp for WordProcessorApp {
             let editor = Rc::clone(&editor);
             cx.on_stage(move |scenario| editor.borrow_mut().stage_scenario(scenario));
         }
-        // The Find results of whoever invokes them, beneath the document.
         cx.publishing(
             Publishes::new().live_rows(move || editor.borrow().search_rows()),
             Box::new(window),
         )
     }
 
-    /// The document's first heading, as the palette and history name it.
     fn label(state: &Document) -> String {
         state
             .text()
@@ -129,21 +109,14 @@ impl ResourceApp for WordProcessorApp {
             .unwrap_or_else(|| "Document".to_owned())
     }
 
-    /// A file is a record of its own: reopening it reopens its history.
     fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
         input.argument().map(RecordId::for_file)
     }
 
-    /// A file's record starts as the file imported, in its genesis: every
-    /// device that opens the same file before they have synced writes the
-    /// same document.
     fn genesis(input: &LaunchInput<'_>) -> Vec<Invoke<Document>> {
         import(input)
     }
 
-    /// Reopened, the record is the document and the file is where Save
-    /// writes it, unless the file changed since the record last read or
-    /// wrote it: then it is read again, an edit Undo takes back.
     fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Document>> {
         let (Some(file), Some(state)) = (input.file(), input.record::<Document>()) else {
             return Vec::new();
@@ -157,13 +130,10 @@ impl ResourceApp for WordProcessorApp {
         import(input)
     }
 
-    /// The app's messages, history's sentences among them.
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::i18n::CATALOG)
     }
 
-    /// The document's text a page at a time, for agents, scripts and
-    /// assistive tools.
     fn local_operations() -> Vec<tilo_actions::ActionSpec> {
         vec![crate::semantic_read::action::spec()]
     }
@@ -172,8 +142,6 @@ impl ResourceApp for WordProcessorApp {
         SCENARIOS
     }
 
-    /// The text each scenario shows; comments, images and the caret are
-    /// staged on the editor, which knows the paragraphs these actions made.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Document>> {
         let texts: &[&str] = match name {
             Some("comments" | "threaded-comments" | "reactions") => &["Quarterly planning summary"],
@@ -202,12 +170,7 @@ impl ResourceApp for WordProcessorApp {
     }
 }
 
-/// Take the editor into the framework: where its pictures are kept, the
-/// file the window shows the record of, the person's words and preferences,
-/// and the document's door.
 fn attach(editor: &mut Editor, cx: &ViewCx<Document>) {
-    // The images are in the store the host lends the window, which carries
-    // them on the document's route; without one they are kept in memory.
     let content = cx
         .content()
         .unwrap_or_else(tilo_content::ContentStore::memory);
@@ -216,14 +179,12 @@ fn attach(editor: &mut Editor, cx: &ViewCx<Document>) {
         editor.show_record_of(std::path::PathBuf::from(path));
     }
     editor.follow_personal_dictionary();
-    // A past version and a capture show the layout they are given.
     if cx.mode() == RunMode::Live {
         editor.follow_preferences(cx.settings(), cx.settings());
     }
     editor.attach_framework(cx.live().clone(), cx.dispatcher());
 }
 
-/// Answer `effect` with the editor the window shows.
 fn answer(
     editor: &Rc<RefCell<Editor>>,
     effect: WordProcessorEffect,
@@ -236,7 +197,6 @@ fn answer(
             .ok_or("there is no one picture to share: place the caret on one")?;
         return Effected::content(&hash);
     }
-    // Files on disk, not the document open here.
     match effect {
         WordProcessorEffect::ReadFile { file, from } => Ok(Effected::value(
             crate::file_convert::read_file(&file, from)?,
@@ -260,7 +220,6 @@ fn answer(
     }
 }
 
-/// Sharing a picture needs the caret on one.
 fn share_image_status(editor: &Editor) -> Vec<EffectStatus> {
     if editor.shared_image().is_some() {
         return Vec::new();
@@ -305,8 +264,6 @@ mod tests {
         }
     }
 
-    /// A caller with no screen converts a file on disk and reads one, and
-    /// the document open here is untouched.
     #[test]
     fn files_on_disk_convert_and_read_without_opening_them() {
         use super::WordProcessorEffect;

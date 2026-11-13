@@ -365,19 +365,44 @@ async fn home_host(site: &Origin) -> Result<String> {
 }
 
 /// What the code names, spending it.
+///
+/// A code the host does not know is asked about again for a moment: the host
+/// keeps a code from the moment the tab showing it follows it, which the tab
+/// does as it copies the prompt (`web/first-run.mjs`), so a person who hands
+/// the prompt to their agent at once can beat the tab's own request. The host
+/// counts resolves that miss, so the asking is a few tries, not a wait.
 async fn resolve(host: &dyn HttpClient, code: &str) -> Result<Resolved> {
-    login_code::resolve(host, code)
-        .await
-        .map_err(|refusal| match refusal.code() {
-            "unknown" => anyhow!(
-                "the code {code} is unknown, used or expired: a code works once, for 10 minutes. \
-             Ask the person to copy the prompt from their Tilo tab again."
-            ),
-            "too-many" => {
-                anyhow!("too many wrong codes from here: wait a minute, then check the code")
+    let began = std::time::Instant::now();
+    loop {
+        match login_code::resolve(host, code).await {
+            Ok(resolved) => return Ok(resolved),
+            Err(refusal) if refusal.code() == "unknown" && began.elapsed() < CODE_KEPT_WAIT => {
+                tokio::time::sleep(CODE_KEPT_RETRY).await;
             }
-            _ => anyhow!("the host refused the code: {refusal}"),
-        })
+            Err(refusal) => return Err(said_refusal(&refusal, code)),
+        }
+    }
+}
+
+/// How long a code the host does not know yet is asked about again, and how
+/// often: a few tries inside the host's budget of misses (ten a minute from
+/// one address), long enough for the tab of a machine that is drawing slowly
+/// to hand the code over.
+const CODE_KEPT_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
+const CODE_KEPT_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// What a refused code says to the person.
+fn said_refusal(refusal: &login_code::CodeRefusal, code: &str) -> anyhow::Error {
+    match refusal.code() {
+        "unknown" => anyhow!(
+            "the code {code} is unknown, used or expired: a code works once, for 10 minutes. \
+             Ask the person to copy the prompt from their Tilo tab again."
+        ),
+        "too-many" => {
+            anyhow!("too many wrong codes from here: wait a minute, then check the code")
+        }
+        _ => anyhow!("the host refused the code: {refusal}"),
+    }
 }
 
 /// Tells the tab what this computer did with its code.

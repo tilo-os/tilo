@@ -734,6 +734,7 @@ impl Compactor {
     /// ([`ParticipantKeys::unsent`]), whatever its tail: a store that already holds such writes
     /// (written before a page's writes waited for their record) is repaired when its host starts,
     /// rather than at the next fold its writes bring.
+    #[cfg(any(feature = "agents", feature = "web"))]
     pub(crate) async fn repair(
         &self,
         workspace: &SharedWorkspace,

@@ -1,25 +1,15 @@
 //! The running Tier 1 data plane of one workspace.
 //!
-//! Startup order is what keeps the tree safe to use:
+//! Startup order is what keeps the tree safe to use: the subvolume exists, the
+//! pre-content group starts and re-adopts every placeholder an earlier run left (a
+//! placeholder read without the daemon holding its mark returns zeros), the change
+//! journal starts, the first epoch is cut, and only then is the workspace
+//! bind-mounted at its path. Stopping reverses it: the bind goes first, pending
+//! changes are cut into a last epoch, held leases are released, and the pre-content
+//! group closes last.
 //!
-//! 1. the workspace's subvolume on the store volume exists;
-//! 2. the pre-content group starts, and every placeholder left by an
-//!    earlier run is re-adopted from its residency xattr — a placeholder
-//!    read without the daemon holding its mark returns zeros, so none may
-//!    be reachable before this;
-//! 3. the change journal starts, ignoring this process;
-//! 4. the first epoch is cut: from the persisted epoch when there is one
-//!    (a comparison by inode metadata finds what changed while nothing was
-//!    journaling), else from scratch;
-//! 5. only then is the workspace bind-mounted at its path.
-//!
-//! Stopping reverses it: the bind goes first, pending changes are cut into
-//! a last epoch, held leases are released, and the pre-content group
-//! closes last.
-//!
-//! One thread owns the journal, the capture and the projection, so a local
-//! change and a remote version of the same path are never applied
-//! concurrently.
+//! One thread owns the journal, the capture and the projection, so a local change and
+//! a remote version of the same path are never applied concurrently.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
@@ -53,7 +43,6 @@ use tilo_lock::MutexRecover as _;
 /// content that could not be fetched.
 const PROJECT_FALLBACK: Duration = Duration::from_secs(3);
 const LEASE_TICK: Duration = Duration::from_secs(1);
-/// Delay before a failed publication is tried again.
 const RETRY_AFTER: Duration = Duration::from_secs(2);
 /// A long publication rewrites its open changeset mark this often.
 const MARK_REFRESH: Duration = Duration::from_secs(2);
@@ -61,26 +50,17 @@ const MARK_REFRESH: Duration = Duration::from_secs(2);
 /// that stopped mid-publication; its changes are applied as they are.
 const MARK_STALE: Duration = Duration::from_secs(30);
 
-/// Everything the plane needs to know about its workspace.
 #[derive(Clone, Debug)]
 pub struct NativeConfig {
-    /// Root of the dedicated store volume.
     pub store: PathBuf,
-    /// Workspace id: the name of its subvolume under `live/`.
     pub workspace: String,
-    /// Where the workspace is bind-mounted (`/var/workspace`).
     pub mount_point: PathBuf,
-    /// Directory holding `meta.redb`.
     pub state_dir: PathBuf,
-    /// Owner of materialised files; `None` takes the workspace directory's.
     pub owner: Option<(u32, u32)>,
-    /// This device's key, as leases name their holder.
     pub device: [u8; 32],
-    /// Remote files up to this size are fetched before they appear.
     pub eager_bytes: u64,
     pub scheduler: EpochScheduler,
     pub leases: LeaseTiming,
-    /// Arbitrate the workspace's write leases (its always-on host).
     pub lease_authority: bool,
 }
 
@@ -107,7 +87,6 @@ impl NativeConfig {
     }
 }
 
-/// Counters for logs and tests.
 #[derive(Clone, Debug, Default)]
 pub struct PlaneStatus {
     pub epochs: u64,
@@ -175,8 +154,8 @@ fn c_path(path: &Path) -> Result<CString> {
     CString::new(path.as_os_str().as_bytes()).context("path contains a NUL byte")
 }
 
-/// Detaches whatever is mounted at `mount_point` (a bind a crashed run left,
-/// or a stale FUSE mount).
+/// Detaches whatever is mounted at `mount_point` (a bind a crashed run left, or a
+/// stale FUSE mount).
 fn detach(mount_point: &Path) -> Result<()> {
     let target = c_path(mount_point)?;
     for _ in 0..8 {
@@ -215,7 +194,6 @@ fn bind(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// What publishing one changeset did, persisted with its epoch.
 #[derive(Default)]
 struct Published {
     nodes: Vec<(PathBuf, Option<fs_native::capture::NodeState>)>,
@@ -239,7 +217,6 @@ struct Engine {
     /// Paths whose captured node changed outside an epoch (tracked after a
     /// projection); persisted with the next epoch.
     node_dirty: HashSet<PathBuf>,
-    /// Journal positions already fed to the scheduler.
     observed: u64,
     /// Paths written in place since the last epoch, and paths created or
     /// renamed into place (which are not in-place writes).
@@ -248,7 +225,6 @@ struct Engine {
     status: Arc<Mutex<PlaneStatus>>,
     /// Removals the record plane refused, retried every epoch.
     retry_removals: HashSet<PathBuf>,
-    /// When to cut an epoch for failed publications even without new changes.
     retry_at: Option<Instant>,
     /// Where the last projection stopped, waiting for a version not yet
     /// verified here (for the trace).
@@ -256,9 +232,7 @@ struct Engine {
     /// The last projection was held back by another device's open
     /// changeset (for the trace).
     held_for_changeset: bool,
-    /// Log every journal entry and published operation.
     trace: bool,
-    /// The changeset mark this device is publishing under.
     mark: Option<(ChangesetMark, Instant)>,
     /// Other devices' marks as last seen, and since when unchanged.
     marks_seen: HashMap<[u8; 32], (ChangesetMark, Instant)>,
@@ -315,21 +289,18 @@ impl NativePlane {
         self.status.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
-    /// Whether the plane thread ended on its own (an error).
     pub fn is_finished(&self) -> bool {
         self.thread.as_ref().is_none_or(JoinHandle::is_finished)
     }
 
-    /// Resolves once the plane thread has ended on its own (an error). The
-    /// thread signals its own end, so a mount waits on this without the
-    /// once-a-second health tick it used to run.
+    /// Resolves once the plane thread has ended on its own (an error). The thread
+    /// signals its own end, so a mount waits on this without a health tick.
     pub async fn finished(&self) {
         let mut finished = self.finished.clone();
         // A closed channel means the thread's signal is gone with it.
         let _ = finished.wait_for(|done| *done).await;
     }
 
-    /// Unmounts, publishes what is pending and stops serving placeholders.
     pub fn stop(mut self) -> Result<()> {
         self.stop.store(true, Ordering::Relaxed);
         match self.thread.take() {
@@ -569,7 +540,6 @@ impl Engine {
         }
     }
 
-    /// Cuts an epoch and publishes its changeset in journal order.
     #[allow(
         clippy::too_many_lines,
         reason = "capture, publication and persistence of one epoch stay in order in one place"
@@ -735,7 +705,6 @@ impl Engine {
         }
     }
 
-    /// Applies each operation through the record plane, in order.
     fn publish(&mut self, cs: &Changeset, snapshot: &Path) -> Published {
         let mut out = Published::default();
         let retry: Vec<PathBuf> = self.retry_removals.drain().collect();
@@ -778,8 +747,6 @@ impl Engine {
         out
     }
 
-    /// Opens this device's changeset mark before the epoch's first
-    /// operation, naming the span of version times it publishes.
     fn open_changeset(&mut self, cs: &Changeset) {
         if cs.ops.is_empty() {
             return;
@@ -830,8 +797,8 @@ impl Engine {
         }
     }
 
-    /// Other devices' changesets: whether one is still being published
-    /// (and not abandoned), and the version-time span of each.
+    /// Other devices' changesets: whether one is still being published (and not
+    /// abandoned), and the version-time span of each.
     fn changesets(&mut self) -> (Option<[u8; 32]>, Vec<(u64, u64)>) {
         let now = Instant::now();
         let mut open = None;
@@ -1006,8 +973,6 @@ impl Engine {
         }
     }
 
-    /// Moves the materialised records of `from` and everything below it to
-    /// `to`.
     fn rename_materialized(
         &mut self,
         from: &Path,
@@ -1020,7 +985,6 @@ impl Engine {
         }
     }
 
-    /// Drops the materialised records of `path` and everything below it.
     fn forget_materialized(
         &mut self,
         path: &Path,
@@ -1105,7 +1069,6 @@ impl Engine {
         }
     }
 
-    /// Materialises the record plane's current state.
     #[allow(
         clippy::too_many_lines,
         reason = "one projection pass and the bookkeeping of what it changed"
@@ -1228,8 +1191,8 @@ impl Engine {
     }
 }
 
-/// Deletes capture snapshots of this workspace other than `keep`: leftovers of a
-/// run that stopped between cutting an epoch and persisting it.
+/// Deletes capture snapshots of this workspace other than `keep`: leftovers of a run
+/// that stopped between cutting an epoch and persisting it.
 fn remove_other_snapshots(epochs: &Path, keep: Option<&Path>) {
     let Ok(entries) = std::fs::read_dir(epochs) else {
         return;
@@ -1268,8 +1231,8 @@ fn prepare_workspace(
     Ok((live, owner))
 }
 
-/// Starts the pre-content group and re-adopts every placeholder an earlier
-/// run left, before anything can reach them.
+/// Starts the pre-content group and re-adopts every placeholder an earlier run left,
+/// before anything can reach them.
 fn start_placeholders(
     live: &Path,
     content: &Arc<Hydrator>,

@@ -46,10 +46,10 @@ use serde::{Deserialize, Serialize};
 /// The longest identity accepted or recorded.
 const MAX_ID_BYTES: usize = 1024;
 
-/// An application identity, in one of the forms of the module docs.
+/// The program asking, in one of the forms of the module docs.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct AppId(String);
+pub struct CallerId(String);
 
 /// How far an identity is trusted with the store's shared contents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,7 +60,7 @@ pub enum Trust {
     Local,
 }
 
-impl AppId {
+impl CallerId {
     /// A sandboxed app the portal vouched for.
     #[must_use]
     pub fn sandbox(package: &str) -> Option<Self> {
@@ -112,7 +112,7 @@ impl AppId {
     }
 }
 
-impl fmt::Display for AppId {
+impl fmt::Display for CallerId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
@@ -155,7 +155,7 @@ pub fn identify_process(
     proc_root: &Path,
     pid: u32,
     expected_uid: u32,
-) -> Result<AppId, UnknownCaller> {
+) -> Result<CallerId, UnknownCaller> {
     identify_proven_process(proc_root, pid, expected_uid, None)
 }
 
@@ -172,7 +172,7 @@ pub fn identify_proven_process(
     pid: u32,
     expected_uid: u32,
     proven: Option<&Path>,
-) -> Result<AppId, UnknownCaller> {
+) -> Result<CallerId, UnknownCaller> {
     let process = proc_root.join(pid.to_string());
     if process_uid(&process).ok_or(UnknownCaller::Unreadable)? != expected_uid {
         return Err(UnknownCaller::OtherUser);
@@ -183,7 +183,7 @@ pub fn identify_proven_process(
 
 /// The identity of `process` running `executable`, whether the kernel
 /// showed the executable or the caller proved it.
-fn classify(process: &Path, executable: &Path) -> Result<AppId, UnknownCaller> {
+fn classify(process: &Path, executable: &Path) -> Result<CallerId, UnknownCaller> {
     if executable.to_string_lossy().ends_with(" (deleted)") {
         return Err(UnknownCaller::Replaced);
     }
@@ -198,14 +198,14 @@ fn classify(process: &Path, executable: &Path) -> Result<AppId, UnknownCaller> {
         return Err(UnknownCaller::Proxied);
     }
     if let Some(app) = flatpak_app(process) {
-        return AppId::parse(&format!("flatpak:{app}")).ok_or(UnknownCaller::Unreadable);
+        return CallerId::parse(&format!("flatpak:{app}")).ok_or(UnknownCaller::Unreadable);
     }
     let kind = if is_interpreter(&leaf) || !immutable_system_binary(executable) {
         "local-process"
     } else {
         "binary"
     };
-    AppId::parse(&format!("{kind}:{}", executable.display())).ok_or(UnknownCaller::Unreadable)
+    CallerId::parse(&format!("{kind}:{}", executable.display())).ok_or(UnknownCaller::Unreadable)
 }
 
 /// The caller's executable: the link the kernel shows, or, only when it
@@ -272,13 +272,13 @@ fn immutable_system_binary(path: &Path) -> bool {
 
 /// The identity a trusted caller of the management interface must have.
 #[must_use]
-pub fn trusted_managers() -> Vec<AppId> {
+pub fn trusted_managers() -> Vec<CallerId> {
     [
         "/usr/bin/tilo-session",
         "/usr/libexec/tilo/tilo-secret-service",
     ]
     .iter()
-    .filter_map(|path| AppId::parse(&format!("binary:{path}")))
+    .filter_map(|path| CallerId::parse(&format!("binary:{path}")))
     .collect()
 }
 
@@ -495,12 +495,12 @@ mod tests {
 
     #[test]
     fn identities_parse_only_in_the_known_forms() {
-        assert!(AppId::parse("binary:/usr/bin/shell").is_some());
-        assert!(AppId::parse("sandbox:so.tilo.notes").is_some());
-        assert!(AppId::parse("so.tilo.notes").is_none());
-        assert!(AppId::parse("binary:/usr/bin/x\nbinary:/usr/bin/shell").is_none());
+        assert!(CallerId::parse("binary:/usr/bin/shell").is_some());
+        assert!(CallerId::parse("sandbox:so.tilo.notes").is_some());
+        assert!(CallerId::parse("so.tilo.notes").is_none());
+        assert!(CallerId::parse("binary:/usr/bin/x\nbinary:/usr/bin/shell").is_none());
         assert_eq!(
-            AppId::parse("binary:/usr/lib64/chromium/chromium")
+            CallerId::parse("binary:/usr/lib64/chromium/chromium")
                 .unwrap()
                 .display_name(),
             "chromium"

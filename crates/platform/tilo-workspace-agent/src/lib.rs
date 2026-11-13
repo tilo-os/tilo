@@ -190,25 +190,16 @@ impl Agent {
         format!("agent:{}", self.id.0)
     }
 
-    /// Its presence colour's slot: the one its keeper chose, or the one its
-    /// identity gives it.
+    /// Its presence colour's slot: the one its keeper chose, or the one the
+    /// rule every surface draws software by gives it — what it is, clear of
+    /// the colour of the person who keeps it ([`PresenceHue::of_participant`]).
     #[must_use]
     pub fn slot(&self) -> u8 {
         self.colour.unwrap_or_else(|| {
-            u8::try_from(PresenceHue::of_identity(&self.identity()).slot()).unwrap_or(0)
+            let keeper = Some(self.keeper.as_str()).filter(|keeper| !keeper.is_empty());
+            let hue = PresenceHue::of_participant(&self.identity(), true, keeper);
+            u8::try_from(hue.slot()).unwrap_or(0)
         })
-    }
-
-    /// Its presence colour, as people's colours are chosen.
-    #[must_use]
-    pub fn hue(&self) -> PresenceHue {
-        PresenceHue::from_slot(usize::from(self.slot()))
-    }
-
-    /// The colour it is drawn in, as sRGB.
-    #[must_use]
-    pub fn rgb(&self) -> (u8, u8, u8) {
-        collab_types::presence::identity_rgb(self.hue())
     }
 
     /// Whether it still works here.

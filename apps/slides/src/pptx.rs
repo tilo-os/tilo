@@ -187,9 +187,6 @@ struct Picture {
     bytes: Vec<u8>,
 }
 
-/// Write a Tilo palette role as DrawingML. Theme colours stay live when the
-/// presentation is opened in Office; literal picker colours stay literal,
-/// and so do the roles no scheme slot holds (white, the ink on the accent).
 fn drawing_color(role: &str, palette: &Palette) -> String {
     if let Some(hex) = role.strip_prefix('#') {
         if (hex.len() == 6 || hex.len() == 8) && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -239,10 +236,6 @@ fn drawing_fill(role: &str, palette: &Palette) -> String {
     }
 }
 
-/// Emit the model's three slide treatments as a native DrawingML background.
-/// The value deliberately stays theme-relative: an Accent or Deep slide still
-/// tracks the presentation theme when opened in PowerPoint instead of being
-/// flattened to a Tilo-specific RGB colour.
 fn drawing_slide_background(background: Background, palette: &Palette) -> String {
     let role = match background {
         Background::Surface => "surface",
@@ -262,8 +255,6 @@ fn slide_background_from_color(e: &BytesStart<'_>) -> Option<Background> {
     (local(e.name().as_ref()) == b"schemeClr").then(|| match attr(e, b"val").as_str() {
         "lt1" => Some(Background::Surface),
         "accent1" => Some(Background::Accent),
-        // `dk1` is where files written before the deep tone had its own
-        // slot kept it.
         "accent6" | "dk1" => Some(Background::Deep),
         _ => None,
     })?
@@ -371,9 +362,6 @@ fn slide_xml(
                     TextAlign::Left => "l",
                 };
                 let size = (el.font_size * 100.0).round() as i64;
-                // The ink Slides draws the words in: the theme's text slot
-                // where that is it, else the ink itself, chosen against what
-                // the words stand on.
                 let ink = crate::render::text_ink(&on, slide, el);
                 let color = match el.fill.as_str() {
                     "text" if ink == palette.text => drawing_color("text", palette),
@@ -389,7 +377,6 @@ fn slide_xml(
                         quick_xml::escape::partial_escape(text)
                     )
                 };
-                // A paragraph per block, a run per stretch of one weight and slant.
                 let runs = el
                     .rich_blocks()
                     .iter()
@@ -402,8 +389,6 @@ fn slide_xml(
                                 .map(|(text, bold, italic)| run(text, bold, italic))
                                 .collect()
                         };
-                        // A list item carries its bullet or number, hung
-                        // in the margin as PowerPoint sets one.
                         let marker = match block.kind {
                             ui::widget::BlockKind::Bullet { .. } => Some(r#"<a:buChar char="•"/>"#),
                             ui::widget::BlockKind::Numbered { .. } => {
@@ -451,8 +436,6 @@ struct Pending {
     fill: String,
     stroke: String,
     stroke_width: f64,
-    /// The text as written: a paragraph per `a:p`, a mark per bold or
-    /// italic run.
     blocks: Vec<ui::widget::BlockContent>,
 }
 impl Default for Pending {
@@ -618,7 +601,6 @@ fn parse_slide(
                         b"srgbClr" | b"schemeClr" => {
                             set_pending_color(c, color_target(in_text_style, in_line), &e);
                         }
-                        // A paragraph's bullet or number makes it a list item.
                         b"buChar" | b"buAutoNum" => {
                             if let Some(block) = c.blocks.last_mut() {
                                 block.kind = if n == b"buChar" {
@@ -657,8 +639,6 @@ fn parse_slide(
                     }
                 }
             }
-            // quick-xml reports `&amp;`/`&#x2019;` as events of their own between
-            // the text around them.
             Ok(Event::GeneralRef(r)) if in_text => {
                 if let Some(c) = cur.as_mut()
                     && let Some(ch) = tilo_doc_codecs::resolve_general_ref(&r)
@@ -741,8 +721,6 @@ fn push_pending(
             h,
         )
     };
-    // Preserve the native DrawingML styling the deck model can represent.
-    // (Text uses `fill` as its ink colour; shapes use it as their fill.)
     el.fill = c.fill;
     el.stroke = c.stroke;
     el.stroke_width = c.stroke_width;
@@ -854,7 +832,6 @@ fn parse_rels(xml: &str) -> HashMap<String, String> {
     }
     m
 }
-/// The text content of the first `wanted` element, or `None` if there is none.
 fn first_text(xml: &str, wanted: &[u8]) -> Option<String> {
     let mut r = Reader::from_str(xml);
     let mut text: Option<String> = None;
@@ -1012,12 +989,10 @@ fn theme_xml(palette: &Palette) -> String {
     )
 }
 
-/// `color` as DrawingML's `RRGGBB`.
 fn rgb(color: Color) -> String {
     ui::color::to_hex(color).trim_start_matches('#').to_owned()
 }
 
-/// The colour a theme names in scheme slot `slot` (`lt1`, `accent1`, …).
 fn scheme_color(theme: &str, slot: &str) -> Option<Color> {
     let open = format!("<a:{slot}>");
     let start = theme.find(&open)? + open.len();
@@ -1033,8 +1008,6 @@ fn scheme_color(theme: &str, slot: &str) -> Option<Color> {
     ))
 }
 
-/// The palette and look a presentation's theme shows: a dark look where its
-/// light slot is the darker, and the Slides palette whose accent it carries.
 fn deck_look_of(theme: &str) -> (PaletteKind, DeckLook) {
     let luminance = |color: Color| {
         let c = color.to_rgba8();
@@ -1213,7 +1186,6 @@ mod tests {
         }
     }
 
-    /// Speaker notes, placeholder filtering, reserved characters and entity references.
     #[test]
     fn pptx_notes_and_text_escaping_round_trip() {
         {
@@ -1303,8 +1275,6 @@ mod tests {
         }
     }
 
-    /// Every predefined entity and decimal/hex character references (one
-    /// outside the BMP), next to each other and to text.
     const RAW_REFS: &str =
         "R&amp;D &lt;b&gt; &quot;q&quot; &apos;s&apos; &#8217;&#x2019;&#x1F600;&#65;&amp;&amp;";
     const REFS_TEXT: &str = "R&D <b> \"q\" 's' \u{2019}\u{2019}\u{1F600}A&&";

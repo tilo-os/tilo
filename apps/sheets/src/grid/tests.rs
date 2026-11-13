@@ -45,7 +45,6 @@ fn scrollbars_are_thin_and_only_reserve_space_for_overflow() {
         assert!(grid.scrollbar_thumb(ScrollAxis::Vertical).is_none());
         assert_eq!(grid.body_rect().x1, grid.rect.x1);
         assert_eq!(grid.body_rect().y1, grid.rect.y1);
-        // Only the vertical axis overflows: no horizontal gutter.
         grid.rect.y1 = 180.0;
         grid.rect.x1 += grid.metrics.gutter;
         assert!(grid.scrollbar_thumb(ScrollAxis::Horizontal).is_none());
@@ -54,14 +53,8 @@ fn scrollbars_are_thin_and_only_reserve_space_for_overflow() {
     }
 }
 
-/// Measured metrics and draggable scrollbar thumbs.
 #[test]
 fn grid_metrics_and_scrollbars_follow_the_renderer() {
-    // Case `measured_metrics_drive_automatic_geometry_but_never_manual_sizes`.
-    // Metrics resolved against a real renderer at 1× reproduce the classic
-    // density; at 2× the automatic row, header height and row-header width
-    // follow the measured text, the prefix sums are rebuilt from them, and a
-    // user's manual row height survives untouched.
     {
         let mut tr = TextRenderer::new();
         let one_x = GridMetrics::resolve(&mut tr, &Theme::dark());
@@ -87,7 +80,6 @@ fn grid_metrics_and_scrollbars_follow_the_renderer() {
         let theme = Theme::dark().with_text_scale(2.0);
         tr.set_text_scale(2.0);
         let two_x = GridMetrics::resolve(&mut tr, &theme);
-        // The role scales once, so the measured line box doubled.
         assert!(two_x.cell_line_h > one_x.cell_line_h * 1.9);
         assert!(two_x.default_row_h() >= two_x.cell_line_h + two_x.pad - 0.01);
         assert!(two_x.col_header_h() >= two_x.header_line_h + two_x.header_pad - 0.01);
@@ -109,7 +101,6 @@ fn grid_metrics_and_scrollbars_follow_the_renderer() {
         assert!((g.row_top(4) - (3.0 * two_x.default_row_h() + 40.0)).abs() < 0.01);
         assert!((g.grid_y0() - g.rect.y0 - two_x.col_header_h()).abs() < 0.01);
         assert!((g.grid_x0() - g.rect.x0 - two_x.row_header_w()).abs() < 0.01);
-        // Unchanged metrics are a no-op: no needless geometry rebuild flag.
         g.needs_autofit = false;
         g.set_metrics(two_x);
         assert!(!g.needs_autofit);
@@ -117,8 +108,6 @@ fn grid_metrics_and_scrollbars_follow_the_renderer() {
 
     {
         let mut grid = grid_with(&[]);
-        // The normal logical grid is larger than this deliberately narrow
-        // viewport, so both rails expose a thumb and have scroll range.
         grid.rect = Rect::new(0.0, 0.0, 260.0, 180.0);
         let mut out = Vec::new();
         let horizontal = grid
@@ -161,9 +150,6 @@ fn grid_metrics_and_scrollbars_follow_the_renderer() {
     }
 }
 
-/// A grid with a known geometry: each column is the default width, the
-/// body starts after the headers and is wide enough for many columns,
-/// with the scroll bar gutters beside it. No scroll.
 fn grid_with(values: &[(Addr, CellValue)]) -> Grid {
     let mut g = Grid::new();
     let m = g.metrics();
@@ -179,10 +165,6 @@ fn grid_with(values: &[(Addr, CellValue)]) -> Grid {
     g
 }
 
-/// A row that appears opens the room the rows below need rather than
-/// teleporting into place: the band starts closed, the row after it is
-/// drawn where it was, and both come to rest on the standard disclosure.
-/// A row that leaves closes its band, and the rows below rise into it.
 #[test]
 fn an_inserted_row_opens_and_the_rows_after_it_make_room() {
     let theme = Theme::dark();
@@ -193,8 +175,6 @@ fn an_inserted_row_opens_and_the_rows_after_it_make_room() {
     let row_h = g.metrics.default_row_h();
 
     g.rows_inserted(2, 1);
-    // Drawn before its first frame: the band is closed, so the row after
-    // it still stands where it did — one row above its new place.
     assert!(g.is_animating(), "the change asks for frames");
     assert!(
         (g.cell_screen_rect(0, 3).y0 - (laid - row_h)).abs() < 0.01,
@@ -203,8 +183,6 @@ fn an_inserted_row_opens_and_the_rows_after_it_make_room() {
     let shift = g.row_shift.as_ref().expect("the band is on its way");
     assert!((shift.full - row_h).abs() < 0.01, "one row opens");
 
-    // Mid-way: the following row has moved down by what has opened of
-    // the band, not by the whole of it.
     g.start_shifts(&theme);
     assert!(
         g.row_shift
@@ -220,8 +198,6 @@ fn an_inserted_row_opens_and_the_rows_after_it_make_room() {
     );
     assert!(opened >= 0.0);
 
-    // A row leaving closes its band: the rows below start a band lower
-    // and rise into the gap.
     let mut g = grid_with(&[]);
     g.set_metrics(GridMetrics::resolve(&mut tr, &theme));
     let laid = g.cell_screen_rect(0, 2).y0;
@@ -240,18 +216,15 @@ fn autofit_respects_occupancy_and_manual_sizes() {
         let mut g = grid_with(&[((1, 0), CellValue::Number(5.0))]);
         assert!(g.cell_is_occupied((1, 0)));
         assert!(!g.cell_is_occupied((2, 0)));
-        // Empty CellValue is not occupied.
         g.values.insert((3, 0), CellValue::Empty);
         assert!(!g.cell_is_occupied((3, 0)));
-        // A raw entry (mid-edit, pre-eval) counts as occupied too.
         g.raw.insert((4, 0), "x".into());
         assert!(g.cell_is_occupied((4, 0)));
     }
 
     {
-        // A0 holds a label wider than a default column; B0 is occupied so the
-        // label can't overflow into it. Auto-fit must widen column A to fit the
-        // whole label, while the short occupied neighbour keeps the default.
+        // A0 holds a label wider than a default column and B0 is occupied, so auto-fit must widen
+        // column A to its whole label.
         let label = "Monthly budget total";
         let mut g = grid_with(&[
             ((0, 0), CellValue::Text(label.into())),
@@ -298,15 +271,11 @@ fn autofit_respects_occupancy_and_manual_sizes() {
 #[test]
 fn cell_editor_overflows_only_into_empty_neighbours() {
     {
-        // A0 is being edited; B0.. are all empty. A wide desired width should
-        // grow across several empty columns.
         let g = grid_with(&[]);
         let cell = g.cell_screen_rect(0, 0);
         let body_right = g.body_rect().x1;
-        // Desired width spanning ~3 columns.
         let desired = g.metrics.default_col_w() * 3.0;
         let right = g.editor_right_extent((0, 0), desired, body_right);
-        // It should reach at least 3 columns wide (within the body).
         assert!(
             right >= cell.x0 + g.metrics.default_col_w() * 3.0 - 0.5,
             "right={right} expected >= {}",
@@ -323,7 +292,6 @@ fn cell_editor_overflows_only_into_empty_neighbours() {
         let body_right = g.body_rect().x1;
         let desired = g.metrics.default_col_w() * 6.0; // wants a lot
         let right = g.editor_right_extent((0, 0), desired, body_right);
-        // Reaches the end of B0 (= start of C0) but not into C0.
         let c0_left = g.cell_screen_rect(2, 0).x0;
         assert!(
             (right - c0_left).abs() < 0.5,
@@ -332,7 +300,6 @@ fn cell_editor_overflows_only_into_empty_neighbours() {
     }
 
     {
-        // B0 occupied directly to the right of A0 → editor stays cell-wide.
         let g = grid_with(&[((1, 0), CellValue::Number(1.0))]);
         let cell = g.cell_screen_rect(0, 0);
         let body_right = g.body_rect().x1;
@@ -355,12 +322,10 @@ fn cell_editor_overflows_only_into_empty_neighbours() {
     }
 }
 
-/// The screen point at the centre of a cell — where a click would land.
 fn cell_point(g: &Grid, c: u32, r: u32) -> Point {
     g.cell_screen_rect(c, r).center()
 }
 
-/// Drag, shift/ctrl click/drag multi-ranges, aggregation and arrow collapse.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -368,13 +333,9 @@ fn cell_point(g: &Grid, c: u32, r: u32) -> Point {
 )]
 fn pointer_selection_builds_and_collapses_ranges() {
     {
-        // Press on B2, move to D5 with the button held, release. This is the
-        // exact `pointer_down`/`pointer_move`/`pointer_up` path `handle_event`
-        // drives on a live left-drag.
         let mut g = grid_with(&[]);
         let mut out = Vec::new();
         assert!(g.pointer_down(cell_point(&g, 1, 1), false, false, &mut out));
-        // Live update on each move while the button is held.
         g.pointer_move(cell_point(&g, 2, 3));
         assert_eq!(g.selection_bounds(), ((1, 1), (2, 3)), "mid-drag extent");
         g.pointer_move(cell_point(&g, 3, 4));
@@ -389,7 +350,6 @@ fn pointer_selection_builds_and_collapses_ranges() {
         let mut out = Vec::new();
         g.pointer_down(cell_point(&g, 1, 1), false, false, &mut out);
         g.pointer_up();
-        // Shift+click D4: anchor stays at B2, range grows to B2:D4.
         g.pointer_down(cell_point(&g, 3, 3), true, false, &mut out);
         g.pointer_up();
         assert_eq!(g.selection_bounds(), ((1, 1), (3, 3)));
@@ -399,11 +359,9 @@ fn pointer_selection_builds_and_collapses_ranges() {
     {
         let mut g = grid_with(&[]);
         let mut out = Vec::new();
-        // First range: drag B2:C3.
         g.pointer_down(cell_point(&g, 1, 1), false, false, &mut out);
         g.pointer_move(cell_point(&g, 2, 2));
         g.pointer_up();
-        // Ctrl+click F6 → adds a second, single-cell range; F6 becomes active.
         g.pointer_down(cell_point(&g, 5, 5), false, true, &mut out);
         g.pointer_up();
         assert!(g.is_multi_range());
@@ -420,10 +378,8 @@ fn pointer_selection_builds_and_collapses_ranges() {
     {
         let mut g = grid_with(&[]);
         let mut out = Vec::new();
-        // First range: a single cell B2.
         g.pointer_down(cell_point(&g, 1, 1), false, false, &mut out);
         g.pointer_up();
-        // Ctrl+drag F6→G8 adds a new rectangle while keeping B2.
         g.pointer_down(cell_point(&g, 5, 5), false, true, &mut out);
         g.pointer_move(cell_point(&g, 6, 7));
         g.pointer_up();
@@ -451,8 +407,6 @@ fn pointer_selection_builds_and_collapses_ranges() {
             ((3, 3), CellValue::Number(30.0)),
         ]);
         let mut out = Vec::new();
-        // Drag-select B2:B4 (the first rectangle), then Ctrl+drag D2:D4 to add a
-        // discontiguous second rectangle — the exact production pointer path.
         g.pointer_down(cell_point(&g, 1, 1), false, false, &mut out);
         g.pointer_move(cell_point(&g, 1, 3));
         g.pointer_up();
@@ -461,8 +415,6 @@ fn pointer_selection_builds_and_collapses_ranges() {
         g.pointer_up();
         assert!(g.is_multi_range(), "two discontiguous ranges are selected");
 
-        // Aggregate over the exact methods the status bar's summary consumes:
-        // `selected_cells()` (dedup across ranges) and `cell_value_at()`.
         let mut sum = 0.0;
         let mut count = 0usize;
         for addr in g.selected_cells() {
@@ -493,12 +445,9 @@ fn pointer_selection_builds_and_collapses_ranges() {
     }
 }
 
-/// Point-mode click/drag insertion, operator append, replacement and off-state.
 #[test]
 fn formula_point_mode_inserts_references() {
     {
-        // Select A5, start a formula (as typing '=' would), then click B1.
-        // This drives the exact grid path `handle_event` runs on a click.
         let mut g = grid_with(&[]);
         let mut out = Vec::new();
         g.select_only((0, 4));
@@ -515,7 +464,6 @@ fn formula_point_mode_inserts_references() {
     }
 
     {
-        // Press A1, drag to B4 while editing a formula → inserts A1:B4.
         let mut g = grid_with(&[]);
         let mut out = Vec::new();
         g.select_only((0, 6));
@@ -528,7 +476,6 @@ fn formula_point_mode_inserts_references() {
     }
 
     {
-        // =A1  then type '+'  then click B2  →  =A1+B2.
         let mut g = grid_with(&[]);
         let mut out = Vec::new();
         g.select_only((4, 4));
@@ -543,8 +490,6 @@ fn formula_point_mode_inserts_references() {
     }
 
     {
-        // Click A1, then C3 without typing an operator → the ref is replaced
-        // (Excel point-mode behaviour), not appended.
         let mut g = grid_with(&[]);
         let mut out = Vec::new();
         g.select_only((4, 4));
@@ -557,8 +502,6 @@ fn formula_point_mode_inserts_references() {
     }
 
     {
-        // A non-pointable click (nothing typed makes the caret ready) commits
-        // the edit and moves the selection instead of inserting a reference.
         let mut g = grid_with(&[]);
         let mut out = Vec::new();
         g.select_only((0, 0));
@@ -566,7 +509,6 @@ fn formula_point_mode_inserts_references() {
         g.point_anchor = None; // as if the ref were typed, not clicked
         assert!(g.pointer_down(cell_point(&g, 3, 3), false, false, &mut out));
         g.pointer_up();
-        // The edit committed to A1 and the selection moved to the clicked cell.
         assert!(
             out.iter().any(|c| matches!(c, GridCmd::SetCell { .. })),
             "a non-pointable click commits the edit"
@@ -576,14 +518,9 @@ fn formula_point_mode_inserts_references() {
     }
 }
 
-// --- formula-bar text editing (caret + selection) ----------------------
-
-/// Edit selection replace/paste, grapheme boundaries, cut and shift-arrow delete.
 #[test]
 fn cell_edit_selection_replaces_cuts_and_deletes() {
     {
-        // The exact methods the formula bar drives: set_edit_caret (click /
-        // shift-drag), typing over a selection, select-all, and paste.
         let mut g = grid_with(&[]);
         g.select_only((0, 0));
         g.begin_edit(Some("hello".into()));
@@ -627,13 +564,11 @@ fn cell_edit_selection_replaces_cuts_and_deletes() {
         g.edit_move_caret(CaretMove::Left, true); // select "d"
         g.edit_move_caret(CaretMove::Left, true); // select "cd"
         assert_eq!(g.edit_selection(), Some((2, 4)));
-        // Backspace removes the whole selection, not one char.
         assert!(g.delete_selection());
         assert_eq!(g.active_display_raw(), "ab");
     }
 }
 
-/// Formula/header highlights and bounded accessibility windows.
 #[test]
 fn highlights_and_accessibility_windows_track_the_selection() {
     {
@@ -641,7 +576,6 @@ fn highlights_and_accessibility_windows_track_the_selection() {
         g.raw.insert((0, 0), "=A2+A3".into());
         g.select_only((0, 0));
         assert!(!g.is_editing());
-        // Refs are available for highlighting even when only selecting.
         assert_eq!(g.highlight_formula_body().as_deref(), Some("A2+A3"));
         g.raw.insert((1, 0), "42".into());
         g.select_only((1, 0));
@@ -709,9 +643,6 @@ fn highlights_and_accessibility_windows_track_the_selection() {
     }
 }
 
-/// A wheel says whether the sheet followed it: the columns end, so a wheel
-/// toward the columns already passed moves nothing, and the app leaves that
-/// wheel to whatever encloses the window.
 #[test]
 fn a_wheel_reports_whether_the_sheet_followed_it() {
     let mut grid = grid_with(&[]);

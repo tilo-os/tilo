@@ -675,7 +675,6 @@ pub fn developer_probe(
     developer_probe_with_reports(config, receipt, cancel_after_ms, |_| {})
 }
 
-/// Qualify the existing owned guest path with informational report observation.
 pub fn developer_probe_with_reports(
     config: &Path,
     receipt: &Path,
@@ -718,8 +717,6 @@ fn reported_environment(prepared: &Prepared) -> Vec<(String, String)> {
     environment
 }
 
-/// Internal trusted host entry: waits for the supervisor's cgroup gate, then
-/// enters the existing ush sandbox. No model-facing request accepts this path.
 pub fn run_guest(config: &Path) -> Result<i32, String> {
     let config_bytes = read_private(config)?;
     let prepared: Prepared = serde_json::from_slice(&config_bytes).map_err(|e| e.to_string())?;

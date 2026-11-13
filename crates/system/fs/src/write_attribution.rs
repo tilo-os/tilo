@@ -1,18 +1,13 @@
-//! Which agent caused a write, as the desktop session says.
-//!
-//! An agent has no filesystem access of its own. It invokes an app's action,
-//! and the app, or the session for a clipboard transfer, writes through the
-//! mount, so the version is this device's, for its person like any other
-//! write. The session knows from its authenticated action context which agent
-//! the action ran for. Over the session-only document media socket
-//! (`SessionBlobs.attributeWrites`, which no sandbox reaches) it grants a short
-//! lease naming the paths the action writes and that agent. Each version this
-//! device then makes of one of those paths records the agent in the tree
-//! document beside the version, so Files' history names the agent, on behalf
-//! of the person, on every device.
+//! Which agent caused a write, as the desktop session says. An agent has no
+//! filesystem access of its own: it invokes an app's action, and the app writes
+//! through the mount. The session knows from its authenticated action context
+//! which agent the action ran for, and over the session-only document media socket
+//! grants a short lease naming the paths and that agent. Each version this device
+//! then makes of those paths records the agent beside the version, so Files'
+//! history names it on every device.
 //!
 //! A lease grants nothing: it changes who a version is shown as, never what
-//! anybody may write, and only ever names an agent of this device's person.
+//! anybody may write.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -20,17 +15,12 @@ use std::time::{Duration, Instant};
 use fs_protocol::FileAttributionV1;
 use thiserror::Error;
 
-/// Longest a lease lasts. An action's writes land within it; a write after
-/// it is the person's again.
+/// Longest a lease lasts; a write after it is the person's again.
 pub const MAX_LEASE_TTL: Duration = Duration::from_secs(60);
-/// Most leases held at once; granting another drops the oldest.
 pub const MAX_LEASES: usize = 64;
-/// Most paths one lease names.
 pub const MAX_LEASE_PATHS: usize = 256;
-/// Longest path a lease names, in bytes.
 pub const MAX_LEASE_PATH_BYTES: usize = 4096;
 
-/// Why a lease was refused.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum WriteAttributionError {
     #[error("the attribution does not name a presentable agent")]
@@ -41,7 +31,6 @@ pub enum WriteAttributionError {
     InvalidDuration,
 }
 
-/// The session's live attribution leases.
 #[derive(Debug, Default)]
 pub struct WriteAttributions {
     leases: Mutex<Vec<Lease>>,
@@ -60,9 +49,8 @@ impl WriteAttributions {
     ///
     /// # Errors
     ///
-    /// Refuses an invalid attribution, no or too many paths, a path that is
-    /// the mount root or not a clean absolute path, and a duration that is
-    /// zero or longer than [`MAX_LEASE_TTL`].
+    /// An invalid attribution, no or too many paths, a path that is the mount root
+    /// or not clean, or a duration that is zero or above [`MAX_LEASE_TTL`].
     pub fn grant(
         &self,
         paths: Vec<String>,
@@ -99,7 +87,6 @@ impl WriteAttributions {
         Ok(())
     }
 
-    /// Whether no lease is live: every write is its person's alone.
     #[must_use]
     pub fn is_idle(&self) -> bool {
         let now = Instant::now();
@@ -110,7 +97,6 @@ impl WriteAttributions {
             .all(|lease| lease.until <= now)
     }
 
-    /// The agent the newest live lease covering `path` names.
     #[must_use]
     pub fn for_path(&self, path: &str) -> Option<FileAttributionV1> {
         let now = Instant::now();
@@ -127,8 +113,7 @@ impl WriteAttributions {
     }
 }
 
-/// A `/`-rooted path below the mount root, without empty, `.` or `..`
-/// components.
+/// A `/`-rooted path below the mount root, without empty, `.` or `..` components.
 fn clean_path(path: &str) -> bool {
     path.len() <= MAX_LEASE_PATH_BYTES
         && path.len() > 1
@@ -140,13 +125,11 @@ fn clean_path(path: &str) -> bool {
             .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
-/// Whether `leased` names `path` or a folder holding it.
 fn covers(leased: &str, path: &str) -> bool {
     path.strip_prefix(leased)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
-/// The mount-relative path of `absolute`, a path under `mount_point`.
 #[must_use]
 pub fn mount_relative(mount_point: &std::path::Path, absolute: &str) -> Option<String> {
     let relative = std::path::Path::new(absolute)

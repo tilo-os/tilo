@@ -2,7 +2,7 @@
 //! words the person's language gives it and without where the window's composition drew it.
 //!
 //! A control that runs an app action says which one — the record kind and the operation, in the
-//! app's own ids — and one that edits a record's field says which field. The window's
+//! app's own names — and one that edits a record's field says which field. The window's
 //! composition moves the control between its bar, an empty state and a columns' header row and
 //! the person's language renames it; neither changes what it does.
 
@@ -100,7 +100,7 @@ impl super::Session {
     }
 
     /// The identity of the app's action `action`, as it is declared (`new_note`), on records of
-    /// `ty`: the record kind and the action's id.
+    /// `ty`: the record kind and the action's name, as the app publishes it at its door.
     pub(super) fn doing(&self, ty: &str, action: &str) -> String {
         let bundle = package(package_of(&self.app));
         let Some(declared) = bundle
@@ -111,7 +111,7 @@ impl super::Session {
         else {
             panic!("{} declares no action {action}", self.app);
         };
-        format!("{}{PLACE}{}", self.kind(ty), declared.id)
+        format!("{}{PLACE}{}", self.kind(ty), declared.name)
     }
 
     /// The id the app gives the field `field`, as it is declared (`title`): what the control that

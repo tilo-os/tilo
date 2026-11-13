@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tilo_actions::{
     Action, ActionError, ActionFacet, ActionKey, ActionRegistry, Described, Did, Doc,
-    EncodedAction, Scalar,
+    EncodedAction, ParamType, Scalar,
 };
 use tilo_resource::{ActionCx, Edit, Fields, Model, ModelError, Segment, Slot};
 
@@ -45,6 +45,38 @@ pub const EDIT_TEXT_ACTION: &str = tilolang_runtime::store::EDIT_TEXT_ACTION;
 
 /// The action id of a bound checkbox changing its field.
 pub const EDIT_FLAG_ACTION: &str = tilolang_runtime::store::EDIT_FLAG_ACTION;
+
+/// A bound control's edit of one field — a text input or a checkbox — as a resource offers it:
+/// the door gives it an action ([`crate::publish`]), and the surface publishes it as the verb a
+/// change of the field names ([`crate::surface`]). One declaration, so the arguments a change is
+/// published with are the ones the surface's verb declares.
+pub struct DirectEdit {
+    /// The verb a change of the field names.
+    pub id: &'static str,
+    /// What the action reads as.
+    pub label: &'static str,
+    /// What the value it sets is.
+    pub value: ParamType,
+    /// Whether a change of the field names the value it set. A text edit's does not: what a
+    /// person typed is the change itself, so its arguments name the field alone.
+    pub names_value: bool,
+}
+
+/// The two direct edits every resource offers its fields.
+pub const DIRECT_EDITS: [DirectEdit; 2] = [
+    DirectEdit {
+        id: EDIT_TEXT_ACTION,
+        label: "Edit a text field",
+        value: ParamType::Text,
+        names_value: false,
+    },
+    DirectEdit {
+        id: EDIT_FLAG_ACTION,
+        label: "Set a flag field",
+        value: ParamType::Boolean,
+        names_value: true,
+    },
+];
 
 /// The action id of a resource the host creates on its own, outside any action: a package's
 /// per-workspace root, the first time it is wanted ([`crate::store::TiloStore::create_with_id`]).

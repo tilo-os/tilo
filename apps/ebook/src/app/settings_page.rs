@@ -105,8 +105,6 @@ pub(super) const SETTINGS_TABS: [(SettingsTab, &str); 4] = [
     (SettingsTab::Shortcuts, "ebook-tab-shortcuts"),
 ];
 
-// --- Settings screen: the font + colour-scheme managers ---------------------
-
 impl BooksApp {
     pub(super) fn draw_settings(&mut self, ctx: &mut PaintCtx<'_>) {
         let theme = ctx.theme;

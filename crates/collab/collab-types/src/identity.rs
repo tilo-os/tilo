@@ -33,7 +33,7 @@ use crate::crypto::{Ed25519PublicKey, Signature};
 
 /// Stable identifier for an attestation — a UUID v4 (unique across
 /// issuers with no coordination), assigned by the issuer at mint time,
-/// referenced from `MemberRef::attestation` and `SignedOp::attestation_id`.
+/// referenced from `SignedOp::attestation_id`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AttestationId(pub Uuid);
@@ -51,12 +51,11 @@ impl Default for AttestationId {
     }
 }
 
-/// Security-clearance level for classified artifacts.
+/// Security-clearance level.
 ///
 /// A `u8` so comparisons work directly: `0` Public (no restriction), `1`
 /// Internal (any org member), `2` Confidential (cleared subset), `3`
-/// Restricted (smallest cleared set). Higher = stricter; the check is
-/// `identity_clearance >= artifact_classification`.
+/// Restricted (smallest cleared set). Higher = stricter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Clearance(pub u8);
@@ -138,14 +137,8 @@ impl Attestation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Claim {
-    /// "This identity is a member of the named space." Issued by the space's
-    /// trust root at join time.
-    MemberOf {
-        /// Space id this membership covers.
-        space: crate::space::SpaceId,
-    },
-    /// "This identity is cleared at the given level." Gates
-    /// `Artifact::classification`. Issued by an org's trust root (or delegate).
+    /// "This identity is cleared at the given level." Issued by an org's
+    /// trust root (or delegate).
     ClearedAt(Clearance),
     /// "This identity is an employee of the named org." Human-meaningful,
     /// not parsed by the validator; surfaces in UI ("Signed by Alice @ ACME").

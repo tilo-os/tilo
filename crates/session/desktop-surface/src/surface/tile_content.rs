@@ -44,7 +44,6 @@ fn tile_app_id(tile: &tilo_desktop_model::TileContent) -> Option<&str> {
     match tile {
         tilo_desktop_model::TileContent::Foreign { app_id, .. }
         | tilo_desktop_model::TileContent::LocalApp { app_id, .. }
-        | tilo_desktop_model::TileContent::PeerWindow { app_id, .. }
         | tilo_desktop_model::TileContent::HostedWindow { app_id, .. } => Some(app_id),
         tilo_desktop_model::TileContent::AppPlaceholder { .. }
         | tilo_desktop_model::TileContent::Stub { .. } => None,
@@ -77,7 +76,6 @@ pub fn tile_app_kind(tile: &tilo_desktop_model::TileContent) -> ui::widget::AppK
         // A window wears its own app's glyph, never another app's.
         tilo_desktop_model::TileContent::Foreign { app_id, .. }
         | tilo_desktop_model::TileContent::LocalApp { app_id, .. }
-        | tilo_desktop_model::TileContent::PeerWindow { app_id, .. }
         | tilo_desktop_model::TileContent::HostedWindow { app_id, .. } => {
             Kind::App(ui::icons::app_glyph(app_id, None))
         }

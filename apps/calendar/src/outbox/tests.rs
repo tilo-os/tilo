@@ -7,9 +7,6 @@ fn apply(calendar: &mut Replica<Calendar>, invoke: Invoke<Calendar>) {
     calendar.apply(invoke).expect("applies");
 }
 
-/// Only what an account on this device can reach is drained here; the
-/// rest waits for a device that holds its account. What a server
-/// confirmed is not sent again, and a deleted event is deleted there.
 #[test]
 fn the_differences_drain_to_the_calendars_this_device_holds() {
     let accounts = AccountStore::sample();
@@ -102,8 +99,6 @@ fn the_differences_drain_to_the_calendars_this_device_holds() {
     );
 }
 
-/// An event moved to another calendar is deleted from the old one's
-/// server first, then created on the new one's.
 #[test]
 fn a_move_to_another_calendar_deletes_there_then_uploads_here() {
     let accounts = AccountStore::sample();
@@ -161,9 +156,6 @@ fn a_move_to_another_calendar_deletes_there_then_uploads_here() {
     assert_eq!(jobs[0].1.href, None);
 }
 
-/// An event deleted before its upload ran is not uploaded, and nothing is
-/// deleted on a server that never held it; settled entries are kept only
-/// as many as the calendar keeps.
 #[test]
 fn what_no_longer_needs_doing_leaves_the_queue() {
     let accounts = AccountStore::sample();

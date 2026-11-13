@@ -1,28 +1,8 @@
-//! The commands the Music binary runs instead of opening a window.
-//!
-//! - `--probe QUERY` proves the live path end to end from a terminal: a real
-//!   YouTube-Music search, a real audio stream for the top hit (HTTP-verified
-//!   and, with `audio`, decoded), and the real Home, artist and album pages.
-//! - `--bench [SCENARIO:]FRAMES` renders a screenshot scenario (the sample
-//!   library's Home by default) `FRAMES` times headlessly and reports the
-//!   per-frame CPU cost of sync, layout and draw.
-//! - `--bench-search [QUERY,QUERY,...]` measures the query view's contract:
-//!   how long the library's results take after a keystroke (over the sample
-//!   library and a library of ten thousand songs), and, typed at a person's
-//!   pace against the real catalogue, how long its first rows take (p50 and
-//!   p95), each keystroke's query cancelling the one before.
-//! - `--probe-spotify-engine VALUE` (the value is ignored) runs native Spotify
-//!   playback's self-check without an account, network or audio device. In a
-//!   release build that code is in `libtilo_spotify_engine.so`, so the check
-//!   proves Music loads its engine library and runs it.
-//! - `--probe-youtube-engine VALUE` (the value is ignored) runs the `YouTube`
-//!   client's self-check without a network. It needs `runtime-engine`, the
-//!   release build, where that code is in `libtilo_youtube_engine.so`; the
-//!   check proves Music loads that library and runs it.
+//! The commands the Music binary runs instead of opening a window: probes that prove
+//! the live path from a terminal, and benchmarks.
 
 use ui::framework::Command;
 
-/// The commands [`crate::MusicShell`] declares.
 pub const COMMANDS: &[Command] = &[
     Command {
         option: "--probe",
@@ -79,7 +59,6 @@ fn probe(query: &str) -> Result<(), String> {
     run_probe(query).map_err(|error| error.to_string())
 }
 
-/// Render `[SCENARIO:]FRAMES` frames of a capture and report their cost.
 fn bench(value: &str) -> Result<(), String> {
     use ui::framework::ResourceApp as _;
 
@@ -118,15 +97,12 @@ fn bench(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The queries `--bench-search` types when given none.
 const BENCH_QUERIES: &str =
     "aurora,daft punk,radiohead,billie eilish,beatles,taylor swift,bonobo,nils frahm";
 
-/// How long a person takes between two keystrokes, typing a search.
 #[cfg(feature = "live")]
 const KEYSTROKE: std::time::Duration = std::time::Duration::from_millis(180);
 
-/// The value at `fraction` of sorted `samples`.
 fn percentile(samples: &[f64], fraction: f64) -> f64 {
     if samples.is_empty() {
         return f64::NAN;
@@ -149,7 +125,6 @@ fn report(name: &str, samples: &mut [f64]) {
     );
 }
 
-/// A library of the sample's songs and `extra` more, for the local timing.
 fn bench_library(extra: usize) -> crate::model::Library {
     let mut lib = crate::seed::sample_library();
     let words = [
@@ -196,7 +171,6 @@ fn bench_library(extra: usize) -> crate::model::Library {
     lib
 }
 
-/// Every prefix of `query`, as a person types it.
 fn prefixes(query: &str) -> Vec<String> {
     query
         .char_indices()
@@ -216,7 +190,6 @@ fn bench_search(value: &str) -> Result<(), String> {
             .collect()
     };
     if queries.is_empty() {
-        // Only commas: nothing to type.
         return Err(format!("--bench-search: no queries in {value:?}"));
     }
     for (name, extra) in [("sample library", 0), ("10k-song library", 10_000)] {
@@ -331,9 +304,8 @@ fn bench_remote(_queries: &[&str]) {
     println!("remote: this build has no live catalogue (`live` feature)");
 }
 
-/// Prove the live streaming path from the terminal. Real search + real audio
-/// stream resolution + an independent HTTP byte-check. Requires `--features
-/// live`; the default build prints how to enable it (never fakes a result).
+/// Prove the live path from the terminal: a real search, a real stream URL and an
+/// independent HTTP byte check. Needs `live`; without it the build says how.
 #[cfg(feature = "live")]
 fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
     use crate::backend::MusicBackend;
@@ -371,8 +343,7 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Resolve a real audio stream for the top hit, print its details, and prove
-/// the URL serves real bytes (+ a best-effort decode).
+/// Resolve a stream for the top hit, print its details and check it serves bytes.
 #[cfg(feature = "live")]
 fn probe_stream(
     backend: &impl crate::backend::MusicBackend,
@@ -386,24 +357,20 @@ fn probe_stream(
     let mib = stream.size_bytes as f64 / (1024.0 * 1024.0);
     println!("   itag={}  ~{} kbps", stream.itag, stream.bitrate / 1000);
     println!("   mime: {}", stream.mime);
+    // format: machine (a diagnostic command's own output)
     println!(
-        // format: machine (a diagnostic command's own output)
         "   API content-length: {} bytes ({mib:.2} MiB)",
         stream.size_bytes
     );
-    // Signed media URLs contain short-lived query credentials. Keep them out of
-    // local and CI logs while still verifying the exact URL below.
+    // Signed URLs carry short-lived credentials: keep them out of logs.
     println!("   source URL resolved (redacted)");
 
-    // Independent proof the URL actually serves audio bytes.
     verify_stream_http(&stream.url)?;
 
-    // Best-effort decode proof (only with the `audio` feature / GStreamer).
     probe_decode(&stream.url);
     Ok(())
 }
 
-/// Real Home content (charts / new releases / top artists) with cover art.
 #[cfg(feature = "live")]
 fn probe_home(backend: &impl crate::backend::MusicBackend) {
     println!("\n== real Home content (YouTube-Music charts) ==");
@@ -428,8 +395,6 @@ fn probe_home(backend: &impl crate::backend::MusicBackend) {
     }
 }
 
-/// Real artist page for the top hit's artist (proves the artist endpoint +
-/// yields a channel id usable for `TILO_MUSIC_VIEW=artist:<id>`).
 #[cfg(feature = "live")]
 fn probe_artist(backend: &impl crate::backend::MusicBackend, top: &crate::backend::TrackHit) {
     let Some(aid) = top.artist_id.clone() else {
@@ -456,7 +421,6 @@ fn probe_artist(backend: &impl crate::backend::MusicBackend, top: &crate::backen
     }
 }
 
-/// Real album page (ordered track list) for the top hit's album.
 #[cfg(feature = "live")]
 fn probe_album(backend: &impl crate::backend::MusicBackend, top: &crate::backend::TrackHit) {
     let Some(alid) = top.album_id.clone() else {
@@ -480,7 +444,6 @@ fn probe_album(backend: &impl crate::backend::MusicBackend, top: &crate::backend
     }
 }
 
-/// Range-GET the resolved stream URL to prove it serves real media bytes.
 #[cfg(feature = "live")]
 fn verify_stream_http(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     use std::fmt::Write as _;
@@ -528,9 +491,7 @@ fn verify_stream_http(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Best-effort `GStreamer` decode of the resolved stream to a fake sink (no
-/// speakers needed). Only compiled with the `audio` feature; on missing codec
-/// plugins it reports honestly rather than claiming audio it didn't produce.
+/// Decodes the resolved stream to a fake sink; the `audio` feature only.
 #[cfg(all(feature = "live", feature = "audio"))]
 fn probe_decode(url: &str) {
     use gstreamer::prelude::*;
@@ -539,8 +500,7 @@ fn probe_decode(url: &str) {
         println!("   [decode] gstreamer init failed — skipping");
         return;
     }
-    // Report any plugins this pipeline needs but the environment lacks, so a
-    // failure is explained concretely rather than hand-waved.
+    // Plugins this pipeline needs, so a missing one is named.
     let need = ["souphttpsrc", "curlhttpsrc", "qtdemux", "avdec_aac", "faad"];
     let missing: Vec<&str> = need
         .iter()
@@ -611,7 +571,6 @@ fn probe_decode(_url: &str) {
     );
 }
 
-/// Without the `live` feature the probe cannot run — say so honestly.
 #[cfg(not(feature = "live"))]
 fn run_probe(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
     Err(

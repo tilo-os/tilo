@@ -251,7 +251,7 @@ mod tests {
             policy.grants.push(bob_refused);
             policy
         };
-        let cx = Context::at_time(std::time::SystemTime::now());
+        let cx = Context::at_time(tilo_clock::wall());
         let decision = |bound: &crate::Bound| {
             let party = bound.party(&policy.grants);
             let person = policy.party(BOB);
@@ -318,7 +318,7 @@ mod tests {
         })
         .unwrap();
         let node = TreePath::workspace(WORKSPACE);
-        let cx = Context::at_time(std::time::SystemTime::now());
+        let cx = Context::at_time(tilo_clock::wall());
         let party: Party<'_> = bound.party(&[]);
         assert_eq!(
             party.decide(&node, ActionKind::Outside, &cx).answer,
@@ -355,7 +355,7 @@ mod tests {
             Some(looked.clone())
         })
         .unwrap();
-        let cx = Context::at_time(std::time::SystemTime::now());
+        let cx = Context::at_time(tilo_clock::wall());
         let party = bound.party(&[]);
         assert_eq!(
             party.decide(&notes, ActionKind::Undoable, &cx).answer,

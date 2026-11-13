@@ -1,33 +1,22 @@
 //! Reading `InnerTube` answers into Tube's model.
-//!
-//! The answers are deep trees of named renderers whose nesting changes as
-//! `YouTube` redesigns its pages, while the rows themselves (`videoRenderer`,
-//! `channelRenderer`, `lockupViewModel`) change far less. So rows are found
-//! by name wherever they sit, and a row missing a field gives a shorter row
-//! rather than none.
 
 use serde_json::Value;
 
 use crate::backend::yt_thumb_url;
 use crate::model::{Channel, Video};
 
-/// A search answer's rows.
 #[derive(Debug, Default)]
 pub struct Found {
     pub videos: Vec<Video>,
     pub channels: Vec<Channel>,
 }
 
-/// A stream the media element plays from one URL: picture and sound in
-/// one file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stream {
     pub url: String,
-    /// `YouTube`'s quality label, e.g. "360p".
     pub quality: String,
 }
 
-/// The visitor id an answer hands out, which later requests carry.
 pub fn visitor(answer: &Value) -> Option<String> {
     answer
         .pointer("/responseContext/visitorData")
@@ -36,7 +25,6 @@ pub fn visitor(answer: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The videos and creators a search answered, in its order, each once.
 pub fn search(answer: &Value, category: &str) -> Found {
     let contents = answer.get("contents").unwrap_or(answer);
     let mut found = Found::default();
@@ -58,9 +46,6 @@ pub fn search(answer: &Value, category: &str) -> Found {
     found
 }
 
-/// A watch page: the video, from the watch-next answer and, when there is
-/// one, the player answer (which alone knows the length and the full
-/// description), and the videos it recommends next.
 pub fn watch(next: &Value, player: Option<&Value>, id: &str) -> Option<(Video, Vec<Video>)> {
     let primary = first(next, "videoPrimaryInfoRenderer");
     let secondary = first(next, "videoSecondaryInfoRenderer");
@@ -151,7 +136,6 @@ pub fn watch(next: &Value, player: Option<&Value>, id: &str) -> Option<(Video, V
     Some((video, related))
 }
 
-/// `YouTube`'s reason for not playing, when the player answer refuses.
 #[must_use]
 pub fn refusal(player: &Value) -> Option<String> {
     let status = player
@@ -168,13 +152,6 @@ pub fn refusal(player: &Value) -> Option<String> {
     )
 }
 
-/// The progressive stream a player answer names, best first; or why the
-/// answer refused (a bot check, a removed or private video).
-///
-/// `wanted` is the height a person asked for (`Some(480)` for 480p, `None`
-/// for the best available): the best stream that does not exceed it, so
-/// choosing a smaller size actually spends less data, and the smallest one
-/// when the source has nothing that small.
 pub fn stream(player: &Value, wanted: Option<u32>) -> Result<Stream, String> {
     let status = player
         .pointer("/playabilityStatus/status")
@@ -225,9 +202,6 @@ pub fn stream(player: &Value, wanted: Option<u32>) -> Result<Stream, String> {
         .ok_or_else(|| "no progressive stream".into())
 }
 
-/// The caption tracks a player answer lists: `captionTracks` under
-/// `playerCaptionsTracklistRenderer`. A machine transcript (`kind="asr"`) is
-/// marked so the menu can say so. An answer with no captions offers none.
 pub fn caption_tracks(player: &Value) -> Vec<crate::captions::CaptionTrack> {
     player
         .pointer("/captions/playerCaptionsTracklistRenderer/captionTracks")
@@ -257,8 +231,6 @@ pub fn caption_tracks(player: &Value) -> Vec<crate::captions::CaptionTrack> {
                     .get("kind")
                     .and_then(Value::as_str)
                     .is_some_and(|kind| kind == "asr"),
-                // The timed text is served as WebVTT; asking for it explicitly
-                // is what makes one parser serve both sources.
                 url: format!("{url}&fmt=vtt"),
                 language,
             })
@@ -266,7 +238,6 @@ pub fn caption_tracks(player: &Value) -> Vec<crate::captions::CaptionTrack> {
         .collect()
 }
 
-/// A channel page and its uploads, from a channel's videos tab.
 pub fn channel(answer: &Value, id: &str) -> Option<(Channel, Vec<Video>)> {
     let meta = answer.pointer("/metadata/channelMetadataRenderer")?;
     let name = meta.get("title").and_then(Value::as_str)?.to_string();
@@ -341,7 +312,6 @@ pub fn channel(answer: &Value, id: &str) -> Option<(Channel, Vec<Video>)> {
     Some((channel, uploads))
 }
 
-/// A search or list row (`videoRenderer`, `compactVideoRenderer`).
 fn video_row(row: &Value, category: &str) -> Option<Video> {
     let id = row.get("videoId").and_then(Value::as_str)?;
     let (channel_name, channel_id) = ["longBylineText", "ownerText", "shortBylineText"]
@@ -392,11 +362,8 @@ fn video_row(row: &Value, category: &str) -> Option<Video> {
     })
 }
 
-/// A creator row in search.
 fn channel_row(row: &Value) -> Option<Channel> {
     let id = row.get("channelId").and_then(Value::as_str)?;
-    // The row names the handle where the subscriber count used to be, and
-    // the subscriber count where the video count used to be.
     let lines = [
         text(row.get("subscriberCountText")),
         text(row.get("videoCountText")),
@@ -434,8 +401,6 @@ fn channel_row(row: &Value) -> Option<Channel> {
     })
 }
 
-/// A row in `YouTube`'s newer layout (watch-next, channel tabs): a title and
-/// lines of short parts, "Lofi Girl" / "1.2M views · 3 years ago".
 fn lockup_row(row: &Value, category: &str) -> Option<Video> {
     if row.get("contentType").and_then(Value::as_str) != Some("LOCKUP_CONTENT_TYPE_VIDEO") {
         return None;
@@ -523,7 +488,6 @@ fn lockup_row(row: &Value, category: &str) -> Option<Video> {
     Some(video)
 }
 
-/// The like count the watch-next answer shows ("499K"), as a number.
 fn likes(next: &Value) -> u64 {
     rows(next, &["likeCountEntity"])
         .into_iter()
@@ -537,8 +501,6 @@ fn likes(next: &Value) -> u64 {
         .unwrap_or(0)
 }
 
-/// Every object under `tree` that has one of `keys`, in document order,
-/// without looking inside a match.
 fn rows<'a>(tree: &'a Value, keys: &[&str]) -> Vec<&'a Value> {
     fn walk<'a>(value: &'a Value, keys: &[&str], out: &mut Vec<&'a Value>) {
         match value {
@@ -564,13 +526,10 @@ fn rows<'a>(tree: &'a Value, keys: &[&str]) -> Vec<&'a Value> {
     out
 }
 
-/// The first `key` object under `tree`.
 fn first<'a>(tree: &'a Value, key: &str) -> Option<&'a Value> {
     rows(tree, &[key]).first().and_then(|row| row.get(key))
 }
 
-/// The text of a text node in any of its forms: `simpleText`, `runs` or
-/// `content`.
 fn text(node: Option<&Value>) -> String {
     let Some(node) = node else {
         return String::new();
@@ -593,7 +552,6 @@ fn text(node: Option<&Value>) -> String {
         .collect()
 }
 
-/// A byline's creator name and channel id.
 fn byline(node: Option<&Value>) -> (String, String) {
     let run = node.and_then(|n| n.pointer("/runs/0"));
     let id = run
@@ -603,7 +561,6 @@ fn byline(node: Option<&Value>) -> (String, String) {
     (text(node), id.to_string())
 }
 
-/// The last (largest) image URL of a thumbnail list, made absolute.
 fn last_url(images: &Value) -> String {
     let url = images
         .as_array()
@@ -617,7 +574,6 @@ fn last_url(images: &Value) -> String {
     }
 }
 
-/// Whether `part` is a bare count, "824K" or "1,204".
 fn looks_like_count(part: &str) -> bool {
     let digits = part.trim_end_matches(['K', 'M', 'B']);
     !digits.is_empty()
@@ -626,8 +582,6 @@ fn looks_like_count(part: &str) -> bool {
             .all(|c| c.is_ascii_digit() || c == '.' || c == ',')
 }
 
-/// The number at the start of a count: "58,224,382 views", "1.2M views",
-/// "20K watching", "15.8M subscribers". 0 when there is none ("No views").
 fn count(text: &str) -> u64 {
     let word = text.split_whitespace().next().unwrap_or_default();
     let scaled = [('K', 1e3), ('M', 1e6), ('B', 1e9)]
@@ -650,7 +604,6 @@ fn count(text: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// Seconds in a clock length, "1:04:42" or "3:41"; 0 for anything else.
 fn clock(text: &str) -> u32 {
     if text.is_empty() || !text.chars().all(|c| c.is_ascii_digit() || c == ':') {
         return 0;

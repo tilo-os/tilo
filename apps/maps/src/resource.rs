@@ -1,6 +1,5 @@
-//! Maps as a resource: the shared map ([`Workspace`]) is the document, and
-//! the effects a window answers look things up, find the device and manage
-//! this device's offline tiles.
+//! Maps as a resource: the shared map ([`Workspace`]) is the document, and the effects a window
+//! answers look things up, find the device and manage its offline tiles.
 
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
@@ -15,9 +14,8 @@ use crate::app::MapsApp;
 use crate::scenario::Sample;
 use crate::workspace::Workspace;
 
-/// What a maps window does with no change to the shared map: look things
-/// up, find where the device is, show what it holds, and manage the tiles
-/// this device keeps for offline use.
+/// What a maps window does without changing the shared map: look things up, find the device, and
+/// manage this device's tiles.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "maps.effect")]
 pub enum MapsEffect {
@@ -68,7 +66,6 @@ pub enum MapsEffect {
     ClearOfflineAreas,
 }
 
-/// Framework app: the maps window is the view of the shared [`Workspace`].
 pub struct MapsShell;
 
 impl ResourceApp for MapsShell {
@@ -94,7 +91,6 @@ impl ResourceApp for MapsShell {
         crate::scenario::viewport(scenario)
     }
 
-    /// A capture shows the bundled sample city instead of live imagery.
     #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<Workspace>) {
         crate::scenario::prepare(fixture);
@@ -106,10 +102,7 @@ impl ResourceApp for MapsShell {
     }
 
     fn view(cx: &mut ViewCx<Workspace>) -> Element {
-        // Only a live window fetches tiles, places and routes; a capture
-        // draws its sample, and a past version draws what it held.
         let mut app = match cx.mode() {
-            // The tiles are kept in the app's own cache area on this device.
             RunMode::Live => match cx.storage().files().paths().cache().native_path() {
                 Ok(cache) => MapsApp::new_with_cache_dir(cache.join("tiles")),
                 Err(_) => MapsApp::new(),
@@ -119,20 +112,15 @@ impl ResourceApp for MapsShell {
                 cx.fixture::<Sample>()
                     .map_or(Sample::City, |sample| *sample),
             ),
-            // Without the sample city a capture is the empty map.
             #[cfg(not(feature = "samples"))]
             RunMode::Capture => MapsApp::offline_empty(),
             RunMode::Past => MapsApp::past(),
         };
-        // A live window launched to search ("Search Maps for cafe" in
-        // desktop search) opens on the places it finds.
         if cx.mode() == RunMode::Live
             && let Some(query) = launch_search(cx.launch_arguments())
         {
             app.search_for(query);
         }
-        // A search hit, or an agent's `open`, opens the place, point of
-        // interest or recent search it names.
         let dispatcher = cx.dispatcher();
         cx.on_open(
             move |anchor: &str| -> Result<(), ui::tilo_resource::Refusal> {
@@ -147,8 +135,6 @@ impl ResourceApp for MapsShell {
     }
 }
 
-/// The search a launch names: a `geo:` URI's `q` (`geo:0,0?q=cafe%20berlin`),
-/// decoded; `None` for any other launch, and for an empty query.
 fn launch_search(arguments: &[String]) -> Option<String> {
     arguments.iter().find_map(|arg| {
         let (scheme, rest) = arg.split_once(':')?;
@@ -165,8 +151,8 @@ fn launch_search(arguments: &[String]) -> Option<String> {
     })
 }
 
-/// `text` with `+` as a space and `%XX` as its byte; `None` when an escape
-/// is malformed or the bytes are not UTF-8.
+/// `text` with `+` as a space and `%XX` as its byte; `None` on a malformed escape or bytes that are
+/// not UTF-8.
 fn percent_decode(text: &str) -> Option<String> {
     let mut bytes = Vec::with_capacity(text.len());
     let mut rest = text.bytes();
@@ -206,7 +192,6 @@ mod tests {
     use crate::offline_areas::OfflineAreas;
     use ui::framework::testing::TestApp;
 
-    /// The ids of the actions published on `resource` in the running app.
     fn actions_on(app: &mut TestApp<MapsShell>, resource: &str) -> Vec<String> {
         app.agent_surface()
             .as_array()
@@ -360,8 +345,6 @@ mod tests {
     #[test]
     fn every_scenario_stages_its_places_and_plans_through_map_actions() {
         use ui::framework::testing::TestApp;
-        // Coordinates are stored rounded, so a place is compared by what
-        // names it.
         let by_id = |places: &[Place]| {
             let mut places: Vec<_> = places
                 .iter()
@@ -416,8 +399,6 @@ mod tests {
         assert!(arrive.arrive_by());
     }
 
-    /// An agent saves a place, chooses how directions travel and clears a
-    /// route, one call each, and reads what it did as the map's sentences.
     #[test]
     fn an_agent_works_the_map_one_call_each_and_history_reads_it() {
         use ui::tilo_actions::{ActionInvoker, ActorKind};

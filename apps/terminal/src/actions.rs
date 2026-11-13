@@ -1,16 +1,5 @@
-//! The terminal's actions and effects.
-//!
-//! A terminal session is a record ([`Terminal`](crate::resource::Terminal)):
-//! where the session runs, the relay session it re-attaches to and the pane
-//! collaborators' presence is scoped to. What the process prints stays on
-//! the device that runs it: the emulator's own screen, never the record's.
-//!
-//! Keystrokes are not actions: they travel straight to the process's stdin
-//! and change no document. Driving the process from the palette, an agent
-//! or a script — send text, run a command, interrupt it, paste — is an
-//! effect on the live session, and so is reading what it shows. Presentation
-//! (the scrollback offset, the selection, the find bar, the context menu) is
-//! view state of the widget.
+//! The terminal's actions and effects: a session is a record, and what drives its process is an
+//! effect that changes no document.
 
 #[cfg(test)]
 mod tests {
@@ -28,8 +17,6 @@ mod tests {
     use crate::resource::TerminalEffect;
     use ui::tilo_resource::Effect as _;
 
-    /// A PTY master with no process behind it: writes are dropped, reads return
-    /// EOF. Enough for the emulator to seed its grid and accept input.
     struct MockMaster;
     impl MasterPty for MockMaster {
         fn get_size(&self) -> Result<PtySize, anyhow::Error> {
@@ -58,11 +45,6 @@ mod tests {
         }
     }
 
-    /// Construct a terminal over a mock PTY whose *writer* funnels every byte the
-    /// production input path sends to the shell into a channel, so a test can
-    /// assert exactly what reached the shell's stdin. This is the same rig the
-    /// widget's own tests use — the real `handle_event` → `write_input` path runs
-    /// unchanged.
     fn build_test_widget() -> (TerminalWidget, Receiver<Vec<u8>>) {
         struct ChanWriter(std::sync::mpsc::Sender<Vec<u8>>);
         impl Write for ChanWriter {
@@ -86,8 +68,6 @@ mod tests {
         (widget, write_rx)
     }
 
-    /// Everything the PTY-write channel has buffered, concatenated — i.e. every
-    /// byte the terminal has sent to the shell so far.
     fn drain_writes(rx: &Receiver<Vec<u8>>) -> Vec<u8> {
         let mut out = Vec::new();
         while let Ok(b) = rx.try_recv() {
@@ -98,12 +78,10 @@ mod tests {
 
     use ui::synthetic_input::char_key;
 
-    /// Pump one event through the production `Widget::handle_event`.
     fn send(widget: &mut TerminalWidget, doc: &mut AutoCommit, ev: &WindowEvent) {
         ui::testing::Dispatch::new().doc(doc).send(widget, ev);
     }
 
-    /// Keystrokes reach the shell and change no document.
     #[test]
     fn keys_go_to_the_shell_not_the_document() {
         // Case `keystrokes_go_to_the_shell_not_the_document`.
@@ -136,8 +114,6 @@ mod tests {
         }
     }
 
-    /// The terminal's effects: every one that reaches the process or the
-    /// clipboard asks for confirmation from the palette, an agent or a script.
     #[test]
     fn effects_that_reach_the_process_or_clipboard_ask_for_confirmation() {
         use ui::tilo_actions::{ActionKind, ConfirmationPolicy, OperationKind};
@@ -179,8 +155,6 @@ mod tests {
         }
     }
 
-    /// Reviewed input may not smuggle control sequences or reach the PTY
-    /// when refused.
     #[test]
     fn reviewed_input_is_bounded() {
         let (mut widget, writes) = build_test_widget();
@@ -202,7 +176,6 @@ mod tests {
         );
     }
 
-    /// Only public web links the process printed are offered as rows.
     #[test]
     fn only_public_web_osc_links_are_offered_to_agents() {
         let (mut widget, _writes) = build_test_widget();
@@ -230,8 +203,6 @@ mod tests {
         );
     }
 
-    /// A failed or poisoned PTY writer fails the effect, and the process's
-    /// input is no longer offered.
     #[test]
     fn pty_write_failures_disconnect_and_never_report_completion() {
         struct FailingWriter;

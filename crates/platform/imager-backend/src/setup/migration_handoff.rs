@@ -1,10 +1,8 @@
-//! Metadata-only Linux migration intent across installation/reboot.
+//! Metadata-only Linux migration intent across installation and reboot.
 //!
-//! A plan records consent and stable source identities; it grants neither a
-//! mount nor a copy. After reboot, a fresh read-only source grant must match its
-//! GPT partition, filesystem and home inode. Host-native `/dev` or mount paths
-//! are never serialized as target authority. No account secrets or home-file
-//! contents belong in this format or on installation media.
+//! A plan records consent and stable source identities; it grants neither a mount nor a copy. After
+//! reboot a fresh read-only grant must match its GPT partition, filesystem and home inode, and no
+//! `/dev` or mount path is serialized as authority.
 use super::migration_store::NativePath;
 #[cfg(target_os = "linux")]
 use super::{migration::PinnedDirectory, staging};
@@ -60,7 +58,6 @@ pub use linux::resolve;
 
 pub const SCHEMA: u32 = 1;
 pub const MAX_BYTES: usize = 64 * 1024;
-/// The normal installed account this same-computer handoff may target.
 pub const DEFERRED_ORIGINAL_UID: u32 = 1000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,13 +93,13 @@ pub struct SourceVolume {
 #[serde(deny_unknown_fields)]
 pub struct Home {
     pub volume: SourceVolume,
-    /// Relative to the top-level filesystem, including any Btrfs subvolume
-    /// root from mountinfo. Native byte names round-trip without UTF-8 loss.
+    /// Relative to the top-level filesystem, including any Btrfs subvolume root from mountinfo;
+    /// native byte names round-trip without UTF-8 loss.
     relative: NativePath,
     inode: u64,
     original_uid: u32,
-    /// Btrfs subvolume UUID/tree ID distinguish reused inode numbers. The
-    /// existing native durability service supplies this binding.
+    /// Btrfs subvolume UUID/tree ID distinguish reused inode numbers; the native durability service
+    /// supplies this binding.
     subvolume: Option<super::migration_durability::Identity>,
 }
 
@@ -144,7 +141,6 @@ impl Home {
     }
 }
 
-/// Legacy plans copy data; retained access requires an explicit new policy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HomePolicy {
@@ -156,10 +152,8 @@ pub enum HomePolicy {
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     value == &T::default()
 }
-/// Opaque locator of the selected-source journal kept in the retained Home.
-/// It names an exact operation and journal digest, never a path, profile name,
-/// credential or content key. Installation media can carry this metadata
-/// without carrying private source data.
+/// Names an exact operation and journal digest, never a path, profile name, credential or content
+/// key, so installation media can carry it without private source data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeferredHandoff {
@@ -179,14 +173,11 @@ pub struct Plan {
     pub home: Home,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flatpak_inventory: Option<serde_json::Value>,
-    /// Nested subtrees the person excluded from Home, relative to the selected
-    /// Home. Consent metadata, not a path grant: the receiving producer
-    /// revalidates each path under its own pinned source.
+    /// Consent metadata, not a path grant: the receiving producer revalidates each path under its
+    /// own pinned source.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub home_exclusions: Vec<NativePath>,
-    /// Same-computer selections whose private source journal stays in the
-    /// retained Home. Absent on every earlier plan, so released forms continue
-    /// to parse and retain their original meaning.
+    /// Absent on every earlier plan, so released forms keep parsing with their original meaning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deferred_handoff: Option<DeferredHandoff>,
 }
@@ -206,11 +197,8 @@ fn operation_id(value: &str) -> bool {
 }
 
 impl Plan {
-    /// Decode the reviewed Home exclusions as normalized relative paths.
-    ///
-    /// # Errors
-    /// Refuses unrepresentable bytes, non-relative components and exclusions
-    /// without selected Home data.
+    /// Decodes the reviewed Home exclusions as normalized relative paths. Refuses unrepresentable
+    /// bytes, non-relative components and exclusions without selected Home data.
     pub fn home_exclusion_paths(&self) -> io::Result<Vec<std::path::PathBuf>> {
         if !self.categories.home && !self.home_exclusions.is_empty() {
             return Err(refusal("Home exclusions require selected Home data"));
@@ -301,9 +289,8 @@ impl Plan {
         Ok(hex::encode(Sha256::digest(self.bytes()?)))
     }
 
-    /// Digest of the plan without the journal locator. The private journal
-    /// stores this value, while the plan stores the journal digest, so the two
-    /// records bind each other without a circular digest.
+    /// The private journal stores this value while the plan stores the journal digest, so the two
+    /// bind each other without a circular digest.
     pub fn base_digest(&self) -> io::Result<[u8; 32]> {
         use sha2::{Digest, Sha256};
         let mut base = self.clone();
@@ -312,14 +299,12 @@ impl Plan {
         Ok(Sha256::digest(serde_json::to_vec(&base)?).into())
     }
 
-    /// Attach an opaque journal locator only after the journal itself exists.
     pub fn attach_deferred_handoff(&mut self, handoff: DeferredHandoff) -> io::Result<()> {
         self.deferred_handoff = Some(handoff);
         self.validate()
     }
 
-    /// Synthetic fixtures run as the build account, not as the reviewed source
-    /// account. Production plans always take this value from the source Home.
+    /// Fixtures run as the build account; production plans take this value from the source Home.
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_fixture_original_uid(&mut self, uid: u32) {
         self.home.original_uid = uid;
@@ -334,11 +319,9 @@ impl Plan {
         store::read(directory, operation)
     }
 
-    /// Direct Linux installation must retain the exact source partition. The
-    /// ordinary staging planner chooses free space and never resizes Linux.
-    /// Produce prospective retained geometry from the reviewed installation.
-    /// This is metadata only: the elevated helper must independently prove
-    /// recorded and actual resize completion before publishing the handoff.
+    /// Direct Linux installation must retain the exact source partition; the ordinary planner picks
+    /// free space and never resizes Linux. Metadata only: the helper must prove recorded and actual
+    /// resize completion before publishing the handoff.
     #[cfg(target_os = "linux")]
     pub fn for_completed_staging(&self, installation: &staging::plan::Plan) -> io::Result<Self> {
         self.validate_for_install(installation)?;

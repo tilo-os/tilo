@@ -1,21 +1,15 @@
 //! Display tools the person lets rearrange their displays without asking.
 //!
-//! An external layout tool (`kanshi`, `way-displays`, `wlr-randr`) changes
-//! the displays through the compositor's privileged output-management
-//! socket. Its changes apply directly, except a risky one — a custom mode,
-//! or a display in use turned off or given a mode it never showed — which
-//! waits for the person to keep it. A tool they chose to trust is recorded
-//! here, keyed by the executable the compositor read from the connection's
-//! peer credentials, so even its risky changes are kept without a prompt.
-//! Settings › Displays lists and revokes them.
+//! A trusted tool's changes apply directly, even a risky one (a custom mode, or a display in use
+//! turned off or given a mode it never showed), where an untrusted tool's risky change waits for
+//! the person to keep it. A tool is keyed by the executable the compositor read from the
+//! connection's peer credentials.
 
 use serde::{Deserialize, Serialize};
 
-/// A program on the privileged display socket, identified by its executable.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplayTool {
-    /// Absolute path of the executable (`/usr/bin/kanshi`).
     pub executable: String,
 }
 
@@ -26,7 +20,6 @@ impl DisplayTool {
         }
     }
 
-    /// What the person calls it: the executable's file name.
     pub fn name(&self) -> &str {
         self.executable
             .rsplit('/')
@@ -36,7 +29,6 @@ impl DisplayTool {
     }
 }
 
-/// Every tool whose risky display changes are kept without asking.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TrustedDisplayTools {
@@ -44,7 +36,6 @@ pub struct TrustedDisplayTools {
 }
 
 impl TrustedDisplayTools {
-    /// The section the trusted tools are stored in, whole.
     pub const SECTION: &'static str = "display_tools";
 
     pub fn load() -> Self {
@@ -54,9 +45,6 @@ impl TrustedDisplayTools {
         .unwrap_or_default()
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if the settings section can't be written.
     pub fn save(&self) -> std::io::Result<()> {
         let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
         super::update_section(
@@ -69,7 +57,6 @@ impl TrustedDisplayTools {
         self.tools.iter().any(|known| known == tool)
     }
 
-    /// Add `tool`; returns whether it was new.
     pub fn insert(&mut self, tool: DisplayTool) -> bool {
         if self.contains(&tool) {
             return false;
@@ -78,14 +65,12 @@ impl TrustedDisplayTools {
         true
     }
 
-    /// Remove the tool with this executable; returns whether it was trusted.
     pub fn remove(&mut self, executable: &str) -> bool {
         let before = self.tools.len();
         self.tools.retain(|tool| tool.executable != executable);
         self.tools.len() != before
     }
 
-    /// Trust `tool` from now on.
     pub fn trust(tool: DisplayTool) -> std::io::Result<()> {
         let mut trusted = Self::load();
         if trusted.insert(tool) {
@@ -94,7 +79,6 @@ impl TrustedDisplayTools {
         Ok(())
     }
 
-    /// Ask before keeping this tool's changes again.
     pub fn forget(executable: &str) -> std::io::Result<()> {
         let mut trusted = Self::load();
         if trusted.remove(executable) {

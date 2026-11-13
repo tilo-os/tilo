@@ -72,6 +72,23 @@ pub use timer::timer_now;
 pub use tokio::runtime::{Handle, Runtime};
 pub use tokio::task::JoinHandle;
 
+/// `Send` where the platform has threads; nothing on the web.
+///
+/// Spawning hands a future, its answer and everything it holds to a task. Natively that task runs
+/// on another thread, so they must move there; a page has one thread, and the task a page runs is
+/// a turn of its own queue, holding the page's own values (a browser key, a page's storage). Code
+/// that spawns takes this bound and stays one path on both targets: it requires `Send` exactly
+/// where moving is real.
+#[cfg(not(target_family = "wasm"))]
+pub trait MaybeSend: Send {}
+#[cfg(not(target_family = "wasm"))]
+impl<T: Send + ?Sized> MaybeSend for T {}
+/// `Send` where the platform has threads; nothing on the web.
+#[cfg(target_family = "wasm")]
+pub trait MaybeSend {}
+#[cfg(target_family = "wasm")]
+impl<T: ?Sized> MaybeSend for T {}
+
 /// Why a runtime operation was refused.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

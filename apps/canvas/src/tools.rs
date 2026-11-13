@@ -1,7 +1,6 @@
-//! What the person is holding: the tool, the paint on the brush, the layer
-//! new marks go on and what is selected. The rail and the panels set it;
-//! the canvas reads it. None of it is part of the artwork: it is never
-//! saved, shared or undone.
+//! What the window holds while painting: the tool, the paint on the brush,
+//! the layer new marks go on and what is selected. None of it is part of
+//! the artwork: it is never saved, shared or undone.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -18,7 +17,7 @@ use crate::gesture::Ink;
 use crate::model::Artwork;
 use crate::render::Renderer;
 
-/// A local tool presentation preference; mixed documents keep every action.
+/// The tool set a window shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Workspace {
     #[default]
@@ -102,9 +101,7 @@ pub enum Tool {
     Pen,
     Text,
     Eyedropper,
-    /// Selects a rectangle of the artwork.
     Marquee,
-    /// Selects an ellipse.
     Oval,
     /// Selects freehand (drag) or point by point (click).
     Lasso,
@@ -192,7 +189,6 @@ impl Tool {
         }
     }
 
-    /// The tool `key` picks up, if any.
     pub fn for_key(key: &str) -> Option<Self> {
         let key = key.to_lowercase();
         Self::ALL.into_iter().find(|tool| tool.shortcut() == key)
@@ -203,110 +199,80 @@ impl Tool {
 #[derive(Clone)]
 pub struct Tools {
     pub tool: LocalState<Tool>,
-    /// The brush's colour when no pigment is chosen, `#rrggbb` as typed.
+    /// `#rrggbb` as typed; painted when no pigment is chosen.
     pub colour: LocalState<String>,
-    /// The pigment of the layer's medium the brush is loaded with: its
-    /// name and masstone `#rrggbb`. None paints `colour`.
+    /// The pigment the brush is loaded with: its name and `#rrggbb` masstone.
     pub pigment: LocalState<Option<(String, String)>>,
     /// Brush size, `0..=1` of the slider's travel.
     pub size: LocalState<f64>,
-    /// How much paint a painted layer's brush carries, `0..=1` of the
-    /// medium's range. Choosing a painted layer starts it at the medium's
-    /// own ([`load_fraction`]).
+    /// How much paint the brush carries, `0..=1` of the medium's range; a
+    /// chosen painted layer starts it at the medium's own.
     pub load: LocalState<f64>,
     /// The layer new marks go on; the top layer when empty.
     pub layer: LocalState<String>,
-    /// The marks selected on the canvas.
     pub selection: LocalState<Vec<String>>,
-    /// Exact objects chosen from the tree, consumed by the canvas.
     pub pick_objects: LocalState<Option<Vec<String>>>,
-    /// A past version shown in place of the artwork, by change id.
     pub preview: LocalState<Option<String>>,
     pub checkpoint_name: LocalState<String>,
-    /// How far the canvas is zoomed: screen pixels per artwork unit, as
-    /// the canvas last showed it.
+    /// Screen pixels per artwork unit, as the canvas last showed it.
     pub zoom: LocalState<f64>,
-    /// A change of view asked for from outside the canvas (the zoom
-    /// buttons), carried out by the canvas on its next frame.
+    /// A view change asked from outside the canvas, carried out on its next frame.
     pub view: LocalState<Option<ViewRequest>>,
-    /// Keys pressed while a button or another control that does not type
-    /// had the focus, and that it left alone: the canvas's own (Escape,
-    /// Delete, the arrows, Enter), carried out by the canvas on its next
-    /// frame as if it had had the focus.
+    /// Keys a button or other non-typing control left alone (Escape, Delete,
+    /// the arrows, Enter), carried out on the next frame as if the canvas had
+    /// had the focus.
     pub keys: LocalState<Vec<CanvasKey>>,
-    /// Whether the sidebar of inspector, layers and history is shown.
     pub sidebar: LocalState<bool>,
     pub workspace: LocalState<Workspace>,
     pub all_tools: LocalState<bool>,
-    /// The canvas's width in logical pixels, in steps of [`ROOM_STEP`], as
-    /// it was last laid out: what the strip over it has room for.
+    /// The canvas's last laid-out width in logical pixels, in steps of [`ROOM_STEP`].
     pub room: LocalState<u32>,
-    /// The stop of a gradient fill the swatches recolour.
     pub stop: LocalState<usize>,
-    /// The selected picture's handles crop it, and its turn handle
-    /// straightens it, instead of stretching and turning the mark.
+    /// The selected picture's handles crop it and its turn handle straightens
+    /// it, instead of stretching and turning the mark.
     pub crop: LocalState<bool>,
-    /// The inspector's controls being dragged, shown on the canvas before
-    /// they are let go and become an edit.
+    /// Inspector controls being dragged, shown on the canvas before they are
+    /// let go and become an edit.
     pub live: Rc<RefCell<Vec<Live>>>,
-    /// Whether the chosen layer's adjustments are shown, with nothing
-    /// selected.
     pub layer_adjust: LocalState<bool>,
-    /// A picture being chosen to add, until the chooser answers.
     pub picking: Rc<RefCell<Option<ui::portal::ContentsChannel>>>,
-    /// The preset the brush lays strokes with on a plain layer.
     pub preset: LocalState<Preset>,
     /// The brush's opacity, `0..=1`.
     pub opacity: LocalState<f64>,
-    /// The brush's dynamics as the person set them, starting at its
-    /// preset's own.
     pub flow: LocalState<f64>,
     pub hardness: LocalState<f64>,
     pub smoothing: LocalState<f64>,
     pub taper: LocalState<f64>,
-    /// What the eraser takes: whole strokes, or the paint under it.
     pub erasing: LocalState<Erasing>,
-    /// What the magic wand finds colour in: every layer as shown, or the
-    /// chosen layer alone.
     pub sampling: LocalState<Sampling>,
-    /// What the bucket finds the area to fill in: the chosen layer, as
-    /// painters expect a fill to stay on the layer it lands on, or every
-    /// layer as shown.
+    /// What the bucket fills within: the chosen layer by default, as painters
+    /// expect a fill to stay on the layer it goes on.
     pub fill_sampling: LocalState<Sampling>,
     /// The artwork's longest side in units: how large a brush can be.
     pub extent: LocalState<f64>,
-    /// How crisp the eraser's edge is, `0..=1`.
+    /// The eraser's edge, `0..=1`.
     pub eraser_hardness: LocalState<f64>,
     /// How much paint the eraser takes off, `0..=1`.
     pub eraser_strength: LocalState<f64>,
-    /// How unlike a colour the magic wand and the bucket still take in,
-    /// `0..=1`.
+    /// How unlike a colour the wand and the bucket still take in, `0..=1`.
     pub tolerance: LocalState<f64>,
-    /// Draws the artwork and keeps painted layers' simulations, shared by
-    /// the canvas and the layer thumbnails so each layer is simulated once.
+    /// Draws the artwork and holds painted layers' simulations, shared by the
+    /// canvas and the layer thumbnails so each layer is simulated once.
     pub renderer: Rc<RefCell<Renderer>>,
-    /// The dialog open over the window, if any.
     pub sheet: LocalState<Option<Sheet>>,
-    /// What the person asked of Files, carried out by the file desk.
     pub files: LocalState<Option<FileRequest>>,
-    /// The file this window's artwork was last opened from or saved to.
     pub file: LocalState<Option<String>>,
-    /// Where the artwork was last saved when that place has no path here
-    /// (a browser page's Save dialog file): every later Save writes there
-    /// without asking, and only Save as asks again.
+    /// Where the artwork was last saved when that place has no path here (a
+    /// browser page's Save dialog file): every later Save writes there without
+    /// asking, and only Save as asks again.
     pub kept: LocalState<Option<ui::portal::SaveDestination>>,
     /// What the last file request came to, said beside the title.
     pub notice: LocalState<Option<String>>,
-    /// The artworks opened or saved lately, by device, newest first.
     pub recents: LocalState<Rc<crate::document::ArtworkRecents>>,
-    /// The device whose recent artworks are shown.
     pub device: Rc<str>,
-    /// The welcome over a blank artwork was put away.
     pub welcomed: LocalState<bool>,
-    /// What was chosen from the artwork's menu, until it is carried out.
     pub menu: LocalState<String>,
     pub export: crate::panels::export::Choices,
-    /// What the new-artwork dialog is set to.
     pub new: crate::panels::start::Choices,
     /// The part of the artwork the canvas shows, in artwork units.
     pub visible: LocalState<Option<ui::vello::kurbo::Rect>>,
@@ -315,49 +281,33 @@ pub struct Tools {
 /// A dialog over the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sheet {
-    /// A size, a ground and a medium to start a new artwork on.
     NewArtwork,
-    /// Exporting the artwork as a picture.
     Export,
-    /// The keyboard shortcuts.
     Shortcuts,
 }
 
-/// Something asked of Files.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FileRequest {
-    /// Choose an artwork or SVG to open in place of this one.
     Open,
-    /// Open the artwork at this path.
     OpenRecent(String),
-    /// Open, in this window, the workspace's artwork this launch argument
-    /// names: one an earlier window made.
+    /// Open, in this window, the workspace's artwork this launch argument names.
     OpenWorkspace(String),
     Save,
-    /// Choose a file to save the artwork to, and keep working on it there.
     SaveAs,
-    /// Save a copy to a file of its own and keep working on this one.
     Duplicate,
-    /// Export a picture as set in the export dialog.
     Export(crate::panels::export::Settings),
 }
 
-/// A control whose value the canvas shows while it is dragged.
 #[derive(Clone)]
 pub struct Live {
-    /// The control's value, as it moves.
     pub state: LocalState<f64>,
-    /// The value the artwork has, followed as it changes.
     pub committed: LocalState<f64>,
-    /// The value onto the artwork as shown.
     pub apply: Onto,
 }
 
-/// How a control's value changes the artwork as shown.
 pub type Onto = Rc<dyn Fn(&mut Artwork, f64)>;
 
 impl Live {
-    /// The value while it differs from what the artwork has.
     pub fn moved(&self) -> Option<f64> {
         let value = self.state.with(|value| *value);
         let committed = self.committed.with(|value| *value);
@@ -365,8 +315,7 @@ impl Live {
     }
 }
 
-/// The brush's paint and the chosen layer, apart from the rest of the
-/// tools.
+/// The brush's paint and the chosen layer, apart from the rest of the tools.
 #[derive(Clone)]
 pub struct Loaded {
     colour: LocalState<String>,
@@ -375,7 +324,6 @@ pub struct Loaded {
 }
 
 impl Loaded {
-    /// The paint as a mark names it, as [`Tools::paint`] says.
     pub fn paint(&self) -> String {
         if let Some((name, _)) = self.pigment.with(Clone::clone) {
             return format!("pigment:{name}");
@@ -389,7 +337,6 @@ impl Loaded {
         format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b)
     }
 
-    /// The chosen layer, if one is chosen.
     pub fn layer(&self) -> Option<String> {
         Some(self.layer.with(Clone::clone)).filter(|layer| !layer.is_empty())
     }
@@ -403,7 +350,6 @@ pub struct CanvasKey {
     pub modifiers: ui::winit::keyboard::ModifiersState,
 }
 
-/// A change of view the canvas makes when asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewRequest {
     ZoomIn,
@@ -414,23 +360,17 @@ pub enum ViewRequest {
     Pixel,
 }
 
-/// Where the magic wand and the bucket look for colour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Sampling {
-    /// Every layer, as the artwork shows.
     #[default]
     All,
-    /// The chosen layer alone.
     Layer,
 }
 
-/// What the eraser takes off.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Erasing {
-    /// The paint under it, as an eraser mark of its own.
     #[default]
     Paint,
-    /// Every stroke it touches, whole.
     Strokes,
 }
 
@@ -494,7 +434,7 @@ impl Default for Tools {
     }
 }
 
-/// How finely [`Tools::room`] follows the canvas's width: coarse enough
+/// How coarsely [`Tools::room`] follows the canvas's width: coarse enough
 /// that resizing the window rebuilds the strip over it only now and then.
 pub const ROOM_STEP: u32 = 24; // a granularity of a measured width, not spacing
 
@@ -507,7 +447,7 @@ const BRUSH_SMALLEST: u8 = 1; // a brush width in artwork units, not on-screen s
 /// The largest brush on any artwork, in units: a small artwork still gets
 /// a broad one.
 const BRUSH_LARGEST_LEAST: u8 = 120; // a brush width in artwork units, not on-screen spacing
-/// The largest brush as a share of the artwork's longest side: a quarter,
+/// The largest brush as a share of the artwork's longest side.
 /// enough to lay in a sky in a few strokes on any size of artwork.
 const BRUSH_LARGEST_SHARE: f64 = 0.25;
 
@@ -544,15 +484,12 @@ pub enum ToolEffect {
 }
 
 impl Tools {
-    /// Whether the canvas's next frame has work it took from elsewhere: keys
-    /// a menu or a panel pressed for the person, or objects the tree picked.
-    /// The frame that sees one syncs and carries it out, so a command chosen
-    /// away from the canvas reaches the artwork in the frame it arrived in.
+    /// Whether the next frame has work taken from elsewhere: keys a menu or a
+    /// panel pressed for the canvas, or objects the tree picked.
     pub fn waiting(&self) -> bool {
         !self.keys.with(Vec::is_empty) || self.pick_objects.with(Option::is_some)
     }
 
-    /// Take up what `effect` chooses.
     pub fn answer(&self, effect: ToolEffect) -> ui::framework::EffectAnswer {
         match effect {
             ToolEffect::UseBrush { preset } => {
@@ -566,9 +503,8 @@ impl Tools {
         Ok(ui::framework::Effected::done())
     }
 
-    /// A smaller (`[`) or larger (`]`) brush and eraser: a step of the
-    /// size slider's travel, as painters' hands expect. Whether `key` was
-    /// one of them.
+    /// A smaller (`[`) or larger (`]`) brush and eraser: a step of the size
+    /// slider's travel. Whether `key` was one of them.
     pub fn size_key(&self, key: &str) -> bool {
         let step = match key {
             "]" => 0.05,
@@ -588,14 +524,12 @@ impl Tools {
         smallest + travel * travel * (self.largest_brush() - smallest)
     }
 
-    /// The largest brush on this artwork, in units.
     pub fn largest_brush(&self) -> f64 {
         let extent = self.extent.with(|extent| *extent);
         (extent * BRUSH_LARGEST_SHARE).max(f64::from(BRUSH_LARGEST_LEAST))
     }
 
-    /// The paint on the brush as a mark names it: `pigment:<name>` or
-    /// `#rrggbb`.
+    /// The paint on the brush as a mark names it: `pigment:<name>` or `#rrggbb`.
     pub fn paint(&self) -> String {
         self.pigment.with(|pigment| match pigment {
             Some((name, _)) => format!("pigment:{name}"),
@@ -615,8 +549,8 @@ impl Tools {
         }
     }
 
-    /// The colour the brush paints, for drawing its preview: the pigment's
-    /// masstone, else the ink.
+    /// The brush's colour for drawing its preview: the pigment's masstone, else
+    /// the ink.
     pub fn colour(&self) -> Color {
         let pigment = self
             .pigment
@@ -631,8 +565,6 @@ impl Tools {
         })
     }
 
-    /// The paint and the chosen layer alone, for a control that reads them
-    /// when it is used.
     pub fn loaded(&self) -> Loaded {
         Loaded {
             colour: self.colour.clone(),
@@ -641,7 +573,6 @@ impl Tools {
         }
     }
 
-    /// What the tools put down now.
     pub fn ink(&self) -> Ink {
         Ink {
             colour: self.paint(),
@@ -650,7 +581,6 @@ impl Tools {
         }
     }
 
-    /// Load the brush with `colour`, picked from the artwork.
     pub fn pick(&self, colour: Color) {
         let rgba = colour.to_rgba8();
         self.pigment.set(None);
@@ -658,8 +588,7 @@ impl Tools {
             .set(format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b));
     }
 
-    /// Load the brush with `preset`, its dynamics starting at the
-    /// preset's own.
+    /// Load the brush with `preset`, its dynamics starting at the preset's.
     pub fn choose_preset(&self, preset: Preset) {
         let dynamics = Dynamics::of(preset, &BTreeMap::new());
         self.preset.set(preset);
@@ -673,8 +602,8 @@ impl Tools {
         self.taper.set(dynamics.taper);
     }
 
-    /// The preset name a stroke on `layer` is laid with: the brush's on a
-    /// plain layer; a painted layer's medium paints it.
+    /// The preset a stroke on `layer` is laid with: the brush's on a plain
+    /// layer; a painted layer's medium paints it.
     pub fn brush_name(&self, art: &Artwork, layer: &str) -> Option<String> {
         if art
             .layer(layer)
@@ -685,9 +614,9 @@ impl Tools {
         crate::brushes::stored(self.preset.with(|preset| preset.name()))
     }
 
-    /// The parameters a stroke on `layer` carries: on a painted layer its
-    /// load, when the load was set; on a plain layer the dynamics the
-    /// person moved away from the preset's.
+    /// The parameters a stroke on `layer` carries: on a painted layer its load,
+    /// when the load was set; on a plain layer the dynamics moved away from the
+    /// preset's.
     pub fn stroke_params(&self, art: &Artwork, layer: &str) -> Option<BTreeMap<String, f64>> {
         let plain = art
             .layer(layer)
@@ -725,14 +654,13 @@ pub fn load_range(art: &Artwork, layer: &str) -> Option<(f64, f64)> {
     load_param(art, layer).map(|(range, _)| range)
 }
 
-/// The medium's own `load` on `layer` as a fraction of its range: where
-/// the brush starts when the layer is chosen.
+/// The medium's own `load` on `layer` as a fraction of its range: where the
+/// brush starts when the layer is chosen.
 pub fn load_fraction(art: &Artwork, layer: &str) -> Option<f64> {
     let ((min, max), value) = load_param(art, layer)?;
     (max > min).then(|| ((value - min) / (max - min)).clamp(0.0, 1.0))
 }
 
-/// `load`'s range and the value the medium painting `layer` gives it.
 fn load_param(art: &Artwork, layer: &str) -> Option<((f64, f64), f64)> {
     let layer = art.layer(layer)?;
     if layer.medium.is_empty() {

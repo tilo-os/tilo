@@ -1,16 +1,7 @@
-//! How the calculator's changes show in the shared History view.
-//!
-//! The calculations a person did are the calculator's history: there is no
-//! list of its own beside History. Each `commit-history` change shows as the
-//! calculation, typeset as the display sets it, with its result; choosing it
-//! puts the calculation back into the calculator and Copy copies the result.
-//! A change to a graph shows the function it plotted (a 2D curve with a
-//! small plot of it). Everything else (a removal, hiding a curve) reads as
-//! its sentence from the app's catalogue.
-//!
-//! A face is made from the change's recorded facts alone, never the live
-//! document, so a past calculation reads the same after it left the
-//! calculator's record (it keeps only the newest [`crate::actions::HISTORY_CAP`]).
+//! How the calculator's changes show in the shared History view: a calculation
+//! typeset as the display sets it with its result, a graph change as the
+//! function it plotted. A face is made from the change's recorded facts alone,
+//! so it reads the same after the record dropped it.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -29,25 +20,20 @@ use crate::draw::{self, Align};
 use crate::engine;
 use crate::mathfield::MathField;
 
-/// The x range a curve's thumbnail plots, in the graph's own units.
+/// The x range a thumbnail plots, in the graph's units.
 const THUMBNAIL_X: std::ops::RangeInclusive<f64> = -5.0..=5.0;
-/// Samples across a thumbnail.
 const THUMBNAIL_SAMPLES: usize = 48;
 
-/// Each curve's place in the list, by row id: the colour it is drawn in
-/// on the graph and in its panel.
+/// Each curve's place in the list, by row id: the colour it is drawn in.
 type Series = Rc<RefCell<HashMap<String, usize>>>;
 
-/// The calculator's [`HistoryEntryPresenter`].
 #[derive(Default)]
 pub struct CalculatorEntries {
-    /// The curves as the calculator lists them now, so a plotted curve's
-    /// thumbnail is drawn in the colour it has on the graph.
     series: Series,
 }
 
 impl CalculatorEntries {
-    /// The curves now listed, in order (their row ids).
+    /// The curves now listed, in order.
     pub fn set_curves<'a>(&self, rows: impl IntoIterator<Item = &'a str>) {
         let mut series = self.series.borrow_mut();
         series.clear();
@@ -78,10 +64,8 @@ impl HistoryEntryPresenter for CalculatorEntries {
             .map(|row| (row, Rc::clone(&self.series)));
         Some(EntryFace::new(spoken).with_body(Rc::new(GraphBody::new(kind, &formula, curve))))
     }
-    /// A band reads as what was done in it: the functions written in it
-    /// (each once, however many keystrokes wrote it), its calculations, and
-    /// how many other changes beside them. A change to a row of a function
-    /// written in the band, such as adding the row, is part of that function.
+    /// A band reads as the functions written in it once each, its
+    /// calculations, and a count of other changes.
     fn group_summary(&self, entries: &[HistoryEntry]) -> Option<String> {
         let calculations = entries
             .iter()
@@ -126,8 +110,7 @@ impl HistoryEntryPresenter for CalculatorEntries {
     }
 }
 
-/// The calculation a `commit-history` change made: its expression and
-/// result.
+/// The expression and result a `commit-history` change made.
 pub fn calculation(entry: &HistoryEntry) -> Option<(String, String)> {
     let Some(Did::Verb(call)) = entry.context.as_ref()?.what.as_ref() else {
         return None;
@@ -146,8 +129,7 @@ pub fn calculation(entry: &HistoryEntry) -> Option<(String, String)> {
     Some((expression, text("result").unwrap_or_default()))
 }
 
-/// The function a graph change plotted: a formula added (by the verb or as
-/// a new row) or written into a row.
+/// The function a graph change plotted.
 fn plotted(entry: &HistoryEntry) -> Option<(GraphKind, String)> {
     let context = entry.context.as_ref()?;
     let formula = match context.what.as_ref()? {
@@ -183,8 +165,7 @@ fn plotted(entry: &HistoryEntry) -> Option<(GraphKind, String)> {
     Some((graph_kind(edit_of(context)?)?, formula))
 }
 
-/// The formula a change's row reads as: its item's label. A row with no
-/// formula yet is offered under its id, which is not a formula.
+/// A row with no formula yet is offered under its id, which is not a formula.
 fn written_formula(context: &ui::tilo_actions::ActionContext) -> Option<String> {
     context
         .item
@@ -193,8 +174,7 @@ fn written_formula(context: &ui::tilo_actions::ActionContext) -> Option<String> 
         .map(|item| item.label.clone())
 }
 
-/// The graph row a change is about: the item its edit names, or the item
-/// it addressed.
+/// The item its edit names, or the item it addressed.
 fn row_of(entry: &HistoryEntry) -> Option<String> {
     let context = entry.context.as_ref()?;
     edit_of(context)
@@ -214,7 +194,6 @@ fn edit_of(context: &ui::tilo_actions::ActionContext) -> Option<&FieldEdit> {
     }
 }
 
-/// Which graph list an edit is in, from the collection it names.
 fn graph_kind(edit: &FieldEdit) -> Option<GraphKind> {
     let names = |list: &str| {
         edit.field == list
@@ -233,8 +212,7 @@ fn graph_kind(edit: &FieldEdit) -> Option<GraphKind> {
 }
 
 impl GraphKind {
-    /// What a formula of this list is equal to: `y` for a curve, `z` for a
-    /// surface.
+    /// `y` for a curve, `z` for a surface.
     fn variable(self) -> &'static str {
         match self {
             GraphKind::Curve2d => "y",
@@ -243,11 +221,9 @@ impl GraphKind {
     }
 }
 
-/// A calculation, set as the display sets it: the expression in the math
-/// layout, dim, and its result in the numeric title face beneath, trailing.
+/// A calculation: the expression in the math layout, its result beneath.
 struct CalculationBody {
     field: RefCell<MathField>,
-    /// The expression the calculation was made from; the field shows it.
     expression: String,
     result: String,
 }
@@ -255,8 +231,7 @@ struct CalculationBody {
 impl CalculationBody {
     fn new(expression: &str, result: &str) -> Self {
         Self {
-            // Read-only: follows the expression the history holds, which an
-            // undo, a merge or a peer can change under this row.
+            // Read-only, and following: an undo or a peer can change it.
             field: RefCell::new(MathField::new(expression).follow_source()),
             expression: expression.to_owned(),
             result: result.to_owned(),
@@ -265,7 +240,6 @@ impl CalculationBody {
 }
 
 impl EntryBody for CalculationBody {
-    /// The expression's line over the result's, between the row's padding.
     fn height(&self, theme: &Theme) -> f64 {
         let pad_y = f64::from(theme.tokens.spacing.s1);
         let result = f64::from(theme.text(TextRole::Title).numeric().line_height_px());
@@ -308,34 +282,29 @@ impl EntryBody for CalculationBody {
     }
 }
 
-/// One line of a formula in a History row: a body line, with room above
-/// and below it for an exponent or an index.
 fn formula_line(theme: &Theme) -> f64 {
     let set = f64::from(formula_size(theme));
     (set * 1.25).max(f64::from(theme.text(TextRole::Body).line_height_px()))
         + f64::from(theme.tokens.spacing.s2)
 }
 
-/// The size a formula is set at in a History row: the body face, so a row
-/// keeps the display's typesetting at the list's scale. A role is already
-/// resolved against the reader's text scale, and the math layout paints at
-/// exactly the size it is given, so it is read straight off the theme.
+/// The body face. A role is already resolved against the reader's text scale,
+/// and the math layout paints at the size it is given.
 fn formula_size(theme: &Theme) -> f32 {
     theme.tokens.typography.size(TextRole::Body)
 }
 
-/// A plotted function: `y = f(x)` typeset, and for a curve a small plot of
-/// it beside the formula.
+/// A plotted function typeset, and for a curve a small plot beside it.
 struct GraphBody {
     kind: GraphKind,
     field: RefCell<MathField>,
     /// The formula the row was made from; the field shows it.
     formula: String,
-    /// The curve's samples over the thumbnail span, `None` where it is
-    /// undefined; empty for a surface or a formula that does not compile.
+    /// `None` where it is undefined; empty for a surface or an unparseable
+    /// formula.
     samples: Vec<Option<f64>>,
-    /// The curve's row and the list it is looked up in at paint time: it is
-    /// drawn in its colour on the graph, or quietly once it was removed.
+    /// The row and the list it is looked up in: drawn in its colour, or
+    /// quietly once it was removed.
     curve: Option<(String, Series)>,
 }
 
@@ -358,8 +327,8 @@ impl GraphBody {
         };
         Self {
             kind,
-            // Read-only, and following: a relabelled or edited formula is drawn
-            // as it is now, not as it was when the row was built.
+            // Read-only, and following: an edited formula is drawn as it is
+            // now.
             field: RefCell::new(MathField::new(formula).follow_source()),
             formula: formula.into(),
             samples,
@@ -367,8 +336,7 @@ impl GraphBody {
         }
     }
 
-    /// The colour the curve is drawn in now: its series colour while it is
-    /// listed, the dim text colour once it is gone.
+    /// Its series colour while listed, the dim text colour once it is gone.
     fn ink(&self, theme: &Theme) -> vello::peniko::Color {
         let listed = self
             .curve
@@ -380,7 +348,6 @@ impl GraphBody {
         }
     }
 
-    /// The thumbnail's path inside `frame`, scaled to the curve's own range.
     fn thumbnail(&self, frame: Rect) -> Option<BezPath> {
         let defined: Vec<f64> = self.samples.iter().flatten().copied().collect();
         let low = defined.iter().copied().fold(f64::INFINITY, f64::min);
@@ -413,8 +380,7 @@ impl GraphBody {
 }
 
 impl EntryBody for GraphBody {
-    /// Two formula lines between the row's padding: room for a fraction
-    /// (a line over a line) or a root over its radicand.
+    /// Two formula lines: room for a fraction or a root over its radicand.
     fn height(&self, theme: &Theme) -> f64 {
         let pad_y = f64::from(theme.tokens.spacing.s1);
         2.0 * pad_y + 2.0 * formula_line(theme)
@@ -529,8 +495,6 @@ mod tests {
         })
     }
 
-    /// A calculation is its expression and result, typeset; it opens in the
-    /// calculator and copies its result.
     #[test]
     fn a_calculation_reads_as_itself_opens_and_copies_its_result() {
         let face = CalculatorEntries::default()
@@ -576,8 +540,6 @@ mod tests {
         );
     }
 
-    /// A function added with no formula yet has nothing to show: its row is
-    /// offered under its id, and the id is not a formula.
     #[test]
     fn a_blank_function_row_is_not_read_as_its_id() {
         let added = Did::Edit(FieldEdit {
@@ -613,8 +575,6 @@ mod tests {
         );
     }
 
-    /// A band reads as the functions and calculations in it, and any other
-    /// changes beside them; a band of neither keeps the default.
     #[test]
     fn a_band_counts_its_functions_and_calculations() {
         let calculation = || {
@@ -636,8 +596,6 @@ mod tests {
         assert_eq!(CalculatorEntries::default().group_summary(&none), None);
     }
 
-    /// A function typed a keystroke at a time is one function in its band,
-    /// and adding its row is part of writing it.
     #[test]
     fn a_band_counts_a_function_once_however_it_was_typed() {
         let added = entry(
@@ -665,7 +623,6 @@ mod tests {
         );
     }
 
-    /// Removing, clearing and hiding read as their sentences.
     #[test]
     fn other_changes_read_as_their_sentence() {
         for what in [

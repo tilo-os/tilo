@@ -100,7 +100,7 @@ fn media_basis_matches_original_malformed_container_conflict_and_certificate_rej
                 doc.put(ROOT, "owner", "wrong key").unwrap();
             }
             1 => {
-                doc.put_object(ROOT, "grants", ObjType::List).unwrap();
+                doc.put_object(ROOT, "peers", ObjType::List).unwrap();
             }
             2 => {
                 doc.put(ROOT, "peers", "wrong shape").unwrap();
@@ -203,25 +203,15 @@ fn historical_basis(
 ) -> Result<[u8; 32], MediaPolicyError> {
     let owner = strict_string(doc, &ROOT, "owner")?;
     let owner_key = canonical_key(&owner)?;
-    let grant_map = strict_map(doc, &ROOT, "grants")?;
+    let membership = crate::members::replay_declared(doc);
     let mut grants = BTreeMap::new();
-    for key in doc.keys(&grant_map) {
-        let bytes = strict_bytes(doc, &grant_map, &key)?;
-        let value: tilo_action_policy::Grant =
-            serde_json::from_slice(&bytes).map_err(|_| MediaPolicyError::Malformed)?;
+    for grant in &membership.grants {
         grants.insert(
-            key,
-            canonical_bytes(&value).map_err(|_| MediaPolicyError::Malformed)?,
+            grant.id.as_str().to_owned(),
+            canonical_bytes(grant).map_err(|_| MediaPolicyError::Malformed)?,
         );
     }
-    let member_map = strict_map(doc, &ROOT, "members")?;
-    let mut members = BTreeMap::new();
-    for key in doc.keys(&member_map) {
-        let bytes = strict_bytes(doc, &member_map, &key)?;
-        let role: tilo_action_policy::Role =
-            serde_json::from_slice(&bytes).map_err(|_| MediaPolicyError::Malformed)?;
-        members.insert(key, role);
-    }
+    let members: BTreeMap<String, tilo_action_policy::Role> = membership.members;
     let peers = strict_map(doc, &ROOT, "peers")?;
     let mut roster = BTreeSet::new();
     for key in doc.keys(&peers) {

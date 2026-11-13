@@ -14,21 +14,16 @@ use crate::resource::{ExportSvg, FindArea, ViewOp};
 use crate::selection::Select;
 use crate::view_ops::{self, Awaiting};
 
-/// An answer still waiting for its pictures, and who it goes to.
 pub(super) struct Due {
     waiting: Waiting,
     reply: ui::framework::EffectReply,
 }
 
-/// What an answer waits for.
 enum Waiting {
-    /// A view's or an export's pictures.
     Answer(Awaiting<ActionOutput>),
-    /// The magic wand's or a colour's area being found for find-area.
     Colour(Box<Colouring>),
 }
 
-/// A colour find-area is looking for in the artwork as it was invoked on.
 struct Colouring {
     search: ColourSearch,
     art: Artwork,
@@ -86,7 +81,6 @@ impl CanvasSurface {
         answered
     }
 
-    /// What `waiting` came to, once its pictures came.
     fn came(&mut self, waiting: &mut Waiting) -> Option<Result<ActionOutput, String>> {
         match waiting {
             Waiting::Answer(answer) => answer.poll(),
@@ -134,7 +128,6 @@ impl CanvasSurface {
         ui::framework::Effected::Pending
     }
 
-    /// The area `colouring` found, as path data, once its pictures came.
     fn look_for(&mut self, colouring: &mut Colouring) -> Option<Result<ActionOutput, String>> {
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
         let mut renderer = self.tools.renderer.borrow_mut();
@@ -178,7 +171,6 @@ impl CanvasSurface {
         ))
     }
 
-    /// `op` from the artwork it names, waiting for any picture it needs.
     fn answer(&mut self, op: &ViewOp, cx: &Reading) -> Result<Awaiting<ActionOutput>, String> {
         let version = match op {
             ViewOp::Look { look } => look.version.as_deref(),
@@ -266,7 +258,6 @@ impl CanvasSurface {
         answer
     }
 
-    /// The reference picture as `inspect` reports it, when there is one.
     fn reference_info(&self, art: &Artwork) -> Option<Value> {
         let reference = art.reference.as_ref()?;
         let mut renderer = self.tools.renderer.borrow_mut();
@@ -308,7 +299,6 @@ pub(super) fn select_found(
     Ok(answer)
 }
 
-/// An answer that is only `value`.
 fn listing(value: Value) -> ActionOutput {
     ActionOutput {
         value: Some(value),
@@ -316,7 +306,6 @@ fn listing(value: Value) -> ActionOutput {
     }
 }
 
-/// `info` with the revision it answers from and the version's name.
 fn stamp(info: &mut Value, revision: &str, shown: Option<&str>) {
     if let Value::Object(fields) = info {
         fields.insert("revision".into(), revision.into());
@@ -347,7 +336,6 @@ fn written(
     Ok(info)
 }
 
-/// The answer of `info`, stamped, with `picture` kept as content.
 fn pictured(
     picture: Option<&view_ops::Picture>,
     mut info: Value,

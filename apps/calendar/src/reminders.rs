@@ -1,11 +1,4 @@
 //! Event reminders as system notifications.
-//!
-//! The reminders of the coming days are handed to the platform's
-//! notification scheduler, which shows them at their time whether or not
-//! Calendar is running. Whenever what is due changes (an event moved, a
-//! reminder changed, a calendar hidden, the days rolled on) the scheduled set
-//! is reconciled with it: what is no longer due is cancelled, what is new or
-//! moved is scheduled.
 
 use std::collections::HashSet;
 use std::hash::Hasher as _;
@@ -16,37 +9,26 @@ use ui::notify::{Notification, Notifier, NotifyError, Scheduled};
 use crate::model::{Calendar, Event};
 use crate::shown::Viewer;
 
-/// How far ahead reminders are handed to the scheduler. A window left
-/// open, or the next start, carries the horizon on.
 pub(crate) const HORIZON_DAYS: i64 = 7;
 
-/// The most reminders scheduled at once: the earliest ones. The platform
-/// keeps 64 per app.
 pub(crate) const MAX_SCHEDULED: usize = 48;
 
-/// The time an all-day event's reminder counts back from.
 const ALL_DAY_MORNING: chrono::NaiveTime = match chrono::NaiveTime::from_hms_opt(9, 0, 0) {
     Some(time) => time,
     None => chrono::NaiveTime::MIN,
 };
 
-/// The scheme of a reminder's activation: a click opens its event.
 pub(crate) const SCHEME: &str = "tilo-calendar";
 
-/// One reminder to ring.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Reminder {
-    /// Stable per occurrence, so a moved event replaces its reminder.
     pub tag: String,
     pub at: DateTime<Utc>,
     pub title: String,
     pub body: String,
-    /// What a click opens.
     pub activation: String,
 }
 
-/// The tag of the reminder of `event`'s occurrence on `original`: 15 ASCII
-/// characters, the shortest limit among the platforms.
 fn tag(event: &Event, original: chrono::NaiveDate) -> String {
     let mut hasher = fnv::FnvHasher::default();
     hasher.write(event.id.as_bytes());
@@ -54,8 +36,6 @@ fn tag(event: &Event, original: chrono::NaiveDate) -> String {
     format!("c{:014x}", hasher.finish() & 0x00ff_ffff_ffff_ffff)
 }
 
-/// The reminders that ring from `now` through the horizon, earliest first:
-/// those of events in shown calendars, at their instant.
 pub(crate) fn due(
     model: &Calendar,
     viewer: Viewer,
@@ -71,7 +51,6 @@ pub(crate) fn due(
         .flat_map(|event| crate::shown::occurrences(event, today, until, &viewer))
         .filter_map(|shown| {
             let minutes = shown.event.reminder_min?;
-            // An all-day event's reminder counts back from the morning.
             let start = if shown.event.all_day {
                 shown.start.date().and_time(ALL_DAY_MORNING)
             } else {
@@ -96,7 +75,6 @@ pub(crate) fn due(
     due
 }
 
-/// What the notification says under the title: when, and where.
 fn body(shown: &crate::shown::Shown<'_>) -> String {
     let when = if shown.event.all_day {
         "All day".to_owned()
@@ -114,7 +92,6 @@ fn body(shown: &crate::shown::Shown<'_>) -> String {
     }
 }
 
-/// `at` on the platform clock.
 fn system_time(at: DateTime<Utc>) -> ui::time::SystemTime {
     let millis = u64::try_from(at.timestamp_millis()).unwrap_or(0);
     ui::time::SystemTime::UNIX_EPOCH
@@ -122,12 +99,6 @@ fn system_time(at: DateTime<Utc>) -> ui::time::SystemTime {
         .unwrap_or(ui::time::SystemTime::UNIX_EPOCH)
 }
 
-/// Make the scheduler hold exactly `wanted`: cancel what it holds that is
-/// not wanted, schedule what is new or moved, leave the rest.
-///
-/// # Errors
-/// The scheduler is unavailable or refused a request; what could be done
-/// before it was.
 pub(crate) fn reconcile(notifier: &dyn Notifier, wanted: &[Reminder]) -> Result<(), NotifyError> {
     let held: Vec<Scheduled> = notifier.scheduled()?;
     for scheduled in &held {
@@ -185,7 +156,6 @@ mod tests {
     #[test]
     fn reminders_ring_before_each_occurrence_at_its_instant() {
         let berlin = Viewer::named("Europe/Berlin");
-        // Tuesday 30 June, 08:00 in Berlin.
         let now = Utc.with_ymd_and_hms(2026, 6, 30, 6, 0, 0).unwrap();
         let mut standup = event("Standup", "Europe/Berlin", at(2026, 6, 29, 9, 30), Some(10));
         standup.recurrence = crate::model::Recurrence::Weekdays;
@@ -210,12 +180,10 @@ mod tests {
         assert_eq!(
             first,
             vec![
-                // 09:20 in Berlin.
                 (
                     "Standup",
                     Utc.with_ymd_and_hms(2026, 6, 30, 7, 20, 0).unwrap()
                 ),
-                // 09:00 in New York is 15:00 in Berlin; half an hour before.
                 (
                     "New York call",
                     Utc.with_ymd_and_hms(2026, 6, 30, 12, 30, 0).unwrap()
@@ -267,7 +235,6 @@ mod tests {
         };
         reconcile(&notifier, &[reminder("ca", 20), reminder("cb", 30)]).unwrap();
         assert_eq!(notifier.scheduled().unwrap().len(), 2);
-        // "cb" is gone, "ca" moved, "cc" is new.
         reconcile(&notifier, &[reminder("ca", 25), reminder("cc", 40)]).unwrap();
         let mut held: Vec<(String, ui::time::SystemTime)> = notifier
             .scheduled()

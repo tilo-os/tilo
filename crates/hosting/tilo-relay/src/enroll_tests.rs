@@ -56,12 +56,7 @@ fn host_record_approval_keeps_admission_and_revocation_checks() {
         reason: RevocationReason::Retired,
         signature: [0; 64],
     };
-    revocation.signature = identity
-        .root
-        .as_ref()
-        .unwrap()
-        .sign_message(&tilo_user_identity::revocation_signing_digest(&revocation).unwrap())
-        .unwrap();
+    sign_revocation_entry(&mut revocation, identity.root.as_deref().unwrap()).unwrap();
     let store = fleet_store(&root, &identities);
     let identity_id = hex::encode(identity.user_public_key);
     let mut fleet = store.load(&identity_id).unwrap();
@@ -767,14 +762,17 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             device_cert: Some(cert),
             relay_workspace_ids: vec![7],
         };
-        assert!(valid_home_peer_registration(&registration));
+        let registry = |registration: &HomePeerRegistration| {
+            tilo_relay::checked_home_peers(&serde_json::to_vec(&[registration]).unwrap())
+        };
+        assert!(registry(&registration).is_ok());
 
         registration.schema_version = HomePeerRegistration::CURRENT_SCHEMA.saturating_add(1);
-        assert!(!valid_home_peer_registration(&registration));
+        assert!(registry(&registration).is_err());
 
         registration.schema_version = HomePeerRegistration::CURRENT_SCHEMA;
         registration.device_node_id = hex::encode([84; 32]);
-        assert!(!valid_home_peer_registration(&registration));
+        assert!(registry(&registration).is_err());
     }
     // Phase `personal_enrollment_staging_keeps_an_existing_device_unchanged` (defined above).
     personal_enrollment_staging_keeps_an_existing_device_unchanged();

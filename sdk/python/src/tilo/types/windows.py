@@ -26,7 +26,7 @@ Route = Literal["wine", "proton", "vm"]
 
 class Manager(Resource):
     """Windows manager — `windows.manager`."""
-    __surface__ = "so.tilo.windows@88e1e8cbfc0827d1"
+    __surface__ = "so.tilo.windows@59fa16efb06a9562"
     routes: dict[str, Route]
 
     def open_file(self,

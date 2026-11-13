@@ -1,13 +1,6 @@
-//! POSIX attributes that replicate with a record: permission bits and
-//! whether a file is a symbolic link (`storage.md` §6.6).
-//!
-//! Owner and group never replicate: every materialised path belongs to the
-//! local person. A symbolic link is a file record whose content is the link
-//! target, byte for byte, so its target is versioned, signed and fetched
-//! like any other content; only the fact that it is a link and the mode
-//! bits are carried here, as one root-level scalar per record, in causal
-//! order with the record's own changes. A record without one is a regular
-//! file (0644) or a directory (0755).
+//! POSIX attributes that replicate with a record: permission bits and whether it
+//! is a symbolic link. Owner and group never replicate, and a record without
+//! attributes is a 0644 file or a 0755 directory.
 
 use automerge::transaction::Transactable;
 use automerge::{ROOT, ReadDoc, ScalarValue, Value};
@@ -18,23 +11,17 @@ use super::Namespace;
 
 const POSIX_PREFIX: &str = "posix/";
 
-/// Mode of a file nobody gave another one.
 pub const DEFAULT_FILE_MODE: u32 = 0o644;
-/// Mode of a directory nobody gave another one.
 pub const DEFAULT_DIR_MODE: u32 = 0o755;
 
-/// The replicated POSIX attributes of one record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PosixAttrs {
-    /// Permission bits. Files keep `rwx` for user, group and other;
-    /// directories also keep setgid. Setuid is never replicated.
+    /// Permission bits; setuid is never replicated.
     pub mode: u32,
-    /// The record's content is a symbolic link's target.
     pub symlink: bool,
 }
 
 impl PosixAttrs {
-    /// The attributes a record has when none were published.
     pub fn default_for(dir: bool) -> Self {
         Self {
             mode: if dir {
@@ -46,8 +33,6 @@ impl PosixAttrs {
         }
     }
 
-    /// Attributes of a local path with mode bits `mode` (from `st_mode`),
-    /// keeping only what replicates.
     pub fn of_local(mode: u32, dir: bool, symlink: bool) -> Self {
         let mode = if symlink {
             // A link's own mode means nothing on Linux.
@@ -62,7 +47,6 @@ impl PosixAttrs {
 }
 
 impl Namespace {
-    /// The published POSIX attributes of `record`, if any.
     pub fn posix_attrs(&self, record: FileRecordId) -> Option<PosixAttrs> {
         let key = format!("{POSIX_PREFIX}{}", record.0);
         match self.doc.get(&ROOT, key.as_str()) {
@@ -74,8 +58,7 @@ impl Namespace {
         }
     }
 
-    /// Records the POSIX attributes of `record`. The caller broadcasts the
-    /// next incremental save.
+    /// The caller broadcasts the next incremental save.
     pub fn put_posix_attrs(&mut self, record: FileRecordId, attrs: &PosixAttrs) -> bool {
         let Ok(bytes) = postcard::to_allocvec(attrs) else {
             return false;
@@ -107,8 +90,6 @@ mod tests {
         assert_eq!(PosixAttrs::default_for(true).mode, 0o755);
     }
 
-    /// The mount presents the mode a record was given, so a checkout's script made executable is
-    /// one the kernel lets run; a record given none is a plain 0644 file.
     #[test]
     fn a_file_is_presented_with_the_mode_it_was_given() {
         let mut ns = Namespace::new("a").unwrap();

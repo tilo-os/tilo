@@ -1,37 +1,9 @@
 //! Transport: the protocol edge of the Mail app.
 //!
-//! ## The offline / online split (important for `--shots`)
-//!
-//! `--shots` runs one headless frame with no event loop and no live account,
-//! so it cannot talk to an IMAP/SMTP server. To still render a fully populated
-//! client we bundle a representative corpus (`sample.rs`). Several messages
-//! are authored as raw RFC 5322 `.eml` blobs and **parsed through
-//! `mail-parser`** here, matching incoming server messages.
-//!
-//! Outgoing mail is built with `mail-builder` ([`build_mime`]), producing a
-//! multipart RFC 5322 message (headers, text body, and base64 MIME
-//! attachments). In the **live** app that byte buffer is handed to an SMTP
-//! transport; here we expose it directly so compose/send is genuinely wired
-//! end to end up to the socket.
-//!
-//! ## What the live app does (network path)
-//!
-//! The live binary (no `--shots`) would drive, on a background worker thread
-//! (mirroring the notes `Saver` pattern — the `ui` event loop is synchronous
-//! and must not block):
-//!
-//! * **IMAP** via `async-imap` (or the synchronous `imap` crate): `LOGIN`,
-//!   `SELECT INBOX`, `UID SEARCH`, `UID FETCH (ENVELOPE BODY[])`, then feed
-//!   each fetched RFC 822 blob into [`parse_eml`]. Flag changes (`\Seen`,
-//!   `\Flagged`) and folder moves map onto `UID STORE` / `UID MOVE`.
-//! * **SMTP** via `lettre`'s `SmtpTransport` (rustls): connect to
-//!   `AccountConfig::smtp_host:smtp_port`, `STARTTLS`/implicit-TLS per
-//!   `smtp_tls`, `AUTH`, then submit the [`build_mime`] buffer.
-//!
-//! Those crates pull a TLS + async stack we deliberately keep out of the
-//! headless build; the seam is this module, and the data types
-//! ([`AccountConfig`](crate::model::AccountConfig), [`Draft`], [`Message`]) match those libraries' inputs
-//! and outputs.
+//! Incoming MIME is parsed with `mail-parser` ([`parse_eml`]) and outgoing mail built with
+//! `mail-builder` ([`build_mime`]). The live engine drives IMAP and SMTP on a worker thread;
+//! keeping those TLS and async crates out of the headless build is what lets `--shots` render
+//! the bundled sample corpus with no server.
 
 use mail_builder::MessageBuilder;
 use mail_parser::{MessageParser, MimeHeaders};
@@ -39,9 +11,6 @@ use uuid::Uuid;
 
 use crate::model::{Addr, Attachment, Draft, Folder, Message};
 
-/// Parse a comma/semicolon-separated recipient string (as typed in the
-/// compose header fields) into a list of addresses. Tolerates `Name <addr>`
-/// and bare `addr` forms.
 pub fn parse_addr_list(s: &str) -> Vec<Addr> {
     // Use the same mailbox grammar as incoming headers: punctuation inside
     // a quoted display name is not a recipient separator.
@@ -128,10 +97,6 @@ fn addr_tuples(addrs: &[Addr]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Parse a raw RFC 5322 message into our model via `mail-parser`. The
-/// timestamp and target folder are supplied by the caller (in the live app
-/// the folder is the IMAP mailbox being fetched; the timestamp comes from
-/// the `Date:` header / `INTERNALDATE`).
 pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Message> {
     let parsed = MessageParser::default().parse(raw)?;
 
@@ -217,7 +182,6 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
                 Some(declared) if inline_id.is_some() => declared,
                 _ => mime_from_filename(&filename).to_string(),
             };
-            // Keep the decoded bytes so the reader can save the real file.
             let content = part.contents().to_vec();
             Attachment {
                 size: content.len() as u64,
@@ -264,13 +228,7 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
     })
 }
 
-/// A deterministic [`Uuid`] for an RFC 5322 `Message-ID`. Hashing the
-/// (globally unique) header into the 128-bit id space means the same server
-/// message always resolves to the same local id, so a re-fetch dedupes instead
-/// of duplicating. Uses the message body's own FNV-1a hash folded into 128 bits
-/// — stable across processes and machines.
 pub fn stable_message_id(message_id: &str) -> Uuid {
-    // Two independent 64-bit FNV-1a passes (different seeds) fill the 128 bits.
     fn fnv1a(bytes: &[u8], key: u64) -> u64 {
         let mut hasher = fnv::FnvHasher::with_key(key);
         std::hash::Hasher::write(&mut hasher, bytes);
@@ -285,12 +243,6 @@ pub fn stable_message_id(message_id: &str) -> Uuid {
     Uuid::from_u128((u128::from(hi) << 64) | u128::from(lo))
 }
 
-/// Parse a raw RFC 5322 message fetched over IMAP, carrying the server's flag
-/// state and internal date. Reuses [`parse_eml`] for the header/body/attachment
-/// extraction, then overlays the `\Seen`/`\Flagged` state and the message
-/// timestamp. `internal_date_min` is the IMAP `INTERNALDATE` (minutes since the
-/// epoch) when the server supplied one; otherwise the message's own `Date:`
-/// header is used, falling back to `fallback_min`.
 pub fn parse_fetched(
     raw: &[u8],
     folder: Folder,
@@ -325,8 +277,6 @@ fn addr_from_parsed(a: &mail_parser::Addr) -> Addr {
     Addr::new(name, email)
 }
 
-/// Best-effort MIME type from a filename extension, for the attachment glyph
-/// and the multipart Content-Type.
 pub fn mime_from_filename(name: &str) -> &'static str {
     tilo_mime::from_path_or_octet_stream(name)
 }
@@ -374,7 +324,6 @@ mod tests {
             assert!(v[1].name.is_none());
         }
 
-        // Phase `build_mime_produces_valid_rfc5322`.
         {
             let content = tilo_content::ContentStore::memory();
             let attachment = crate::attachment_store::stage_bytes(
@@ -560,7 +509,6 @@ mod tests {
             let msg = parse_eml(raw, 1000, Folder::Inbox).unwrap();
             assert!(msg.html_body.is_some(), "an HTML mail keeps its html part");
             assert!(msg.html_body.as_deref().unwrap().contains("<h1>"));
-            // A stripped text fallback is still available for the list snippet.
             assert!(msg.body.to_ascii_lowercase().contains("hi"));
         }
 

@@ -9,9 +9,7 @@ use getrandom::rand_core::TryRng as _;
 use runtime_portal::process_binding::ExecutingPeer;
 use std::{ffi::CString, os::unix::fs::DirBuilderExt, path::PathBuf};
 
-/// This is lifetime custody only. It never makes failed authority checks pass.
-/// Only actual root endpoint clone ownership increments it; no public setter or
-/// caller boolean can defer shutdown of an unrelated service.
+/// This is lifetime custody only.
 #[derive(Default)]
 pub(super) struct ExposureCustody(std::sync::Mutex<ExposureState>);
 #[derive(Default)]
@@ -37,7 +35,6 @@ impl ExposureCustody {
         Ok(ExposureHold(Arc::clone(self)))
     }
     /// Linearizes admission against the first intentional cancellation signal.
-    /// Poisoning refuses shutdown; it never discharges unknown custody.
     pub(super) fn begin_stop(&self) -> bool {
         let Ok(mut state) = self.0.lock() else {
             return false;
@@ -259,9 +256,7 @@ fn readonly(file: &File) -> io::Result<()> {
     }
     Ok(())
 }
-/// Owned before placement and all fallible postchecks. Root session retains this
-/// before any possible delivery, through observed consuming init stop. Unknown
-/// stop blocks Drop rather than allowing the root process to lose mount custody.
+/// Owned before placement and all fallible postchecks.
 pub struct HeldViewExposure {
     endpoint: Arc<TargetProjectionEndpoint>,
     hold: Option<ExposureHold>,
@@ -326,8 +321,7 @@ impl HeldViewExposure {
             consumer: None,
         })
     }
-    /// The original source owner stays in its own namespace. The actual managed
-    /// consuming helper owns the separate staging namespace and launcher child.
+    /// The original source owner stays in its own namespace.
     pub fn prepare_remote(
         endpoint: Arc<TargetProjectionEndpoint>,
         peer: Arc<ExecutingPeer>,
@@ -500,8 +494,7 @@ impl Drop for HeldViewExposure {
     }
 }
 
-/// Disposable boundary fixture only. No conversion to HeldViewExposure, Home,
-/// installed consent or signed app binding exists.
+/// Disposable boundary fixture only.
 #[cfg(feature = "native-home-alias-qualification")]
 pub struct FixtureExposure {
     inner: HeldViewExposure,
@@ -554,9 +547,7 @@ impl FixtureExposure {
         self.inner.check()
     }
 
-    /// Untrusted info routing identifies only a candidate. Actual owned child,
-    /// parent relations, held init pidfd/PID namespace and NSpid independently
-    /// establish fixture custody. Never interpret outer process exit as stop.
+    /// Untrusted info routing identifies only a candidate.
     pub fn adopt_owned_child(
         &mut self,
         outer: &std::process::Child,
@@ -612,8 +603,8 @@ impl FixtureExposure {
         {
             return Err(refused("Fixture actual owned namespace init differs"));
         }
-        // Recheck after opening both kernel handles; never accept numeric wire
-        // facts without actual held identity/ancestry.
+        // Recheck after opening both kernel handles; never accept numeric wire facts without actual
+        // held identity/ancestry.
         if ppid(&status(pid)?)? != outer.id() || ppid(&status(outer.id())?)? != std::process::id() {
             return Err(refused("Fixture ancestry changed"));
         }
@@ -685,8 +676,7 @@ mod custody_tests {
 mod mount_placement;
 mod remote_placement;
 pub(crate) use mount_placement::MountPlacement;
-/// Preparation retains the real endpoint and target service custody. Its wire
-/// description is never a grant; only a managed child can consume this object.
+/// Preparation retains the real endpoint and target service custody.
 struct ExposurePreparation {
     endpoint: Arc<TargetProjectionEndpoint>,
     hold: Option<ExposureHold>,

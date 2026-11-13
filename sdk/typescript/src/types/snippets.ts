@@ -20,11 +20,25 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.snippets@ac8a87311686dc62";
+export const SURFACE = "so.tilo.snippets@530e3c69f46d7e0c";
 
-/** Snippets — `snippets.library`. */
+/** One of "text", "shell", "rust", "sql", "git", "python", "javascript", "json", "yaml", "markdown", "html", "css", "toml", "dockerfile". */
+export type Language = "text" | "shell" | "rust" | "sql" | "git" | "python" | "javascript" | "json" | "yaml" | "markdown" | "html" | "css" | "toml" | "dockerfile";
+
+export interface Snippet {
+  title: string;
+  body: string;
+  description: string;
+  favorite: boolean;
+  folder: string;
+  language: Language;
+  tags: string[];
+  uses: number;
+}
+
+/** Snippet library — `snippets.library`. */
 export interface Library extends tilo.Resource {
-  snippets: unknown;
+  snippets: Snippet[];
   newSnippet(args: {
     title: string;
     folder?: string;

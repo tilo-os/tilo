@@ -232,7 +232,7 @@ impl Adapter {
     }
 
     /// What the control `node` of a view does, as the identity anyone looks it up by: the kind
-    /// of record it acts on and the operation, in the app's ids.
+    /// of record it acts on and the operation, named as the app publishes it at its door.
     ///
     /// A control that runs an app action does that action; one that edits a record's field
     /// edits that field. The window's composition moves the control between the bar, an empty
@@ -242,13 +242,13 @@ impl Adapter {
         // One event per control runs what the person presses it for. A node whose events run
         // several actions is none of them in particular, so the first the map holds answers for
         // it — the map is ordered, so this is the same one every frame.
-        if let Some((resource, action)) = node
+        if let Some(invoked) = node
             .events
             .values()
             .find_map(|event| event.invokes.as_ref())
         {
-            let kind = self.published.borrow().kind(resource)?.to_owned();
-            return Some(tilo_actions::ActionAddress::new(kind, action).encode());
+            let kind = self.published.borrow().kind(&invoked.resource)?.to_owned();
+            return Some(tilo_actions::ActionAddress::new(kind, &invoked.declared).encode());
         }
         let (_, field) = node.binding.as_ref()?.field()?;
         let kind = node.binding.as_ref()?.kind.as_deref()?;
@@ -712,8 +712,10 @@ impl NodeSource<'_> {
         if !self.presses(name) {
             return None;
         }
-        let (resource, action) = self.node.events.get(name)?.invokes.as_ref()?;
-        self.reconciler.adapter().bind(resource, action)
+        let invoked = self.node.events.get(name)?.invokes.as_ref()?;
+        self.reconciler
+            .adapter()
+            .bind(&invoked.resource, &invoked.action)
     }
 
     /// Whether the event `name` is a press of its control: the event the description declares
@@ -1341,7 +1343,11 @@ mod tests {
         bound.events.insert(
             "activate".to_owned(),
             Event {
-                invokes: Some(("rows/r1".to_owned(), "open".to_owned())),
+                invokes: Some(crate::Invocation {
+                    resource: "rows/r1".to_owned(),
+                    action: "open".to_owned(),
+                    declared: "open".to_owned(),
+                }),
                 ..Event::default()
             },
         );

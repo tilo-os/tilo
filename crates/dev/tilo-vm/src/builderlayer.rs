@@ -1,16 +1,6 @@
-//! `--builder remote`: build a component's layer on a remote builder of
-//! the device's architecture and stream it through this host to the
-//! device, without its binaries ever landing on this host's disk.
-//!
-//! The builder is a cargo drop-in whose `run` runs the program on a machine
-//! of that architecture, in this worktree, with its stdout passed through as
-//! text lines (`[remote_builders]` in vms.toml names its command line). It
-//! runs `tilo-vm layer-pack` there ([`pack`]): the component builds with the
-//! same cargo arguments as on every other builder, the manifest installer
-//! lays it out, and the layer tar goes to stdout as framed base64 lines.
-//! [`Stream`] reads those lines here and hands the decoded bytes straight to
-//! tilo-vmd's upload. A plain remote `build` would bring the binaries back
-//! into this host's target dir instead.
+//! `--builder remote`: build a component's layer on a remote builder of the
+//! device's architecture and stream it through this host to the device, so its
+//! binaries never land on this host's disk.
 
 use std::io::{BufRead, Read, Write};
 use std::path::Path;
@@ -36,7 +26,6 @@ pub const END: &str = "tilo-vm-layer-end ";
 /// Raw bytes per data line: a multiple of 3, so only the last line pads.
 const LINE_BYTES: usize = 3 << 18;
 
-/// What the builder says about the layer it built.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Packed {
     pub component: String,
@@ -57,8 +46,6 @@ pub struct Packed {
     pub binary: bool,
 }
 
-/// The remote builder's `run` that builds and streams `component`'s layer:
-/// `builder` is its command line up to the cargo subcommand.
 pub fn remote_command(builder: &[String], component: &Component, extra: &[String]) -> CommandLine {
     let (program, prefix) = builder
         .split_first()
@@ -91,9 +78,6 @@ pub fn remote_command(builder: &[String], component: &Component, extra: &[String
     command
 }
 
-/// `tilo-vm layer-pack`, on the builder: build `name` from the worktree in
-/// the current directory, lay it out, and write the framed layer to stdout.
-/// The build's own output goes to stderr.
 pub fn pack(name: &str, profile: &str, extra: &[String]) -> Result<(), CliError> {
     pack_with_source(name, profile, extra, None, &[], false)
 }
@@ -133,7 +117,6 @@ pub(crate) fn pack_with_source(
             known: manifest.components.keys().cloned().collect(),
         })?
         .with_profile(Some(profile));
-    // `cargo run` sets CARGO to the cargo that runs this program.
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     if !component.image_assembled {
         run_to_stderr(Command::new(&cargo).args(component.cargo_args(extra)))?;
@@ -283,7 +266,6 @@ pub(crate) fn run_to_stderr(command: &mut Command) -> Result<(), CliError> {
     }
 }
 
-/// Bytes written as [`DATA`] lines, hashed and counted on the way.
 pub struct Lines<'a, W: Write> {
     out: &'a mut W,
     pending: Vec<u8>,
@@ -314,7 +296,6 @@ impl<'a, W: Write> Lines<'a, W> {
         Ok(())
     }
 
-    /// Finish the legacy builder frames with their archive digest.
     pub fn finish(mut self) -> std::io::Result<(String, u64)> {
         self.emit()?;
         Ok((hex::encode(self.hasher.finalize()), self.bytes))
@@ -339,9 +320,6 @@ impl<W: Write> Write for Lines<'_, W> {
     }
 }
 
-/// The layer as it arrives from the builder: [`Self::header`] passes the
-/// build's own output on to stderr until the layer begins, then the
-/// stream reads as the layer's bytes, checked against the end line.
 pub struct Stream<R: BufRead> {
     input: R,
     decoded: Vec<u8>,
@@ -377,10 +355,7 @@ impl<R: BufRead> Stream<R> {
     }
 
     /// Wait for the layer: lines before it are the build's output and go to
-    /// `passthrough`.
-    ///
-    /// # Errors
-    /// The stream ended without a layer (the build failed), or I/O.
+    /// `passthrough`. Fails when the build did not write one.
     pub fn header(&mut self, passthrough: &mut dyn Write) -> std::io::Result<Packed> {
         self.header_as(passthrough)
     }
@@ -449,7 +424,6 @@ impl<R: BufRead> Read for Stream<R> {
                 }
                 self.done = true;
             }
-            // Anything else between the lines is the program's stray output.
         }
         let rest = self.decoded.get(self.at..).unwrap_or_default();
         let n = rest.len().min(buf.len());
@@ -465,8 +439,6 @@ impl<R: BufRead> Read for Stream<R> {
 mod tests {
     use super::*;
 
-    /// A layer framed on the builder arrives byte for byte, with the build's
-    /// output before it passed on; damage is refused.
     #[test]
     fn a_framed_layer_streams_byte_for_byte_and_damage_is_refused() {
         let layer: Vec<u8> = (0..(LINE_BYTES * 2 + 1234))
@@ -515,7 +487,6 @@ mod tests {
         let mut stream = Stream::new(cut);
         stream.header(&mut Vec::new()).unwrap();
         assert!(stream.read_to_end(&mut Vec::new()).is_err());
-        // A build that failed sends no layer.
         assert!(
             Stream::new(&b"error: could not compile\n"[..])
                 .header(&mut Vec::new())
@@ -523,7 +494,6 @@ mod tests {
         );
     }
 
-    /// The builder's `run` packs the layer there, after its own arguments.
     #[test]
     fn the_remote_run_packs_on_the_builder() {
         let component = tilo_vm_protocol::Manifest::parse(

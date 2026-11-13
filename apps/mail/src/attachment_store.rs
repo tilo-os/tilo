@@ -13,10 +13,7 @@ use tilo_content::ContentStore;
 
 use crate::model::DraftAttachment;
 
-/// What a draft attachment's content id starts with, before the reference.
 pub const PREFIX: &str = "mail-attachment:blake3:";
-/// The portable attachment ceiling. Enforcing it before reading means Mail rejects before a chooser read/stage can report a
-/// vague retention failure for a 32–64 MiB file.
 pub const MAX_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_ATTACHMENTS: usize = 16;
 pub const MAX_ATTACHMENT_TOTAL_BYTES: usize = 128 * 1024 * 1024;
@@ -95,8 +92,6 @@ pub fn bounded(attachments: &[DraftAttachment]) -> Vec<DraftAttachment> {
 ///
 /// # Errors
 ///
-/// Returns an error when the descriptor is not a regular file, exceeds the
-/// portable content limit, cannot be read, or the store cannot retain/verify it.
 pub fn stage_file(
     content: &ContentStore,
     file: std::fs::File,
@@ -171,8 +166,6 @@ pub fn kept_as(
     })
 }
 
-/// Materialise a portable reference only after re-validating identity,
-/// metadata, byte count and digest. Missing peer content deliberately fails.
 pub fn materialize(
     content: &ContentStore,
     attachment: &DraftAttachment,
@@ -189,7 +182,6 @@ pub fn materialize(
             attachment.filename
         )
     })?;
-    // The store opens what it reads and verifies it against the reference.
     let bytes = content.read(reference).ok_or_else(|| {
         format!(
             "attachment {} is not available on this device yet",

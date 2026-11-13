@@ -1,13 +1,9 @@
-//! Source-oriented migration review: recognizable sources, selectable children,
-//! truthful local/online/unknown accounting and nested exclusions.
+//! Source-oriented migration review: recognisable sources, selectable children, and local,
+//! online-only and unknown accounting.
 //!
-//! The public tree never carries a filesystem path, a person's folder name, a
-//! credential or a source identity string. Paths live in a private side table
-//! and are only turned into the root-relative exclusion set that the existing
-//! Home producer and Windows inventory already enforce. Discovery reuses those
-//! two producers; it is not a second walker, staging area or copy engine.
-//! Real entry names are exposed separately to the authorized private view;
-//! serialized reports and action payloads carry only opaque identities.
+//! The public tree carries no path, private name, credential or source identity. Paths stay in a
+//! private side table and become the root-relative exclusions the Home and Windows producers
+//! already enforce.
 
 pub mod catalog;
 #[cfg(target_os = "linux")]
@@ -34,7 +30,6 @@ const MAX_CHILDREN: usize = 128;
 const MAX_DEPTH: usize = 4;
 const MAX_EXCLUSIONS: usize = 1024;
 
-/// What kind of recognizable source or child a node describes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NodeKind {
@@ -49,9 +44,8 @@ pub enum NodeKind {
     Unavailable,
 }
 
-/// A label drawn from the closed known-folder vocabulary or from public Steam
-/// catalog metadata. An unrecognized folder is `Folder`; its own name is never
-/// published.
+/// A label from the closed known-folder vocabulary or public Steam metadata; a folder's own name
+/// is never published.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Label {
@@ -70,48 +64,30 @@ pub enum Label {
     Other,
 }
 
-/// A statement about the source that the person needs in order to decide.
-/// None of these is derived from a path string.
+/// A statement the person needs in order to decide; none is derived from a path string.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case", tag = "fact")]
 pub enum Fact {
-    /// Some entries are online-only placeholders and stay at the source.
     OnlineOnlyNotCopied,
-    /// Some entries have no readable size; they are not counted as zero bytes.
     UnknownSize,
-    /// The inventory could not examine part of the source.
     CoverageIncomplete,
-    /// A referenced location needs its own exact path grant.
     NeedsIndependentGrant,
-    /// Entries exist that this copy engine cannot transfer.
     NotCopyableAtSource,
-    /// Copying online-only content would download it first. Not performed.
     DownloadBeforeCopy,
-    /// No working destination integration exists for this provider.
     ProviderConnectionUnavailable,
     CloudProvider(CloudProvider),
-    /// Installed game files can be reinstalled.
     GameAssets,
-    /// Save state that cannot be regenerated.
     IrreplaceableSaves,
-    /// No documented save location was found. Not the same as no saves.
     SaveLocationUnknown,
     ProtonPrefix,
-    /// Saves for this game are documented outside this Steam folder.
     ExternalSaveLocation(SaveRoot),
-    /// A Steam Cloud label does not prove uploaded or complete saves.
     SteamCloudUnverified,
-    /// This root is already inventoried through another selected root.
-    AlreadyIncluded {
-        covered_by: String,
-    },
-    /// Content kept only on a provider's server cannot be seen from here.
+    AlreadyIncluded { covered_by: String },
     RemoteCoverageUnknown,
 }
 
-/// Local, online-only and unknown accounting. `unknown_size_files` is a count
-/// of entries whose size could not be read: it is never folded into a byte
-/// total, so "0 bytes" is never shown for content that merely could not be read.
+/// Local, online-only and unknown accounting. `unknown_size_files` never folds into a byte total,
+/// so content that could not be read never shows as 0 bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Counts {
     pub local_files: u64,
@@ -141,17 +117,14 @@ impl Counts {
     }
 }
 
-/// One selectable source or child. `counts` is the subtree total; `own` is the
-/// part attributed to this node itself, used to total a selection without
-/// double counting nested children.
+/// One selectable source or child. `counts` is the subtree total; `own` is this node's own part,
+/// so nested children are not counted twice.
 #[derive(Clone, Debug, Serialize)]
 pub struct Node {
-    /// Opaque, stable identity bound to the granted root's namespace identity
-    /// and the entry's relative name. Never a path and never an unkeyed digest
-    /// of a private name.
+    /// Opaque identity bound to the granted root and the entry's relative name; never a path, and
+    /// never an unkeyed digest of a private name.
     pub id: String,
     pub label: Label,
-    /// Valve's public catalog title, when the source is a game.
     pub title: Option<String>,
     pub kind: NodeKind,
     /// False for covered roots and references that need another grant.
@@ -159,39 +132,35 @@ pub struct Node {
     pub counts: Counts,
     pub facts: Vec<Fact>,
     pub children: Vec<Node>,
-    /// The person's own name for this entry, for the authorized private view
-    /// only. It is never part of a serialized report or action payload.
+    /// The entry's own name, for the authorized private view only; never serialized.
     #[serde(skip)]
     private_label: Option<String>,
     #[serde(skip)]
     own: Counts,
     #[serde(skip)]
     root: u16,
-    /// Paths whose entries belong to this node itself, relative to `root`.
+    /// Relative to `root`.
     #[serde(skip)]
     own_paths: Vec<PathBuf>,
-    /// Prefixes that cover this node's whole subtree, for exclusions.
     #[serde(skip)]
     paths: Vec<PathRef>,
 }
 
-/// Where a node's data lives. Private: never serialized into a report.
+/// Private; never serialized into a report.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct PathRef {
     root: u16,
     relative: PathBuf,
 }
 
-/// What a private root is. A Home review has one; a Windows review has one per
-/// granted root, keyed by the identity the inventory already assigns.
+/// A Windows review has one per granted root, keyed by the identity the inventory assigns.
 #[derive(Clone, Debug)]
 pub(crate) enum RootRef {
     Home,
     Windows { source_id: String },
 }
 
-/// The discovered, immutable source tree. Selection is applied separately so
-/// toggling a source never re-runs discovery.
+/// The discovered tree; selection is applied separately so a toggle never re-runs discovery.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Tree {
     pub sources: Vec<Node>,
@@ -200,7 +169,6 @@ pub struct Tree {
     roots: Vec<RootRef>,
 }
 
-/// A person's selection over a discovered tree.
 #[derive(Clone, Debug)]
 pub struct Selection {
     tree: Tree,
@@ -222,9 +190,8 @@ pub enum Decision {
     Exclude,
 }
 
-/// Root-relative exclusions, the only form the copy producers accept.
-/// `home` is relative to the granted Home; `windows` is keyed by the inventory's
-/// own source identity, which is an observed identity rather than a path.
+/// Root-relative exclusions, the only form the copy producers accept. `home` is relative to the
+/// granted Home; `windows` is keyed by the inventory's source identity.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Exclusions {
     home: Vec<PathBuf>,
@@ -249,8 +216,7 @@ impl Exclusions {
         &self.windows_whole
     }
 
-    /// The Home exclusion set as the private plan carries it. Shape is checked
-    /// again by the plan and by the producer that applies it.
+    /// The plan and the producer that applies it check the shape again.
     pub fn home_paths(&self) -> std::io::Result<Vec<NativePath>> {
         self.home
             .iter()
@@ -267,8 +233,6 @@ impl Exclusions {
 }
 
 impl Node {
-    /// The real entry name for the authorized private view. Public reports use
-    /// [`Self::label`] and [`Self::title`] instead.
     pub fn private_label(&self) -> Option<&str> {
         self.private_label.as_deref()
     }
@@ -324,9 +288,8 @@ impl Selection {
         Some(SelectionState::Selected)
     }
 
-    /// Select or exclude one node. Selecting a node inside an excluded ancestor
-    /// keeps the rest of that ancestor excluded by excluding the sibling
-    /// branches: a selection never broadens to data the person did not pick.
+    /// Selecting a node inside an excluded ancestor keeps the rest of that ancestor excluded, so a
+    /// selection never broadens to data the person did not pick.
     pub fn set(&mut self, id: &str, decision: Decision) -> Result<(), String> {
         let node = self.tree.node(id).ok_or("unknown source node")?.clone();
         if !node.selectable {
@@ -370,14 +333,10 @@ impl Selection {
         Ok(())
     }
 
-    /// Carry the same person's decisions into a freshly discovered tree.
-    ///
-    /// Only an identity that still names the same granted root entry is
-    /// replayed. A new or replaced root keeps no old path exclusion; when the
-    /// whole root set was replaced and the old selection was not simply "all",
-    /// every new source starts excluded rather than silently taking in data the
-    /// person never reviewed. A new child under a surviving parent falls under
-    /// that parent's existing decision, which is the explicit parent intent.
+    /// Carries the same person's decisions into a freshly discovered tree. Only an identity that
+    /// still names the same entry is replayed; when the whole root set was replaced and the old
+    /// selection was not simply "all", every new source starts excluded. A new child under a
+    /// surviving parent follows that parent's decision.
     pub fn adopt(&mut self, previous: &Selection) {
         self.excluded.clear();
         let previous_sources = previous
@@ -400,16 +359,16 @@ impl Selection {
             .iter()
             .any(|source| previous.tree.sources.iter().any(|old| old.id == source.id));
 
-        // An explicit decision is meaningful only while its own identity is
-        // present. Descendants of a replayed parent inherit it as before.
+        // A decision applies while its identity is present; descendants of a replayed parent
+        // inherit it.
         for id in &previous.excluded {
             if self.tree.node(id).is_some_and(|node| node.selectable) {
                 self.excluded.insert(id.clone());
             }
         }
 
-        // A new top-level source follows an explicit "nothing selected" intent;
-        // its identity is new, so this is a default, not a replayed path.
+        // A new source follows an explicit "nothing selected" intent; it is a default, not a
+        // replayed path.
         if previous_all_excluded {
             for source in &self.tree.sources {
                 if source.selectable && previous.tree.node(&source.id).is_none() {
@@ -418,9 +377,8 @@ impl Selection {
             }
         }
 
-        // A root that was replaced has no identity to replay. Preserve the old
-        // "not everything was selected" intent conservatively for every new
-        // source instead of letting a different folder inherit the default.
+        // A replaced root has no identity to replay: keep the old "not everything was selected"
+        // intent for every new source.
         if root_replaced && !previous_sources.is_empty() && !previous_all_selected {
             for source in &self.tree.sources {
                 if source.selectable {
@@ -439,8 +397,6 @@ impl Selection {
         }
     }
 
-    /// The one toggle-all. Selecting everything clears every exclusion;
-    /// excluding everything excludes each selectable source.
     pub fn select_all(&mut self, selected: bool) {
         self.excluded.clear();
         if !selected {
@@ -454,23 +410,17 @@ impl Selection {
         }
     }
 
-    /// Totals of the selected part, counting each node's own entries once.
     pub fn counts(&self) -> Counts {
         let mut counts = Counts::default();
         collect_selected(&self.tree.sources, &self.excluded, &mut counts);
         counts
     }
 
-    /// Whether the selected part is known to contain no entries. Only a
-    /// completed inventory with no counts and no facts that may hide content
-    /// is empty: a coverage gap, an unavailable node or an unreadable source is
-    /// unknown, never zero.
+    /// A coverage gap, an unavailable node or an unreadable source is unknown, never zero.
     pub fn selected_is_known_empty(&self) -> bool {
         self.counts().is_empty() && !selected_unknown(&self.tree.sources, &self.excluded)
     }
 
-    /// Turn the selection into the root-relative exclusions the existing copy
-    /// producers enforce. Whole-source exclusions stay explicit decisions.
     pub fn exclusions(&self) -> Exclusions {
         let mut exclusions = Exclusions::default();
         for id in &self.excluded {
@@ -507,8 +457,7 @@ impl Selection {
         exclusions
     }
 
-    /// Public, path-free projection for a UI or an agent: the same tree with
-    /// selection state, totals and unknown counts.
+    /// Public, path-free projection for a UI or an agent.
     pub fn report(&self) -> serde_json::Value {
         let sources = self
             .tree
@@ -553,10 +502,8 @@ fn nested(one: &Path, other: &Path) -> bool {
     one.starts_with(other) || other.starts_with(one)
 }
 
-/// A private key for node identities. It is generated once per process and
-/// never serialized, so a public report cannot be used to test whether a
-/// guessed folder name produced an id. Selections are held in memory for the
-/// same process, so this stays stable across a refresh.
+/// Generated once per process and never serialized, so a public report cannot test whether a
+/// guessed folder name produced an id.
 fn identity_key() -> &'static [u8; 32] {
     static KEY: OnceLock<[u8; 32]> = OnceLock::new();
     KEY.get_or_init(|| {
@@ -577,8 +524,6 @@ fn opaque_token(parts: &[&[u8]]) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-/// The private identity of a granted root, from the namespace identity the
-/// directory capability already holds.
 pub(super) fn root_identity(pin: &PinnedDirectory) -> String {
     use cap_fs_ext::MetadataExt;
     format!("{}:{}", pin.identity.dev(), pin.identity.ino())
@@ -588,8 +533,8 @@ pub(super) fn root_node_id(root_identity: &str) -> String {
     format!("r{}", opaque_token(&[root_identity.as_bytes()]))
 }
 
-/// A child of a root or folder, bound to the relative entry and, where the
-/// caller can safely observe it, that entry's own namespace identity.
+/// Bound to the relative entry and, where the caller can observe it, that entry's own namespace
+/// identity.
 pub(super) fn entry_node_id(
     parent_id: &str,
     relative: &Path,
@@ -602,8 +547,6 @@ pub(super) fn entry_node_id(
     format!("{parent_id}/d{}", opaque_token(&parts))
 }
 
-/// A stable child whose identity is the parent plus a semantic role, not a
-/// position among siblings.
 pub(super) fn semantic_node_id(parent_id: &str, role: &str) -> String {
     format!("{parent_id}/s{role}")
 }
@@ -615,8 +558,7 @@ pub(super) fn derived_node_id(parent_id: &str, role: &str, material: &[u8]) -> S
     )
 }
 
-/// Observe one reviewed directory through the held grant, without following a
-/// link or opening its listing. Used only to bind an identity, not to walk.
+/// Opens no listing and follows no link; it only binds an identity.
 pub(super) fn relative_directory_identity(
     pin: &Arc<PinnedDirectory>,
     relative: &Path,
@@ -664,9 +606,8 @@ fn collect_selected(nodes: &[Node], excluded: &BTreeSet<String>, out: &mut Count
     }
 }
 
-/// Whether any selected node leaves part of its content unaccounted for. A
-/// fact such as a coverage gap, a provider-side unknown or an unavailable node
-/// means an empty count is not proof of an empty source.
+/// A coverage gap, a provider-side unknown or an unavailable node means an empty count is not
+/// proof of an empty source.
 fn selected_unknown(nodes: &[Node], excluded: &BTreeSet<String>) -> bool {
     for node in nodes {
         if excluded.contains(&node.id) {
@@ -682,7 +623,6 @@ fn selected_unknown(nodes: &[Node], excluded: &BTreeSet<String>) -> bool {
     false
 }
 
-/// A leaf node that owns the entries under `own_paths`.
 pub(super) fn leaf(
     id: String,
     label: Label,
@@ -708,7 +648,6 @@ pub(super) fn leaf(
     }
 }
 
-/// A node whose data is its children's data.
 pub(super) fn group(
     id: String,
     label: Label,
@@ -734,8 +673,8 @@ pub(super) fn group(
     }
 }
 
-/// Attribute each reviewed entry to the most specific node that owns it, then
-/// compute subtree totals and the prefix set each node's exclusion covers.
+/// Attributes each entry to the most specific node, then computes subtree totals and the prefix
+/// set each node's exclusion covers.
 pub(super) fn finalize(
     mut sources: Vec<Node>,
     entries: &[steam::EntryCount],
@@ -801,8 +740,7 @@ fn settle(node: &mut Node, counts: &BTreeMap<PathRef, Counts>) -> Counts {
         total.add(nested);
     }
     node.counts = total;
-    // The exclusion set must cover the subtree minimally: a folder's own path
-    // already covers everything beneath it, so its children add nothing.
+    // A folder's path already covers everything beneath it, so its children add nothing.
     let mut paths = Vec::new();
     for relative in &node.own_paths {
         let path = PathRef {
@@ -830,22 +768,19 @@ fn settle(node: &mut Node, counts: &BTreeMap<PathRef, Counts>) -> Counts {
     total
 }
 
-/// Shared inputs for a folder subtree of one granted root.
 pub(crate) struct Folders<'a> {
     pub root: u16,
     pub entries: &'a [steam::EntryCount],
-    /// Reviewed directories, relative to the root.
+    /// Relative to the root.
     pub dirs: &'a BTreeSet<PathBuf>,
-    /// Directories represented by a structured source instead (e.g. Steam).
+    /// Directories a structured source already represents.
     pub skip: &'a [PathBuf],
     pub label: &'a dyn Fn(&Path) -> Label,
-    /// The entry's own namespace identity, when the caller can observe it.
     pub identity: &'a dyn Fn(&Path) -> Option<String>,
 }
 
-/// Build the selectable children of one reviewed folder. Depth and fan-out are
-/// bounded; content below the bound stays owned by the deepest node, so totals
-/// remain complete even when the tree stops offering finer selection.
+/// Builds the selectable children of one folder. Depth and fan-out are bounded; content below the
+/// bound stays owned by the deepest node, so totals stay complete.
 pub(super) fn folder_children(
     parent_id: &str,
     parent: &Path,
@@ -890,8 +825,7 @@ pub(super) fn folder_children(
                 Vec::new(),
             ));
         } else {
-            // Too many loose files to exclude one by one: the folder itself
-            // stays the selectable unit and the bound is disclosed.
+            // Too many loose files to exclude one by one: the folder stays the selectable unit.
             facts.push(Fact::CoverageIncomplete);
         }
     }
@@ -935,7 +869,6 @@ pub(super) fn folder_children(
     children
 }
 
-/// Build the tree for a reviewed Windows inventory.
 pub fn discover_windows(
     inventory: &crate::windows_inventory::Inventory,
     catalog: &SteamCatalog,
@@ -943,9 +876,8 @@ pub fn discover_windows(
     windows::build(inventory, *catalog)
 }
 
-/// Decode and shape-check root-relative exclusion paths. They are consent
-/// metadata, never a path grant: the producer still revalidates each path under
-/// its own pinned source before skipping anything.
+/// Consent metadata, not a path grant: the producer revalidates each path under its pinned source
+/// before skipping anything.
 pub fn exclusion_paths(values: &[NativePath]) -> std::io::Result<Vec<PathBuf>> {
     if values.len() > MAX_EXCLUSIONS {
         return Err(std::io::Error::new(
@@ -974,9 +906,8 @@ pub fn exclusion_paths(values: &[NativePath]) -> std::io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-/// Validate that each exclusion resolves under `root` without following a link.
-/// A vanished or replaced exclusion refuses the operation instead of silently
-/// including data the person excluded.
+/// A vanished or replaced exclusion refuses the operation instead of silently including data the
+/// person excluded.
 pub fn validate_exclusions_under(root: &std::fs::File, paths: &[PathBuf]) -> std::io::Result<()> {
     use crate::nofollow::{metadata_nofollow, open_directory_nofollow};
     for path in paths {
@@ -1018,18 +949,14 @@ pub fn validate_exclusions_under(root: &std::fs::File, paths: &[PathBuf]) -> std
     Ok(())
 }
 
-/// Discover the sources of an explicitly granted Home without creating a
-/// transfer, a permission or a private staging area. The walk is the canonical
-/// Home inventory, so the tree describes exactly what a later export would see.
-/// A host that cannot read a Home inventory has no Home sources to offer, so it
-/// refuses here instead of making every caller decide by target.
+/// Discovers the sources of a granted Home without creating a transfer, permission or staging
+/// area: the walk is the canonical Home inventory. A host that cannot read one refuses here.
 pub fn discover_home(home: &std::path::Path, catalog: &SteamCatalog) -> std::io::Result<Tree> {
     #[cfg(target_os = "linux")]
     {
         let pin = crate::setup::migration::PinnedDirectory::open_absolute(home)?;
         pin.validate()?;
-        // The same producer as the export: the setup's own custody and
-        // runtime files in this Home are never offered as data.
+        // The setup's own custody and runtime files are never offered as data.
         let inventory =
             crate::migration_review::SourceInventory::capture_portable_home(&pin, home)?;
         home::build(&pin, &inventory, *catalog)

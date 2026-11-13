@@ -164,7 +164,7 @@ Transition = Literal["none", "cross_dissolve", "fade_in", "dip_to_black", "wipe"
 
 class Project(Resource):
     """Project — `video-editor.project`."""
-    __surface__ = "so.tilo.video-editor@8b08f2c24cffb89e"
+    __surface__ = "so.tilo.video-editor@c1e632de27d6ebcf"
     name: str
     fps: float
     width: int

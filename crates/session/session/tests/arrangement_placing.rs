@@ -404,7 +404,15 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
         )
         .expect("the arranging action runs");
 
-    // The entry that stands is the one the search found, at the caret.
+    // The entry that stands is the one the search found, at the caret. The action is accepted and
+    // the place lands a pass later, once the search's sources answer: the canvas never waits for
+    // one (a source reading a disk, a mailbox or a service on a slow machine would freeze it).
+    settle(&mut session, |session| {
+        arrangement(session)
+            .places
+            .iter()
+            .any(|place| place.record == "tl:so.tilo.lang.mail:inbox")
+    });
     let placed = arrangement(&session)
         .places
         .into_iter()

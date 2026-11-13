@@ -39,13 +39,10 @@ struct LayerRow {
 struct MaskRow {
     id: String,
     invert: bool,
-    /// Stays put when the layer's marks move.
     unlinked: bool,
-    /// Switched on: the layer shows through it.
     visible: bool,
 }
 
-/// The short name of a medium's engine, `plain` for vector art.
 fn engine_label(art: &Artwork, medium: &str) -> String {
     let engine = crate::media::resolve(art, medium)
         .filter(|_| !medium.is_empty())
@@ -58,7 +55,6 @@ fn engine_label(art: &Artwork, medium: &str) -> String {
     crate::locales::CATALOG.t(id)
 }
 
-/// The layers' rows, top first; a mask rides in its layer's row.
 fn rows(art: &Artwork) -> Vec<LayerRow> {
     art.layers
         .iter()
@@ -142,7 +138,6 @@ struct TreeRowNode {
     label: String,
     parent: Option<u64>,
     picks: Vec<String>,
-    /// The fact on the row's trailing edge.
     trailing: Option<String>,
 }
 
@@ -486,7 +481,6 @@ fn row_menu(
     }
 }
 
-/// A layer row's menu entries for its mask and clipping.
 fn masking(
     row: &LayerRow,
     dispatcher: &ui::framework::Dispatcher<Artwork>,
@@ -534,7 +528,6 @@ fn masking(
     ));
 }
 
-/// The chosen layer's opacity, medium and place among the layers.
 fn chosen_layer(cx: &ViewCx<Artwork>, id: &str, tools: &Tools) -> Element {
     let Some(row) = cx.read(|art| {
         art.and_then(|art| {
@@ -613,7 +606,6 @@ fn chosen_layer(cx: &ViewCx<Artwork>, id: &str, tools: &Tools) -> Element {
     Box::new(column)
 }
 
-/// The organisational folder the layer `id` is filed in, renamed in place.
 fn folder_field(cx: &ViewCx<Artwork>, id: &str) -> Element {
     let folder = {
         let id = id.to_owned();
@@ -707,7 +699,6 @@ fn objects(cx: &ViewCx<Artwork>, layer: &str, tools: &Tools) -> Element {
     })
 }
 
-/// Giving the chosen layer a mask, and clipping it to the layer below.
 fn mask_buttons(cx: &ViewCx<Artwork>, row: &LayerRow) -> Element {
     let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let mut buttons = Row::new()

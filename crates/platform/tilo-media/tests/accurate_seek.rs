@@ -1,24 +1,13 @@
 //! Proof that a seek lands on the frame that was asked for.
 //!
-//! The fixture's keyframes sit **8.333 seconds apart** (0, 8.333, 16.667, 25,
-//! 33.333, 41.667, 50 — verified with `ffprobe -skip_frame nokey`). That makes
-//! the difference between the two seek modes impossible to mistake for noise:
+//! The fixture's keyframes sit 8.333 s apart (0, 8.333, 16.667, 25, 33.333, 41.667, 50,
+//! verified with `ffprobe -skip_frame nokey`), so `SeekMode::Keyframe` misses a request
+//! for 12.500 s by seconds while `SeekMode::Accurate` presents it within one 33 ms
+//! frame.
 //!
-//! * `SeekMode::Keyframe` — the old behaviour — cannot land closer than the
-//!   nearest keyframe, so a request for 12.500s comes back **seconds** away;
-//! * `SeekMode::Accurate` decodes forward from that keyframe and presents the
-//!   picture at 12.500s, within one 33ms frame interval.
-//!
-//! Every frame between two keyframes was simply unreachable before: 249 of
-//! every 250 pictures in this clip could not be displayed at all.
-//!
-//! # About the timebase
-//!
-//! Container edit lists and decoder preroll can make the first decoded PTS
-//! non-zero. Every assertion below measures that base from the clip itself
-//! ([`common::stream_pts_base_ms`]) rather than assuming a timestamp origin,
-//! so the tests calibrate against the stream's timeline and genuine drift
-//! still fails.
+//! Edit lists and preroll can make the first decoded PTS non-zero, so every assertion
+//! measures that base from the clip ([`common::stream_pts_base_ms`]) rather than
+//! assuming a timestamp origin.
 
 mod common;
 
@@ -132,16 +121,6 @@ mod real {
         );
     }
 
-    /// Two different times must yield two genuinely different pictures.
-    ///
-    /// Timestamps alone prove nothing: a pipeline that re-labelled a cached
-    /// buffer would satisfy every check above. Pixels are the evidence.
-    ///
-    /// The deterministic test pattern moves every frame. The invariant is
-    /// therefore "the picture genuinely changed", not merely "the timestamp
-    /// changed" — a stale frame differs in exactly zero bytes. A floor well
-    /// above sampling noise keeps that from being vacuous, and the far-apart
-    /// comparison below adds a case with greater visual displacement.
     #[test]
     fn stepping_forward_changes_the_picture_not_just_the_timestamp() {
         let mut e = engine();
@@ -189,9 +168,6 @@ mod real {
         );
     }
 
-    /// Seeking backwards must work as well as forwards: an editor scrubs both
-    /// ways, and a pipeline that only decodes forward would stall on a nudge
-    /// back.
     #[test]
     fn seeking_backwards_across_a_keyframe_boundary_still_lands_exactly() {
         let mut e = engine();
@@ -207,8 +183,6 @@ mod real {
         );
     }
 
-    /// A single frame step must resolve to the adjacent picture, not round to
-    /// the same one. This is the finest granularity an editor asks for.
     #[test]
     fn a_single_frame_step_resolves_to_the_next_picture() {
         let mut e = engine();
@@ -223,9 +197,6 @@ mod real {
         );
     }
 
-    /// Scrubbing must not make a sound. The old preview drove the pipeline
-    /// through PLAYING on every drawn frame to force a picture out; the
-    /// accurate path reads the preroll while the pipeline stays paused.
     #[test]
     fn scrubbing_never_starts_playback() {
         let mut e = engine();

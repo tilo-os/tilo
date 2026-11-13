@@ -1,6 +1,5 @@
-//! Root-native retained-source I/O projection for one fixed offline service.
-//! This is distinct from immutable migration capture. No launch option or wire
-//! credential claim can mint an admission; the root actor retains actual custody.
+//! Root-native retained-source I/O projection for one fixed offline service. This is
+//! distinct from immutable migration capture.
 use serde::{Deserialize, Serialize};
 
 use std::{
@@ -45,9 +44,7 @@ fn namespaces() -> io::Result<Vec<(u64, u64)>> {
         })
         .collect()
 }
-/// Root actor's inseparable, nonserializable authority. Both the authenticated
-/// source lease and live certified target session must remain retained here.
-/// Implementations are native root adapters, never deserialized caller records.
+/// Root actor's inseparable, nonserializable authority.
 pub trait RetainedIoAuthority: super::ServiceAuthority {
     /// Obtain the independently admitted original source credentials.
     fn source_credentials(&self) -> io::Result<RetainedIoCredentials>;
@@ -75,7 +72,6 @@ pub trait RetainedIoAuthority: super::ServiceAuthority {
     fn context_sha256(&self) -> [u8; 32];
 }
 /// Original facts admitted by a root actor from its protected source record.
-/// Construction is root-only; ordinary app/launcher callers cannot choose groups.
 pub struct RetainedIoCredentials {
     uid: u32,
     gid: u32,
@@ -139,14 +135,13 @@ impl Token {
         Ok(())
     }
 }
-/// Holds the exact approved source descriptor and both authority lifetimes until
-/// canonical `NamespaceOwner` observes quiescence. It is neither `Clone` nor serde.
+/// Holds the exact approved source descriptor and both authority lifetimes until canonical
+/// `NamespaceOwner` observes quiescence.
 pub struct RetainedIoAdmission {
     source: File,
     source_metadata: Option<File>,
-    // Existing capture admission supplies only independently pinned runtime,
-    // native package evidence and sealed executable closure here. Its internal
-    // directory is the runtime root, never a projected source or capture grant.
+    // Existing capture admission supplies only independently pinned runtime, native package evidence
+    // and sealed executable closure here.
     native: Option<super::CaptureAdmission>,
     native_installation: bool,
     pub(super) worker_program: Option<Arc<super::retained_worker::RetainedWorkerProgram>>,
@@ -160,10 +155,6 @@ pub struct RetainedIoAdmission {
 }
 impl RetainedIoAdmission {
     /// Admit an editable source while retaining its authenticated root authority.
-    ///
-    /// # Errors
-    /// Refuses non-root callers, invalid or read-only sources, and revoked
-    /// authority; propagates I/O errors.
     pub fn admit(source: File, authority: Arc<dyn RetainedIoAuthority>) -> io::Result<Self> {
         root()?;
         authority.check()?;
@@ -233,11 +224,8 @@ impl RetainedIoAdmission {
         this.check()?;
         Ok(this)
     }
-    /// Admit the exact independently configured signed SDK publisher and pin
-    /// its root/ABI plus the canonical shim/bwrap/loader executable closure.
-    /// The root adapter obtains these inputs from `TrustedCaptureService`; no
-    /// launch option, environment variable or publisher in an untrusted DTO
-    /// supplies that policy. The runtime directory is internal metadata custody.
+    /// Admit the exact independently configured signed SDK publisher and pin its root/ABI plus the
+    /// canonical shim/bwrap/loader executable closure.
     pub fn with_native_runtime(
         mut self,
         runtime: &std::path::Path,
@@ -261,8 +249,8 @@ impl RetainedIoAdmission {
         self.check()?;
         Ok(self)
     }
-    /// Bind exactly the actual sidecar installation already verified against
-    /// the host application's embedded service identity, without registry lookup.
+    /// Bind exactly the actual sidecar installation already verified against the host application's
+    /// embedded service identity, without registry lookup.
     pub fn with_installation(
         mut self,
         installed: package_store::InstalledPackage,
@@ -560,8 +548,8 @@ fn seal_bytes(bytes: &[u8]) -> io::Result<File> {
     }
     Ok(f)
 }
-/// Signed shim only: sealed root token, actual namespace/source identity and
-/// ambient descriptor closure precede credential drop. Landlock must precede the final credential transition.
+/// Signed shim only: sealed root token, actual namespace/source identity and ambient descriptor closure
+/// precede credential drop.
 pub(crate) fn prepare(keep: &[i32], command: &[String]) -> io::Result<RetainedIoCredentials> {
     root()?;
     if keep.iter().any(|fd| {

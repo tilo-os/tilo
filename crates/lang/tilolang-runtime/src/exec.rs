@@ -1791,7 +1791,13 @@ impl Core {
         Ok(crate::delegate::Invocation::Action {
             app: pkg.meta.app.clone(),
             action: aref.action.clone(),
-            name: meta.name.clone(),
+            // What the app's door takes it by: a compiled package's action by its name, an
+            // action of a description of an app's surface (no module) by the verb it describes.
+            name: if pkg.meta.module_hash.is_empty() {
+                meta.id.clone()
+            } else {
+                meta.name.clone()
+            },
             // A flag travels as the integer the guest boxed it as; the invocation carries it
             // as the flag its parameter declares, so the app it goes to reads a flag.
             args: meta

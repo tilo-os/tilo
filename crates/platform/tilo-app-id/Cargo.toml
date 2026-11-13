@@ -1,0 +1,21 @@
+[package]
+name = "tilo-app-id"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "The id an app is known by: its reverse-DNS name."
+
+[lib]
+name = "tilo_app_id"
+path = "src/lib.rs"
+
+# A std-only leaf: a package, a link, a record's owner and every label a person reads name an app,
+# so this must not pull anything in.
+[dependencies]
+serde.workspace = true
+
+[lints]
+workspace = true

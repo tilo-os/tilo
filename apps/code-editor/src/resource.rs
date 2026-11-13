@@ -1,11 +1,5 @@
 //! Code Editor on the framework: the [`Project`] record, its editor, and
 //! what launching it on a folder or a file does.
-//!
-//! The project's files, folders and texts are the record's
-//! ([`crate::project`]). Opening and saving real files and the editor's
-//! commands are the editor's [`CodeEditorEffect`](crate::effects::CodeEditorEffect)s;
-//! what the editor shows that is not in the document — the files it can open
-//! or save, symbols, search results — are its live rows.
 
 use std::path::PathBuf;
 
@@ -19,17 +13,12 @@ use ui::widget::Element;
 use crate::app::CodeApp;
 use crate::project::Project;
 
-// The editor's Fluent catalog: what its history entries say.
 ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
-/// The id the project's embedded terminal is published under.
 pub const TERMINAL_RESOURCE_ID: &str = "code_editor.project/derived/terminal";
 
-/// Framework app: the code editor widget, laid out as a bound view over
-/// [`Project`].
 pub struct CodeEditorShell;
 
-/// Every screenshot scenario, over the sample project the fixture writes.
 #[cfg(feature = "samples")]
 const SCENARIOS: &[&str] = &[
     "hardware",
@@ -45,20 +34,14 @@ const SCENARIOS: &[&str] = &[
     "narrow-sidebar",
 ];
 
-/// A launch naming a folder opens it as the project; naming a file opens it in
-/// a project of its own.
 const OPEN_FOLDER: ActionRef<Project, Option<String>> =
     ActionRef::new("open-folder", &["path"], ResourceKind::of::<Project>());
 const OPEN_FILE: ActionRef<Project, Option<String>> =
     ActionRef::new("open-file", &["path"], ResourceKind::of::<Project>());
 
-/// The project a capture shows: the bundled sample written to a scratch
-/// folder, opened the way `code-editor FOLDER` opens one.
 #[cfg(feature = "samples")]
 pub(crate) struct SampleProject(pub(crate) PathBuf);
 
-/// The absolute form of a launch argument, resolved against the directory the
-/// editor was started in, as a shell resolves `code-editor .`.
 fn launched_path(argument: &str) -> PathBuf {
     std::path::absolute(argument).unwrap_or_else(|_| PathBuf::from(argument))
 }
@@ -71,7 +54,6 @@ impl ResourceApp for CodeEditorShell {
     const TITLE: &'static str = "Code Editor";
     const TITLE_KEY: &'static str = "code-editor-app-title";
     const ICON: Option<&'static str> = Some("code-editor");
-    /// The folder or file to open (`code-editor .`, `code-editor src/main.rs`).
     const ARGUMENTS: usize = 1;
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
@@ -81,8 +63,6 @@ impl ResourceApp for CodeEditorShell {
     fn view(cx: &mut ViewCx<Project>) -> Element {
         let app = CodeApp::new();
         cx.on_open_item(app.opener());
-        // The embedded terminal carries out the commands asked of its
-        // session, as Terminal's own window does.
         let queue = app.terminal_runs();
         let owner = queue.clone();
         cx.outbox_awaited(
@@ -113,8 +93,6 @@ impl ResourceApp for CodeEditorShell {
         )
     }
 
-    /// Every folder and every file opened on its own is a project of its own,
-    /// so its files, their unsaved text and its collaborators stay with it.
     fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
         let path = launched_path(input.argument()?);
         Some(RecordId::derived(
@@ -123,8 +101,6 @@ impl ResourceApp for CodeEditorShell {
         ))
     }
 
-    /// Opening the project reads the folder (or the file) every time it is
-    /// launched: where its files are on this machine is not in the document.
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Project>> {
         let Some(argument) = input.argument() else {
             return Vec::new();
@@ -145,7 +121,6 @@ impl ResourceApp for CodeEditorShell {
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         match scenario {
-            // Too narrow to dock the sidebar beside the code: it is a drawer.
             Some("narrow" | "narrow-sidebar") => (480, 800),
             _ => (1280, 800),
         }
@@ -221,11 +196,9 @@ mod tests {
             "the folder names its record"
         );
 
-        // A plain launch is the workspace's own project, not this folder's.
         let plain = TestApp::<CodeEditorShell>::new().unwrap();
         assert_ne!(plain.record(), sample.app.record());
 
-        // Opening it again is the same project: the same file records.
         let records = state.files.len();
         let again = sample
             .app
@@ -408,13 +381,10 @@ mod tests {
             })
             .expect_err("a missing file cannot be opened");
         assert!(error.to_string().contains("tilo-code-file"), "{error}");
-        // A path the sandbox cannot see looks missing from inside it: the
-        // answer names the way a file is handed to Code.
         assert!(error.to_string().contains("open it from Files"), "{error}");
         let held = editor(&mut sample.app, |_| ui::window_toolbar::notice())
             .expect("the failure is said in the window's bar");
         assert_eq!(held.kind, ui::widget::toast::ToastKind::Error);
-        // And the window's bar shows it, above the editor's frame.
         sample.app.harness().present_in_window_bar();
         let shown = sample
             .app
@@ -605,8 +575,6 @@ mod tests {
             vec![main.clone()],
             "the open tab's text is read, and only it"
         );
-        // Recording the folder and reading the file are content from
-        // outside: an undo takes neither back.
         sample.app.undo();
         sample.app.settle();
         let after = sample.app.state();

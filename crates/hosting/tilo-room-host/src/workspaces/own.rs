@@ -428,18 +428,26 @@ impl Workspaces {
         self.inner.memberships.holds(person, home) || self.invited(home, *person, now).await
     }
 
+    /// Whether `home`'s door takes people by invitation only, as its governance
+    /// records it.
+    async fn takes_people_by_invitation(&self, home: &str) -> bool {
+        self.door_policy(home)
+            .await
+            .is_some_and(|door| door.invitation_only)
+    }
+
     /// What a person [`Self::let_in`] does not admit hears: the refusal of
     /// the site's door, offering its wait list when it takes people by
     /// invitation, carried as the action's refusal reason
     /// ([`tilo_relay_protocol::directory::DoorRefused::to_reason`]).
-    pub(super) fn not_let_in(&self) -> tilo_relay_protocol::directory::DoorRefused {
+    pub(super) async fn not_let_in(&self) -> tilo_relay_protocol::directory::DoorRefused {
         use tilo_relay_protocol::directory::{DoorRefusalCode, DoorRefused};
         let host = self
             .own()
             .map_or_else(String::new, |own| own.offer().host.clone());
         let home = self.own().and_then(|own| own.home.get());
         let (code, mut error) = match home {
-            Some(home) if self.inner.listings.invites_only(home) => (
+            Some(home) if self.takes_people_by_invitation(home).await => (
                 DoorRefusalCode::InvitationOnly,
                 format!("{host} takes people by invitation and has not let you in yet"),
             ),

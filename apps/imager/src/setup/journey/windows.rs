@@ -1,5 +1,6 @@
-//! Windows prepares selected local data and private sign-in suggestions only.
-//! Identity enrollment and account authorization happen later in the live OS.
+//! Windows prepares selected local data and private sign-in suggestions only;
+//! enrollment and authorization happen later.
+
 use super::*;
 use imager_backend::windows_inventory::{Decision, RootRole, SelectedRoot};
 
@@ -1013,8 +1014,6 @@ mod tests {
         let root = fixture.path().join("User's & mail #100% é");
         std::fs::create_dir(&root).unwrap();
         let mut preview = fixture_preview(&root, RootRole::Outlook);
-        // Production uses the shared send_open_uri, whose Windows native
-        // backend enables ShellExecute rather than interpolating a shell command.
         assert!(std::ptr::fn_addr_eq(
             Preparation::default().opener,
             ui::portal::send_open_uri as fn(&str) -> ui::portal::LaunchChannel,

@@ -63,9 +63,14 @@ const hostOrigin = new URL(relay).origin;
 /** The site's own origin: what its storage belongs to. */
 const siteOrigin = new URL(site).origin;
 
+// A person's tabs share one browser and the flow reads the one behind: the
+// second tab must be let in without the first losing the workspace. A
+// browser freezes or throttles a tab nobody looks at, and a starved machine
+// does it at once, so every tab here answers as the front one does.
 const browserArgs = [
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
+  '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
 ];
 
@@ -620,8 +625,37 @@ try {
   mark('tilo login ran and the tab is in the person\'s own workspace');
   console.log(`ok: the person is in their own workspace (${report.workspace})`);
 
+  // Let in, not only named: no failure screen over the workspace. Then a
+  // second tab of the same browser, which holds a device key of its own (one
+  // per tab), opens the person's workspace as theirs, and the first tab
+  // stays in: the agent's entry never takes the person's own tabs out.
+  const failureOf = tab => tab.evaluate(`document.documentElement.dataset.failure
+    ? document.documentElement.dataset.failure + ': ' + (document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 300) : ''`).catch(() => '');
+  const refusedFirst = await failureOf(stranger.tab);
+  if (refusedFirst) await fail(`the person's own workspace refused the tab after the agent entered it: ${refusedFirst}`);
+  const second = await stranger.browser.tab();
+  second.log ??= [];
+  said.push({name: 'stranger-second-tab', tab: second});
+  await second.send('Emulation.setDeviceMetricsOverride', deskMetrics).catch(() => {});
+  await second.navigate(site);
+  await until(second, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`,
+    'a second tab of the person arriving', stepLimit(8));
+  const refusedSecond = await failureOf(second);
+  if (refusedSecond) await fail(`a second tab of the person was not let into their own workspace: ${refusedSecond}`);
+  await until(second, `!!(${JSON.stringify(report.workspace)} === document.title)`,
+    'the second tab in the person\'s own workspace', stepLimit(4));
+  await dump(second, '5-own-workspace-second-tab');
+  const refusedAfter = await failureOf(stranger.tab);
+  if (refusedAfter) await fail(`the first tab lost the person's own workspace when the second came: ${refusedAfter}`);
+  await second.close();
+  mark('a second tab of the person entered their own workspace, and the first stayed in');
+  console.log('ok: a second tab of the person enters their own workspace, and the first stays in');
+
   // -- 4. a passkey brings the same person back to that workspace ------------
-  // Kept from the person's own desktop, as "Keep with passkey" does.
+  // Kept from the person's own desktop, as "Keep with passkey" does. A
+  // passkey is made in the tab a person is looking at: the second tab opened
+  // above closed, and this one is in front again before the browser is asked.
+  await stranger.tab.send('Page.bringToFront').catch(() => {});
   const kept = await stranger.tab.evaluate(`(async () => {
     const id = ${identityModule};
     const person = await id.browserIdentity();
@@ -677,14 +711,14 @@ try {
       && ['done', 'stopped'].includes(document.documentElement.dataset.arrival);
     return open && kept?.name === ${JSON.stringify(named)} ? chosen.room : '';
   })()`;
-  const first = await stranger.tab.evaluate(opened).catch(() => '');
-  if (first) await fail(`a workspace named ${named} was open before the person made one: ${first}`);
+  const before = await stranger.tab.evaluate(opened).catch(() => '');
+  if (before) await fail(`a workspace named ${named} was open before the person made one: ${before}`);
   await pressText(stranger.tab, 'Create', '.tilo-entry-card');
-  const second = await until(stranger.tab, opened, 'the second workspace opening', stepLimit(10));
-  if (second === report.returned?.room) await fail(`the second workspace is the first one again: ${second}`);
-  report.secondWorkspace = {room: second, name: named, title: await stranger.tab.evaluate(`document.title`)};
+  const made = await until(stranger.tab, opened, 'the second workspace opening', stepLimit(10));
+  if (made === report.returned?.room) await fail(`the second workspace is the first one again: ${made}`);
+  report.secondWorkspace = {room: made, name: named, title: await stranger.tab.evaluate(`document.title`)};
   await dump(stranger.tab, '7-second-workspace');
-  console.log(`ok: the person made and opened a second workspace (${named}, ${second})`);
+  console.log(`ok: the person made and opened a second workspace (${named}, ${made})`);
   mark('the person made a second workspace');
 
   // -- 6. a visitor with no invitation is still out --------------------------

@@ -1,14 +1,11 @@
-//! Where a speaker group's sound comes from on the playing device, and the
-//! raw playback a speaker identifies itself with.
+//! Where a speaker group's sound comes from on the playing device, and the raw
+//! playback a speaker identifies itself with.
 //!
-//! Playing to a group must take the sound off this device's own speakers:
-//! otherwise the local output plays it early and unsynchronized while the
-//! group plays it one group latency later. A [`GroupTap`] therefore creates a
-//! private null sink, moves the chosen audio into it and exposes its monitor
-//! for capture. Every route of the session (the members over the fabric and
-//! this device's own output, if it is a member) captures that one monitor and
-//! plays through the timed playout path. Dropping the last handle moves the
-//! audio back and removes the sink.
+//! Playing to a group must take the sound off this device's own speakers, or the local
+//! output plays it early and unsynchronized. A [`GroupTap`] therefore creates a private
+//! null sink, moves the chosen audio into it and exposes its monitor for capture; every
+//! route of the session captures that one monitor and plays through the timed playout
+//! path. Dropping the last handle moves the audio back and removes the sink.
 
 use std::io::Write;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -25,11 +22,9 @@ pub enum TapError {
     /// The sink could not be made or the graph could not be changed; the
     /// message says how.
     Graph(String),
-    /// The chosen application stream has stopped.
     AppStopped,
     /// Another group session already owns this device's audio.
     OtherSession,
-    /// The tap registry is unusable.
     Unavailable,
 }
 
@@ -41,18 +36,13 @@ impl From<String> for TapError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TapSelection {
-    /// Everything this device plays, including streams started later.
     System,
-    /// One application stream, by `object.serial`.
     Application(u32),
 }
 
-/// A live null sink carrying the group's audio.
 pub struct GroupTap {
     selection: TapSelection,
-    /// `object.serial` of the null sink, whose monitor routes capture.
     serial: u32,
-    /// Holding the client keeps the non-lingering sink alive.
     client: Mutex<Option<(Child, ChildStdin)>>,
     moved_streams: Vec<u32>,
     previous_default: Option<u32>,

@@ -1,40 +1,9 @@
-//! Sheets — a spreadsheet for Tilo, built on the `ui` toolkit.
-//!
-//! Layers:
-//!   * [`model`]    — A1 addressing, cell values, number/date/time/currency
-//!     formats with per-currency symbols and date/time styles.
-//!   * [`infer`]    — smart type inference on entry (Excel/Sheets-style: a
-//!     trailing `%` becomes a percent, a currency symbol becomes money, a
-//!     parseable date/time becomes a date/time, …).
-//!   * [`formula`]  — tokenizer -> parser -> evaluator with ranges, common
-//!     functions, dependency-aware recalculation, and cycle detection, plus
-//!     unit/format propagation for computed cells, and reference adjustment
-//!     (relative/absolute) for copy/paste and fill.
-//!   * [`fill`]     — the smart fill-handle engine: extend a selected pattern
-//!     (formula, numeric series, dates, month/weekday names, text+number).
-//!   * [`settings`] — the person's shared locale defaults and the
-//!     per-document overrides that layer on top of it.
-//!   * [`workbook`] — the stored model: sheets of cells under stable row and
-//!     column ids, with charts and comments anchored at them.
-//!   * [`resource`] — the workbook's verbs, its derived places and the app.
-//!   * [`csv`]      — CSV import/export.
-//!   * [`xlsx`]     — Excel `.xlsx` import/export.
-//!   * [`ods`]      — `LibreOffice` Calc `.ods` import/export.
-//!   * [`grid`]     — the scrollable, editable cell grid with a
-//!     floating in-cell editor that overflows into empty neighbours.
-//!   * [`app`]      — the root widget composing the formula bar + grid +
-//!     sheet tabs + the file/format menus and settings surfaces.
-//!
-//! [`SheetsShell`] is the app every host runs: the live window, screenshots
-//! and the browser desktop.
+//! Sheets: a spreadsheet for Tilo, built on the `ui` toolkit. [`workbook`] holds the stored model,
+//! [`resource`] the workbook's verbs and the app, [`calc`] and [`infer`] evaluation and typing,
+//! [`grid`] the editable grid; [`SheetsShell`] is the app every host runs.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// An app runs sandboxed, so a wrapped integer costs one app rather than the desktop, and the
+// lints that produce a crash stay denied.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -80,7 +49,6 @@ pub use app::SheetsApp;
 pub use resource::SheetsShell;
 pub use workbook::Workbook;
 
-/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(SheetsShell)
 }

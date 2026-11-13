@@ -1,18 +1,12 @@
-//! A member device that takes its workspaces' work: it runs their shell
-//! commands ([`tilo_actions::remote::environment_runs`]) and opens their
-//! Browser ([`tilo_actions::remote::browser`]) in their VMs on the hosted-VM
-//! service beside it.
+//! A member device that takes its workspaces' work: their shell commands
+//! ([`tilo_actions::remote::environment_runs`]) and their Browser
+//! ([`tilo_actions::remote::browser`]), in their VMs on the hosted-VM service.
 //!
-//! [`EnvironmentRuns`] is what the member's device plane hands a request to:
-//! it admits a [`RUN`](environment_runs::RUN) from the workspace's host (a
-//! device of the operator this member's identity belongs to, the only one who
-//! knows which account pays), runs the command line in the session's shell
-//! over the member's own copy of the workspace's files ([`WorkspaceShells`]),
-//! shows what it prints as it prints it, and answers how it went. The host
-//! can stop a run it started: the command ends in the shell as it does on a
-//! person's Ctrl+C, and the answer says so
-//! ([`CommandRan::cancelled`]). Anything else is not served here, so its
-//! caller learns at once.
+//! [`EnvironmentRuns`] admits a [`RUN`](environment_runs::RUN) from the workspace's
+//! host, runs the command line in the session's shell over the member's own copy of the
+//! workspace's files ([`WorkspaceShells`]), streams what it prints, and answers how it
+//! went. The host can stop a run it started, which ends the command as Ctrl+C does
+//! ([`CommandRan::cancelled`]).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -30,39 +24,27 @@ use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use crate::environment_browsers::{AppRefused, BrowserHost};
 use crate::workspace_shell::{Payer, ShellRun, WorkspaceShells};
 
-/// Where, in a workspace's files, its Browser keeps its profile between runs.
 const PROFILE_STORE: &str = ".tilo/browser";
 
-/// How many runs the ledger remembers, finished ones forgotten first.
 const REMEMBERED: usize = 1024;
 
-/// How long a waiting follower is held when nothing changes.
 const CHANGE_WAIT: Duration = Duration::from_secs(1);
 
-/// A member's runs of its workspaces' commands, as its device plane serves
-/// them.
 pub struct EnvironmentRuns(Arc<Inner>);
 
 struct Inner {
     shells: WorkspaceShells,
-    /// Where the workspaces' Browser starts: the hosted-VM service of this
-    /// host, when it runs one.
     browsers: Option<BrowserHost>,
-    /// The operator this member belongs to: whose devices may ask.
     operator: [u8; 32],
     ledger: Mutex<InvocationLedger<Run>>,
-    /// Woken whenever a run moves.
     moved: Condvar,
     /// How many times a run moved, so a waiter tells a change from a wake.
     moves: Mutex<u64>,
 }
 
-/// One admitted run: what it is at now, and how it is stopped.
 #[derive(Clone)]
 struct Run {
     state: Arc<Mutex<InvocationState>>,
-    /// Set when the host cancels the run: the command running in the
-    /// session's shell ends, as it does on a person's Ctrl+C.
     stop: Arc<AtomicBool>,
 }
 
@@ -76,7 +58,6 @@ impl Run {
 }
 
 impl EnvironmentRuns {
-    /// Runs in `shells`, asked by devices of `operator`.
     #[must_use]
     pub fn new(shells: WorkspaceShells, operator: [u8; 32]) -> Self {
         let size = shells.hosted_size();
@@ -142,8 +123,6 @@ impl Inner {
         self.moved();
     }
 
-    /// Answer `run` by opening (or ending) `workspace`'s Browser in its VM on
-    /// this host's hosted-VM service, and answer what it said.
     fn start_browser(
         self: &Arc<Self>,
         run: Run,
@@ -156,10 +135,7 @@ impl Inner {
         std::thread::spawn(move || {
             let outcome = match (asked, browsers) {
                 (Some(mut asked), Some(browsers)) => {
-                    // The workspace is the caller's, whatever the argument says.
                     asked.workspace.clone_from(&workspace);
-                    // The profile is kept among the workspace's own files,
-                    // which sync, encrypted, as they do.
                     let store = inner.shells.files(&workspace).join(PROFILE_STORE);
                     browsers.open(&asked, store).map(Some)
                 }
@@ -204,7 +180,6 @@ impl Inner {
         std::thread::spawn(move || {
             let outcome = match (asked, browsers) {
                 (Some(mut asked), Some(browsers)) => {
-                    // The workspace is the caller's, whatever the argument says.
                     asked.workspace.clone_from(&workspace);
                     browsers.open_app(&asked).map(Some)
                 }
@@ -450,18 +425,12 @@ impl EnvironmentRuns {
     }
 }
 
-/// What one invocation of the member's work asks for.
 enum Asked {
-    /// Run a command line in a session's shell.
     Run(RunCommand),
-    /// Open a workspace's Browser (`Some`), or end its session.
     Browser(Option<OpenBrowser>),
-    /// Start a Linux app in a workspace's VM (`Some`), or end its apps
-    /// session.
     App(Option<OpenApp>),
 }
 
-/// What `what` (Browser, a Linux app) opens with, as its action's argument.
 fn open_argument<T: serde::de::DeserializeOwned>(
     request: &InvokeRequest,
     what: &str,

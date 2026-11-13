@@ -204,7 +204,6 @@ mod tests {
     /// Hostile paths and ids fail closed.
     #[test]
     fn local_library_fails_closed() {
-        // --- phase: hostile_paths_and_ids_fail_closed ---
         {
             let directory = tempfile::tempdir().unwrap();
             let safe = directory.path().join("safe");

@@ -419,19 +419,18 @@ pub struct ActivityTimeline {
     /// this so a snapshot stays stable.
     now_override: Option<SystemTime>,
     newest_first: bool,
-    /// Populated by `draw_filter_strip` each frame so click hit-testing
-    /// matches what was actually painted.
-    chip_rects: Vec<(ChipKind, Rect)>,
+    /// The strip's chips, placed by the layout: what a press on one filters
+    /// the pane by, and where it stands. Painting reads this and adds nothing
+    /// to it, so a press before a paint lands on the chip it means.
+    strip_chips: Vec<StripChip>,
+    /// The author pill's capsule, as the layout placed it.
+    author_pill_painted: Rect,
+    /// The pill's pointer target: its capsule grown to the minimum pointer
+    /// target, and [`Rect::ZERO`] while the pane shows no pill.
     author_pill_rect: Rect,
-    /// The room the layout gave the author pill at the strip's right edge,
-    /// which the class chips (placed by the paint) leave it.
-    author_pill_w: f64,
     /// The strip filters by who made the changes ([`Self::set_filters_people`]):
     /// Everyone, then each person and agent in the history.
     filters_people: bool,
-    /// The people chips as painted: the author each narrows to (`None` for
-    /// Everyone) and its hit rect.
-    people_chip_rects: Vec<(Option<String>, Rect)>,
     /// `metrics.min_pointer_target`, taken from the frame's theme so the
     /// theme-less hit-test accessors can grow a chip's target to it.
     min_pointer_target: f64,
@@ -510,11 +509,10 @@ impl ActivityTimeline {
             on_name_group: None,
             now_override: None,
             newest_first: true,
-            chip_rects: Vec::new(),
+            strip_chips: Vec::new(),
+            author_pill_painted: Rect::ZERO,
             author_pill_rect: Rect::ZERO,
-            author_pill_w: 0.0,
             filters_people: false,
-            people_chip_rects: Vec::new(),
             min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
             face_theme: Theme::default(),
             show_author_pill: true,
@@ -697,12 +695,12 @@ impl ActivityTimeline {
         }
     }
 
-    /// Take `rect` and place in it everything a layout pass would: the strip's
-    /// author pill, the way back out of a filter and the selection bar's
-    /// count and actions, measured in `theme`'s own type. A host that reserves
-    /// the pane's box out of its own layout calls this before it draws, so a
-    /// press or a screen reader finds those controls where the pane draws
-    /// them.
+    /// Take `rect` and place in it everything a layout pass would: the
+    /// strip's chips, its author pill, the way back out of a filter and the
+    /// selection bar's count and actions, measured in `theme`'s own type. A
+    /// host that reserves the pane's box out of its own layout calls this
+    /// before it draws, so a press or a screen reader finds those controls
+    /// where the pane draws them.
     pub fn place_in(&mut self, rect: Rect, theme: &Theme) {
         self.set_rect(rect);
         self.place_controls(theme);
@@ -935,8 +933,29 @@ impl ActivityTimeline {
         (widget_text("history-empty-filtered"), Some(detail))
     }
 
+    /// The author pill's pointer target, once the layout placed it; zero while
+    /// the pane shows no pill.
     pub fn author_pill_rect(&self) -> Rect {
         self.author_pill_rect
+    }
+
+    /// The pointer target of the strip's chip for `kind`, once the layout
+    /// placed it; `None` when that chip did not fit in the strip.
+    pub fn chip_rect(&self, kind: ChipKind) -> Option<Rect> {
+        self.strip_chips.iter().find_map(|chip| match chip.target {
+            StripTarget::Class(placed) if placed == kind => Some(chip.hit),
+            _ => None,
+        })
+    }
+
+    /// The pointer target of the strip's chip that narrows it to `author`'s
+    /// changes (`None` for everyone's), once the layout placed it; `None` when
+    /// the strip does not filter by who, or that chip did not fit.
+    pub fn people_chip_rect(&self, author: Option<&str>) -> Option<Rect> {
+        self.strip_chips.iter().find_map(|chip| match &chip.target {
+            StripTarget::Person(placed) if placed.as_deref() == author => Some(chip.hit),
+            _ => None,
+        })
     }
 
     /// Show or hide the built-in author pill. The default is `true` for
@@ -1606,7 +1625,7 @@ impl ActivityTimeline {
         self.layout_dirty = true;
     }
 
-    /// Put the strip's author pill, the empty state's way back out and the
+    /// Put the strip's chips and the empty state's way back out and the
     /// selection bar's actions where the pane's box puts them, measured in
     /// the theme's own type. The layout runs this, so a frame that is read
     /// before it is drawn — a test, assistive technology, a press — finds
@@ -1617,6 +1636,7 @@ impl ActivityTimeline {
         let theme = self.face_theme.clone();
         crate::text_render::with_layout_renderer(&theme, |tr| {
             self.place_author_pill(tr, &theme);
+            self.place_strip_chips(tr, &theme);
             self.place_selection_bar(tr, &theme);
             self.place_empty_state(tr, &theme);
         });
@@ -1893,6 +1913,10 @@ impl ActivityTimeline {
             self.selection_anchor = None;
         }
         self.rebuild_rows();
+        // What the strip offers follows the list: which chips it has, which
+        // one is chosen, how wide its author pill is. The layout re-places
+        // them before the next frame is read or drawn.
+        self.layout_dirty = true;
     }
 
     fn rebuild_rows(&mut self) {
@@ -2236,12 +2260,27 @@ struct BandHeader<'a> {
     title_style: TextStyle,
 }
 
-/// The filter strip's frame-wide paint inputs, shared by its chip row and
-/// its author pill.
-struct FilterStripPaint {
-    strip: Rect,
-    /// The chip height, never taller than the strip.
-    chip_h: f64,
+/// A chip in the filter strip, placed by the layout: what a press on it
+/// filters the pane by, what it paints, and where it stands. Painting reads
+/// this and decides nothing about it.
+struct StripChip {
+    target: StripTarget,
+    label: String,
+    lead: crate::widget::ChipLead,
+    /// The capsule, inside the strip.
+    painted: Rect,
+    /// The pointer target: `painted` grown to the minimum pointer target.
+    hit: Rect,
+    selected: bool,
+}
+
+/// What a press on a strip chip filters by.
+#[derive(Clone, PartialEq, Debug)]
+enum StripTarget {
+    /// A class chip: the changes of that kind.
+    Class(ChipKind),
+    /// A who chip: that person's or agent's changes, `None` for everyone's.
+    Person(Option<String>),
 }
 
 /// When a row's change was made; empty for the genesis, which no one made
@@ -3196,67 +3235,31 @@ impl ActivityTimeline {
         (c.name, c.restore)
     }
 
-    /// Paint the strip: the chips it holds where this paints them, and the
-    /// author pill where the layout placed it.
+    /// Paint the strip: the chips the layout placed in it, then the author
+    /// pill. Where each stands is the layout's; painting adds nothing to
+    /// what a press can find.
     fn draw_filter_strip(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let strip = self.filter_strip_rect();
         // The filter chips are the shared chip: quiet at rest, a lift when
         // chosen (HIG §9.5).
-        let paint = FilterStripPaint {
-            strip,
-            chip_h: crate::widget::ChipFace::height(theme).min(strip.height()),
-        };
-        let chip_width = |tr: &mut TextRenderer, label: &str| {
-            crate::widget::ChipFace::intrinsic_width(
-                label,
-                crate::widget::ChipLead::None,
-                false,
-                tr,
-                theme,
-            )
-        };
-
-        // Rebuild the chip-rect cache every frame so click hit-testing lines up
-        // with what was just painted.
-        self.chip_rects.clear();
-        self.people_chip_rects.clear();
-        if self.filters_people {
-            let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
-            self.draw_people_chips(&mut ctx, &paint);
+        for chip in &self.strip_chips {
+            crate::widget::ChipFace::new(chip.painted, &chip.label)
+                .lead(chip.lead)
+                .selected(chip.selected)
+                .paint(scene, transform, text_renderer, theme);
+        }
+        let pill = self.author_pill_painted;
+        if pill.is_zero_area() {
             return;
         }
-
-        // The class chips are laid out left to right in the room the author
-        // pill (placed by the layout) leaves them.
-        let chips_budget = if self.show_author_pill {
-            (strip.width() - self.author_pill_w - 8.0).max(0.0)
-        } else {
-            strip.width()
-        };
-
-        let measure_run = |tr: &mut TextRenderer, short: bool| -> f64 {
-            let mut total = 0.0;
-            for chip in ChipKind::ALL {
-                let l = if short {
-                    chip.short_label()
-                } else {
-                    chip.label()
-                };
-                total += chip_width(tr, &l) + CHIP_GAP;
-            }
-            total
-        };
-        let use_short = measure_run(text_renderer, false) > chips_budget;
-
-        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
-        self.draw_filter_chips(&mut ctx, &paint, chips_budget, use_short);
-        self.draw_author_pill(&mut ctx, &paint);
+        crate::widget::ChipFace::new(pill, &self.author_pill_label())
+            .selected(!self.author_query.is_empty())
+            .paint(scene, transform, text_renderer, theme);
     }
 
     /// The `author:...` pill's label: whoever the typeahead names, or
@@ -3292,43 +3295,93 @@ impl ActivityTimeline {
     fn place_author_pill(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         let strip = self.filter_strip_rect();
         let shown = !self.filters_people && self.show_author_pill;
-        self.author_pill_w = if shown {
+        let width = if shown {
             self.author_pill_width(tr, theme)
         } else {
             0.0
         };
-        self.author_pill_rect = if shown {
+        self.author_pill_painted = if shown {
             let h = crate::widget::ChipFace::height(theme).min(strip.height());
             let cy = f64::midpoint(strip.y0, strip.y1);
-            let painted = Rect::new(
-                strip.x1 - self.author_pill_w,
-                cy - h / 2.0,
-                strip.x1,
-                cy + h / 2.0,
-            );
-            self.hit_rect_within(painted, strip)
+            Rect::new(strip.x1 - width, cy - h / 2.0, strip.x1, cy + h / 2.0)
         } else {
             Rect::ZERO
         };
+        self.author_pill_rect = if self.author_pill_painted.is_zero_area() {
+            Rect::ZERO
+        } else {
+            self.hit_rect_within(self.author_pill_painted, strip)
+        };
     }
 
-    /// The `[All] [Edits] [Comments] ...` chip row; populates
-    /// [`Self::chip_rects`] so hit-testing lines up with what was painted.
-    fn draw_filter_chips(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        paint: &FilterStripPaint,
-        chips_budget: f64,
-        use_short: bool,
-    ) {
-        let PaintCtx {
-            scene,
-            transform,
-            text: text_renderer,
-            theme,
-        } = ctx.reborrow();
-        let &FilterStripPaint { strip, chip_h } = paint;
+    /// Where the strip's chips stand, in the strip's height, measured in the
+    /// theme's type: the class chips left to right in the room the author
+    /// pill leaves them, or — when the strip filters by who — Everyone and
+    /// then a chip per person and agent. Chips that do not fit are left out
+    /// rather than squeezed, and a chip left out has no place to press.
+    fn place_strip_chips(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        let strip = self.filter_strip_rect();
+        let chip_h = crate::widget::ChipFace::height(theme).min(strip.height());
+        let cy = f64::midpoint(strip.y0, strip.y1);
+        let mut chips: Vec<StripChip> = Vec::new();
         let mut x = strip.x0;
+
+        if self.filters_people {
+            let chosen = self.filter.authors.first().cloned();
+            let mut offered: Vec<(Option<String>, String, crate::widget::ChipLead)> = vec![(
+                None,
+                widget_text("history-chip-all"),
+                crate::widget::ChipLead::None,
+            )];
+            for author in self.people() {
+                let lead = if author.relation == crate::widget::history::AuthorRelation::Software {
+                    crate::widget::ChipLead::Glyph(crate::icons::Icon::Bot)
+                } else {
+                    let (r, g, b) = author.rgb();
+                    crate::widget::ChipLead::Face(Color::from_rgb8(r, g, b))
+                };
+                // An agent's chip names the agent itself; its rows say for whom.
+                let label = author.name.clone();
+                offered.push((Some(author.name.clone()), label, lead));
+            }
+            for (author, label, lead) in offered {
+                let chip_w =
+                    crate::widget::ChipFace::intrinsic_width(&label, lead, false, tr, theme);
+                if x + chip_w > strip.x1 && !chips.is_empty() {
+                    break;
+                }
+                let painted = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
+                chips.push(StripChip {
+                    selected: author == chosen,
+                    target: StripTarget::Person(author),
+                    label,
+                    lead,
+                    painted,
+                    hit: self.hit_rect_within(painted, strip),
+                });
+                x += chip_w + CHIP_GAP;
+            }
+            self.strip_chips = chips;
+            return;
+        }
+
+        // The class chips fill the room the author pill (placed above) leaves them.
+        let chips_budget = if self.show_author_pill {
+            (strip.width() - self.author_pill_painted.width() - 8.0).max(0.0)
+        } else {
+            strip.width()
+        };
+        let mut run = 0.0;
+        for chip in ChipKind::ALL {
+            run += crate::widget::ChipFace::intrinsic_width(
+                &chip.label(),
+                crate::widget::ChipLead::None,
+                false,
+                tr,
+                theme,
+            ) + CHIP_GAP;
+        }
+        let use_short = run > chips_budget;
         for chip in ChipKind::ALL {
             let label = if use_short {
                 chip.short_label()
@@ -3339,89 +3392,26 @@ impl ActivityTimeline {
                 &label,
                 crate::widget::ChipLead::None,
                 false,
-                text_renderer,
+                tr,
                 theme,
             );
-            let cy = f64::midpoint(strip.y0, strip.y1);
-            // Stop rather than paint a chip half-under the author pill; an
-            // unpainted chip is not in `chip_rects`, so it cannot be clicked.
-            if x + chip_w > strip.x0 + chips_budget && !self.chip_rects.is_empty() {
+            // Stop rather than place a chip half-under the author pill; a
+            // chip nothing placed cannot be pressed.
+            if x + chip_w > strip.x0 + chips_budget && !chips.is_empty() {
                 break;
             }
-            let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
-            self.chip_rects
-                .push((chip, self.hit_rect_within(chip_rect, strip)));
-            crate::widget::ChipFace::new(chip_rect, &label)
-                .selected(self.active_chip == chip)
-                .paint(scene, transform, text_renderer, theme);
+            let painted = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
+            chips.push(StripChip {
+                selected: self.active_chip == chip,
+                target: StripTarget::Class(chip),
+                label,
+                lead: crate::widget::ChipLead::None,
+                painted,
+                hit: self.hit_rect_within(painted, strip),
+            });
             x += chip_w + CHIP_GAP;
         }
-    }
-
-    /// Everyone, then a chip per person and agent: a person's in their
-    /// colour, an agent's with the agent mark. Chips that do not fit are
-    /// left out rather than squeezed.
-    fn draw_people_chips(&mut self, ctx: &mut PaintCtx<'_>, paint: &FilterStripPaint) {
-        let PaintCtx {
-            scene,
-            transform,
-            text: text_renderer,
-            theme,
-        } = ctx.reborrow();
-        let &FilterStripPaint { strip, chip_h } = paint;
-        let cy = f64::midpoint(strip.y0, strip.y1);
-        let chosen = self.filter.authors.first().cloned();
-        let everyone = widget_text("history-chip-all");
-        let mut chips: Vec<(Option<String>, String, crate::widget::ChipLead)> =
-            vec![(None, everyone, crate::widget::ChipLead::None)];
-        for author in self.people() {
-            let lead = if author.relation == crate::widget::history::AuthorRelation::Software {
-                crate::widget::ChipLead::Glyph(crate::icons::Icon::Bot)
-            } else {
-                let (r, g, b) = author.rgb();
-                crate::widget::ChipLead::Face(Color::from_rgb8(r, g, b))
-            };
-            // An agent's chip names the agent itself; its rows say for whom.
-            let label = author.name.clone();
-            chips.push((Some(author.name.clone()), label, lead));
-        }
-        let mut x = strip.x0;
-        for (author, label, lead) in chips {
-            let chip_w =
-                crate::widget::ChipFace::intrinsic_width(&label, lead, false, text_renderer, theme);
-            if x + chip_w > strip.x1 && !self.people_chip_rects.is_empty() {
-                break;
-            }
-            let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
-            self.people_chip_rects
-                .push((author.clone(), self.hit_rect_within(chip_rect, strip)));
-            crate::widget::ChipFace::new(chip_rect, &label)
-                .lead(lead)
-                .selected(author == chosen)
-                .paint(scene, transform, text_renderer, theme);
-            x += chip_w + CHIP_GAP;
-        }
-    }
-
-    /// The right-anchored `author:...` pill, in the place the layout gave it.
-    fn draw_author_pill(&self, ctx: &mut PaintCtx<'_>, paint: &FilterStripPaint) {
-        let pill = self.author_pill_rect;
-        if pill.is_zero_area() {
-            return;
-        }
-        let PaintCtx {
-            scene,
-            transform,
-            text: text_renderer,
-            theme,
-        } = ctx.reborrow();
-        let &FilterStripPaint { strip, chip_h } = paint;
-        let cy = f64::midpoint(strip.y0, strip.y1);
-        let chip_rect = Rect::new(pill.x0, cy - chip_h / 2.0, pill.x1, cy + chip_h / 2.0);
-        let chosen = !self.author_query.is_empty();
-        crate::widget::ChipFace::new(chip_rect, &self.author_pill_label())
-            .selected(chosen)
-            .paint(scene, transform, text_renderer, theme);
+        self.strip_chips = chips;
     }
 
     /// Where the bar's count, its way out and its name action stand: decided
@@ -4386,26 +4376,24 @@ impl ActivityTimeline {
     }
 
     fn handle_click_in_filter_strip(&mut self, handled: &mut bool) {
-        if let Some((author, _)) = self
-            .people_chip_rects
+        let target = self
+            .strip_chips
             .iter()
-            .find(|(_, rect)| rect.contains(self.last_cursor))
-            .cloned()
-        {
-            self.filter_by_author(author.as_deref());
+            .find(|chip| chip.hit.contains(self.last_cursor))
+            .map(|chip| chip.target.clone());
+        if let Some(target) = target {
+            match target {
+                StripTarget::Person(author) => self.filter_by_author(author.as_deref()),
+                StripTarget::Class(kind) => {
+                    if self.active_chip != kind {
+                        self.active_chip = kind;
+                        self.rebuild();
+                        self.dirty = true;
+                    }
+                }
+            }
             *handled = true;
             return;
-        }
-        for (kind, rect) in &self.chip_rects {
-            if rect.contains(self.last_cursor) {
-                if self.active_chip != *kind {
-                    self.active_chip = *kind;
-                    self.rebuild();
-                    self.dirty = true;
-                }
-                *handled = true;
-                return;
-            }
         }
         // The author pill clears the typeahead — the only way back
         // from a mistyped name without reaching for backspace.

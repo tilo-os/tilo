@@ -1,8 +1,5 @@
-//! Margin cards for comments and tracked changes.
-//!
-//! This component owns the materialized review items, view visibility, drawing,
-//! and frame-local hit targets. The editor remains responsible for applying the
-//! typed [`ReviewAction`] to the document.
+//! Margin cards for comments and tracked changes: the items, their visibility, their
+//! drawing and their hit targets. The editor applies the typed [`ReviewAction`].
 
 use tilo_doc::snapshot::{ChangeKind, ChangeView, CommentView};
 use vello::kurbo::{Affine, Point, Rect};
@@ -19,35 +16,24 @@ use ui::widget::{Button, ButtonFace, ButtonRole, CardFace, ControlSize, Tone};
 use crate::i18n::t;
 use crate::num;
 
-/// Revision ink painted into the document text for tracked insertions /
-/// deletions — paper markup the user authored, not OS chrome.
 pub(super) const INSERTION_RGB: [u8; 3] = [0x1d, 0x7a, 0x3a];
 pub(super) const DELETION_RGB: [u8; 3] = [0xbf, 0x29, 0x29];
-/// Review colour for tracked insertions.
 pub(super) const INSERTION_INK: Color =
     Color::from_rgb8(INSERTION_RGB[0], INSERTION_RGB[1], INSERTION_RGB[2]);
-/// Review colour for tracked deletions.
 pub(super) const DELETION_INK: Color =
     Color::from_rgb8(DELETION_RGB[0], DELETION_RGB[1], DELETION_RGB[2]);
 
 /// Alpha of the comment-range band on the paper (text must read through it).
 const COMMENT_HIGHLIGHT_ALPHA: u8 = 0x66;
 
-/// The paper-side review colours: the wash under a commented range and the
-/// pip at its end, both in the comment author's presence colour made
-/// legible on the sheet. The margin cards themselves are content on the
-/// window ground and read the theme directly.
 pub(super) struct ReviewColors;
 
 impl ReviewColors {
-    /// The presence colour of the author a `tone` names, stepped until it
-    /// reads on the paper.
     pub(super) fn author_mark(theme: &Theme, paper: Color, tone: Tone) -> Color {
         let c = &theme.tokens.colors;
         c.ink_on(paper, tone.colour(theme), NON_TEXT_MIN_CONTRAST)
     }
 
-    /// The translucent band under a range `tone`'s author commented on.
     pub(super) fn comment_highlight(theme: &Theme, paper: Color, tone: Tone) -> Color {
         with_alpha(
             Self::author_mark(theme, paper, tone),
@@ -63,24 +49,19 @@ pub(super) enum ReviewAction {
     AcceptAllChanges,
     RejectAllChanges,
     ResolveComment(String),
-    /// Opens the editor-owned durable reply composer for this comment thread.
     OpenCommentThread(String),
 }
 
-/// Where the margin cards go this frame. The cards are chrome beside the
-/// page and stand in window space at the window's own scale; only their
-/// anchors come from the page, whose content space `to_window` maps.
+/// Where the margin cards go this frame: window space at the window's scale, with
+/// anchors mapped from the page's content space.
 pub(super) struct ReviewPlacement {
     /// The visible canvas (the cards never leave it).
     pub(super) canvas: Rect,
-    /// The page sheet's trailing edge.
     pub(super) page_x1: f64,
     /// The page's content space to the window.
     pub(super) to_window: Affine,
 }
 
-/// The anchors of the review items painted this frame: `(id, y, x)` in
-/// the page's content space.
 pub(super) type Markers<'a> = &'a [(String, f64, f64)];
 
 pub(super) struct ReviewOverlay {
@@ -89,8 +70,6 @@ pub(super) struct ReviewOverlay {
     visible: bool,
     hits: Vec<(Rect, ReviewAction)>,
     pointer: Point,
-    /// The slot held for the comment whose thread is open, where the host
-    /// draws the expanded thread instead of the card.
     expanded_slot: Option<Rect>,
 }
 
@@ -107,8 +86,6 @@ impl Default for ReviewOverlay {
     }
 }
 
-/// One card in the margin column; comments and changes share the column in
-/// reading order.
 enum MarginCard {
     Comment(CommentView, f64),
     Change(ChangeView, f64),
@@ -131,19 +108,15 @@ impl ReviewOverlay {
         self.changes = changes;
     }
 
-    /// Whether any card shows beside the page this frame.
     pub(super) fn shows_cards(&self) -> bool {
         self.visible && !(self.comments.is_empty() && self.changes.is_empty())
     }
 
-    /// The narrowest and the preferred width of the margin column.
     pub(super) fn column_widths(theme: &Theme) -> (f64, f64) {
         let wanted = f64::from(theme.tokens.metrics.sidebar_min_width);
         (wanted * 0.75, wanted)
     }
 
-    /// The room the margin column takes beside the page: the column at its
-    /// narrowest, the gaps on either side and the scroll bar's gutter.
     pub(super) fn column_reserve(theme: &Theme) -> f64 {
         let (minimum, _) = Self::column_widths(theme);
         minimum
@@ -151,9 +124,6 @@ impl ReviewOverlay {
             + f64::from(theme.tokens.metrics.scrollbar_gutter)
     }
 
-    /// The margin column, `(x0, width)` in window space: in the room beside
-    /// the page when it fits there, over the sheet's trailing margin
-    /// otherwise (a phone-sized window).
     pub(super) fn column(theme: &Theme, placement: &ReviewPlacement) -> (f64, f64) {
         let gap = f64::from(theme.tokens.spacing.s4);
         let scrollbar = f64::from(theme.tokens.metrics.scrollbar_gutter);
@@ -168,7 +138,6 @@ impl ReviewOverlay {
         }
     }
 
-    /// Where the open thread stands this frame, if its comment has a card.
     pub(super) fn expanded_slot(&self) -> Option<Rect> {
         self.expanded_slot
     }
@@ -181,7 +150,6 @@ impl ReviewOverlay {
         &self.changes
     }
 
-    /// The author of comment `id`, for its paper-side colours.
     pub(super) fn comment_author(&self, id: &str) -> Option<&str> {
         self.comments
             .iter()
@@ -201,8 +169,6 @@ impl ReviewOverlay {
         self.hits.clear();
     }
 
-    /// Track the pointer (in the cards' space) for the buttons' hover
-    /// state; returns whether the hovered button changed.
     pub(super) fn pointer_moved(&mut self, point: Point) -> bool {
         let before = self.action_at(self.pointer);
         self.pointer = point;
@@ -241,11 +207,8 @@ impl ReviewOverlay {
         }
     }
 
-    /// Paint the margin column (`ctx` draws in window space): one card per
-    /// comment and tracked change, each level with its anchor line and never
-    /// above the card before it. The comment whose thread is open
-    /// (`expanded`: its id and the thread's height) gets a slot of that
-    /// height instead of its card, for the host to draw the thread in.
+    /// Paint the margin column in window space: one card per comment and change, each
+    /// level with its anchor and never above the card before it.
     pub(super) fn draw_cards(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -302,10 +265,6 @@ impl ReviewOverlay {
         }
     }
 
-    /// Paint the card for `comment` at the top of `slot` (its width is the
-    /// column's) and return its height: the author as the title, the
-    /// comment in `Body`, up to two replies in `Caption`, then Reply and
-    /// Resolve.
     fn draw_comment(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -390,7 +349,6 @@ impl ReviewOverlay {
         height
     }
 
-    /// Reply and Resolve along the bottom of a comment card.
     fn draw_comment_actions(&mut self, ctx: &mut PaintCtx<'_>, row: Rect, id: &str) {
         let theme = ctx.theme;
         let reply = t("review-reply");
@@ -423,9 +381,6 @@ impl ReviewOverlay {
         }
     }
 
-    /// Paint the card for the tracked `change` at the top of `slot` and
-    /// return its height: what changed and who changed it, then Accept and
-    /// Reject as icon buttons.
     fn draw_change(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -503,15 +458,10 @@ impl ReviewOverlay {
     }
 }
 
-/// The tone a person's review marks wear: the colour presence paints them in,
-/// the one they chose or the one their identity derives, the same colour their
-/// face and their caret wear.
 fn tone_of(presence: &PresenceCtx, author: &str) -> Tone {
     Tone::Presence(presence.hue_of(author))
 }
 
-/// The comment pip: a caret-thin mark in the author's colour standing
-/// between the last commented character and the next, one body line tall.
 fn draw_pip(ctx: &mut PaintCtx<'_>, mark: Color, at: Point) {
     let width = f64::from(ctx.theme.tokens.metrics.chrome_rule_px).max(1.0) * 2.0;
     let height = ctx.line_box(TextRole::Body);
@@ -520,8 +470,6 @@ fn draw_pip(ctx: &mut PaintCtx<'_>, mark: Color, at: Point) {
         .fill(Fill::NonZero, ctx.transform, mark, None, &pip);
 }
 
-/// Replies in the order they were written (oldest first), ties in their
-/// canonical id order, so every reader sees the conversation the same way.
 pub(super) fn sort_replies(comment: &mut CommentView) {
     comment
         .replies
@@ -532,8 +480,6 @@ pub(super) fn sort_replies(comment: &mut CommentView) {
 mod tests {
     use super::*;
 
-    /// A comment's paper-side marks take its author's presence colour and
-    /// stay legible on the sheet under every shipped theme.
     #[test]
     fn comment_marks_take_the_author_colour_and_read_on_paper() {
         use ui::a11y::contrast_ratio;
@@ -551,10 +497,8 @@ mod tests {
         }
     }
 
-    /// A hidden overlay never routes stale hits and the topmost review hit wins.
     #[test]
     fn review_overlay_hits_are_topmost_and_never_stale() {
-        // Phase: hidden_overlay_never_routes_stale_hits.
         {
             let mut overlay = ReviewOverlay::default();
             overlay.hits.push((
@@ -568,7 +512,6 @@ mod tests {
             assert_eq!(overlay.action_at(Point::new(10.0, 10.0)), None);
         }
 
-        // Phase: topmost_review_hit_wins.
         {
             let mut overlay = ReviewOverlay::default();
             let rect = Rect::new(0.0, 0.0, 20.0, 20.0);

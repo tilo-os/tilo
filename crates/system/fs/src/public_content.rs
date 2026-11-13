@@ -1,30 +1,16 @@
-//! Public content this device keeps a copy of: small public files that
-//! belong to no workspace and no app (Project Gutenberg's catalogue, later the
-//! tiles of a map's offline areas), one copy per device, readable from every
-//! workspace.
+//! Public content this device keeps a copy of: small public files that belong to no
+//! workspace and no app (Project Gutenberg's catalogue, later a map's offline
+//! areas), one copy per device, readable from every workspace.
 //!
-//! - **What may be kept** is a fixed list of [`Source`]s, each a name, the
-//!   address it is fetched from and the most it may weigh. An app names a
-//!   source; it never hands the daemon an address to fetch.
-//! - **The copy** is ordinary content in the content store's file area, keyed
-//!   by the BLAKE3 of its bytes, with [`Retention::Fetchable`](crate::store::Retention::Fetchable): the budget
-//!   evicts it like any cached content, in the same order, and only its
-//!   bytes go. The entry keeps where it came from, so a read of an evicted
-//!   copy fetches it again.
-//! - **The name** points at the copy: a device-level pointer from the
-//!   source's name to the current hash. A refresh writes the new copy whole
-//!   and only then moves the pointer, so a reader sees the old copy or the
-//!   new one, never half of either.
-//! - **Keepers.** An app keeps a copy ([`PublicContent::keep`]): the first
-//!   keeper fetches it, and only kept copies are refreshed. Releasing it
-//!   removes nothing: the copy stays on the device, and the budget evicts it
-//!   when it needs the room, so an app that keeps it again does not
-//!   download it again.
-//! - **Refresh** is conditional (`If-None-Match`, `If-Modified-Since`): the
-//!   background refresh asks the origin whether the copy changed and
-//!   downloads it only when it did. A copy is asked about once a
-//!   [`REFRESH_EVERY`]; the background scheduler only says when the device
-//!   may spend the network (os/usr/lib/systemd/user/tilo-public-content-refresh.timer).
+//! What may be kept is a fixed list of [`Source`]s; an app names a source and never
+//! hands the daemon an address to fetch. The copy is ordinary content in the
+//! content store's file area, evicted by the budget like any cached content, and a
+//! read of an evicted copy fetches it again. A name points at the current copy: a
+//! refresh writes the new copy whole and only then moves the pointer, so a reader
+//! sees the old copy or the new one. The first keeper of a copy fetches it and only
+//! kept copies are refreshed; releasing one removes nothing. Refresh is conditional
+//! (`If-None-Match`, `If-Modified-Since`) and a copy is asked about once a
+//! [`REFRESH_EVERY`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -37,34 +23,27 @@ use tilo_lock::MutexRecover as _;
 
 use crate::store::area::{AreaKey, FileArea};
 
-/// One public file a device may keep a copy of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Source {
-    /// What apps call it.
     pub name: &'static str,
-    /// Where it is fetched from.
     pub url: &'static str,
-    /// The most it may weigh, in bytes.
     pub max_bytes: u64,
 }
 
-/// Every public file a device may keep.
 pub const SOURCES: &[Source] = &[Source {
     name: "gutenberg-catalogue",
     url: "https://www.gutenberg.org/cache/epub/feeds/pg_catalog.csv.gz",
     max_bytes: 64 * 1024 * 1024,
 }];
 
-/// How long an origin's answer about a copy holds before it is asked again.
+/// How long an origin's answer holds before the copy is asked about again.
 pub const REFRESH_EVERY: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
-/// The source called `name`.
 #[must_use]
 pub fn source(name: &str) -> Option<&'static Source> {
     SOURCES.iter().find(|source| source.name == name)
 }
 
-/// What an origin said about a copy, to ask it next time whether it changed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Validator {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -73,22 +52,18 @@ pub struct Validator {
     pub last_modified: Option<String>,
 }
 
-/// What an origin answered.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Answer {
-    /// The file, and what to ask with next time.
     Changed {
         bytes: Vec<u8>,
         validator: Validator,
     },
-    /// The copy asked about is still current.
     Unchanged,
 }
 
-/// Where public files are fetched from: the network, or a test's stand-in.
 pub trait Origin: Send + Sync + 'static {
-    /// Fetch `url`, at most `limit` bytes of it; with `since`, only if it
-    /// changed since the copy that validator describes.
+    /// Fetch `url`, at most `limit` bytes of it; with `since`, only if it changed
+    /// since the copy that validator describes.
     fn fetch(
         &self,
         url: &'static str,
@@ -97,15 +72,12 @@ pub trait Origin: Send + Sync + 'static {
     ) -> BlobFuture<Result<Answer, String>>;
 }
 
-/// One kept copy, as the pointer file records it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Copy {
-    /// The current copy's hash, once one arrived.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hash: Option<String>,
     #[serde(default)]
     validator: Validator,
-    /// The apps that keep it.
     #[serde(default)]
     keepers: BTreeSet<String>,
     /// When its origin last answered, in seconds since the epoch.
@@ -118,14 +90,11 @@ fn epoch_seconds(time: SystemTime) -> u64 {
         .map_or(0, |since| since.as_secs())
 }
 
-/// The public content this device keeps.
 pub struct PublicContent {
     files: Arc<FileArea>,
     origin: Arc<dyn Origin>,
-    /// Where the pointers are recorded.
     pointers: PathBuf,
     copies: std::sync::Mutex<BTreeMap<String, Copy>>,
-    /// Sources being fetched right now.
     fetching: std::sync::Mutex<BTreeSet<&'static str>>,
 }
 
@@ -140,12 +109,8 @@ fn unknown(name: &str) -> BlobError {
 }
 
 impl PublicContent {
-    /// The public content kept in `files`, its pointers recorded in `dir`,
-    /// fetched from `origin`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `dir` cannot be created.
+    /// The public content kept in `files`, its pointers recorded in `dir`, fetched
+    /// from `origin`.
     pub fn open(
         dir: &Path,
         files: Arc<FileArea>,
@@ -177,7 +142,6 @@ impl PublicContent {
         }
     }
 
-    /// Whether the copy `hash` is wholly on this device.
     fn resident(&self, hash: Option<&str>) -> bool {
         hash.and_then(area_key)
             .and_then(|key| self.files.entry(&key))
@@ -209,9 +173,8 @@ impl PublicContent {
         Ok(())
     }
 
-    /// `app` no longer keeps the source `name`. The copy stays on the device
-    /// until the budget needs its room; nobody keeping it, it is no longer
-    /// refreshed.
+    /// `app` no longer keeps the source `name`. The copy stays on the device until
+    /// the budget needs its room, and is no longer refreshed.
     ///
     /// # Errors
     ///
@@ -229,9 +192,9 @@ impl PublicContent {
         Ok(())
     }
 
-    /// Up to `max_len` bytes of the current copy of `name` from `offset`.
-    /// A copy that is not here (still arriving, or evicted) is fetched and
-    /// reads as pending; one never kept on this device is unavailable.
+    /// Up to `max_len` bytes of the current copy of `name` from `offset`. A copy
+    /// that is not here (still arriving, or evicted) is fetched and reads as
+    /// pending; one never kept on this device is unavailable.
     ///
     /// # Errors
     ///
@@ -272,16 +235,14 @@ impl PublicContent {
                 total_len: entry.size,
             }
         } else {
-            // Evicted between the look and the read: fetched again.
             self.start_fetch(source);
             ReadOutcome::Pending
         };
         Ok(PublicRead { outcome, hash })
     }
 
-    /// Ask the origin of every kept copy not asked about for a
-    /// [`REFRESH_EVERY`] whether it changed, and take the newer one where it
-    /// did. How many changed.
+    /// Ask the origin of every kept copy not asked about for a [`REFRESH_EVERY`]
+    /// whether it changed, and take the newer one where it did. How many changed.
     pub async fn refresh(self: &Arc<Self>) -> u32 {
         self.refresh_at(SystemTime::now()).await
     }
@@ -309,7 +270,6 @@ impl PublicContent {
         changed
     }
 
-    /// Fetch `source` in the background, unless it is being fetched.
     fn start_fetch(self: &Arc<Self>, source: &'static Source) {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
@@ -320,8 +280,8 @@ impl PublicContent {
         });
     }
 
-    /// Fetch `source`, conditionally when its copy is here, and make what
-    /// arrived the current copy. Whether a new copy arrived.
+    /// Fetch `source`, conditionally when its copy is here, and make what arrived
+    /// the current copy. Whether a new copy arrived.
     async fn fetch(self: &Arc<Self>, source: &'static Source, now: SystemTime) -> bool {
         if !self.fetching.lock_recover().insert(source.name) {
             return false;
@@ -356,8 +316,8 @@ impl PublicContent {
         arrived
     }
 
-    /// Make `bytes` the current copy of `source`: written whole first, the
-    /// pointer moved after, the copy it replaced removed last.
+    /// Make `bytes` the current copy of `source`: written whole first, the pointer
+    /// moved after, the copy it replaced removed last.
     fn install(
         &self,
         source: &'static Source,
@@ -394,17 +354,11 @@ impl PublicContent {
     }
 }
 
-/// Public files fetched over the network.
 pub struct NetOrigin {
     client: tilo_net::Client,
 }
 
 impl NetOrigin {
-    /// An origin on its own connection.
-    ///
-    /// # Errors
-    ///
-    /// No network client can be made here.
     pub fn new() -> Result<Arc<Self>, String> {
         let client = tilo_net::Client::builder()
             .user_agent("Tilo/1 (+https://tilo.so)")

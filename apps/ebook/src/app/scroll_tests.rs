@@ -48,7 +48,6 @@ fn prose_book(chapters: usize, paragraphs: usize, words: usize) -> Book {
                     let mut text = String::new();
                     let n = words / 2 + next() as usize % words;
                     for i in 0..n {
-                        // Common words often, rare ones now and then.
                         let pick = (next() as usize % 64).pow(2) % vocabulary.len();
                         let word = &vocabulary[(pick + next() as usize % 8) % vocabulary.len()];
                         if i > 0 {
@@ -393,8 +392,6 @@ fn marked_share(app: &Framed<BooksApp>) -> f64 {
 fn sustained_scrolling_through_a_long_book_never_waits_on_layout() {
     let (mut app, _, _, _) = first_content(prose_book(4, 80, 90), ReadMode::Continuous);
     let mut samples = drive(&mut app, ScrollInput::Sweep, 360);
-    // A worker slowed by a loaded machine may keep the scroll resting at the
-    // first chapter's end for longer; it still reaches the next one.
     let deadline = tilo_test_env::hang_deadline();
     while samples.last().is_none_or(|s| s.chapter < 1) && ui::time::now() < deadline {
         samples.extend(drive(&mut app, ScrollInput::Sweep, 60));
@@ -421,8 +418,6 @@ fn sustained_scrolling_through_a_long_book_never_waits_on_layout() {
     for (i, pair) in samples.windows(2).enumerate() {
         let (before, after) = (&pair[0], &pair[1]);
         let moved = (after.chapter, after.scroll_y) > (before.chapter, before.scroll_y);
-        // The one wait the reader has: at a chapter's end, until the worker
-        // has set the next chapter's first screen.
         assert!(
             moved || (after.chapter == before.chapter && before.at_end && after.at_end),
             "the text stood still mid-chapter at frame {}: {report}",

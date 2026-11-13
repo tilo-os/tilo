@@ -130,6 +130,9 @@ pub struct ParamInfo {
     /// Whether the view offering the action supplies it (`above: Option<Task> (above)`): the
     /// place the item stands in, as a row of a list gives the row above it.
     pub place: bool,
+    /// What the parameter is called where a person gives it, when its name in words does not
+    /// say what it holds (`saved: Bool (label: "On the Watch later list")`).
+    pub label: Option<String>,
     /// Whether the text of an entry fills it: an action's one `Text` parameter is what the
     /// words left after the other parameters take theirs title the item with
     /// (`crate::entry`).

@@ -1,5 +1,5 @@
-//! Root-owned relay for an already admitted selected-file source capability.
-//! The target receives only the existing filesystem RPC, never the worker fd.
+//! Root-owned relay for an already admitted selected-file source capability; the target receives
+//! only the existing filesystem RPC, never the worker fd.
 use super::installed_retained_actor::InstalledRetainedLaunchInput;
 use launcher::owned_service::{TargetProjectionEndpoint, TargetProjectionMode};
 use runtime_fs::{
@@ -28,11 +28,9 @@ fn refused() -> io::Error {
         "Retained source relay refused",
     )
 }
-// Constructor private: neither RPC labels nor caller-selected callbacks can
-// replace installed custody. The lock serializes proof challenges and source
-// calls; the connected server admits only eight pending backend callbacks.
-// This is native owned-child delegation, not a second person proof. The
-// originating certified Shell binding is never rewritten to the worker PID.
+// Constructor private: neither RPC labels nor caller-selected callbacks can replace installed
+// custody. The lock serializes proof challenges and source calls, the connected server admits eight
+// pending callbacks, and the certified Shell binding is never rewritten to the worker PID.
 struct RetainedProjectionConsumer {
     endpoint: Arc<TargetProjectionEndpoint>,
 }
@@ -143,7 +141,6 @@ struct Custody {
     interrupt: Source,
     consumer: Consumer,
 }
-/// Destruction of one already-owned capability; never an effect or access request.
 #[derive(Clone, Copy)]
 enum ControllerRelease {
     Job(u64),
@@ -163,8 +160,6 @@ impl ControllerCleanup {
     fn perform(self, home: &DirectoryConnection) -> io::Result<()> {
         match self {
             Self::Release(release) => release.release(home),
-            // Fixed original-channel ordering observation, with no path supplied
-            // by the consumer and no metadata returned to it.
             Self::Barrier => home.metadata(ROOT_DIRECTORY).map(|_| ()),
         }
     }
@@ -172,8 +167,6 @@ impl ControllerCleanup {
 impl Custody {
     fn revoke(&self) {
         self.revoked.store(true, Ordering::Release);
-        // No source-call lock: close the exact channel immediately even when
-        // a backend callback holds custody while awaiting an actual effect.
         self.interrupt.revoke();
         self.input.revoke();
     }
@@ -189,10 +182,8 @@ impl Custody {
         consumer.current()?;
         Ok(())
     }
-    /// Cleanup outlives the target's role/process proof. It may only release
-    /// constructor-minted aliases/tickets on this exact still-owned connection.
-    /// Native scope and observed callback retirement remain enforced remotely;
-    /// any transport error is unknown and never acknowledged or replayed as IO.
+    /// May only release constructor-minted aliases and tickets on this exact still-owned connection;
+    /// a transport error is unknown and is never acknowledged or replayed.
     fn cleanup(&self, request: ControllerCleanup) -> io::Result<()> {
         if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(refused());
@@ -205,8 +196,6 @@ impl Custody {
             let source = self.source.lock().map_err(|_| refused())?;
             self.current()?;
             let value = call(source.as_ref().ok_or_else(refused)?);
-            // A write followed by failed authority has an unknown outcome; it
-            // is refused and terminal, and is never replayed by this relay.
             self.current()?;
             value
         })();
@@ -227,8 +216,6 @@ struct Handle {
 }
 impl Drop for Handle {
     fn drop(&mut self) {
-        // Revoked custody cannot issue further RPC. Connection retirement
-        // below drops every remaining remote handle in either case.
         let _ = self.custody.call(|source| source.release(self.id));
     }
 }
@@ -372,17 +359,16 @@ impl WorkspaceFileBackend for Handle {
     }
 }
 
-/// Keep alongside the actual target namespace owner, then explicitly retire
-/// after observed target death. This object has no wire/public constructor.
+/// Keep alongside the target namespace owner, then explicitly retire after observed target death;
+/// no wire or public constructor.
 pub struct RetainedSourceRelay {
     custody: Option<Arc<Custody>>,
     server: Option<ConnectedWorkspaceServer>,
     runtime: Option<tokio::runtime::Runtime>,
 }
 impl RetainedSourceRelay {
-    /// The endpoint is minted only by the canonical launcher owner for its
-    /// fixed root projection child. Caller streams or child PID labels cannot
-    /// substitute for it. The caller retains that owner through relay retirement.
+    /// Minted only by the canonical launcher owner for its fixed root projection child; caller
+    /// streams or child PID labels cannot substitute, and the caller retains that owner.
     pub fn serve_projection(
         source: SelectedFileConnection,
         input: Arc<InstalledRetainedLaunchInput>,
@@ -468,15 +454,12 @@ impl RetainedSourceRelay {
         let Some(custody) = self.custody.clone() else {
             return Ok(());
         };
-        // Retain the complete relay on any Reader retirement failure.
         self.custody.take();
         custody.revoke();
         let server_result = self
             .server
             .take()
             .map_or(Ok(()), ConnectedWorkspaceServer::retire);
-        // Runtime drop waits for already spawned blocking callbacks. Do not
-        // use shutdown_background/timeout: source custody must remain held.
         drop(self.runtime.take());
         let custody = Arc::try_unwrap(custody).map_err(|_| refused())?;
         let (mut source, lock_result) = match custody.source.into_inner() {
@@ -491,8 +474,6 @@ impl RetainedSourceRelay {
 impl Drop for RetainedSourceRelay {
     fn drop(&mut self) {
         if self.stop().is_err() {
-            // Unknown Reader/source retirement must not erase source epoch or
-            // current proof custody when this cleanup owner unwinds.
             std::mem::forget(self.custody.take());
             std::mem::forget(self.server.take());
             std::mem::forget(self.runtime.take());
@@ -710,8 +691,8 @@ impl Drop for HomeMetadata {
         let _ = self.custody.call(|s| s.home()?.release_pin(self.id));
     }
 }
-/// Exact constructor-minted map alias release, with progress kept across an
-/// unknown barrier reply. State1 has removed the map; only state2 is an ACK.
+/// Exact constructor-minted map alias release, with progress kept across an unknown barrier reply:
+/// state1 has removed the map and only state2 is an ACK.
 #[derive(Default)]
 struct ControllerCache(Mutex<u8>);
 impl ControllerCache {
@@ -726,8 +707,6 @@ impl ControllerCache {
                 .map_err(|error| error.to_string())?;
             *state = 1;
         }
-        // SAME ordered original source channel, after the actual local cap drop.
-        // Unknown reply retains state1; retry only the fixed observation barrier.
         custody
             .cleanup(ControllerCleanup::Barrier)
             .map_err(|error| error.to_string())?;

@@ -1,18 +1,10 @@
 //! The terminal: a [`Terminal`] session resource and the [`TerminalWidget`]
 //! surface that runs its process. The app is [`TerminalShell`]; the shell
 //! also embeds the widget in a tile.
-//!
-//! See [`actions`] for the resource + action-model split: the shared document is
-//! the emulator's live-screen projection, while Ctrl+K exposes real PTY controls
-//! as non-undoable effects.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// An app runs in its own sandboxed process, so an integer that wraps here costs one app rather than the
+// desktop: overflow is allowed here, while the lints whose fault is a crash stay denied. `shell`, `ui`
+// and `crates/` keep the full set: a fault there takes the session, or every app with it.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -45,11 +37,8 @@ pub use crate::inner::{
     TerminalWidget, parse_target_argument,
 };
 
-/// Re-exported so hosts can build a command for [`TerminalWidget::spawn_command`]
-/// without taking a direct dependency on `portable-pty`.
 pub use portable_pty::CommandBuilder;
 
-// Keep the large implementation private while exposing the stable types above.
 mod inner {
     include!("main_body.rs");
     include!("scrollback_ui.rs");
@@ -65,9 +54,6 @@ mod view;
 
 pub use view::TerminalView;
 
-/// A short scripted session, typed into a freshly spawned login shell, that
-/// prints a few recognisable lines in that shell's own syntax. Hosts use it to
-/// stage screenshots of a live terminal.
 #[must_use]
 pub fn demo_session_input() -> &'static str {
     #[cfg(windows)]
@@ -88,12 +74,9 @@ mod target_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 
-/// Permission to discover the session-owned supervisor on the open worker.
-/// A real host lends this instead of connecting on its compositor thread.
 #[derive(Clone, Copy, Debug)]
 pub struct HostedSessionSource;
 
-/// Process connections explicitly granted to one hosted Terminal instance.
 #[cfg_attr(not(unix), derive(Default))]
 pub struct HostedProcessServices {
     #[cfg(unix)]
@@ -110,8 +93,6 @@ impl Default for HostedProcessServices {
 }
 
 impl HostedProcessServices {
-    /// No process service: a host that shows a terminal (a capture, a
-    /// fixture) without letting it open sessions.
     pub fn unavailable() -> Self {
         Self {
             #[cfg(unix)]
@@ -122,13 +103,10 @@ impl HostedProcessServices {
 
 #[cfg(unix)]
 impl HostedProcessServices {
-    /// Whether the host handed over the `ush` supervisor.
     pub fn has_ush(&self) -> bool {
         self.ush.is_some()
     }
 
-    /// Open a session on `target` over `first`, or over a fresh connection
-    /// to the session's supervisor once the first has been used.
     pub(crate) fn open_session(
         first: Option<Self>,
         target: &target::SessionTarget,
@@ -151,8 +129,6 @@ impl HostedProcessServices {
         crate::inner::ush_backend_on(&stream, &[], target, requested_by, relay_session, workspace)
     }
 
-    /// One request to the session's supervisor over a fresh connection, in
-    /// `workspace` when the Terminal knows it; returns its one-line answer.
     pub(crate) fn ask(
         request: &serde_json::Value,
         workspace: Option<&str>,
@@ -173,11 +149,6 @@ impl HostedProcessServices {
         Ok(reply)
     }
 
-    /// Discover the session-owned `ush` supervisor below one runtime directory.
-    ///
-    /// This stays crate-visible so the socket lookup can be tested without
-    /// mutating `XDG_RUNTIME_DIR`, which is process-global and shared by the
-    /// terminal test suite. Production callers use [`Default`].
     pub(crate) fn discover_from_runtime_dir(runtime: &std::path::Path) -> Self {
         Self {
             ush: discover_ush(runtime).ok(),
@@ -200,7 +171,6 @@ fn discover_ush(runtime: &std::path::Path) -> std::io::Result<std::os::unix::net
     Ok(stream)
 }
 
-/// A required provider is missing or refused the session. Hosts may retry with a fresh grant.
 #[derive(Debug)]
 pub enum HostedTerminalError {
     RequiredServiceMissing(&'static str),
@@ -219,20 +189,16 @@ impl std::fmt::Display for HostedTerminalError {
 impl std::error::Error for HostedTerminalError {}
 pub use resource::{Terminal, TerminalEffect, TerminalShell};
 
-/// The terminal a host mounted, when `widget` is the root of a terminal
-/// tab: for a host's test that types into the terminal it shows.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn mounted_terminal(widget: &mut dyn ui::widget::Widget) -> Option<&mut TerminalWidget> {
     ui::framework::testing::surface_in_root::<TerminalShell, TerminalView>(widget)
         .map(TerminalView::terminal_mut)
 }
 
-/// The terminal's application definition: the one every host mounts.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(TerminalShell)
 }
 
-/// Without a hosted process-service transport nothing opens here.
 #[cfg(not(unix))]
 impl HostedProcessServices {
     /// Whether the host handed over the `ush` supervisor: never, here.

@@ -3,9 +3,6 @@
 use super::*;
 use crate::app::editor;
 
-/// The rows name themselves in the window's language: a German sheet lists
-/// "Jeden Tag" and "Keine Zeitzone", and a custom rule counts in German's own
-/// plural forms.
 #[test]
 fn the_dropdown_rows_read_in_german() {
     let catalog = &crate::resource::CATALOG;

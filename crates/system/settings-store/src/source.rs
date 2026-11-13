@@ -1,11 +1,8 @@
 //! A settings document the host provides instead of the local file.
 //!
-//! A host that keeps settings somewhere of its own installs a
-//! [`SettingsSource`]; [`crate::load`], [`crate::load_section`] and
-//! [`crate::update_section`] then read and merge into it. A sandboxed app
-//! installs its channel to the session; a browser page, which has no config
-//! directory, installs a [`HostDocument`]. Every other process reads and
-//! writes its profile's [`crate::Store`], the session as its holder.
+//! A host that keeps settings somewhere of its own installs a [`SettingsSource`]; the load and
+//! update functions then read and merge into it. A sandboxed app installs its channel to the
+//! session; a browser page, which has no config directory, installs a [`HostDocument`].
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -13,12 +10,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use serde_json::{Map, Value};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
-/// Receipt of a storage operation performed under its canonical lock.
 #[derive(Debug)]
 pub enum ConditionalUpdate {
-    /// A comparison failed; no requested fields were changed.
     Superseded,
-    /// The change was accepted.
     Stored,
 }
 
@@ -61,42 +55,24 @@ impl DisplayUpdate {
     }
 }
 
-/// Who and what made a settings change: the action (or shell entry point,
-/// such as a fixed chord) that caused it, and the principal that invoked it.
-///
-/// A source that keeps a history ([`crate::Store`]) records it with the
-/// change, so "who changed this" has an answer and a later system undo has
-/// its input. Every field is optional.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChangeOrigin {
-    /// The action id (`appearance.theme.dark`) or shell entry point
-    /// (`fixed-toggle-mouse-keys`) that made the change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
-    /// Who invoked it: [`ChangeOrigin::LOCAL_USER`] for the person at this
-    /// device's own input, else the collaborator's or agent's principal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal: Option<String>,
-    /// The action that ran [`Self::action`] on the person's behalf, when it
-    /// did not run on its own: the palette's `appearance.theme.dark` runs
-    /// Settings' appearance field edit. "Dark mode, from the palette" and
-    /// "edited in Settings" make the same edit; this tells them apart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invoked_by: Option<InvokingAction>,
 }
 
-/// The action that invoked another one, as a settings change records it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InvokingAction {
-    /// Its action id (`appearance.theme.dark`).
     pub action: String,
-    /// Its invocation, when it ran as one the action journal knows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation: Option<String>,
 }
 
 impl InvokingAction {
-    /// The action `action`, run outside any journalled invocation.
     #[must_use]
     pub fn action(action: impl Into<String>) -> Self {
         Self {
@@ -107,10 +83,8 @@ impl InvokingAction {
 }
 
 impl ChangeOrigin {
-    /// The person at this device's keyboard, pointer or touch screen.
     pub const LOCAL_USER: &'static str = "local-user";
 
-    /// A change `action` made, with no principal known yet.
     #[must_use]
     pub fn action(action: impl Into<String>) -> Self {
         Self {
@@ -120,21 +94,18 @@ impl ChangeOrigin {
         }
     }
 
-    /// This origin, invoked by `principal`.
     #[must_use]
     pub fn by(mut self, principal: impl Into<String>) -> Self {
         self.principal = Some(principal.into());
         self
     }
 
-    /// This origin, run by the action `invoked_by`.
     #[must_use]
     pub fn invoked_by(mut self, invoked_by: Option<InvokingAction>) -> Self {
         self.invoked_by = invoked_by;
         self
     }
 
-    /// `action`, invoked by the person at this device's own input.
     #[must_use]
     pub fn local(action: impl Into<String>) -> Self {
         Self::action(action).by(Self::LOCAL_USER)
@@ -145,22 +116,11 @@ impl ChangeOrigin {
 /// merge into it. Called once, with the section as stored at that moment.
 pub type SectionChange<'a> = dyn FnMut(&Map<String, Value>) -> Map<String, Value> + 'a;
 
-/// Where the settings document lives when it is not the local file.
 pub trait SettingsSource: Send + Sync {
-    /// The whole document. Forgiving like the file: never fails.
     fn load(&self) -> Map<String, Value>;
 
-    /// Merge `values` into section `name` as [`crate::update_section`] does.
-    ///
-    /// # Errors
-    /// The host could not keep the change; the document is unchanged.
     fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()>;
 
-    /// [`Self::update_section`], recording `origin` with every leaf it
-    /// changes. A source without a history ignores the origin.
-    ///
-    /// # Errors
-    /// As [`Self::update_section`].
     fn update_section_by(
         &self,
         name: &str,
@@ -196,13 +156,8 @@ pub trait SettingsSource: Send + Sync {
         self.update_section_by(name, change(&current), origin)
     }
 
-    /// Wait until every change this source accepted is durable. Sources
-    /// whose writes are durable when they return have nothing to do.
     fn flush_pending(&self) {}
 
-    /// The failures of writes this source accepted before they were made
-    /// durable, each once, oldest first: the changes were reverted in the
-    /// document.
     fn take_deferred_failures(&self) -> Vec<DeferredFailure> {
         Vec::new()
     }
@@ -222,8 +177,6 @@ pub trait SettingsSource: Send + Sync {
         ))
     }
 
-    /// Atomically compare and merge display transaction/profile intent in
-    /// its single device record.
     fn compare_display_update(&self, _update: DisplayUpdate) -> std::io::Result<ConditionalUpdate> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -231,8 +184,6 @@ pub trait SettingsSource: Send + Sync {
         ))
     }
 
-    /// Compare a host-owned display transaction, including an absent section.
-    /// Main's atomic display update also protects the observed profile state.
     fn compare_display_transaction(
         &self,
         expected: Option<&Value>,
@@ -254,30 +205,21 @@ pub trait SettingsSource: Send + Sync {
         }
     }
 
-    /// Changes whenever the document does, so readers can cache it.
     fn revision(&self) -> u64;
 
     /// Rings every time [`Self::revision`] changes, so a reader waiting for
     /// a change wakes at once instead of looking again and again.
     fn changes(&self) -> &ChangeSignal;
 
-    /// The profile's documents themselves, where this source is them: what
-    /// a change that needs the document's history (a section's undo) is
-    /// made through. `None` for a source that keeps only the values (an
-    /// app's channel to the session's settings).
     fn store(&self) -> Option<&crate::Store> {
         None
     }
 
-    /// Host-owned personal vocabulary. App/profile sources provide no host
-    /// authority; the authenticated settings capability projects scoped reads.
     fn dictionary_service(&self) -> Option<Arc<crate::personal_dictionary::Service>> {
         None
     }
 }
 
-/// A shared source is the source it shares: every method hands its
-/// arguments to `**self` unchanged.
 macro_rules! shared_source {
     ($(fn $name:ident(&self $(, $arg:ident: $ty:ty)* $(,)?) $(-> $ret:ty)?;)*) => {
         impl<T: SettingsSource + ?Sized> SettingsSource for Arc<T> {
@@ -325,7 +267,6 @@ shared_source! {
     fn dictionary_service(&self) -> Option<Arc<crate::personal_dictionary::Service>>;
 }
 
-/// Wakes the readers of a [`SettingsSource`] when its document changes.
 #[derive(Default)]
 pub struct ChangeSignal {
     listeners: Mutex<Vec<std::sync::Weak<Listener>>>,
@@ -336,15 +277,12 @@ pub struct ChangeSignal {
 pub type Listener = dyn Fn() + Send + Sync;
 
 impl ChangeSignal {
-    /// Call `listener` after every change for as long as the caller keeps
-    /// it.
     pub fn listen(&self, listener: &Arc<Listener>) {
         let mut listeners = self.listeners.lock_recover();
         listeners.retain(|known| known.strong_count() > 0);
         listeners.push(Arc::downgrade(listener));
     }
 
-    /// The document changed: wake every reader still listening.
     pub fn ring(&self) {
         let listeners: Vec<Arc<Listener>> = self
             .listeners
@@ -360,25 +298,18 @@ impl ChangeSignal {
 
 static SOURCE: RwLock<Option<Arc<dyn SettingsSource>>> = RwLock::new(None);
 
-/// Make durable every write the settings accepted without waiting for the
-/// disk. Called before the session ends or sleeps.
 pub fn flush_pending_writes() {
     if let Some(source) = crate::source() {
         source.flush_pending();
     }
 }
 
-/// A save that failed: the sections it held and why. The changes stay in the
-/// documents and are saved again with the next change.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeferredFailure {
-    /// The sections changed since the last save that succeeded.
     pub sections: Vec<String>,
-    /// What the disk said.
     pub error: String,
 }
 
-/// Set when a source stores a [`DeferredFailure`], cleared when they are taken.
 static DEFERRED_FAILED: AtomicBool = AtomicBool::new(false);
 
 /// A source records that a deferred write failed and was reverted (or, an
@@ -387,8 +318,6 @@ pub fn note_deferred_failure() {
     DEFERRED_FAILED.store(true, Ordering::Release);
 }
 
-/// Whether a deferred write failed since the failures were last taken: one
-/// atomic load, for a loop that checks every tick.
 #[must_use]
 pub fn deferred_failure_pending() -> bool {
     DEFERRED_FAILED.load(Ordering::Acquire)
@@ -412,8 +341,6 @@ pub fn install_source(source: Option<Arc<dyn SettingsSource>>) {
     *SOURCE.write_recover() = source;
 }
 
-/// The installed source, if the host provides the document: this thread's
-/// [`scoped_source`] where one is held, else the process's.
 pub fn installed_source() -> Option<Arc<dyn SettingsSource>> {
     if let Some(scoped) = SCOPED.with(|scoped| scoped.borrow().last().cloned()) {
         return scoped;
@@ -422,17 +349,10 @@ pub fn installed_source() -> Option<Arc<dyn SettingsSource>> {
 }
 
 thread_local! {
-    /// The documents scoped to this thread, innermost last. An entry of
-    /// `None` scopes this thread to the local profile.
     static SCOPED: std::cell::RefCell<Vec<Option<Arc<dyn SettingsSource>>>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// `source` as this thread's settings document until the returned scope is
-/// dropped (`None`: the local profile), whatever the process installed.
-/// Tests run on threads of one process; a document one of them installs
-/// process-wide is read by every other running at the time, so a test sets
-/// up its settings with this instead.
 #[must_use = "the scope ends when it is dropped"]
 pub fn scoped_source(source: Option<Arc<dyn SettingsSource>>) -> SourceScope {
     SCOPED.with(|scoped| scoped.borrow_mut().push(source));
@@ -441,8 +361,6 @@ pub fn scoped_source(source: Option<Arc<dyn SettingsSource>>) -> SourceScope {
     }
 }
 
-/// This thread's settings document, held by [`scoped_source`]. It ends on
-/// the thread it began on (it is not `Send`).
 pub struct SourceScope {
     _not_send: std::marker::PhantomData<*const ()>,
 }
@@ -474,10 +392,6 @@ pub fn merge_section(doc: &mut Map<String, Value>, name: &str, values: Map<Strin
 
 type Persist = dyn Fn(&Map<String, Value>) -> std::io::Result<()> + Send + Sync;
 
-/// A document held in memory and handed to the host on every change.
-///
-/// `persist` receives the whole merged document before it becomes current;
-/// if it fails, the change is refused and readers keep the previous one.
 pub struct HostDocument {
     doc: Mutex<Map<String, Value>>,
     revision: AtomicU64,
@@ -668,7 +582,6 @@ mod tests {
         };
         let outer = scoped_source(Some(document("light")));
         assert_eq!(mode().as_deref(), Some("light"));
-        // A thread running beside it does not see it.
         let elsewhere = std::thread::spawn(move || mode().as_deref() != Some("light"))
             .join()
             .unwrap_or(false);

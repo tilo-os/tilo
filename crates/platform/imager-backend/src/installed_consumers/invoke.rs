@@ -1,10 +1,4 @@
 //! Bounded execution of installed consumer probes.
-//!
-//! The probe runs in its own process group with a cleared environment. Both
-//! output streams are capped, a deadline covers the whole run, and the group
-//! is killed once the leader has exited so a descendant holding a pipe cannot
-//! outlive the check. The leader is observed with `WNOWAIT`, which keeps its
-//! PID (and so the group id) reserved until that cleanup is done.
 use std::{
     ffi::OsString,
     fmt, io,
@@ -14,10 +8,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// The fixed environment every installed consumer probe receives.
 pub const ENV: [(&str, &str); 3] = [("PATH", "/usr/bin:/bin"), ("LANG", "C"), ("LC_ALL", "C")];
 
-/// A probe that ran to completion but exited unsuccessfully.
 #[derive(Debug)]
 pub struct CommandFailed;
 impl fmt::Display for CommandFailed {
@@ -27,25 +19,23 @@ impl fmt::Display for CommandFailed {
 }
 impl std::error::Error for CommandFailed {}
 
-/// True when `error` is a completed probe's nonzero exit, as opposed to a
-/// deadline, bound or spawn failure.
+/// True when `error` is a completed probe's nonzero exit, not a deadline, bound or spawn failure.
 pub fn is_command_failure(error: &io::Error) -> bool {
     error
         .get_ref()
         .is_some_and(<dyn std::error::Error + Send + Sync>::is::<CommandFailed>)
 }
 
-/// One bounded probe execution.
+/// One bounded probe execution; the bounds apply to stdout and stderr independently.
 pub struct Request<'a> {
     pub command: &'a [OsString],
     pub env: &'a [(&'a str, OsString)],
     pub input: Option<&'a [u8]>,
-    /// Applies to stdout and stderr independently.
     pub limit: usize,
     pub timeout: Duration,
 }
 
-/// Run `command` with only [`ENV`] and return its stdout.
+/// Runs `command` with only [`ENV`] and returns its stdout.
 pub fn run_fixed(command: &[OsString], limit: usize, timeout: Duration) -> io::Result<Vec<u8>> {
     let env = ENV.map(|(key, value)| (key, OsString::from(value)));
     run(&Request {
@@ -71,7 +61,6 @@ impl Drop for Owned {
     }
 }
 
-/// Run one probe under the bounds in `request`.
 #[allow(
     clippy::too_many_lines,
     reason = "one poll loop owns both pipes and the process group"
@@ -106,7 +95,6 @@ pub fn run(request: &Request<'_>) -> io::Result<Vec<u8>> {
     let mut stdout = owned.child.stdout.take().ok_or_else(closed)?;
     let mut stderr = owned.child.stderr.take().ok_or_else(closed)?;
     for fd in [stdout.as_raw_fd(), stderr.as_raw_fd()] {
-        // SAFETY: fcntl only sets nonblocking mode on these privately held pipes.
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
             return Err(io::Error::last_os_error());
@@ -138,7 +126,6 @@ pub fn run(request: &Request<'_>) -> io::Result<Vec<u8>> {
         let wait = deadline
             .saturating_duration_since(Instant::now())
             .min(Duration::from_millis(100));
-        // SAFETY: two initialized pollfd entries live for the duration of the call.
         let ready = unsafe {
             libc::poll(
                 polls.as_mut_ptr(),
@@ -188,7 +175,6 @@ pub fn run(request: &Request<'_>) -> io::Result<Vec<u8>> {
     }
     loop {
         let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
-        // SAFETY: observe only our child and keep its PID reserved until group cleanup.
         if unsafe {
             libc::waitid(
                 libc::P_PID,
@@ -200,7 +186,6 @@ pub fn run(request: &Request<'_>) -> io::Result<Vec<u8>> {
         {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: a successful waitid initializes the zeroed siginfo, including no-status.
         if unsafe { info.assume_init().si_pid() } == pid {
             break;
         }
@@ -247,7 +232,6 @@ mod tests {
             let error = run_fixed(&shell(script), 4096, timeout).unwrap_err();
             assert!(!is_command_failure(&error), "{script}");
         }
-        // Cargo exports CARGO_MANIFEST_DIR to this test; the probe never sees it.
         assert!(std::env::var_os("CARGO_MANIFEST_DIR").is_some());
         let env = [("ONLY", OsString::from("this"))];
         let echoed = run(&Request {
@@ -265,10 +249,8 @@ mod tests {
     fn deadline_retires_child_holding_stdout_after_leader_exit() {
         let temp = tempfile::tempdir().unwrap();
         let pid_file = temp.path().join("child.pid");
-        // The shell drains its input only once the descendant's PID is
-        // recorded. More input than a pipe buffers holds the write, and so the
-        // start of the deadline, until then: a slow start cannot meet the
-        // deadline before the PID exists.
+        // The shell drains its input only once the descendant's PID is recorded, and more input than
+        // a pipe buffers delays the start of the deadline until then.
         let command = [
             "/bin/sh".into(),
             "-c".into(),
@@ -293,20 +275,17 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
-        // SAFETY: pidfd_open observes the captured synthetic child; it grants no signal.
         let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
         if fd < 0 {
             assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
         } else {
             use std::os::fd::FromRawFd;
-            // SAFETY: successful pidfd_open returns this uniquely owned descriptor.
             let file = unsafe { std::fs::File::from_raw_fd(i32::try_from(fd).unwrap()) };
             let mut poll = libc::pollfd {
                 fd: file.as_raw_fd(),
                 events: libc::POLLIN,
                 revents: 0,
             };
-            // SAFETY: writable single pollfd retained throughout the bounded wait.
             assert_eq!(unsafe { libc::poll(&raw mut poll, 1, 1000) }, 1);
             assert_ne!(
                 poll.revents & libc::POLLIN,

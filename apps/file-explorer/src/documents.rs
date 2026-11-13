@@ -1,27 +1,14 @@
-//! What a file says, as text, and text written as a file.
-//!
-//! Reading a file to quote it, summarise it or mail what it says, and
-//! writing what was written into a new file: a PDF reads as the text of its
-//! pages, anything else that is text reads as itself, and text is written
-//! as given. A document format (`.docx`, `.odt`, `.rtf`, `.epub`) is neither
-//! read nor written here: Writer links the document codecs and reads,
-//! writes and converts those files (its `read-file` and `convert-file`), so
-//! Files stays free of them.
+//! What a file says as text, and text written as a file.
 
 use std::fmt::Write as _;
 use std::path::Path;
 
-/// The largest file read.
 pub const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 
-/// Document formats Writer reads and writes; Files names it for them.
 const DOCUMENT_FORMATS: &[&str] = &["docx", "odt", "rtf", "epub"];
 
-/// What a file says, as text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileText {
-    /// `markdown`, `text`, or `pdf` (the text of its pages, each opened by a
-    /// `[page N]` line).
     pub format: &'static str,
     pub text: String,
 }
@@ -32,12 +19,10 @@ fn extension(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Whether `ext` names a document format only Writer reads and writes.
 fn is_document(ext: &str) -> bool {
     DOCUMENT_FORMATS.contains(&ext)
 }
 
-/// The bytes of the file at `path`, at most [`MAX_FILE_BYTES`] of them.
 pub fn read_file(path: &Path) -> Result<Vec<u8>, String> {
     read_bounded(path)
 }
@@ -73,10 +58,6 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|error| read_failure(path, &error))
 }
 
-/// Why the file at `path` could not be read. A file whose bytes no device
-/// delivered failed because the device that keeps it is offline, not
-/// because anything is wrong with it, and is named unavailable rather than
-/// with the bare `EIO` its read ended in.
 fn read_failure(path: &Path, error: &std::io::Error) -> String {
     if crate::model::read_availability(path).is_some_and(|availability| availability.unavailable())
     {
@@ -89,7 +70,6 @@ fn read_failure(path: &Path, error: &std::io::Error) -> String {
     }
 }
 
-/// The text of the PDF `bytes`, page by page.
 fn pdf_text(bytes: &[u8]) -> Result<String, String> {
     // The portable engine is memory-safe and runs in process; nothing here
     // needs what only the sandboxed one draws.
@@ -110,12 +90,6 @@ fn pdf_text(bytes: &[u8]) -> Result<String, String> {
     Ok(text)
 }
 
-/// What the file at `path` says.
-///
-/// # Errors
-///
-/// The file cannot be read, is too large, is a folder, is a document only
-/// Writer reads, or is binary data that does not read as text.
 pub fn read_text(path: &Path) -> Result<FileText, String> {
     let ext = extension(path);
     if is_document(&ext) {
@@ -159,11 +133,6 @@ pub fn writable(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The bytes of a file named `name` that holds `text`: the text as given.
-///
-/// # Errors
-///
-/// As [`writable`].
 pub fn bytes_for(name: &str, text: &str) -> Result<Vec<u8>, String> {
     writable(name)?;
     Ok(text.as_bytes().to_vec())

@@ -1,41 +1,43 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "typst-editor.workspace"
 label = "Typst workspace"
 version = 1
 fields = [
-  { path = "files", type = "Collection<TypstFile>", stored = "collection" },
-  { path = "files.*.name", type = "Atom", label = true },
-  { path = "files.*.path", type = "Option<Atom>", readonly = true },
-  { path = "files.*.source", type = "String" },
+  { path = "files", type = { collection = { named = "TypstFile" } }, stored = "collection" },
+  { path = "files.*.name", type = "text", label = true },
+  { path = "files.*.path", type = { option = "text" }, readonly = true },
+  { path = "files.*.source", type = "text" },
 ]
 
 [[resources.verbs]]
 id = "new-file"
 kind = "undoable"
 params = [
-  { name = "name", required = true, schema = { type = "string" } },
-  { name = "path", required = false, schema = { type = ["string", "null"] } },
-  { name = "source", required = false, schema = { type = ["string", "null"] } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "path", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "source", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "saved-at"
 kind = "undoable"
 params = [
-  { name = "file", required = true, schema = { type = "string" } },
-  { name = "path", required = true, schema = { type = "string" } },
+  { name = "file", type = "text", required = true, schema = { type = "string" } },
+  { name = "path", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "load"
 kind = "undoable"
 params = [
-  { name = "file", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string" } },
-  { name = "path", required = false, schema = { type = ["string", "null"] } },
-  { name = "source", required = true, schema = { type = "string" } },
+  { name = "file", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "path", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "source", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -43,6 +45,14 @@ id = "close-file"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "file", required = true, schema = { type = "string" } },
+  { name = "file", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "TypstFile"
+fields = [
+  { name = "name", type = "text" },
+  { name = "path", type = { option = "text" } },
+  { name = "source", type = "text" },
 ]
 

@@ -1821,12 +1821,12 @@ fn outline_ink_bounds(
         .outline_glyphs()
         .get(GlyphId::new(u32::from(glyph_id)))?;
     let mut pen = InkBoundsPen::default();
-    outline
-        .draw(
-            DrawSettings::unhinted(Size::new(size), location.as_slice()),
-            &mut pen,
-        )
-        .ok()?;
+    vello_encoding::draw_outline(
+        &outline,
+        DrawSettings::unhinted(Size::new(size), location.as_slice()),
+        &mut pen,
+    )
+    .ok()?;
     if pen.invalid {
         None
     } else {

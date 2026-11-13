@@ -20,12 +20,12 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.hex-editor@7d5dcf386447ee8e";
+export const SURFACE = "so.tilo.hex-editor@232e3b35ec6f1f92";
 
 /** Hex document — `hex-editor.document`. */
 export interface Document extends tilo.Resource {
-  readonly name: unknown;
-  readonly opened: unknown;
+  readonly name: string | null;
+  readonly opened: number;
   bytes: unknown;
   // the app's `load` action is the SDK's own: run it with `action("load")`.
   insertBytes(args: {

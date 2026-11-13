@@ -1,9 +1,6 @@
-//! Bundled offline catalogue. The `--shots` renderer has no event loop and
-//! no network, so the app must look fully alive from a cold start — this
-//! module hands back a populated [`TubeModel`] the moment the app boots.
-//!
-//! Live fetch (Invidious / `SponsorBlock` / `DeArrow`) folds fetched data on top
-//! of this once the user interacts; see `api.rs` + `app::TubeApp::pump`.
+//! Bundled offline catalogue. The `--shots` renderer has no event loop and no network, so the app
+//! must look fully alive from a cold start — this module hands back a populated [`TubeModel`] the
+//! moment the app boots.
 
 use crate::model::{Category, Channel, Comment, Route, Segment, Settings, TubeModel, Video};
 
@@ -29,8 +26,6 @@ fn comment(author: &str, initials: &str, text: &str, likes: u64, ago: &str) -> C
     }
 }
 
-/// A video by `channel` with every figure zeroed; fixtures fill in the rest
-/// with struct-update syntax.
 fn video(id: &str, title: &str, dearrow: Option<&str>, channel: &Channel) -> Video {
     Video {
         id: id.into(),
@@ -39,7 +34,6 @@ fn video(id: &str, title: &str, dearrow: Option<&str>, channel: &Channel) -> Vid
         channel_id: channel.id.clone(),
         channel_name: channel.name.clone(),
         channel_seed: channel.seed.clone(),
-        // Offline sample carries no real uploader avatar URL.
         channel_avatar_url: String::new(),
         views: 0,
         published: String::new(),
@@ -47,7 +41,6 @@ fn video(id: &str, title: &str, dearrow: Option<&str>, channel: &Channel) -> Vid
         description: String::new(),
         likes: 0,
         seed: id.into(),
-        // Offline sample: no real thumbnail URL, so the seed gradient shows.
         thumbnail_url: String::new(),
         category: String::new(),
         dearrow_thumb: dearrow.is_some(),
@@ -71,9 +64,6 @@ fn channel(id: &str, name: &str, handle: &str, subs: u64, verified: bool, desc: 
     }
 }
 
-/// The caption tracks the bundled sample videos offer, so a capture or a test
-/// can show the caption control with something to choose. A live video's
-/// tracks come from the source (`api::fetch_captions`).
 #[must_use]
 pub fn caption_tracks(id: &str) -> Vec<crate::captions::CaptionTrack> {
     if id != SAMPLE_CAPTIONED_VIDEO {
@@ -98,10 +88,6 @@ pub fn caption_tracks(id: &str) -> Vec<crate::captions::CaptionTrack> {
 /// The bundled sample video whose captions a capture shows.
 pub const SAMPLE_CAPTIONED_VIDEO: &str = "vid_donut";
 
-/// The caption lines the sample video offers in `language`, or `None` when
-/// the sample has none: the same shape the worker delivers, so the page's
-/// caption path is exercised without the network. The first line is spoken
-/// where `play_demo` leaves the playhead, so a still shows the words.
 #[must_use]
 pub fn caption_cues(id: &str, language: &str) -> Option<Vec<crate::captions::CaptionCue>> {
     if id != SAMPLE_CAPTIONED_VIDEO {
@@ -139,7 +125,6 @@ pub fn caption_cues(id: &str, language: &str) -> Option<Vec<crate::captions::Cap
     )
 }
 
-/// The sample channels, in the order the sample videos are attributed to them.
 fn channels() -> [Channel; 6] {
     [
         channel(
@@ -193,7 +178,6 @@ fn channels() -> [Channel; 6] {
     ]
 }
 
-/// The bundled sample video `vid_rust_async`.
 fn rust_async(channel: &Channel) -> Video {
     Video {
         views: 842_000,
@@ -255,7 +239,6 @@ fn rust_async(channel: &Channel) -> Video {
     }
 }
 
-/// The bundled sample video `vid_black_holes`.
 fn black_holes(channel: &Channel) -> Video {
     Video {
         views: 6_400_000,
@@ -306,7 +289,6 @@ fn black_holes(channel: &Channel) -> Video {
     }
 }
 
-/// The bundled sample video `vid_donut`.
 fn donut(channel: &Channel) -> Video {
     Video {
         views: 3_100_000,
@@ -344,7 +326,6 @@ fn donut(channel: &Channel) -> Video {
     }
 }
 
-/// The bundled sample video `vid_privacy`.
 fn privacy(channel: &Channel) -> Video {
     Video {
         views: 1_240_000,
@@ -387,7 +368,6 @@ fn privacy(channel: &Channel) -> Video {
     }
 }
 
-/// The bundled sample video `vid_synth`.
 fn synth(channel: &Channel) -> Video {
     Video {
         views: 2_800_000,
@@ -426,7 +406,6 @@ fn synth(channel: &Channel) -> Video {
     }
 }
 
-/// The bundled sample video `vid_lofi`.
 fn lofi(channel: &Channel) -> Video {
     Video {
         views: 12_400,
@@ -460,7 +439,6 @@ fn lofi(channel: &Channel) -> Video {
     }
 }
 
-/// The bundled sample video `vid_gpu`.
 fn gpu(channel: &Channel) -> Video {
     Video {
         views: 534_000,
@@ -489,7 +467,6 @@ fn gpu(channel: &Channel) -> Video {
     }
 }
 
-/// The bundled sample video `vid_solar`.
 fn solar(channel: &Channel) -> Video {
     Video {
         views: 9_100_000,
@@ -518,7 +495,6 @@ fn solar(channel: &Channel) -> Video {
     }
 }
 
-/// The bundled sample video `vid_fuse`.
 fn fuse(channel: &Channel) -> Video {
     Video {
         views: 188_000,
@@ -547,7 +523,6 @@ fn fuse(channel: &Channel) -> Video {
     }
 }
 
-/// The bundled sample video `vid_color`.
 fn color(channel: &Channel) -> Video {
     Video {
         views: 5_200_000,
@@ -573,7 +548,6 @@ fn color(channel: &Channel) -> Video {
     }
 }
 
-/// The bundled sample video `vid_amp`.
 fn amp(channel: &Channel) -> Video {
     Video {
         views: 1_100_000,
@@ -602,7 +576,6 @@ fn amp(channel: &Channel) -> Video {
     }
 }
 
-/// The bundled sample video `vid_compose`.
 fn compose(channel: &Channel) -> Video {
     Video {
         views: 670_000,
@@ -632,7 +605,6 @@ fn compose(channel: &Channel) -> Video {
     }
 }
 
-/// The sample videos, in the order the home feed lists them.
 fn videos(
     [
         blender,
@@ -659,7 +631,6 @@ fn videos(
     ]
 }
 
-/// Build the full offline catalogue.
 #[must_use]
 pub fn model() -> TubeModel {
     let chans = channels();
@@ -679,7 +650,6 @@ pub fn model() -> TubeModel {
             video_count: 3,
             video_ids: vec!["vid_rust_async".into(), "vid_gpu".into(), "vid_fuse".into()],
         }],
-        // Start subscribed to a few so the Subscriptions tab is populated.
         subscriptions: vec![
             "ch_lowlevel".into(),
             "ch_kurz".into(),
@@ -690,8 +660,6 @@ pub fn model() -> TubeModel {
         .into_iter()
         .filter(|id: &String| ["ch_lowlevel", "ch_kurz", "ch_blender"].contains(&id.as_str()))
         .collect(),
-        // The shared queue starts empty; screenshots should not imply a video
-        // was queued by a collaborator.
         queue: Vec::new(),
         history: vec!["vid_black_holes".into(), "vid_donut".into()],
         history_notice: None,
@@ -706,11 +674,7 @@ pub fn model() -> TubeModel {
         unplayable: None,
         liked: Vec::new(),
         comment_likes: std::collections::BTreeSet::new(),
-        // No pre-seeded notices: the toast stack fills from real activity
-        // (auto-skips, share/like acknowledgements, worker status) so it never
-        // shows events that didn't happen.
         notices: Vec::new(),
-        // The bundled catalogue is, by definition, the offline sample.
         data_source: crate::model::DataSource {
             live: false,
             label: "offline — sample data".into(),
@@ -721,9 +685,6 @@ pub fn model() -> TubeModel {
         search_channel_hits: Vec::new(),
         related_of: String::new(),
         related_hits: Vec::new(),
-        // A few crowdsourced dislike counts (Return YouTube Dislike) so the
-        // offline watch page shows a real dislikes pill from a cold start; live
-        // fetch folds in the true numbers on top.
         dislikes: [
             ("vid_rust_async", 1_240u64),
             ("vid_black_holes", 8_400),
@@ -734,15 +695,10 @@ pub fn model() -> TubeModel {
         .into_iter()
         .map(|(id, n)| (id.to_string(), n))
         .collect(),
-        // Offline: no real DeArrow community thumbnails (the sample has no
-        // network); live fetch populates this.
         dearrow_thumb_url: std::collections::BTreeMap::new(),
-        // The sample is fully populated, so it never shows a loading skeleton.
         feed_loading: false,
         feed_error: None,
         sources_unreached: None,
-        // The person watched the sample's history; one of them they left part
-        // way through, so the capture shows what "continue watching" is.
         history_positions: [("vid_black_holes".to_string(), 246_000u64)]
             .into_iter()
             .collect(),

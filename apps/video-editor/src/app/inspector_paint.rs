@@ -5,14 +5,10 @@ use super::strip_menu::StripHost;
 )]
 use super::*;
 
-/// A control's label above it, and the readout beside it: `Label`, the role
-/// the system sets every control label in.
 fn label_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Label)
 }
 
-/// One caption line above a control, its line box's top `line_h` plus a
-/// tight step above `y`, where `y` is the top of the control it labels.
 fn caption_above(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -37,14 +33,9 @@ fn caption_above(
 }
 
 impl VideoEditorApp {
-    /// Draw the tone-curve editor: the grid, the "unchanged" diagonal, the
-    /// curve, and its control points.
-    ///
-    /// This is canvas drawing rather than a toolkit widget for the same
-    /// reason the timeline and the waveform are: a 2D control-point editor
-    /// is content, not a control the system shares. Everything around it —
-    /// the channel chooser, the amount slider, the reset — goes through the
-    /// shared widgets.
+    /// Canvas drawing rather than a toolkit widget for the same reason the timeline is:
+    /// a 2D control-point editor is content, not a control the system shares. Everything
+    /// around it — the channel chooser, the amount slider, the reset — is shared.
     #[expect(
         clippy::many_single_char_names,
         reason = "curve plotting: colours c, sample fraction f and value v, and the x/y/h of each mark"
@@ -163,8 +154,6 @@ impl VideoEditorApp {
         );
     }
 
-    /// Paint the project's format section: what the frame is now, the size
-    /// and rate presets with the one in force marked, and the match button.
     fn draw_project_section(
         &self,
         scene: &mut Scene,
@@ -466,10 +455,8 @@ impl VideoEditorApp {
             &body_view,
         );
         self.draw_inspector_body(scene, tf, tr, theme, r);
-        // A clip on a locked track has inert controls — every edit path checks
-        // the lock — so they are veiled rather than left looking live. The
-        // header above stays crisp, because that is where the reason is
-        // written ("On V2, locked").
+        // Every edit path checks the lock, so these are veiled rather than left looking
+        // live. The header above stays crisp: that is where the reason is written.
         let locked = self
             .selected()
             .is_some_and(|id| !self.project.clip_editable(id));
@@ -673,10 +660,8 @@ impl VideoEditorApp {
                    readout: String,
                    v: f64,
                    drag: bool,
-                   // `Some` when this row carries a key control, whose box
-                   // the label starts after. The indent is unconditional
-                   // so keying a parameter does not shuffle its row
-                   // sideways; an animated one reads in primary ink.
+                   // Unconditional, so keying a parameter does not shuffle its row
+                   // sideways.
                    keyed: Option<bool>| {
             let Some(track) = track else { return };
             let lx = if keyed.is_some() {
@@ -1035,11 +1020,8 @@ impl VideoEditorApp {
                 l.anchor_label_y,
             );
         }
-        // Three segmented rows make the 3×3 grid, so each row is a real
-        // shared toggle group rather than nine hand-drawn cells. Each cell
-        // carries a miniature frame with a dot where the anchor sits, as the
-        // picture-in-picture presets carry theirs: the picture of what the
-        // choice does, rather than an arrow standing in for it.
+        // Three shared toggle groups rather than nine hand-drawn cells. Each cell shows
+        // a miniature frame with a dot where the anchor sits.
         for band in l.anchor.chunks(3) {
             let rects: Vec<Rect> = band.iter().map(|(_, r)| *r).collect();
             let labels = ["", "", ""];
@@ -1124,9 +1106,8 @@ impl VideoEditorApp {
             );
         }
         // ---- the lane's mix ---------------------------------------------
-        // The panel is otherwise entirely about one clip, so the two knobs
-        // that reach past it have to say what they reach — including that
-        // everything else on the lane moves with them.
+        // The panel is otherwise about one clip, so the two knobs that reach past it say
+        // what they reach, including that everything else on the lane moves with them.
         if let Some(t) = self.selected_track() {
             let level = self.mix.track(t.id);
             if l.mix_track_y > 0.0 {
@@ -1612,13 +1593,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// One collapsible section header: a fold chevron, the name, and — when it
-    /// is folded — a summary of what is inside it.
-    ///
-    /// The summary is the point. Folding a section away is a view choice, but
-    /// a fold that hid "this clip plays at 4x in reverse" would turn a view
-    /// choice into missing state, and the user would have no way to know the
-    /// clip was re-timed without unfolding every section on every clip.
     fn draw_section_header(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -1687,14 +1661,9 @@ impl VideoEditorApp {
         );
     }
 
-    /// A clip's placement in one line for its folded header — its scale, its
-    /// tilt, and whether it was cropped, moved or keyed — or `None` when it
-    /// sits where it was placed.
-    ///
-    /// The geometry is the one the clip is *playing*, not the constants under
-    /// it: a keyframe supersedes the constant for every other reader, so a
-    /// folded header reading `transform.scale_x` reported 1.00× beside a
-    /// canvas that was pushing in.
+    /// The geometry the clip is *playing*, not the constants under it: a keyframe
+    /// supersedes the constant, so a folded header reading `transform.scale_x` reported
+    /// 1.00× beside a canvas that was pushing in.
     fn transform_summary(&self, clip: &Clip) -> Option<String> {
         let g = self.geometry_at_playhead(clip);
         let animated = Self::transform_is_animated(clip);
@@ -1720,11 +1689,6 @@ impl VideoEditorApp {
         Some(parts.join(", "))
     }
 
-    /// What a clip's key is removing, for its folded header. A key that is
-    /// switched on but keying nothing still has to say so: "on" and "removing
-    /// something" are different states, and a fold that reported neither would
-    /// hide both. The tolerance is read at the playhead, because it is
-    /// animatable.
     fn key_summary(&self, clip: &Clip) -> String {
         let tolerance = clip.param_at(Param::KeyTolerance, self.playhead);
         if tolerance <= 1e-6 {
@@ -1755,10 +1719,8 @@ impl VideoEditorApp {
             Section::Curves => curve_summary(clip, self.playhead),
             Section::Transform => self.transform_summary(clip),
             Section::Speed => (!clip.speed.is_normal()).then(|| clip.speed.label()),
-            // The lane's fader, and whether it has been caught clipping. The
-            // second is the part that must survive a fold: hiding the warning
-            // because the panel is tidied away is exactly the silence this
-            // section exists to end.
+            // The clipping flag must survive a fold: hiding the warning because the panel
+            // is tidied away is the silence this section exists to end.
             Section::Mix => {
                 let t = self.project.track(clip.track)?;
                 let clipped = self.mix.track(t.id).is_some_and(|level| level.clipped);
@@ -1775,10 +1737,8 @@ impl VideoEditorApp {
                     level
                 })
             }
-            // A key that is switched on but keying nothing still has to
-            // say so: "on" and "removing something" are different states,
-            // and a fold that reported neither would hide both. The tolerance
-            // is read at the playhead, because it is animatable.
+            // A key switched on but keying nothing still says so: "on" and "removing
+            // something" are different states.
             Section::Key => clip.key.enabled.then(|| self.key_summary(clip)),
             Section::Mask => clip.mask.is_active().then(|| {
                 let shape = crate::resource::CATALOG.t(clip.mask.shape.message());

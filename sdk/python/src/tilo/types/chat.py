@@ -53,6 +53,7 @@ __all__ = [
     "Triage",
     "TriageUpdate",
     "WorkspaceFiles",
+    "Acting",
     "AgentFinish",
     "AgentStepOutcome",
     "AgentWorkState",
@@ -280,6 +281,10 @@ class WorkspaceFiles(TypedDict):
     largest: int
     member_hourly: int
 
+class Acting(TypedDict):
+    name: str | None
+    person: str | None
+
 AgentFinish = Literal["complete", "truncated", "refused", "cancelled", "failed"]
 
 AgentStepOutcome = dict[str, Any]
@@ -337,6 +342,7 @@ class Message(TypedDict):
     pinned: bool
     work: Work | None
     appearance: ShownAs | None
+    acting: Acting | None
     share: WindowShare | None
     attempts: int
 
@@ -442,7 +448,7 @@ class Spent(TypedDict):
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@5b5ece4fc61e4157"
+    __surface__ = "so.tilo.chat@285e342c43975c1d"
     @property
     def categories(self) -> list[Category]:
         """Read only."""
@@ -695,7 +701,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@5b5ece4fc61e4157"
+    __surface__ = "so.tilo.chat@285e342c43975c1d"
     @property
     def messages(self) -> list[Message]:
         """Read only."""
@@ -904,7 +910,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@5b5ece4fc61e4157"
+    __surface__ = "so.tilo.chat@285e342c43975c1d"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> Run | None:
@@ -914,7 +920,7 @@ class Drafts(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@5b5ece4fc61e4157"
+    __surface__ = "so.tilo.chat@285e342c43975c1d"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -936,7 +942,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
-    __surface__ = "so.tilo.chat@5b5ece4fc61e4157"
+    __surface__ = "so.tilo.chat@285e342c43975c1d"
     agents: list[Agent]
 
     def create_agent(self,

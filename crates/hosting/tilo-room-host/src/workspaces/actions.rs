@@ -1157,7 +1157,7 @@ impl Workspaces {
                 .await
                 .map(|()| listed(None))
                 .map_err(|error| refused(&error)),
-            _ => Ok(listed(self.listing(workspace))),
+            _ => Ok(listed(self.listing(workspace).await)),
         }
     }
 

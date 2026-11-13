@@ -12,8 +12,6 @@ use ui::text_edit::EditCore;
 pub(super) type BlockRuns = (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize, usize)>);
 type ChangeDecoRanges = (Vec<(usize, usize)>, Vec<(usize, usize)>);
 
-/// True when a mark named `name` fully covers the half-open char range
-/// `[start, end)`. Same cover rule as `tilo_doc::model::has_mark_over`.
 pub(super) fn marks_cover_range(marks: &[MarkSpan], name: &str, start: usize, end: usize) -> bool {
     marks
         .iter()
@@ -89,12 +87,9 @@ pub(super) fn parse_hex_rgb(value: &str) -> Option<[u8; 3]> {
     ui::color::parse_hex(value).map(ui::color::to_rgb8)
 }
 
-/// Shape `block` into style runs plus underline and strike byte ranges.
-/// With `show_markup`, tracked insertions and deletions are tinted.
 pub(super) fn block_runs(block: &BlockView, show_markup: bool) -> BlockRuns {
     let chars: Vec<char> = block.text.chars().collect();
     let len = chars.len();
-    // An `ins` run is green, a `del` run red.
     let track_color = |i: usize| -> Option<[u8; 3]> {
         if !show_markup {
             None
@@ -106,11 +101,6 @@ pub(super) fn block_runs(block: &BlockView, show_markup: bool) -> BlockRuns {
             None
         }
     };
-    // Run key: f32 size as bits so the tuple is comparable. Highlight
-    // (background) and super/subscript baseline join the key so a change in
-    // either splits runs. The tracked-change review colour overrides any
-    // explicit `color` mark over the same range (review colour wins for
-    // legibility).
     let key = |i: usize| {
         (
             char_has(i, &block.marks, "strong"),
@@ -155,15 +145,9 @@ pub(super) fn block_runs(block: &BlockView, show_markup: bool) -> BlockRuns {
             })
             .collect::<Vec<_>>()
     };
-    // Links render underlined as well as blue.
     let mut underlines = deco("underline");
     underlines.extend(deco("link"));
     let strikes = deco("strike");
-    // NOTE: the `ins`/`del` review decorations (underline for ins, strike for
-    // del) are *not* added here — they are drawn in the body pass in the review
-    // colour (`draw_rich` paints these decorations in the block ink, which would
-    // mismatch the coloured glyphs). Keeping them out of the shaped layout also
-    // keeps the underline/strike ranges independent of review mode.
     (runs, underlines, strikes)
 }
 
@@ -284,10 +268,6 @@ pub(super) fn running_head_runs_editing(block: &BlockView) -> Vec<RichSpan> {
     running_head_runs_with(block, FieldDisplay::Placeholder)
 }
 
-/// `block` as it shows while the input method composes in it: the
-/// composition laid into the text at the caret and underlined, every mark
-/// moved with the text after it. A mark that runs up to the caret covers the
-/// composition too, so it reads in the style it will be typed in.
 pub(super) fn composed_block(block: &BlockView, core: &EditCore) -> BlockView {
     let Some(preedit) = core.preedit_display_range(&block.text) else {
         return block.clone();

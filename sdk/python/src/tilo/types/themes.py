@@ -82,7 +82,7 @@ class Theme(TypedDict):
 
 class Studio(Resource):
     """Themes — `themes.studio`."""
-    __surface__ = "so.tilo.themes@19e215a1dfe522b0"
+    __surface__ = "so.tilo.themes@aece4838e9a21ddc"
     themes: list[Theme]
 
     def new_theme(self,

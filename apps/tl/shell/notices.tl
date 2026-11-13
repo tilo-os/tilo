@@ -155,13 +155,14 @@ view banner(d: Desk) {
 }
 
 /// A banner on a desk with the room: the notice with its kind's tone, what sent it, its first
-/// action.
+/// action. Each part it has is the part it shows: a notice that says nothing puts no line under
+/// the title, and one with no sender names none above it.
 view banner_full(d: Desk, n: Notice) {
     let actions = actions_of(d, n)
     ui.Banner(
         n.title,
-        message: n.body,
-        source: n.origin_app,
+        message: if n.body != "" { n.body },
+        source: if n.origin_app != "" { n.origin_app },
         kind: if n.kind == "error" {
             .error
         } else if n.kind == "warning" {
@@ -177,7 +178,11 @@ view banner_full(d: Desk, n: Notice) {
 /// A banner on a narrow desk: the notice as a row with what sent it, its actions under it.
 view banner_row(d: Desk, n: Notice) {
     stack(gap: .related) {
-        ui.ListRow(n.title, secondary: n.body, meta: n.origin_app) {
+        ui.ListRow(
+            n.title,
+            secondary: if n.body != "" { n.body },
+            meta: if n.origin_app != "" { n.origin_app },
+        ) {
             trailing: {
                 ui.Badge(
                     dot: true,

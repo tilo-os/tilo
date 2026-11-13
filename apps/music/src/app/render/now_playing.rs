@@ -1,12 +1,5 @@
-//! Now Playing: the song large, its cover, title, artist and album, and the
-//! way to the album's and the artist's pages.
-//!
-//! The band's cover opens it: the cover grows from the band into the page
-//! (`motion::Zoom`) while the page's lines fade in, and the same cover
-//! shrinks back into the band when the page closes, by the cover again, Back
-//! or anything else that leaves the page. While the cover is in flight the
-//! band leaves its place empty, so one cover moves, not two. A key lands at
-//! once; reduced motion fades the cover in place.
+//! Now Playing: the song large with its cover, and the way to its album and artist. The
+//! band's cover flies into the page and back; reduced motion fades it in place.
 
 use ui::icons::Icon;
 use ui::motion::{
@@ -23,14 +16,11 @@ use vello::peniko::BlendMode;
 
 use super::{Action, Fill, Instant, Look, Music, Rect, Theme, View, line_of};
 
-/// The page's song and the cover's flight between the band and the page.
 pub(in crate::app) struct NowPlaying {
     song: SongFace,
     /// Where the cover is: 0 in the band, 1 on the page.
     zoom: MotionValue<f64>,
-    /// The band's cover when the flight began (in the window).
     band: Rect,
-    /// The page's cover at its last layout (in the window).
     page: Rect,
     reduced: bool,
 }
@@ -48,8 +38,6 @@ impl Default for NowPlaying {
 }
 
 impl NowPlaying {
-    /// Follow the page opening or closing from the frame at `now`: the
-    /// cover flies from `band` to `page`, or back.
     fn follow(
         &mut self,
         open: bool,
@@ -87,7 +75,6 @@ impl NowPlaying {
         }
     }
 
-    /// What a screen reader says for the song on the page.
     pub(in crate::app) fn spoken(&self) -> String {
         self.song.spoken()
     }
@@ -96,7 +83,7 @@ impl NowPlaying {
         self.zoom.is_moving(now)
     }
 
-    /// How far the page has come in, for its lines' fade: 1 at rest.
+    /// How far the page has come in, for its lines' fade.
     fn arrived(&self, now: Instant) -> f32 {
         if self.in_flight(now) {
             Zoom::contents(self.zoom.get(now)).1
@@ -119,8 +106,7 @@ impl NowPlaying {
     }
 }
 
-/// One of the page's links: a name, the library item it names (id, kind,
-/// the Open's label) and that item's Open.
+/// One of the page's links: its name and the item's own Open.
 struct NowPlayingLink {
     name: String,
     resource: (String, &'static str, &'static str),
@@ -128,8 +114,7 @@ struct NowPlayingLink {
 }
 
 impl NowPlayingLink {
-    /// The link, invoking the item's own Open: focusable, opened with Enter,
-    /// a click or assistive technology alike.
+    /// The link, invoking the item's own Open.
     fn control(&self) -> Option<Link> {
         let (id, kind, label) = &self.resource;
         let resource = ui::tilo_actions::ResourceSpec::new(id.clone(), *kind, self.name.clone())
@@ -140,19 +125,16 @@ impl NowPlayingLink {
     }
 }
 
-/// Where the page's parts stand in `body`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Layout {
     art: Rect,
-    /// The column the lines and the buttons share.
     text: Rect,
-    /// Beside the cover (wide) or under it.
+    /// Beside the cover on a wide page, under it on a narrow one.
     beside: bool,
 }
 
 impl Layout {
-    /// The cover as large as the page allows with room for the lines: beside
-    /// them on a wide page, centred above them on a narrow one.
+    /// The cover as large as the page allows with room for the lines.
     fn of(body: Rect, look: &Look, theme: &Theme) -> Self {
         let inner = body.inset(-look.gutter);
         let width = inner.width().max(0.0);
@@ -167,7 +149,6 @@ impl Layout {
             let text = Rect::new(text_x, art.y0, (text_x + column).min(inner.x1), art.y1);
             return Self { art, text, beside };
         }
-        // Under the cover the lines need their three lines and the buttons.
         let reserve = 6.0 * look.target;
         let side = width.min(height - reserve).min(column).max(0.0);
         let left = inner.x0 + (width - side) / 2.0;
@@ -178,7 +159,7 @@ impl Layout {
 }
 
 impl Music {
-    /// What the band's cover does: open Now Playing, or close it from it.
+    /// The band's cover opens Now Playing, or closes it.
     pub(in crate::app) fn now_playing_toggle(&self) -> Action {
         if self.view == View::NowPlaying {
             Action::Back
@@ -187,8 +168,7 @@ impl Music {
         }
     }
 
-    /// The song the page paints: the band's title, and why it can't play
-    /// when it can't. The artist and the album are links under it.
+    /// The song the page paints; its artist and album are links under it.
     fn now_playing_song(&self) -> Option<Song> {
         self.pb
             .current
@@ -202,8 +182,7 @@ impl Music {
         Some(song)
     }
 
-    /// The artist's and the album's names, each with the item it names
-    /// and that item's Open: the page's links, in that order.
+    /// The artist's and the album's names, each with its item's Open.
     fn now_playing_links(&self, track: &crate::model::Track) -> Vec<NowPlayingLink> {
         let artist = NowPlayingLink {
             name: self.lib.artist_name(&track.artist_id).to_owned(),
@@ -234,7 +213,6 @@ impl Music {
             .collect()
     }
 
-    /// Follow the page opening or closing, before the frame is drawn.
     pub(in crate::app) fn follow_now_playing(&mut self, theme: &Theme, now: Instant) {
         let look = Look::of(theme);
         let page = Layout::of(self.body_rect, &look, theme).art;
@@ -252,7 +230,6 @@ impl Music {
         self.transport.lend_art(lent);
     }
 
-    /// The page: the cover, the lines, the way to the album and the artist.
     pub(super) fn draw_now_playing(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -292,7 +269,6 @@ impl Music {
                 0.0
             };
         let links = self.now_playing_links(&track);
-        // Each link is a line of body text.
         let nav_h = links.len() as f64 * (line_of(ctx, &subtitle) + look.tight);
         let block_h = song_h + look.related + nav_h;
         let top = if layout.beside {
@@ -314,8 +290,6 @@ impl Music {
             .paint_lines(ctx, song_rect, Some((&title, &subtitle)), now);
         ctx.scene.pop_layer();
 
-        // The artist and the album are the links to their pages: one
-        // control each, focusable and opened with Enter like any link.
         let gap = ui::num::f32_of_f64(look.tight);
         let key = format!(
             "now-playing:{:?}",
@@ -344,7 +318,6 @@ impl Music {
         end.max(layout.art.y1).min(body.y1 - look.gutter)
     }
 
-    /// The cover in flight between the band and the page, over everything.
     pub(super) fn paint_now_playing_flight(&self, ctx: &mut PaintCtx<'_>) {
         let now = ui::motion::frame_now();
         let Some((rect, opacity)) = self.now_playing.flight(now) else {

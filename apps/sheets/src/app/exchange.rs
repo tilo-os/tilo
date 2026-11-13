@@ -1,4 +1,4 @@
-//! Getting a workbook in and out of the app: the bounds of a file, the tables it decodes into, the import that becomes a durable action stream, and the bytes an export writes back.
+//! Importing and exporting files, and the sheets they bring.
 
 use super::{
     CellFormat, Currency, Interchange, Invoke, MAX_CSV_MATERIALIZED_SLOTS, MAX_IMPORT_CELLS,
@@ -94,7 +94,6 @@ impl SheetsApp {
         Ok(())
     }
 
-    /// The tables of the spreadsheet file at `path`.
     pub(super) fn read_tables_at(
         format: Interchange,
         path: &std::path::Path,
@@ -104,8 +103,6 @@ impl SheetsApp {
         Self::read_tables(format, &bytes, &sheet_name_from_path(path))
     }
 
-    /// The tables a spreadsheet file holds, one per sheet; a CSV is one,
-    /// named `csv_name`.
     pub(super) fn read_tables(
         format: Interchange,
         bytes: &[u8],
@@ -169,7 +166,6 @@ impl SheetsApp {
         }
     }
 
-    /// The tables a Notion export holds, each read the way a CSV file is.
     pub(super) fn read_notion_tables(bytes: &[u8]) -> Result<Vec<crate::xlsx::SheetTable>, String> {
         let mut tables = Vec::new();
         for table in crate::notion::tables(bytes)? {
@@ -179,7 +175,6 @@ impl SheetsApp {
         Ok(tables)
     }
 
-    /// `sheets` as the bytes of a spreadsheet file; a CSV holds the first.
     pub(super) fn encode_tables(
         format: Interchange,
         sheets: &[crate::workbook::SheetSnapshot],
@@ -226,7 +221,6 @@ impl SheetsApp {
         }
     }
 
-    /// Add `tables` as new sheets now, as an import does, and show the last.
     #[cfg(test)]
     pub(super) fn import_tables(
         &mut self,

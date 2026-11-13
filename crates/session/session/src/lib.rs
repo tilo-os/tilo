@@ -118,6 +118,8 @@ mod capture_studio;
 #[cfg(target_os = "linux")]
 mod cards;
 #[cfg(target_os = "linux")]
+mod carets;
+#[cfg(target_os = "linux")]
 mod certification;
 #[cfg(target_os = "linux")]
 mod chrome;
@@ -150,8 +152,6 @@ mod desk;
 #[cfg(target_os = "linux")]
 mod desk_changes;
 pub mod desk_doc;
-#[cfg(target_os = "linux")]
-mod desk_migration;
 #[cfg(target_os = "linux")]
 mod desk_resource;
 #[cfg(target_os = "linux")]

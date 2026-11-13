@@ -1,6 +1,9 @@
+# What the desk calls what nobody has named
+desk-unnamed-workspace = Workspace
+desk-unnamed-strip = Strip { $number }
+
 # Top bar
 continuity-dismiss = Dismiss
-topbar-workspace-fallback = Workspace
 topbar-sharing-agent-controls = Agent in control: { $name }
 topbar-sharing-agent-viewing = Agent watching: { $name }
 topbar-sharing-person-controls = In control: { $name }
@@ -228,6 +231,7 @@ activity-event-revoked-capabilities = { $count ->
         [one] Revoked a capability
        *[other] Revoked { $count } capabilities
     }
+activity-event-membership = Changed who is in the workspace
 activity-event-created = Created the workspace
 activity-event-created-named = Created the workspace “{ $name }”
 activity-event-updated = Updated the workspace
@@ -257,38 +261,6 @@ activity-capability-unknown = a capability
 activity-capability-this-workspace = this workspace
 activity-capability-one-shared-file = one shared file
 activity-capability-network = network { $host }
-activity-capability-role = { $role ->
-        [owner] owners
-        [moderator] moderators
-        [editor] editors
-        [commenter] commenters
-       *[viewer] viewers
-    }
-activity-grant = { $answer ->
-        [deny] denied
-        [ask] ask first for
-       *[allow] allowed
-    } { $kinds ->
-        [read] reading
-        [undoable] changes
-        [outside] outside effects
-        [read-undoable] reading and changes
-        [read-outside] reading and outside effects
-        [undoable-outside] changes and outside effects
-        [none] nothing
-       *[all] everything
-    } on { $node } to { $subject }
-activity-grant-task = task { $task }
-activity-grant-shortcut = Shortcut { $shortcut }
-activity-grant-bot = Bot { $bot }
-activity-grant-foreign-device = devices that are not their own
-activity-member = { $person } as { $role ->
-        [owner] owner
-        [moderator] moderator
-        [editor] editor
-        [commenter] commenter
-       *[viewer] viewer
-    }
 activity-capability-a-person = a person
 activity-capability-agent = agent { $agent }
 activity-capability-invite-token = an invite token
@@ -637,7 +609,6 @@ workspace-settings-review-activity = Review activity first
 workspace-settings-remove-person = Remove person
 workspace-settings-keep-permission = Keep permission
 workspace-settings-revoke-permission = Revoke permission
-workspace-settings-workspace-fallback = Workspace
 workspace-settings-identity-title = Workspace identity
 workspace-settings-identity-description = This name appears in the top bar, invites, and shared activity.
 workspace-settings-name-label = Workspace name
@@ -934,7 +905,6 @@ activity-morning-next = Next chosen source
 desktop-window-opened-elsewhere = { $person } opened { $app }
 # Strip switcher: the strip ribbon grown into labels, one per strip of the workspace.
 strip-switcher-a11y = Strips
-strip-switcher-unnamed = Strip { $number }
 strip-switcher-new-strip = New strip
 strip-switcher-rename-named = Rename { $name }
 strip-switcher-name-placeholder = Strip name
@@ -1222,7 +1192,6 @@ task-programs-run-detail = Runs a program as a step of the task, and answers wha
 
 ## What a grant covers when it covers the whole tree
 workspace-settings-scope-everything = Everything
-activity-grant-everything = Everything
 
 ## Actions
 

@@ -1,31 +1,12 @@
-//! Data-source abstraction for Tube.
-//!
-//! Live data comes from real `YouTube` via the pure-Rust
-//! [`rustypipe`](https://docs.rs/rustypipe) `InnerTube` client (`--features
-//! live`, in the default build) behind the [`YtBackend`] trait. Captures and
-//! tests never spawn it.
-//!
-//! ## What lives where
-//!
-//! | Concern            | Type / module                       |
-//! |--------------------|-------------------------------------|
-//! | data-source trait  | [`YtBackend`]                       |
-//! | live impl (gated)  | `live::RustyPipeBackend` (`live`)   |
-//! | request/result DTO | [`Query`], [`BackendResult`]        |
-//!
-//! Recommendations model (Home): the trait exposes the no-auth signals
-//! `NewPipe` / Piped use — [`YtBackend::trending`] and [`YtBackend::related`]
-//! (per-video "up next"). See [`crate::recommend`].
+//! Data-source abstraction for Tube. Live data comes from real `YouTube` via the pure-Rust
+//! [`rustypipe`](https://docs.rs/rustypipe) `InnerTube` client (`--features live`, in the default
+//! build) behind the [`YtBackend`] trait.
 
 #[cfg(feature = "live")]
 pub mod live;
 
 use crate::model::{Channel, Comment, Playlist, Video};
 
-/// Canonical i.ytimg.com thumbnail URL for a video id. `hqdefault.jpg` is the
-/// stable 480×360 still every public video serves, so a real card image is
-/// available from just the id — no extra extraction round trip. Empty id in →
-/// empty string out (the caller shows the seed gradient).
 pub fn yt_thumb_url(video_id: &str) -> String {
     if video_id.is_empty() {
         String::new()
@@ -34,23 +15,15 @@ pub fn yt_thumb_url(video_id: &str) -> String {
     }
 }
 
-/// A read request against a [`YtBackend`]. Kept serde-free and toolkit-free so
-/// it can cross the worker-thread boundary cheaply.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Query {
     Search(String),
-    /// Full metadata for one video (description, likes, comments, streams …).
     Video(String),
-    /// A channel page + its uploads.
     Channel(String),
-    /// Per-video "up next" / related videos.
     Related(String),
-    /// Region trending feed.
     Trending,
 }
 
-/// The result of a [`Query`]. Backends map their native types onto Tube's
-/// plain [`crate::model`] structs so the UI never sees a rustypipe type.
 #[derive(Clone, Debug)]
 pub enum BackendResult {
     Videos(Vec<Video>),
@@ -61,8 +34,6 @@ pub enum BackendResult {
     },
 }
 
-/// Error surfaced by a backend. Stringly-typed on purpose — the UI only ever
-/// shows it in the status log.
 #[derive(Clone, Debug)]
 pub struct BackendError(pub String);
 
@@ -76,117 +47,38 @@ impl std::error::Error for BackendError {}
 
 pub type BackendOutcome = Result<BackendResult, BackendError>;
 
-/// A resolved, directly-playable media URL for the `GStreamer` decode path.
-///
-/// This whole playable URL is handed to the shared [`media::MediaEngine`],
-/// which negotiates the container and codec and routes audio through the same
-/// playback backend as the system video player and editor preview.
 #[derive(Clone, Debug)]
 pub struct PlaybackSource {
-    /// Directly-playable media URL of a progressive stream (picture and sound
-    /// in one file).
     pub url: String,
-    /// True when the chosen URL carries audio as well as video (a progressive
-    /// muxed format), so the caller knows sound will play.
     pub has_audio: bool,
-    /// `YouTube` quality label, e.g. "360p".
     pub quality: String,
 }
 
-/// The data-source seam. Methods are intentionally coarse-grained — one per screen need
-/// — so a backend can batch the underlying `InnerTube` calls however it likes.
-///
-/// Implementations must be `Send + Sync` because the live backend is driven
-/// from the fetch worker thread.
 pub trait YtBackend: Send + Sync {
-    /// Human name for the status log / settings ("rustypipe").
     fn name(&self) -> &str;
 
-    /// Full-text video search.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if the backend cannot reach or parse the search results.
     fn search(&self, query: &str) -> BackendOutcome;
 
-    /// Full metadata for a single video.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if the backend cannot reach or parse the video.
     fn video(&self, id: &str) -> BackendOutcome;
 
-    /// Channel page + uploads.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if the backend cannot reach or parse the channel.
     fn channel(&self, id: &str) -> BackendOutcome;
 
-    /// Per-video related / "up next".
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if the backend cannot reach or parse the related list.
     fn related(&self, id: &str) -> BackendOutcome;
 
-    /// Region trending.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if the backend cannot reach or parse the trending feed.
     fn trending(&self) -> BackendOutcome;
 
-    /// A playlist page: its metadata + ordered video list. The default errors —
-    /// only a backend that can reach a real extractor produces one. The UI shows
-    /// an "unavailable" state when this fails.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` unless overridden by a backend that can resolve playlists.
     fn playlist(&self, _id: &str) -> Result<(Playlist, Vec<Video>), BackendError> {
         Err(BackendError("this backend cannot resolve playlists".into()))
     }
 
-    /// Top comments for a video. The default returns none — only a backend that
-    /// can reach `YouTube`'s `next`/comments continuation (the live rustypipe one)
-    /// produces real comments. The UI
-    /// degrades to "no comments" when empty.
-    ///
-    /// # Errors
-    ///
-    /// The default never errors (`Ok(Vec::new())`); an overriding backend may.
     fn comments(&self, _id: &str) -> Result<Vec<Comment>, BackendError> {
         Ok(Vec::new())
     }
 
-    /// Popular recent videos matching `query`, used to compose a real "popular"
-    /// home feed when `YouTube`'s dedicated trending browse is unavailable. The
-    /// default is a plain [`search`](YtBackend::search); a live backend can
-    /// override it with a view-count-sorted, recent-upload filter so the feed is
-    /// genuinely "popular" rather than arbitrary.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` under the same conditions as [`YtBackend::search`], which
-    /// the default implementation delegates to.
     fn popular_search(&self, query: &str) -> BackendOutcome {
         self.search(query)
     }
 
-    /// Resolve a whole directly-playable media URL for `id`, for the `GStreamer`
-    /// decode path. The default errors — only the live backend produces one.
-    /// The UI degrades to the poster when this fails.
-    ///
-    /// `max_height` is the height the person chose (`Some(480)` for 480p,
-    /// `None` for the best available): a backend that can choose a format
-    /// stays at or under it, so choosing a smaller size spends less data
-    /// rather than being silently ignored.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` unless overridden by a backend that can resolve a
-    /// playable source.
     fn resolve_playback_source(
         &self,
         _id: &str,
@@ -197,7 +89,6 @@ pub trait YtBackend: Send + Sync {
         ))
     }
 
-    /// Dispatch a [`Query`] to the right method. Lets the worker stay generic.
     fn run(&self, query: Query) -> BackendOutcome {
         match query {
             Query::Search(q) => self.search(&q),

@@ -1057,25 +1057,6 @@ pub mod __private {
         serde_json::json!({"type": "object", "properties": properties})
     }
 
-    /// The label an item is offered under: its `#[model(label)]`, else its
-    /// first text, else its id.
-    pub fn item_label<T: crate::Model>(id: &crate::Id, item: &T) -> String {
-        if let Some(label) = item.label()
-            && !label.is_empty()
-        {
-            return label;
-        }
-        let mut text = Vec::new();
-        item.collect_text(&mut text);
-        text_or_id(text, id)
-    }
-
-    /// The first line of `text`, else the id.
-    #[inline(never)]
-    fn text_or_id(text: Vec<String>, id: &crate::Id) -> String {
-        first_line_of(text).unwrap_or_else(|| id.to_string())
-    }
-
     /// The first non-empty line among `text`.
     #[inline(never)]
     pub(crate) fn first_line_of(text: Vec<String>) -> Option<String> {

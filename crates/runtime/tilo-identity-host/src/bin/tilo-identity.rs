@@ -24,11 +24,11 @@ mod unix {
     use clap::{Parser, Subcommand, ValueEnum};
     use serde_json::{Value, json};
     use tilo_actions::remote::identity_admin::FleetDevice;
-    use tilo_identity_host::device_admin::{self, Approval, PairRole, PersonPaths};
+    use tilo_identity_host::device_admin::{self, Approval, PersonPaths};
     use tilo_identity_host::device_fleet::DeviceFleetStore;
     use tilo_identity_host::provisioning::{self, IdentityStorage, ProvisionOutcome};
     use tilo_identity_host::registry::{IdentityProfile, IdentityRegistryStore};
-    use tilo_user_identity::{DeviceCert, IdentityPaths};
+    use tilo_user_identity::{DeviceCert, DeviceRole, IdentityPaths};
 
     /// How long `pair` and `approve` wait at most, as the pairing window
     /// `tilo-enroll` keeps open.
@@ -796,7 +796,7 @@ mod unix {
             eprintln!("Looking for a device waiting in `tilo-identity pair`...");
         }
         let found = Command::new(device_admin::ENROLL)
-            .arg(PairRole::PersonalDevice.discover_command())
+            .arg(device_admin::discover_command(DeviceRole::Personal))
             .arg("--timeout")
             .arg(timeout.clamp(1, PAIRING_WINDOW_SECS).to_string())
             .stdin(Stdio::null())
@@ -819,7 +819,7 @@ mod unix {
             );
         }
         let approval = Approval {
-            role: PairRole::PersonalDevice,
+            role: DeviceRole::Personal,
             device: candidate.device_node_id.clone(),
             service: candidate.relay_service_node_id.clone(),
             workspace_ids: None,
@@ -1081,7 +1081,7 @@ mod unix {
         }
         let found = run(
             "identity.device.pair.discover",
-            json!({"role": PairRole::PersonalDevice.as_str()}),
+            json!({"role": DeviceRole::Personal.name()}),
         )
         .map_err(|error| {
             guided(
@@ -1121,7 +1121,7 @@ mod unix {
         run(
             "identity.device.pair.approve",
             json!({
-                "role": PairRole::PersonalDevice.as_str(),
+                "role": DeviceRole::Personal.name(),
                 "device": key,
                 "service": text("service"),
                 "confirm": true,

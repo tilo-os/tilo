@@ -48,7 +48,6 @@ impl Check {
     }
 }
 
-/// How to install one host package on this host.
 pub fn install_fix(facts: &HostFacts, tool: &str) -> String {
     let package = match (tool, facts.kind) {
         ("ssh", HostKind::Apt) => "openssh-client",
@@ -77,7 +76,6 @@ pub fn install_fix(facts: &HostFacts, tool: &str) -> String {
     }
 }
 
-/// Host tools, each with the path it resolves to, and the hypervisor.
 pub fn host_checks(facts: &HostFacts) -> Vec<Check> {
     let mut checks = vec![Check::ok(
         "host",
@@ -165,11 +163,6 @@ fn verdict(name: &str, result: Result<String, Missing>) -> Check {
     }
 }
 
-/// The adapter `vm create` uses by default, with every tool's resolved
-/// path. On Linux that is libvirt's rootless session, so three checks: its
-/// tools, KVM access, and that the session's QEMU driver answers
-/// `virsh capabilities` with a KVM guest for this host's architecture. The
-/// storage and network drivers are never needed, so never probed.
 pub fn hypervisor_checks(facts: &HostFacts) -> Vec<Check> {
     if facts.os != "linux" {
         return vec![verdict(
@@ -206,8 +199,6 @@ pub fn hypervisor_checks(facts: &HostFacts) -> Vec<Check> {
     checks
 }
 
-/// The registered VM's own adapter, plus what the qemu adapter needs from
-/// the worktree.
 pub fn vm_adapter_checks(
     entry: &VmEntry,
     verdict: Result<Choice, Missing>,
@@ -231,8 +222,6 @@ pub fn vm_adapter_checks(
     checks
 }
 
-/// The forge token, with the operations that read it. Image pulls need no
-/// credential: registry.tilo.so is public.
 pub fn credential_checks(token: Option<&Token>) -> Vec<Check> {
     let forge = match token {
         Some(token) => Check::ok(
@@ -250,8 +239,6 @@ pub fn credential_checks(token: Option<&Token>) -> Vec<Check> {
     vec![forge]
 }
 
-/// Is a dev disk published? `listing` is the forge's answer to
-/// [`disk::VERSIONS`]; `token` whether one was sent.
 pub fn disk_check(
     listing: Result<(u16, String), CliError>,
     token: Option<&Token>,
@@ -296,17 +283,11 @@ pub fn disk_check(
     }
 }
 
-/// Where the local dev-disk build script is, when this checkout has one.
 pub fn local_build(root: &Path) -> Option<String> {
     let script = root.join(crate::error::LOCAL_BUILD_SCRIPT);
     script.is_file().then(|| script.display().to_string())
 }
 
-/// Build directories that hold files owned by root: every worktree's
-/// `target/` and the shared compiler cache. Older in-VM builders ran cargo
-/// as root, and what they left makes the next `cargo` as yourself fail
-/// with "permission denied". Only the first `depth` levels are looked at,
-/// which is where cargo writes (`target/<profile>/deps/*.d`).
 #[cfg(unix)]
 pub fn root_owned_build_dirs(
     roots: &[std::path::PathBuf],
@@ -327,7 +308,6 @@ pub fn root_owned_build_dirs(
     Vec::new()
 }
 
-/// Whether `root` or anything within `depth` levels below it belongs to `uid`.
 #[cfg(unix)]
 fn holds_files_of(root: &Path, uid: u32, depth: usize) -> bool {
     use std::os::unix::fs::MetadataExt;
@@ -350,8 +330,6 @@ fn holds_files_of(root: &Path, uid: u32, depth: usize) -> bool {
     false
 }
 
-/// The verdict on [`root_owned_build_dirs`]' findings, with the command
-/// that gives them back to `user`.
 pub fn ownership_check(found: &[std::path::PathBuf], user: &str) -> Check {
     const NAME: &str = "build file ownership";
     if found.is_empty() {
@@ -379,14 +357,6 @@ pub fn ownership_check(found: &[std::path::PathBuf], user: &str) -> Check {
 /// dep-info a profile's `deps/` carries.
 const CARGO_OUTPUT: &str = "d";
 
-/// Every build directory another worktree owns and that cargo, run in this
-/// one, would overwrite: the same profile means the same output paths.
-///
-/// The compiler cache is shared on purpose; a `target/` is not (`AGENTS.md`,
-/// "never point two worktrees at one target directory"). Two cargo runs whose
-/// jobs fill the same directory silently hand each other's binary back and
-/// churn the same incremental state, which is how a full volume turns a slow
-/// build into a failed one.
 pub fn contended_build_dirs(mine: &Path, others: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
     let here = identity(mine);
     let mut found: Vec<std::path::PathBuf> = Vec::new();
@@ -401,14 +371,10 @@ pub fn contended_build_dirs(mine: &Path, others: &[std::path::PathBuf]) -> Vec<s
     found
 }
 
-/// Where a path really is, so a linked `target/` is the directory it points at.
 fn identity(dir: &Path) -> std::path::PathBuf {
     std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_owned())
 }
 
-/// The cargo outputs `dir` holds, in the `target/<profile>/deps/*.d` cargo
-/// writes them to. The compiler cache stores objects elsewhere and is shared
-/// on purpose, so a cache is not one of these.
 fn holds_cargo_outputs(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut found = Vec::new();
     for level in ["debug/deps", "release/deps", "deps"] {
@@ -426,8 +392,6 @@ fn holds_cargo_outputs(dir: &Path) -> Vec<std::path::PathBuf> {
     found
 }
 
-/// The verdict on [`contended_build_dirs`], with the command that ends the
-/// contention.
 pub fn contended_build_check(found: &[std::path::PathBuf]) -> Check {
     const NAME: &str = "build target contention";
     if found.is_empty() {
@@ -460,15 +424,12 @@ mod tests {
             .unwrap_or_else(|| panic!("no {name} check in {checks:?}"))
     }
 
-    /// Tools print their resolved path or an OS-specific fix; hypervisor checks cover tools, KVM and the
-    /// session; verdicts ignore virt-install; a registered QEMU VM needs vm.sh.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn doctor_checks_tools_hypervisors_and_vm_registration() {
-        // Phase: tools_print_their_resolved_path_or_an_os_specific_fix.
         {
             let facts = linux(
                 HostKind::RpmOstree,
@@ -493,7 +454,6 @@ mod tests {
             );
         }
 
-        // Phase: hypervisor_checks_cover_tools_kvm_and_the_session.
         {
             let facts = linux(HostKind::Dnf, LIBVIRT);
             let checks = hypervisor_checks(&facts);
@@ -559,7 +519,6 @@ mod tests {
             assert!(checks.iter().all(|c| c.check != "libvirt session"));
         }
 
-        // Phase: doctor_verdicts_ignore_virt_install.
         {
             let mut with_it = LIBVIRT.to_vec();
             with_it.push(("virt-install", "/usr/bin/virt-install"));
@@ -570,7 +529,6 @@ mod tests {
             let text = format!("{without:?}");
             assert!(!text.contains("virt-install"), "{text}");
 
-            // virt-install alone is not libvirt: the fix names what is needed.
             let only = hypervisor_checks(&linux(
                 HostKind::Apt,
                 &[("virt-install", "/usr/bin/virt-install")],
@@ -585,7 +543,6 @@ mod tests {
             assert!(fix.contains("libvirt-clients"), "{fix}");
         }
 
-        // Phase: a_registered_qemu_vm_needs_vm_sh.
         {
             let entry = VmEntry {
                 hypervisor: "qemu".into(),
@@ -599,11 +556,8 @@ mod tests {
         }
     }
 
-    /// Credentials say which operations read them; the published-disk check covers each answer; a local
-    /// build is offered only when the script exists.
     #[test]
     fn doctor_explains_credentials_disks_and_local_builds() {
-        // Phase: credentials_say_which_operations_read_them.
         {
             let token = Token {
                 value: "t".into(),
@@ -618,7 +572,6 @@ mod tests {
             );
         }
 
-        // Phase: published_disk_check_covers_each_answer.
         {
             let token = Token {
                 value: "t".into(),
@@ -652,7 +605,6 @@ mod tests {
             assert_eq!(offline.state, "warn");
         }
 
-        // Phase: local_build_is_offered_only_when_the_script_exists.
         {
             let dir = tempfile::tempdir().unwrap();
             assert_eq!(local_build(dir.path()), None);
@@ -671,8 +623,6 @@ mod tests {
 mod ownership_tests {
     use super::*;
 
-    /// Root-owned files in a target or the compiler cache fail the check
-    /// with the exact chown that fixes them; none passes.
     #[test]
     fn root_owned_build_files_fail_with_the_chown_that_fixes_them() {
         assert_eq!(ownership_check(&[], "bob").state, "ok");
@@ -689,9 +639,6 @@ mod ownership_tests {
         );
     }
 
-    /// One target for two worktrees is a failure that names the shared
-    /// directory and how to end it; a worktree's own target and the shared
-    /// compiler cache are not.
     #[test]
     fn another_worktrees_target_fails_the_contention_check() {
         let root = tempfile::tempdir().unwrap();
@@ -722,7 +669,6 @@ mod ownership_tests {
         assert!(check.fix.is_some());
     }
 
-    /// A worktree whose `target` is a link to another's is the same directory.
     #[cfg(unix)]
     #[test]
     fn a_linked_target_is_the_target_it_points_at() {

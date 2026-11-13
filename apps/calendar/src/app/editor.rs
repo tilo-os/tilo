@@ -1,9 +1,5 @@
-//! The event and task editor: a modal sheet presented in the window's top
-//! layer through the shared modal chrome (`ui::widget::modal_dialog`). The
-//! sheet's height follows its content; a form taller than the window scrolls
-//! inside the sheet's body. Every field is a toolkit control: text inputs,
-//! buttons that open the date and time pickers, a switch, dropdowns and
-//! checkboxes, laid out as label-leading form rows.
+//! The event and task editor: a modal sheet in the window's top layer, through the shared modal
+//! chrome (`ui::widget::modal_dialog`).
 
 use chrono::NaiveDate;
 use vello::Scene;
@@ -30,13 +26,10 @@ use crate::event_popovers::{PopoverAnchors, PopoverKind as FormPopover};
 use crate::model::{Event, Palette, Priority, Recurrence, Task};
 use ui::widget::DrawChild;
 
-/// The sheet's primary answer, which closes the editor.
 fn done_label() -> String {
     crate::resource::t("calendar-done")
 }
 
-/// One dropdown of the editor with the value it last published, so a pick
-/// is applied to the model exactly once.
 pub(crate) struct Choice {
     pub(super) state: LocalState<String>,
     pub(super) dropdown: Dropdown,
@@ -45,8 +38,6 @@ pub(crate) struct Choice {
 }
 
 impl Choice {
-    /// A dropdown named by the catalogue message `key`, whose `icon` says
-    /// what it chooses.
     pub(super) fn new(key: &str, icon: Icon) -> Self {
         let state = LocalState::new(String::new());
         let dropdown = Dropdown::from_state(Vec::new(), &state)
@@ -60,7 +51,6 @@ impl Choice {
         }
     }
 
-    /// Offer `options` with `value` chosen, unless the list is open.
     pub(super) fn seed(&mut self, options: Vec<(String, String)>, value: &str) {
         if self.dropdown.is_open() {
             return;
@@ -73,7 +63,6 @@ impl Choice {
         }
     }
 
-    /// The value the person just picked, once.
     pub(super) fn take_pick(
         &mut self,
         doc: &ui::widget::Edits<'_>,
@@ -94,7 +83,6 @@ impl Choice {
     }
 }
 
-/// The editor's dropdowns.
 pub(crate) struct Choices {
     pub(super) calendar: Choice,
     pub(super) repeat: Choice,
@@ -116,7 +104,6 @@ impl Choices {
         }
     }
 
-    /// The dropdowns the current sheet shows, in form order.
     pub(super) fn shown_mut(&mut self, task: bool) -> Vec<&mut Choice> {
         if task {
             vec![&mut self.priority, &mut self.project]
@@ -144,12 +131,8 @@ impl Choices {
     }
 }
 
-/// Where every part of the sheet's body landed, already offset by the body's
-/// scroll. Recomputed every layout; the paint pass, the hit map and the
-/// embedded widgets all read it.
 #[derive(Clone, Debug, Default)]
 pub(super) struct FormRects {
-    /// Leading labels of the form rows, by the row they label.
     pub(super) labels: Vec<FormLabel>,
     pub(super) title: Rect,
     pub(super) start_date: Rect,
@@ -165,7 +148,6 @@ pub(super) struct FormRects {
     pub(super) repeat: Rect,
     pub(super) alert: Rect,
     pub(super) timezone: Rect,
-    /// The Colour row, and one swatch per calendar colour along it.
     pub(super) colour: Rect,
     pub(super) swatches: Vec<(Palette, Rect)>,
     pub(super) invite: Rect,
@@ -176,14 +158,11 @@ pub(super) struct FormRects {
     pub(super) priority: Rect,
     pub(super) project: Rect,
     pub(super) subtasks: Vec<Rect>,
-    /// The "Notes" heading and where the notes editor starts.
     pub(super) notes_label: Rect,
     pub(super) notes_top: f64,
 }
 
 impl FormRects {
-    /// The bottom edge of every row of the form, top to bottom: where a
-    /// body that cannot show the whole form may end without cutting a row.
     fn row_bottoms(&self) -> Vec<f64> {
         let mut rows: Vec<f64> = [
             self.title,
@@ -230,9 +209,6 @@ fn repeat_value(event: &Event) -> &'static str {
     }
 }
 
-/// The repeat presets the editor offers, in the order it lists them: the value
-/// a pick publishes, and the rule it writes. The row's words, and how a
-/// language words an interval, come from the catalogue.
 const REPEATS: [(&str, Recurrence, u32); 7] = [
     ("none", Recurrence::None, 1),
     ("daily", Recurrence::Daily, 1),
@@ -243,8 +219,6 @@ const REPEATS: [(&str, Recurrence, u32); 7] = [
     ("yearly", Recurrence::Yearly, 1),
 ];
 
-/// How a rule reads in the form: how often it comes round, and what ends it.
-/// One phrase for the preset rows and the custom one, so the two cannot drift.
 fn repeat_phrase(
     recurrence: Recurrence,
     interval: u32,
@@ -284,7 +258,6 @@ fn repeat_phrase(
     }
 }
 
-/// How an event's repeat rule reads in the form.
 fn repeat_label(event: &Event) -> String {
     repeat_phrase(
         event.recurrence,
@@ -324,8 +297,6 @@ fn alert_value(event: &Event) -> String {
         .map_or_else(|| "none".into(), |minutes| minutes.to_string())
 }
 
-/// A reminder as a person reads it: when it rings, from the start itself to a
-/// day before.
 fn alert_label(minutes: i64) -> String {
     let key = match minutes {
         0 => return crate::resource::t("calendar-alert-at-start"),
@@ -369,8 +340,6 @@ const TIME_ZONES: [&str; 5] = [
     "Asia/Tokyo",
 ];
 
-/// A time zone as a person reads it: the city of an IANA name, or "No time
-/// zone" for a floating event (one that keeps its wall time everywhere).
 fn timezone_label(zone: &str) -> String {
     match zone {
         "floating" | "" => crate::resource::t("calendar-time-zone-floating"),
@@ -411,9 +380,6 @@ fn priority_options() -> Vec<(String, String)> {
     .collect()
 }
 
-/// The catalogue message of each row of the event form's label column, in the
-/// order the form shows them: the column is as wide as the widest of them in
-/// the window's language.
 const EVENT_FIELDS: [&str; 10] = [
     "calendar-field-starts",
     "calendar-field-ends",
@@ -426,38 +392,29 @@ const EVENT_FIELDS: [&str; 10] = [
     "calendar-field-colour",
     "calendar-field-guests",
 ];
-/// The catalogue message of each row of the task form's label column.
 const TASK_FIELDS: [&str; 3] = [
     "calendar-field-due",
     "calendar-field-priority",
     "calendar-field-project",
 ];
-/// The message heading the rows of a task's subtasks.
 const SUBTASKS_FIELD: &str = "calendar-field-subtasks";
-/// What an unscheduled task's due field says.
 const NO_DUE_DATE: &str = "calendar-field-no-due-date";
 
-/// The words of a form row, in the window's language.
 fn field_label(key: &str) -> String {
     crate::resource::t(key)
 }
 
-/// Running geometry of one form layout pass.
 struct Flow<'a> {
     theme: &'a Theme,
     body: Rect,
     field_x: f64,
     y: f64,
     row_h: f64,
-    /// Labels sit above their fields (a narrow sheet) instead of beside them;
-    /// `label_h` is the line a label takes then.
     stacked: bool,
     label_h: f64,
     labels: Vec<FormLabel>,
 }
 
-/// One line of a form's label column: the words it says, the band it sits in,
-/// and whether it heads a group of rows rather than naming one row.
 #[derive(Clone, Debug)]
 pub(super) struct FormLabel {
     pub(super) text: String,
@@ -466,9 +423,6 @@ pub(super) struct FormLabel {
 }
 
 impl<'a> Flow<'a> {
-    /// A flow down `body` whose labels take `label_column` beside their
-    /// fields, or stack above them when the fields would then be narrower
-    /// than `widest_field`.
     fn new(
         theme: &'a Theme,
         body: Rect,
@@ -497,8 +451,6 @@ impl<'a> Flow<'a> {
         }
     }
 
-    /// A row of `height` labelled `label`: the label's band and the field's
-    /// span.
     fn row(&mut self, label: String, height: f64) -> Rect {
         if self.stacked {
             let band = Rect::new(self.body.x0, self.y, self.body.x1, self.y + self.label_h);
@@ -532,7 +484,6 @@ impl<'a> Flow<'a> {
 }
 
 impl CalendarApp {
-    /// The sheet's title: what is being edited.
     pub(super) fn sheet_title(&self) -> String {
         match self.selection {
             Some(Sel::Task(_)) => crate::resource::t("calendar-task-detail-title"),
@@ -543,7 +494,6 @@ impl CalendarApp {
         }
     }
 
-    /// The modal sheet's spec: its title and its one action, Done.
     fn sheet_spec<'a>(
         title: &'a str,
         actions: &'a [ModalAction<'a>],
@@ -555,8 +505,6 @@ impl CalendarApp {
             .body_height(body_height)
     }
 
-    /// The part of the sheet's body the notes editor takes, where a press
-    /// goes to the editor.
     pub(super) fn notes_region(&self) -> Rect {
         self.modal.as_ref().map_or(Rect::ZERO, |modal| {
             Rect::new(
@@ -568,15 +516,10 @@ impl CalendarApp {
         })
     }
 
-    /// Width of the sheet's body (the form and the notes column) in the
-    /// current window and theme.
     pub(super) fn detail_body_w(&self) -> f64 {
         modal_dialog::body_width(self.rect, modal_dialog::MODAL_MAX_WIDTH, &self.layout_theme)
     }
 
-    /// Lay the sheet out for the current selection: the form at its own
-    /// height, the notes below it, the modal chrome around both, and the
-    /// body's scroll. Clears the layout when no editor is open.
     pub(super) fn layout_sheet(&mut self) {
         let open = self.detail_open && self.selection.is_some() && self.rect.area() > 0.0;
         if !open {
@@ -602,9 +545,6 @@ impl CalendarApp {
                 text,
                 &theme,
             );
-            // A form taller than the window scrolls inside a sheet that
-            // keeps the window's header row clear, and whose body ends
-            // between two rows rather than through one.
             let header = f64::from(theme.tokens.metrics.header_height);
             let chrome_h = natural.card.height() - natural.body.height();
             let room = (window.height() - 2.0 * header - chrome_h).max(0.0);
@@ -652,8 +592,6 @@ impl CalendarApp {
         self.place_form_widgets();
     }
 
-    /// Point the embedded inputs and dropdowns at the fresh form geometry,
-    /// parking the ones the current sheet does not show.
     fn place_form_widgets(&mut self) {
         let parked = Rect::new(-10000.0, -10000.0, -9900.0, -9900.0);
         let editing_event = matches!(self.selection, Some(Sel::Event(_)));
@@ -681,7 +619,6 @@ impl CalendarApp {
         }
     }
 
-    /// Seed the dropdowns from the selected event or task.
     pub(super) fn seed_choices(&mut self) {
         match self.selection {
             Some(Sel::Event(id)) if self.detail_open => {
@@ -729,7 +666,6 @@ impl CalendarApp {
         }
     }
 
-    /// Apply the picks the dropdowns published since the last pass.
     pub(super) fn commit_choices(
         &mut self,
         doc: &mut ui::widget::Edits<'_>,
@@ -780,7 +716,6 @@ impl CalendarApp {
         }
     }
 
-    /// The widest leading label of `labels` plus the gap before its field.
     fn label_column(labels: &[String], text: &mut TextRenderer, theme: &Theme) -> f64 {
         let style = theme.text(TextRole::Body);
         labels
@@ -790,8 +725,6 @@ impl CalendarApp {
             + f64::from(theme.tokens.spacing.s4)
     }
 
-    /// One swatch per calendar colour along the Colour row, each centred
-    /// in a pointer target, the first target flush with the field's edge.
     fn swatch_layout(row: Rect, theme: &Theme) -> Vec<(Palette, Rect)> {
         let side = f64::from(theme.tokens.metrics.icon_lg);
         let target = f64::from(theme.tokens.metrics.min_pointer_target).max(side);
@@ -809,7 +742,6 @@ impl CalendarApp {
             .collect()
     }
 
-    /// The form's geometry inside `body` (whose top is already scrolled).
     fn form_layout(&self, body: Rect, text: &mut TextRenderer, theme: &Theme) -> FormRects {
         match self.selection {
             Some(Sel::Event(id)) => self
@@ -839,9 +771,6 @@ impl CalendarApp {
         let date_w = |text: &mut TextRenderer, d: NaiveDate| {
             ButtonFace::new(Rect::ZERO, &date::fmt_day_long(d)).intrinsic_width(text, theme)
         };
-        // Both time buttons are as wide as the wider of the two times they
-        // show, in the person's clock ("11:00 AM" is wider than "00:00"), so
-        // neither is cut off and the two stay aligned.
         let time_labels = [date::fmt_time(&event.start), date::fmt_time(&event.end)];
         let time_w = |text: &mut TextRenderer| {
             time_labels
@@ -914,10 +843,6 @@ impl CalendarApp {
         f.swatches = Self::swatch_layout(f.colour, theme);
         flow.gap();
         f.invite = flow.row(field_label("calendar-field-guests"), row_h);
-        // A guest row's avatar lines up with the Guests field above it: the
-        // row reaches left past the field by the row's own inset. It ends
-        // at the body's edge, where the sheet clips, so its status reads
-        // whole.
         let row_inset = f64::from(sp.s3);
         for attendee in &event.attendees {
             let face = ListRowFace::new(&attendee.email).secondary(&attendee.email);
@@ -949,7 +874,6 @@ impl CalendarApp {
         let fields: Vec<String> = TASK_FIELDS.iter().map(|key| field_label(key)).collect();
         let label_column = Self::label_column(&fields, text, theme);
         let mut flow = Flow::new(theme, body, label_column, due_w, text);
-        // The checkbox and the title share the first line.
         let side = f64::from(theme.tokens.metrics.icon_md);
         let title_style = theme.text(TextRole::Heading);
         let check_x1 = body.x0 + side + f64::from(theme.tokens.metrics.icon_label_gap);
@@ -1010,7 +934,6 @@ impl CalendarApp {
         f.notes_top = f.notes_label.y1 + f64::from(theme.tokens.spacing.rhythm.related);
     }
 
-    /// Paint the sheet in the top layer and append its hit targets.
     pub(super) fn draw_sheet(
         &mut self,
         scene: &mut Scene,
@@ -1083,8 +1006,6 @@ impl CalendarApp {
             .draw_child(scene, t, text, &sheet, presence);
         scene.pop_layer();
         if self.detail_scroll_max > 0.0 {
-            // The body scrolls: the shared quiet thumb in the sheet's
-            // trailing padding says how much more there is.
             let gap = f64::from(sheet.tokens.spacing.s2);
             let track = Rect::new(
                 layout.body.x1 + gap,
@@ -1105,7 +1026,6 @@ impl CalendarApp {
                 false,
             );
         }
-        // Only the visible part of the body is a target.
         hits.retain(|(rect, _)| rect.intersect(layout.body).area() > 0.0);
         self.hits.extend(hits);
         self.draw_sheet_footer(scene, t, text, theme, &layout, &spec);
@@ -1114,7 +1034,6 @@ impl CalendarApp {
         self.draw_sheet_pickers(scene, t, text, theme, presence);
     }
 
-    /// The sheet's footer: the destructive action leads, Done trails.
     fn draw_sheet_footer(
         &mut self,
         scene: &mut Scene,
@@ -1154,7 +1073,6 @@ impl CalendarApp {
         }
     }
 
-    /// Open pickers float over the sheet.
     fn draw_sheet_pickers(
         &mut self,
         scene: &mut Scene,
@@ -1269,8 +1187,6 @@ impl CalendarApp {
             choice.dropdown.draw_child(scene, t, text, sheet, presence);
         }
 
-        // The event's colour is user content: the swatches show the colours
-        // themselves, the chosen one ringed.
         let target_pad = (f64::from(sheet.tokens.metrics.min_pointer_target)
             - f64::from(sheet.tokens.metrics.icon_lg))
         .max(0.0)
@@ -1309,7 +1225,6 @@ impl CalendarApp {
         }
     }
 
-    /// The local schedule overlap: a warning mark and one sentence.
     fn draw_conflict(ctx: &mut PaintCtx<'_>, rect: Rect, count: usize) {
         let sheet = ctx.theme;
         let label = if count == 1 {
@@ -1441,7 +1356,6 @@ impl CalendarApp {
         }
     }
 
-    /// The date grid under the task's Due button, with a Clear action.
     fn draw_task_due_popover(
         &mut self,
         scene: &mut Scene,
@@ -1502,8 +1416,6 @@ impl CalendarApp {
         self.hits.push((clear, Action::SetTaskDue(None)));
     }
 
-    /// The task the sheet shows the due date of, a day from now when it has
-    /// none, so the picker opens somewhere useful.
     pub(super) fn task_due_seed(&self) -> NaiveDate {
         self.selected_task()
             .and_then(|id| self.model.task(id))

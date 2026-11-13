@@ -15,8 +15,6 @@ use winit::keyboard::ModifiersState;
 use super::bench::{Bench, key_event};
 use super::*;
 
-/// The editor over one slide holding one text box reading `words` at
-/// `(100, 100)`, sized `w × h` at type size 40, selected; and the box's id.
 fn box_of(words: &str, w: f64, h: f64) -> (Bench, Id) {
     let mut slide = Slide::new(Layout::Blank);
     let id = slide.add(Element::text(words, 100.0, 100.0, w, h, 40.0));
@@ -27,7 +25,6 @@ fn box_of(words: &str, w: f64, h: f64) -> (Bench, Id) {
     (bench, id)
 }
 
-/// [`box_of`] with the box open for editing, the caret after its words.
 fn editing(words: &str) -> (Bench, Id) {
     let (mut bench, id) = box_of(words, 900.0, 120.0);
     bench.with(|app| app.begin_text_edit(false));
@@ -64,7 +61,6 @@ fn words_editor(app: &SlidesApp) -> &ui::widget::BlockEditor {
         .editor()
 }
 
-/// The words selected in the text box being edited.
 fn selection(app: &SlidesApp) -> String {
     let editor = words_editor(app);
     if let Some(text) = editor.selected_text() {
@@ -90,9 +86,6 @@ fn caret(app: &SlidesApp) -> usize {
         .map_or(0, |block| block.line.cursor_pos())
 }
 
-/// Where the selected box's first line of words starts in the window: the
-/// caret's place at the start of its words, read with the box open and
-/// left closed again.
 fn words_start(bench: &mut Bench) -> Point {
     bench.with(|app| app.begin_text_edit(false));
     bench.frame();
@@ -103,7 +96,6 @@ fn words_start(bench: &mut Bench) -> Point {
     Point::new(caret.x0, caret.center().y)
 }
 
-/// Where the selected box stands on the canvas.
 fn frame_of(bench: &mut Bench, id: &str) -> Rect {
     let id = id.to_owned();
     bench.read(|app| {
@@ -131,14 +123,12 @@ fn a_double_click_opens_a_box_at_the_word_and_a_third_selects_its_line() {
             "the double-click selects the word under the pointer, not the end of the box"
         );
     });
-    // A click places the caret where it lands.
     bench.app.harness().click_at(start.x + 1.0, start.y);
     bench.read(|app| {
         assert!(app.editing_text);
         assert_eq!(caret(app), 0, "the caret lands at the click");
         assert!(selection(app).is_empty());
     });
-    // Three clicks open a box with its line selected.
     let (mut bench, _) = box_of("Hello world", 900.0, 120.0);
     let start = words_start(&mut bench);
     let at = Point::new(start.x + 10.0, start.y);
@@ -180,8 +170,6 @@ fn dragging_in_the_words_selects_them_and_leaves_the_box_in_place() {
     );
 }
 
-// A finger held still on a box opens its menu, as a right-click does, and
-// moves nothing.
 #[test]
 fn holding_a_finger_on_a_box_opens_its_menu() {
     let (mut bench, id) = box_of("Hello world", 900.0, 120.0);
@@ -210,7 +198,6 @@ fn a_finger_moves_a_box_taps_select_and_a_double_tap_opens_it_at_the_word() {
     let frame = frame_of(&mut bench, &id);
     let before = element(&bench, &id);
 
-    // A finger drag moves the box with it.
     let centre = frame.center();
     touch(&mut bench, 1, TouchPhase::Started, centre);
     for step in [40.0, 80.0, 120.0] {
@@ -256,7 +243,6 @@ fn a_finger_moves_a_box_taps_select_and_a_double_tap_opens_it_at_the_word() {
         );
     });
 
-    // Two taps on a word open the box with the word selected.
     let dx = moved.x - before.x;
     let scale = frame.width() / before.w;
     let word = Point::new(start.x + dx * scale + 10.0, start.y);
@@ -266,7 +252,6 @@ fn a_finger_moves_a_box_taps_select_and_a_double_tap_opens_it_at_the_word() {
         assert_eq!(selection(app), "Hello");
     });
 
-    // In the words, a finger drag selects rather than moving the box.
     let opened = element(&bench, &id);
     let begin = Point::new(start.x + dx * scale + 1.0, start.y);
     touch(&mut bench, 5, TouchPhase::Started, begin);
@@ -326,7 +311,6 @@ fn shift_arrows_extend_and_word_and_line_keys_move_the_caret() {
 #[test]
 fn dead_keys_umlauts_and_the_input_method_write_composed_letters() {
     let (mut bench, id) = editing("Gr");
-    // A dead key types nothing; the letter it composes is typed.
     press(
         &mut bench,
         ModifiersState::empty(),
@@ -344,7 +328,6 @@ fn dead_keys_umlauts_and_the_input_method_write_composed_letters() {
         Key::Character("é".into()),
         Some("é"),
     );
-    // Umlauts and ß have keys of their own.
     for letter in ["ü", "ß"] {
         press(
             &mut bench,
@@ -354,7 +337,6 @@ fn dead_keys_umlauts_and_the_input_method_write_composed_letters() {
         );
     }
     assert_eq!(element(&bench, &id).text, "Gréüß");
-    // An input method composes in place and commits once.
     bench.send(&WindowEvent::Ime(winit::event::Ime::Preedit(
         "¨".into(),
         Some((2, 2)),
@@ -484,14 +466,12 @@ fn words_wrap_inside_the_box_and_the_box_grows_to_hold_them() {
         (300.0, 60.0),
         "growing writes nothing: typing stays word edits"
     );
-    // The grown part is the box's: a press there lands in the words.
     let low = Point::new(after.center().x, after.y1 - 4.0);
     bench.click(low);
     bench.read(|app| {
         assert!(app.editing_text, "a press in the grown box stays in it");
         assert_eq!(app.sel.as_deref(), Some(id.as_str()));
     });
-    // The box shows grown when it is no longer edited.
     named(&mut bench, ModifiersState::empty(), NamedKey::Escape);
     bench.frame();
     let shown = frame_of(&mut bench, &id);
@@ -628,14 +608,11 @@ fn a_collaborators_edits_merge_with_typing_letter_by_letter() {
     let block = |bench: &Bench, id: &str| element(bench, id).blocks[0].id.clone();
     let (my_block, their_block) = (block(&bench, &mine), block(&bench, &theirs));
 
-    // The collaborator's replica, from before this person types.
     let mut peer =
         ui::tilo_resource::Replica::<crate::deck::Deck>::from_doc(bench.app.peer_document())
             .as_author("collaborator");
     bench.type_text(" one");
 
-    // Meanwhile they write in the other box, and take a letter out of the
-    // word this person is typing after.
     let splice = |element: &str, block: String, at: usize, del: usize, ins: &str| {
         crate::actions::edit_text_action(
             &slide_id,
@@ -684,9 +661,6 @@ fn the_words_being_edited_show_the_text_beam() {
     });
 }
 
-/// The words being edited are in the accessibility tree where they are
-/// drawn, under their box, and an assistive technology writes them as
-/// typing does.
 #[test]
 fn assistive_technology_reads_and_writes_the_words_being_edited() {
     let (mut bench, id) = editing("Hello world");
@@ -718,8 +692,6 @@ fn assistive_technology_reads_and_writes_the_words_being_edited() {
     assert_eq!(element(&bench, &id).text, "Hallo Welt");
 }
 
-/// The first paragraph's document id of box `id`: what collaborators name
-/// a place in its words by.
 fn first_paragraph(bench: &Bench, id: &str) -> String {
     let blocks = element(bench, id).blocks;
     let first = blocks.first().expect("the box has paragraphs");
@@ -727,14 +699,11 @@ fn first_paragraph(bench: &Bench, id: &str) -> String {
     first.id.clone()
 }
 
-/// How many paths the last frame drew.
 fn drawn_paths(bench: &mut Bench) -> usize {
     bench.frame();
     bench.app.harness().scene().encoding().path_tags.len()
 }
 
-// A collaborator's caret shows in the box where they are, whether or not
-// this person edits it, and this person's caret is published for theirs.
 #[test]
 fn collaborators_carets_show_in_the_boxes_they_are_in() {
     let (mut bench, id) = box_of("Hello world", 900.0, 120.0);
@@ -769,8 +738,6 @@ fn collaborators_carets_show_in_the_boxes_they_are_in() {
     );
 }
 
-/// Drag the pointer from `from` by `by` over `moves` frames, as a hand
-/// does, and lift it; each move is its own frame. The frames' timings.
 fn drag_frames(
     bench: &mut Bench,
     from: Point,
@@ -810,14 +777,7 @@ fn report(what: &str, samples: &[ui::profiling::FrameTiming], shapes: (u64, u64,
     );
 }
 
-/// Once input stops, nothing asks for another frame: no queued work, no
-/// animation, and no timer left once the ones due have run, as the live
-/// window idles.
 fn assert_idle(bench: &mut Bench, what: &str) {
-    // What the input left runs out in a few wakes, each a frame of the live
-    // window: the woken component taken up, and the save status moving
-    // along once the record's store says the edit the gesture wrote has
-    // landed. Then nothing wakes the window.
     let mut wakes = Vec::new();
     for _ in 0..12 {
         bench.app.idle();
@@ -859,8 +819,6 @@ fn assert_idle(bench: &mut Bench, what: &str) {
     panic!("{what}: the window keeps waking: {wakes:?}");
 }
 
-// Moving a text box shapes none of its words again, resizing it only
-// re-wraps them, and once the hand stops no frame runs.
 #[test]
 fn moving_and_resizing_a_text_box_reshapes_nothing_and_idles_after() {
     let words = "Quarterly goals: ship the new editor, grow the team, and keep \
@@ -868,7 +826,6 @@ fn moving_and_resizing_a_text_box_reshapes_nothing_and_idles_after() {
     let (mut bench, id) = box_of(words, 700.0, 120.0);
     bench.frame();
     let frame = frame_of(&mut bench, &id);
-    // Warm the words' shapes and the drag's own code once.
     drag_frames(&mut bench, frame.center(), (8.0, 4.0), 2);
     bench.app.idle();
 
@@ -901,7 +858,6 @@ fn moving_and_resizing_a_text_box_reshapes_nothing_and_idles_after() {
     assert_idle(&mut bench, "once the hand stops resizing, no frame runs");
 }
 
-/// The secondary button going down or up where the pointer is.
 fn secondary(bench: &mut Bench, state: ElementState) {
     bench.send(&WindowEvent::MouseInput {
         device_id: winit::event::DeviceId::dummy(),
@@ -921,8 +877,6 @@ fn point_at_byte(bench: &mut Bench, byte: usize) -> Point {
     Point::new(caret.x1 + 3.0, caret.center().y)
 }
 
-/// The rows of the words' open menu, each with where it stands on the
-/// canvas, and the menu's own size there and in the editor's space.
 fn words_menu(bench: &mut Bench) -> (Vec<(String, Rect)>, Rect, Rect) {
     bench.read(|app| {
         let host = &app.text_editor.as_ref().expect("an editor").host;
@@ -956,11 +910,7 @@ fn row(rows: &[(String, Rect)], label: &str) -> Point {
 
 #[test]
 fn right_click_or_a_held_finger_opens_the_words_menu() {
-    // A menu arrives from the press that opened it, drawn smaller and nearer
-    // that point until it settles: a test that reads its rows and clicks one
-    // reads them where they rest, as the person sees them once it has arrived.
     let _arrived = ui::motion::testing::settled();
-    // Case `right_click_selects_the_word_and_formats_it`.
     {
         let (mut bench, id) = editing("Hello world");
         let at = point_at_byte(&mut bench, 8);
@@ -1011,7 +961,6 @@ fn right_click_or_a_held_finger_opens_the_words_menu() {
             .any(|span| span.mark == ui::widget::marks::Mark::Bold && span.range == (6..11));
         assert!(bold, "the clicked word is bold: {:?}", words.rich_blocks());
     }
-    // Case `the_menu_cuts_the_selection_through_the_clipboard`.
     {
         let (mut bench, id) = editing("Hello world");
         let at = point_at_byte(&mut bench, 2);
@@ -1031,7 +980,6 @@ fn right_click_or_a_held_finger_opens_the_words_menu() {
             "and onto the clipboard"
         );
     }
-    // Case `a_held_finger_opens_it_and_a_tap_chooses`.
     {
         let (mut bench, id) = editing("Hello world");
         let at = point_at_byte(&mut bench, 8);
@@ -1056,9 +1004,6 @@ fn right_click_or_a_held_finger_opens_the_words_menu() {
     }
 }
 
-/// An agent edits a text box's words through the box's own resource: the
-/// window publishes them at their own address, and an action there applies
-/// as the deck's field edit.
 #[test]
 fn an_agent_edits_a_text_boxes_words_through_their_own_resource() {
     let mut app = ui::framework::testing::TestApp::<crate::resource::SlidesShell>::new().unwrap();

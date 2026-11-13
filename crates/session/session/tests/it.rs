@@ -103,6 +103,8 @@ mod directory;
 mod display_settings;
 #[path = "displays.rs"]
 mod displays;
+#[path = "door_find_loop.rs"]
+mod door_find_loop;
 #[path = "fabric.rs"]
 mod fabric;
 #[path = "file_clipboard.rs"]
@@ -131,6 +133,8 @@ mod invite;
 mod join;
 #[path = "launch.rs"]
 mod launch;
+#[path = "layout_view.rs"]
+mod layout_view;
 #[path = "live_revocation.rs"]
 mod live_revocation;
 #[path = "lockdown_live.rs"]

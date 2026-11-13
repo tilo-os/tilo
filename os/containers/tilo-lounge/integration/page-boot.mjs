@@ -34,7 +34,6 @@ const report = {site, relay, at: new Date().toISOString()};
 // As the gate's other pages: the test certificates, a software GPU, a job
 // container's small /dev/shm, and no sandbox where the run is root.
 const browserArgs = [
-  '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),

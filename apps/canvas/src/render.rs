@@ -69,15 +69,11 @@ fn with_opacity(colour: Color, opacity: f64) -> Color {
 }
 
 struct PaintedLayer {
-    /// The simulation, kept up with the marks away from the window.
     settle: Settle,
-    /// The marks as paint, kept while they stay.
     sources: Sources,
-    /// The painting graded by the layer's adjustments, and what they were.
     graded: Option<(String, ImageData)>,
     /// The picture's halvings, for a view farther than its scale.
     mips: Mips,
-    /// The marks at the finer level a close view simulates.
     level: Option<LayerLevel>,
     /// The finer tiles shown, graded by the layer's adjustments, and what
     /// they and the adjustments were.
@@ -164,7 +160,6 @@ pub struct Renderer {
     tooth: Option<(String, ImageData)>,
     brushes: BrushCache,
     paths: PathCache,
-    /// The ground's halvings, for a view farther than its scale.
     ground_mips: Mips,
     /// Tiles of a close view, simulated finer than the whole layer.
     tiles: Tiles,
@@ -255,7 +250,6 @@ struct MarkCx<'a> {
     /// The ground's height field and cells per unit, which graphite and
     /// charcoal catch on.
     ground: (&'a Heightfield, f64),
-    /// Pictures decoded and graded, kept between frames.
     pictures: &'a mut Pictures,
     layer_adjust: Option<&'a Adjust>,
 }
@@ -267,21 +261,18 @@ struct MarkCx<'a> {
 )]
 #[derive(Clone, Debug, Default)]
 pub struct Options {
-    /// Only these layers, when given.
     pub layers: Option<Vec<String>>,
     /// A labelled coordinate grid over the artwork.
     pub grid: bool,
     /// The part of the artwork being shown, which the grid labels along its
     /// edges; the whole artwork when absent.
     pub view: Option<Rect>,
-    /// The reference picture over the artwork, when there is one.
     pub reference: bool,
     /// Leave the ground out: the layers over transparency.
     pub bare: bool,
     /// A stroke still being painted: shown on its layer as its medium will
     /// paint it, without being kept.
     pub wet: Option<Mark>,
-    /// Only these marks of plain layers, when given.
     pub marks: Option<Vec<String>>,
     pub selection: bool,
     /// How closely the artwork is shown: closer than a painted layer's
@@ -421,14 +412,14 @@ impl Renderer {
         self.tiles.end();
     }
 
-    /// Whether a close view's finer tiles are still being simulated, so the
-    /// view should be drawn again soon.
+    /// Whether a close view's finer tiles are still being simulated, so the view
+    /// should be drawn again soon.
     pub fn detail_pending(&self) -> bool {
         self.tiles.pending()
     }
 
-    /// Whether a painted layer's simulation is being brought up to its
-    /// marks in the background, so the view should be drawn again soon.
+    /// Whether a painted layer's simulation is being brought up to its marks in
+    /// the background, so the view should be drawn again soon.
     pub fn settling(&self) -> bool {
         self.painted.values().any(|entry| entry.settle.running())
     }
@@ -741,7 +732,6 @@ impl Renderer {
         image
     }
 
-    /// The ground's tooth and its lit image, built once per ground.
     fn ground(&mut self, art: &Artwork) -> &(String, Arc<Heightfield>, ImageData) {
         let scale = cell_scale(art);
         let (width, height) = (cells(art.width, scale), cells(art.height, scale));
@@ -917,8 +907,8 @@ impl Renderer {
         (key, shown)
     }
 
-    /// The tiles of `layer`'s part shown, simulated at a finer level than
-    /// the whole layer; `None` when the view is not that close.
+    /// The tiles of `layer`'s part shown, simulated finer than the whole layer;
+    /// `None` when the view is not that close.
     fn finer(
         &mut self,
         art: &Artwork,
@@ -1018,8 +1008,8 @@ impl Renderer {
         }
     }
 
-    /// The finer tiles as the layer's adjustments show them, graded once
-    /// per picture of them and adjustment.
+    /// The finer tiles as the layer's adjustments show them, graded once per
+    /// picture of them and adjustment.
     fn graded_mosaic(&mut self, layer: &Layer, mosaic: &detail::Mosaic) -> ImageData {
         let image = mosaic.image.clone();
         let (Some(adjust), Some(entry)) = (layer.adjust.as_ref(), self.painted.get_mut(&layer.id))
@@ -1220,8 +1210,6 @@ fn draw_picture(
         .as_ref()
         .and_then(|adjust| adjust.vignette);
     if vignetted.is_some() {
-        // The vignette lands only on the picture: both in a group of their
-        // own.
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, at, &frame);
     }
     scene.fill(Fill::NonZero, at, &brush, Some(to_frame), &frame);
@@ -1278,12 +1266,10 @@ fn vignette(scene: &mut Scene, transform: Affine, area: Rect, amount: f64) {
 /// artwork's data, the white of a blank ground, not a colour of the theme.
 const MASK_SHOWN: Color = BLANK_GROUND;
 
-/// A selection's outline, `path` already where it is drawn: black dashes
-/// over white, `width` wide, the dashes `phase` along (marching ants). The
-/// selection's colours, not the theme's: it is drawn over the artwork.
-///
-/// Light under dark dashes reads over any artwork, in every theme: the
-/// white of a blank ground and the black of a shadow, made solid.
+/// A selection's outline, `path` already where it is drawn: black dashes over
+/// white, `width` wide, the dashes `phase` along (marching ants). Its colours
+/// are the artwork's, not the theme's. Light under dark dashes reads over any
+/// artwork.
 pub fn selection_outline(scene: &mut Scene, path: &BezPath, width: f64, phase: f64) {
     let under = Stroke::new(width * 1.5);
     let dashes = Stroke::new(width).with_dashes(phase, [4.0 * width, 4.0 * width]);
@@ -1297,7 +1283,6 @@ pub fn selection_outline(scene: &mut Scene, path: &BezPath, width: f64, phase: f
     );
 }
 
-/// The outline of `path` flattened into polygons, in cell coordinates.
 fn contours(path: &BezPath, to_cells: Affine) -> Vec<Vec<(f32, f32)>> {
     let mut contours: Vec<Vec<(f32, f32)>> = Vec::new();
     ui::vello::kurbo::flatten(to_cells * path.clone(), 0.25, |element| match element {
@@ -1313,14 +1298,11 @@ fn contours(path: &BezPath, to_cells: Affine) -> Vec<Vec<(f32, f32)>> {
     contours
 }
 
-/// The outline a stroke's paint is cut to, in cells: its clip's silhouette.
 fn clip_contours(cut: Option<&BezPath>, scale: f64) -> Vec<Vec<(f32, f32)>> {
     cut.map(|outline| contours(outline, Affine::scale(scale)))
         .unwrap_or_default()
 }
 
-/// The outline of what a mark is cut to, in artwork units: its clip's
-/// silhouette, or every member's of a clipping group.
 fn clip_path(clips: &[&Mark]) -> BezPath {
     let mut path = BezPath::new();
     for clip in clips {
@@ -1348,7 +1330,6 @@ fn wet_cut(art: &Artwork, mark: &Mark) -> Option<BezPath> {
     cuts(art, mark).pop()
 }
 
-/// A stroke's points in cells, with their pressure.
 fn cell_points(points: &[Vec<f64>], to_cells: Affine) -> Vec<WetPoint> {
     points
         .iter()
@@ -1470,8 +1451,6 @@ fn wet_marks(mark: &Mark, clip: Option<&BezPath>, palette: &[Pigment], scale: f6
     painted
 }
 
-/// A mark's gradient as the colour its paint is mixed to across it, in
-/// cell coordinates.
 fn colour_field(gradient: &Gradient, palette: &[Pigment], to_cells: Affine) -> Option<ColourField> {
     let stops = gradient
         .stops
@@ -1496,7 +1475,6 @@ fn colour_field(gradient: &Gradient, palette: &[Pigment], to_cells: Affine) -> O
     )
 }
 
-/// A shape's outline as strokes of its stroke colour.
 fn outline_strokes(
     mark: &Mark,
     path: &BezPath,
@@ -1565,7 +1543,6 @@ fn gradient_brush(
     Some(brush.with_extend(Extend::Pad).with_stops(&stops[..]))
 }
 
-/// The blend a mark names.
 pub fn mix(blend: &str) -> Option<Mix> {
     Some(match blend {
         "multiply" => Mix::Multiply,
@@ -1587,8 +1564,6 @@ pub fn mix(blend: &str) -> Option<Mix> {
     })
 }
 
-/// The region a mark covers, untransformed: a brush stroke's inked
-/// outline as its preset lays it, a text's box, any other shape's outline.
 pub fn silhouette(mark: &Mark) -> BezPath {
     match &mark.shape {
         Shape::Stroke { .. }
@@ -1781,7 +1756,6 @@ fn draw_eraser(art: &Artwork, mark: &Mark, scene: &mut Scene, cx: &mut MarkCx<'_
     scene.pop_layer();
 }
 
-/// The ground's height at `at` (artwork units), read between its cells.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -1975,7 +1949,6 @@ fn speck(grey: u8) -> [u8; 4] {
     }
 }
 
-/// A tile of film grain, the same everywhere.
 fn noise() -> ImageData {
     static NOISE: std::sync::OnceLock<ImageData> = std::sync::OnceLock::new();
     NOISE
@@ -2021,7 +1994,6 @@ impl Speckle {
         Self { tile, unit, amount }
     }
 
-    /// Film grain at `amount`, a texel to an artwork unit.
     fn grain(amount: f64) -> Self {
         Self::new(noise(), 1.0, amount)
     }
@@ -2034,7 +2006,6 @@ impl Speckle {
             .with_alpha(f32_of_f64((self.amount * opacity).clamp(0.0, 1.0)))
     }
 
-    /// Over the outline of `mark`, which paints it solidly.
     fn over(&self, mark: &Mark, scene: &mut Scene, transform: Affine) {
         let mut path = silhouette(mark);
         path.apply_affine(mark.affine());
@@ -2069,8 +2040,6 @@ impl Speckle {
     }
 }
 
-/// A mark whose edge fades out over `feather` units: its paint as drawn
-/// inside, melting away outside.
 fn draw_feathered(
     mark: &Mark,
     palette: &[Pigment],
@@ -2152,7 +2121,6 @@ fn draw_inner_shadow(
         &around,
     );
     if shadow.blur > 0.0 {
-        // The falloff inside the offset silhouette.
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, shifted, &path);
         for ring in 0..rings {
             let grow = shadow.blur * (f64::from(ring) + 0.5) / f64::from(rings);
@@ -2455,7 +2423,6 @@ fn on_path<'a>(
         .collect()
 }
 
-/// Shape and paint a text mark with the toolkit's text renderer.
 fn draw_text_shape(
     shape: &Shape,
     ink: Color,
@@ -2491,7 +2458,6 @@ fn draw_text_shape(
     );
 }
 
-/// The pen a mark's outline is drawn with.
 fn pen(style: &crate::model::Style, width: f64) -> Stroke {
     let cap = match style.cap.as_deref() {
         Some("butt") => Cap::Butt,

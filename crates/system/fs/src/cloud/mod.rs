@@ -6,29 +6,14 @@
     clippy::significant_drop_tightening,
     reason = "state guards are scoped to short in-memory sections and never held across network I/O; the lint cannot see block-scoped guards end"
 )]
-//! Cloud accounts as mounted folders.
+//! Cloud accounts as mounted folders: a Settings account appears at
+//! `~/Remote/<account label>` as a normal folder every app and POSIX tool can
+//! use. [`service`] runs one mount per account, [`volume`] is the account's
+//! engine and [`fuse`] the kernel adapter.
 //!
-//! A `WebDAV`, Nextcloud (and, through the same [`cloud_source::CloudSource`]
-//! interface, Google Drive, `OneDrive`, Dropbox or `iCloud` Drive) account set
-//! up in Settings appears at `~/Remote/<account label>` as a normal folder
-//! every app and POSIX tool can use. The pieces:
-//!
-//! - [`service`]: the per-user service that follows the account store,
-//!   reads each account's short-lived credential from the handoff store
-//!   and runs one mount per account;
-//! - [`volume`]: one account's engine — cached metadata, ranged hydration,
-//!   write-back through a persisted queue, conflict copies;
-//! - [`fuse`]: the kernel adapter;
-//! - [`credential`]: the one-credential pipe between service and mount;
-//! - [`providers`]: which provider serves which account type.
-//!
-//! This module is separate from the workspace data plane on purpose: workspaces
+//! This is separate from the workspace data plane on purpose: workspaces
 //! replicate signed records between peers, while a cloud account mirrors a
-//! server that is the authority for its own tree. What they share is the
-//! conflict-copy convention ([`crate::conflict::conflict_name`]) and the
-//! content store: cached bytes live in the daemon's file-backed,
-//! range-resident, budgeted cache ([`crate::store::FileArea`]), keyed by
-//! remote revision, with identical revisions sharing extents.
+//! server that is the authority for its own tree.
 
 pub mod credential;
 pub mod fuse;

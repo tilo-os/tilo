@@ -1,6 +1,5 @@
-//! Go to clip: from a playhead parked between clips to the nearest clip
-//! the preview can show, as a published action and as the button the
-//! preview's hint carries.
+//! From a playhead parked between clips to the nearest clip the preview can show: a
+//! published action and the button the preview's hint carries.
 
 #[allow(
     clippy::wildcard_imports,
@@ -8,14 +7,13 @@
 )]
 use super::*;
 
-/// The catalogue message naming the button, and its node's key in the
-/// transport's semantics.
+/// The catalogue message naming the button, and its node's key.
 pub(super) const GO_TO_CLIP_LABEL: &str = "video-editor-go-to-clip";
 pub(super) const GO_TO_CLIP_KEY: &str = "go to clip";
 
 impl VideoEditorApp {
-    /// Where Go to clip takes the playhead: the start of the first picture
-    /// clip after it, or of the last one before it when none follows.
+    /// The start of the first picture clip after it, or of the last one before it when none
+    /// follows.
     pub(super) fn go_to_clip_target(&self) -> Option<f64> {
         let starts = || {
             self.project
@@ -47,17 +45,12 @@ impl VideoEditorApp {
         true
     }
 
-    /// Whether the preview shows its "no clip at the playhead" hint now,
-    /// with a clip to go to: then the hint carries Go to clip.
     pub(super) fn preview_offers_go_to_clip(&self) -> bool {
         !self.project.clips.is_empty()
             && self.project.top_video_clip_at(self.playhead).is_none()
             && self.go_to_clip_target().is_some()
     }
 
-    /// The preview's words over an empty canvas, stacked about its centre:
-    /// where the title starts and, when `offer`, where Go to clip stands
-    /// under it.
     pub(super) fn preview_hint_stack(
         canvas: Rect,
         tr: &mut TextRenderer,

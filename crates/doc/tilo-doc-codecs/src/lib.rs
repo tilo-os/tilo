@@ -1,25 +1,14 @@
-//! `tilo-doc-codecs` — file formats as import/export projections of qdoc document resources.
+//! File formats as import/export projections of qdoc document resources.
 //!
-//! A document or workbook lives as a versioned `qdoc` resource; a `.docx`, `.odt`, `.md`,
-//! `.html`, `.rtf`, `.xlsx`, `.ods` or `.epub` file is only a way into or out of it. This crate
-//! holds those projections and [`provider_for_ext`], which picks one by file extension. Each
-//! format sits behind a cargo feature of the same name, so an app compiles only the formats it
-//! imports or exports; an app that only edits resources depends on `qdoc` alone.
+//! A document or workbook lives as a versioned `qdoc` resource; a `.docx`, `.odt`, `.md`, `.html`,
+//! `.rtf`, `.xlsx`, `.ods` or `.epub` file is only a way into or out of it. [`provider_for_ext`]
+//! picks the projection by file extension, and each format sits behind a cargo feature of the same
+//! name.
 //!
 //! Office packages keep what they do not model: every part other than the one mapped onto the
-//! model is carried through export unchanged (see the `docx` and `odt` modules).
-//!
-//! `.docx`, `.odt`, `.ods` and `.xlsx` are zip archives of XML 1.0
-//! documents; every codec here reads them through the one `quick-xml` the
-//! workspace pins, pulling text via `BytesText::xml10_content`, which
-//! applies XML 1.0 end-of-line normalisation (`\r\n` and lone `\r` become
-//! `\n`) — required by the XML 1.0 spec. Entity and character references are
-//! not part of a text event: every reader that collects text also handles
-//! `Event::GeneralRef` through `resolve_general_ref`. Neither OOXML nor
-//! ODF carries line breaks as literal CR/LF (those are `<w:br/>` and
-//! `<text:line-break/>` elements), so a raw CR in text content is whitespace
-//! and folding it is correct. Use `xml11_content` only if a format ever
-//! declares XML 1.1, which none of these do.
+//! model is carried through export unchanged. They are zip archives of XML 1.0, read through
+//! `BytesText::xml10_content`, so `\r\n` and lone `\r` fold to `\n`; character references arrive
+//! as `Event::GeneralRef` and every reader resolves them.
 
 #![cfg_attr(
     test,
@@ -142,9 +131,6 @@ pub fn resolve_general_ref(reference: &quick_xml::events::BytesRef<'_>) -> Optio
     feature = "docx",
     feature = "odt"
 ))]
-/// The canonical `fontFamily` mark for a named font: `"mono"`, `"serif"` or `"sans"`. Documents
-/// carry the font's class, not a face the reader may not have installed, so every importer
-/// classifies a face the same way.
 pub(crate) fn generic_font_family(name: &str) -> &'static str {
     let n = name.to_ascii_lowercase();
     if n.contains("mono") || n.contains("courier") || n.contains("consol") {
@@ -161,13 +147,8 @@ pub(crate) fn generic_font_family(name: &str) -> &'static str {
     }
 }
 
-/// Document formats the platform opens as an editable rich-text resource — the OS source of
-/// truth for "this file is an editable document", independent of which codecs a given binary
-/// compiles (a file manager asks this without linking any of them).
 pub const DOCUMENT_EXTENSIONS: &[&str] = &["md", "markdown", "odt", "docx", "rtf", "html", "htm"];
 
-/// The extension and media type an office package stores picture `bytes`
-/// under: PNG, JPEG and GIF as themselves, anything else as a binary part.
 #[cfg(any(feature = "docx", feature = "odt"))]
 pub(crate) fn office_image_part(bytes: &[u8]) -> (&'static str, &'static str) {
     tilo_content::image_format(bytes)
@@ -177,7 +158,6 @@ pub(crate) fn office_image_part(bytes: &[u8]) -> (&'static str, &'static str) {
         })
 }
 
-/// The provider this build compiles for `ext` (case-insensitive), if any.
 pub fn provider_for_ext(ext: &str) -> Option<&'static dyn FormatProvider> {
     match ext.to_ascii_lowercase().as_str() {
         #[cfg(feature = "markdown")]
@@ -186,8 +166,6 @@ pub fn provider_for_ext(ext: &str) -> Option<&'static dyn FormatProvider> {
         "odt" => Some(&OdtCodec),
         #[cfg(feature = "docx")]
         "docx" => Some(&DocxCodec),
-        // RTF and HTML import through these codecs; their `export` returns Unsupported (writing
-        // is `export_rtf`/`export_html`, over a snapshot), but they make the files openable.
         #[cfg(feature = "rtf")]
         "rtf" => Some(&RtfCodec),
         #[cfg(feature = "html")]
@@ -196,7 +174,6 @@ pub fn provider_for_ext(ext: &str) -> Option<&'static dyn FormatProvider> {
     }
 }
 
-/// Whether `ext` (case-insensitive) is one of [`DOCUMENT_EXTENSIONS`].
 pub fn is_supported_ext(ext: &str) -> bool {
     DOCUMENT_EXTENSIONS
         .iter()
@@ -218,7 +195,6 @@ mod tests {
         BTreeMap<String, AttrVal>,
     )>;
 
-    /// Structural view of a document, ignoring block ids (which differ per replica).
     fn norm(snap: &DocSnapshot) -> Norm {
         snap.blocks
             .iter()
@@ -229,7 +205,6 @@ mod tests {
                     .map(|x| (x.start, x.end, x.name.clone()))
                     .collect();
                 m.sort();
-                // What a codec keeps for its own export is not part of the canonical model.
                 let mut attrs = b.attrs.clone();
                 attrs.retain(|k, _| !crate::preserve::is_codec_private_attr(k));
                 (b.kind.clone(), b.text.clone(), m, attrs)
@@ -253,7 +228,6 @@ mod tests {
 
     use proptest::prelude::*;
 
-    /// Random documents over the subset both codecs model (headings, paragraphs, unordered list items, **strong** / *em*).
     fn doc_strategy() -> impl Strategy<Value = String> {
         let inline = prop_oneof![
             "[a-z]{1,5}".prop_map(|w| w),

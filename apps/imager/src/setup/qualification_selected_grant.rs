@@ -1,5 +1,5 @@
-//! Genuine original-user producer for the optional receiving Apps+Home case.
-//! Every declaration below comes from the normal capture and registration path.
+//! A genuine original-user producer for the optional receiving Apps and Home case.
+
 use crate::setup::{journey::prepared_media::PreparedMedia, staging};
 use imager_backend::{
     prepared_identity::PreparedIdentity,
@@ -24,8 +24,6 @@ fn denied() -> io::Error {
     io::ErrorKind::PermissionDenied.into()
 }
 impl SelectedGrant {
-    /// `home` has already been populated by the real signed runnable source
-    /// owner, on the genuinely held GPT filesystem, before either grant exists.
     pub(super) fn capture(
         home: &Path,
         directory: &Path,
@@ -112,8 +110,6 @@ impl SelectedGrant {
                     return Err(denied());
                 }
             }
-            // A valid second placement retains the SAME source/stage UUID and
-            // reservation. Only the actual full staging geometry changes.
             let sector = installation.basis.disk.sector_bytes;
             let bytes = |first: u64, last: u64| -> io::Result<u64> {
                 last.checked_sub(first)

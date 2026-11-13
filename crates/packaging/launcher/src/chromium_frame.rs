@@ -1,23 +1,7 @@
 //! Chromium-family host browsers use the system title bar under Tilo.
 //!
-//! The OS owns window chrome: every window already gets Tilo's window bar,
-//! and the compositor answers every xdg-decoration request with
-//! server-side decorations. Chromium ignores that answer while its
-//! profile asks for its own custom frame, which is the default on Wayland,
-//! and draws a second title bar with its own window buttons under Tilo's.
-//! No command-line switch changes this; the one lever is the profile
-//! preference behind "Use system title bar and borders",
-//! `browser.custom_chrome_frame`. With it `false` Chromium honours the
-//! server-side answer, and only its tab strip, which is content, remains.
-//!
-//! So before a Chromium-family host app starts, its default profile gets
-//! that preference when it has none: a new profile is seeded with it, and
-//! an existing one has exactly that key merged in, every other key and
-//! value kept. A value already there is the person's choice and stays.
-//! A profile that is unreadable, not JSON or shaped unexpectedly is left
-//! untouched, a running browser's profile is left to the browser, and a
-//! launch naming its own `--user-data-dir` is not the default profile and
-//! is not touched.
+//! The OS owns window chrome: every window already gets Tilo's window bar, and the
+//! compositor answers every xdg-decoration request with server-side decorations.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -29,8 +13,8 @@ use serde_json::{Map, Value};
 const SECTION: &str = "browser";
 const CUSTOM_FRAME: &str = "custom_chrome_frame";
 
-/// A browser's user-data directory, relative to the configuration home it
-/// runs with, and the profile the launch opens.
+/// A browser's user-data directory, relative to the configuration home it runs with, and the profile
+/// the launch opens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChromiumProfile {
     pub user_data_dir: PathBuf,
@@ -58,9 +42,8 @@ pub enum Outcome {
     Unreadable,
 }
 
-/// The default profile of the Chromium-family browser `launch` starts, or
-/// `None` when it is no such browser or names a user-data directory of
-/// its own.
+/// The default profile of the Chromium-family browser `launch` starts, or `None` when it is no such
+/// browser or names a user-data directory of its own.
 pub fn profile_for(launch: &HostLaunch) -> Option<ChromiumProfile> {
     if launch
         .args
@@ -122,9 +105,7 @@ fn flatpak_user_data_dir(app_id: &str) -> Option<&'static str> {
     })
 }
 
-/// `Default`, or the launch's `--profile-directory` when it is one plain
-/// directory name. Anything else is not a profile this module can name
-/// safely, and `None` leaves the launch alone.
+/// `Default`, or the launch's `--profile-directory` when it is one plain directory name.
 fn profile_directory(args: &[String]) -> Option<String> {
     let mut named = None;
     let mut args = args.iter();
@@ -145,16 +126,11 @@ fn profile_directory(args: &[String]) -> Option<String> {
     }
 }
 
-/// Give `profile` the system title bar unless it already states a frame
-/// preference, preserving everything else in it.
-///
-/// # Errors
-///
-/// Creating the profile directory or writing the file failed. A file that
-/// can't be parsed is not an error: it is left as it is.
+/// Give `profile` the system title bar unless it already states a frame preference, preserving
+/// everything else in it.
 pub fn prefer_system_frame(profile: &ChromiumProfile) -> std::io::Result<Outcome> {
-    // A running browser holds its profile in memory and writes it back on
-    // exit; it removes this link when it ends.
+    // A running browser holds its profile in memory and writes it back on exit; it removes this link
+    // when it ends.
     if profile
         .user_data_dir
         .join("SingletonLock")
@@ -188,8 +164,6 @@ pub fn prefer_system_frame(profile: &ChromiumProfile) -> std::io::Result<Outcome
 }
 
 /// [`prefer_system_frame`] for the browser `launch` starts, if it is one.
-/// Never fails the launch: the browser starts either way, with the frame
-/// it would have had.
 pub fn prepare(launch: &HostLaunch) {
     let Some(profile) = profile_for(launch) else {
         return;

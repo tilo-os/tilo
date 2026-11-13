@@ -26,8 +26,6 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ui::framework::testing::TestApp;
 
-/// An engine host that starts and reads its commands but never reports
-/// ready, as a host still initializing on a loaded machine does.
 #[cfg(unix)]
 fn starting_host(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -56,7 +54,6 @@ fn starting_host(dir: &Path) -> std::path::PathBuf {
     host
 }
 
-/// Open a Browser window and draw its first frame; the time it took.
 fn open_window() -> (TestApp<browser::BrowserShell>, u64) {
     let started = Instant::now();
     let mut app = TestApp::<browser::BrowserShell>::new().expect("Browser opens");
@@ -136,7 +133,6 @@ fn a_new_window_and_a_new_tab_open_while_the_engine_starts() {
         1,
         "new tabs share the first window's host"
     );
-    // The windows stayed open until here, so each joined a live host.
     drop(open);
     budget("browser new tab (median of 3)", tabs[1], 150_000);
 }

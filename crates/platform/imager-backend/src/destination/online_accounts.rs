@@ -1,6 +1,5 @@
-//! Session-private authorization. Workers never write custody: only polling the
-//! currently selected attempt can publish a verified result. No value here is
-//! document-backed, and backend diagnostics never cross the fixed-status boundary.
+//! Session-private authorization. Workers never write custody: only polling the currently
+//! selected attempt can publish a verified result, and no value here is document-backed.
 
 pub mod browser;
 
@@ -28,8 +27,8 @@ pub struct AccountRequest {
     pub calendar: bool,
 }
 
-/// Private presentation of a successfully stored, selected account. The owner
-/// derives services from actual grants, never the pending request or a hint.
+/// Private presentation of a successfully stored, selected account; the owner derives services from
+/// actual grants, never the pending request or a hint.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ConnectedAccount {
     pub provider: Provider,
@@ -49,7 +48,6 @@ pub enum AccountsCommand {
     SelectCalendars(Vec<String>),
 }
 
-/// Fixed statuses keep URLs, tokens and arbitrary backend errors out of the UI.
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
 pub enum AccountsStatus {
     #[default]
@@ -60,7 +58,6 @@ pub enum AccountsStatus {
     Added,
 }
 
-/// Deliberately fixed: never carries provider responses or private fields.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AccountsError {
     Privileged,
@@ -120,8 +117,8 @@ impl Drop for PrivateTokens {
     }
 }
 
-// Calendar discovery owns its combined grant; only selected service operations
-// and private custody staging are available to the installer.
+// Calendar discovery owns its combined grant; only selected service operations and private custody
+// staging are available to the installer.
 enum PendingGrant {
     Existing(PrivateTokens),
     GoogleCalendar(Arc<tilo_dav::oauth::PendingGoogleCalendar>),
@@ -202,11 +199,8 @@ struct Attempt {
     result: mpsc::Receiver<Result<Verified, AccountsError>>,
 }
 
-/// Owned by the installer session, never the shared profile or install worker.
-/// Call `command` for drained form commands and `poll` on each UI sync; publish
-/// its fixed status and private `connected` projection to the local form only.
-/// `selected` contains opaque private
-/// IDs; `stage_selected` returns ciphertext for the existing staging handoff.
+/// Owned by the installer session, never the shared profile or install worker; `selected` holds
+/// opaque private ids.
 pub struct AccountsController {
     root: PathBuf,
     custody: Arc<Custodian>,
@@ -219,19 +213,11 @@ pub struct AccountsController {
 }
 
 impl AccountsController {
-    /// Start a fresh isolated canonical custody store below an existing, owned
-    /// 0700 session directory. Both real and effective uid must be non-root.
-    ///
-    /// # Errors
-    /// Rejects privileged callers, invalid session directories, unavailable Browser
-    /// supervision, or failure to create the private custody store.
-    /// Seal the selected accounts for the installed system's first boot,
-    /// bound to the reviewed target disk (by size, device number, WWN and
-    /// serial) and the account `user`. `None` when no account is selected;
-    /// otherwise the sealed transport and the operation id it is bound to.
-    ///
-    /// # Errors
-    /// Refuses an unreviewed target or a sealing failure.
+    /// Starts a fresh isolated custody store below an owned 0700 session directory; both real and
+    /// effective uid must be non-root.
+    /// Seals the selected accounts for the installed system's first boot, bound to the reviewed
+    /// target disk (size, device number, WWN and serial) and the account `user`; `None` when no
+    /// account is selected.
     pub fn stage_for_install(
         &mut self,
         disk_size_bytes: u64,
@@ -273,9 +259,6 @@ impl AccountsController {
     }
 
     /// [`Self::live`] below this login session's private runtime directory.
-    ///
-    /// # Errors
-    /// Refuses without a session runtime directory, or as [`Self::live`] does.
     pub fn live_in_session() -> Result<Self, AccountsError> {
         let root = std::env::var_os("XDG_RUNTIME_DIR").ok_or(AccountsError::InvalidSession)?;
         Self::live(Path::new(&root))
@@ -290,7 +273,6 @@ impl AccountsController {
         Self::create(session_root, Arc::new(opener), |custody| custody)
     }
 
-    /// Test seam retains real canonical custody and OAuth callback handling.
     #[cfg(any(test, feature = "test-support"))]
     pub fn fixture(
         session_root: &Path,
@@ -330,7 +312,6 @@ impl AccountsController {
         self.status
     }
 
-    /// Discovered collection labels remain local to this controller.
     pub fn calendars(&self) -> Vec<(String, String)> {
         self.pending
             .as_ref()
@@ -349,15 +330,10 @@ impl AccountsController {
         &self.selected
     }
 
-    /// Private presentation of selected canonical metadata only. This never opens
-    /// the credential vault or refreshes a grant. Unsaved discovery and source
-    /// suggestions cannot make a service appear connected.
     pub fn connected(&self) -> Vec<ConnectedAccount> {
         connected_accounts(&self.root, &self.selected)
     }
 
-    /// At most one worker and one pending outcome exist. Retry invalidates even
-    /// a successful but not-yet-polled outcome before starting another attempt.
     pub fn command(&mut self, command: AccountsCommand) -> Result<(), AccountsError> {
         match command {
             AccountsCommand::SelectCalendars(selected) => {
@@ -428,8 +404,6 @@ impl AccountsController {
             .name("installer-account".into())
             .spawn(move || {
                 let outcome = authorize(&custody, opener.as_ref(), &request, &cancellation);
-                // The actor owns window closure. A stale worker must not close
-                // the browser of a later attempt.
                 let _ = sender.try_send(outcome);
                 alive.store(false, Ordering::Release);
             });
@@ -495,9 +469,6 @@ impl AccountsController {
         Ok(())
     }
 
-    /// Only explicit selected IDs from this session may be transported. Binding
-    /// must come from the authenticated install operation/target/user, never an
-    /// imported artifact. Adoption belongs to the installed user's login.
     pub fn stage_selected(
         &mut self,
         selected: &[AccountId],
@@ -523,9 +494,6 @@ impl AccountsController {
         .map_err(|_| AccountsError::Storage)
     }
 
-    /// Seal selected session accounts under a caller-owned transport key.
-    /// The caller must protect the key in authenticated setup custody and use
-    /// the same operation/target/user binding when adopting the artifact.
     pub fn stage_selected_with_key(
         &mut self,
         selected: &[AccountId],
@@ -560,7 +528,6 @@ impl AccountsController {
 impl Drop for AccountsController {
     fn drop(&mut self) {
         self.cancel();
-        // Workers never touch this directory, including after cancellation.
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
@@ -796,9 +763,6 @@ fn authorize(
 }
 
 fn bind_confirmed_identity(verified: &mut Verified) {
-    // Only provider-confirmed identity may join independently stored services.
-    // Files-only providers without an identity endpoint retain an opaque account
-    // ID rather than treating the optional login hint as proof of identity.
     let identity = verified
         .entries
         .iter()
@@ -875,8 +839,6 @@ fn launch_authorization(
             return Err(AccountsError::Unavailable);
         }
         cancel.loopback = authorization.canceller();
-        // Serialize launch with cancellation: cancel cannot close first and
-        // then have a stale worker reopen a window.
         opener
             .open(authorization.url())
             .map_err(|_| AccountsError::Unavailable)?;
@@ -931,7 +893,6 @@ fn authorize_nextcloud(
         opener
             .open(flow.login_url())
             .map_err(|_| AccountsError::Unavailable)?;
-        // Keep cancellation serialized through launch, as for loopback OAuth.
         drop(cancel);
     }
     let login = flow

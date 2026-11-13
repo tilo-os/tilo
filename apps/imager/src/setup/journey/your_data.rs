@@ -1,20 +1,5 @@
-//! Source-oriented **Your data**: recognizable applications, accounts, mail
-//! and storage locations, with nested selection.
-//!
-//! The tree is a projection of the authorities that own each decision: the
-//! three migration categories, the discovered folder/Steam tree, the reviewed
-//! browser profiles and their website sources, the configured account sources
-//! with each account and enabled service, the mail profiles' account, folder,
-//! address-book and calendar selection, the Flatpak exclusions and the
-//! per-source website-session selections. Building it reads only
-//! already-discovered metadata; it never opens a source, and a checkbox
-//! delegates through [`Bindings`] so the caller applies the same validation and
-//! rollback as its older controls.
-//!
-//! Selection and disclosure stay separate: a checkbox selects a source or a
-//! child, while the row's own disclosure opens the children. Every eligible
-//! child starts selected; a parent whose children disagree renders the shared
-//! mixed checkbox state and announces the exact selected count.
+//! Your data: the discovered folders, apps and sign-ins, as the tree of choices a
+//! person makes about them.
 
 use std::collections::BTreeSet;
 use std::rc::Rc;
@@ -25,7 +10,6 @@ use ui::icons::Icon;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{Checkbox, Column, Element, ListRow, Text};
 
-/// All, none, or some of a group's eligible children are selected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Toggle {
     All,
@@ -53,47 +37,28 @@ impl Toggle {
     }
 }
 
-/// One selectable decision, or one honest informational row when the backend
-/// that would make it selectable is not available yet.
 pub(super) struct Item {
-    /// Semantic identity the action layer validates against the current
-    /// inventory. Never a source path or a credential.
     pub(super) id: String,
-    /// Stable widget name for pointer, keyboard and assistive-technology use.
     pub(super) test_id: String,
     pub(super) label: String,
     pub(super) detail: Option<String>,
-    /// What this child cannot do yet, or how complete its count is.
     pub(super) note: Option<String>,
     pub(super) eligible: bool,
     pub(super) included: bool,
-    /// The authorized private view's own name for a discovered entry. Public
-    /// reports keep using `label`.
     pub(super) private_label: Option<String>,
 }
 
-/// A nested set of children, such as one browser profile's saved sign-ins or
-/// one mail account's folders. Groups nest: a discovered folder holds its own
-/// subfolders and the files directly inside it.
 pub(super) struct Group {
     pub(super) id: String,
     pub(super) test_id: String,
     pub(super) label: String,
-    /// Exact selected/available counts, or an honest absence of them.
     pub(super) summary: String,
-    /// A value that belongs beside the label (a count, a size).
     pub(super) detail: Option<String>,
-    /// A limitation of this child, stated once.
     pub(super) note: Option<String>,
     pub(super) items: Vec<Item>,
     pub(super) groups: Vec<Group>,
-    /// The child's own decision when it is not simply "every eligible
-    /// descendant": a mail account stays selectable with no folders, and an
-    /// informational group has no decision at all.
     pub(super) state: Option<Toggle>,
     pub(super) selectable: bool,
-    /// The authorized private view's own name for a discovered entry. Public
-    /// reports keep using `label`.
     pub(super) private_label: Option<String>,
 }
 
@@ -126,27 +91,17 @@ impl Group {
     }
 }
 
-/// One recognizable source: a browser, a mail application, an account
-/// provider, Steam or the files and storage locations on this computer.
 pub(super) struct Source {
     pub(super) id: String,
     pub(super) test_id: String,
     pub(super) label: String,
     pub(super) icon: Icon,
-    /// Exact selected/available counts, or an honest absence of them.
     pub(super) summary: String,
-    /// A value that belongs beside the label (a file count and size).
     pub(super) detail: Option<String>,
-    /// What the source cannot do yet, when that is the case.
     pub(super) note: Option<String>,
     pub(super) items: Vec<Item>,
     pub(super) groups: Vec<Group>,
-    /// The parent's own decision, when it is not simply "every eligible child".
-    /// A source whose inclusion is a category, or whose selection is owned by
-    /// the backend tree, reports that state instead of a second derivation.
     pub(super) state: Option<Toggle>,
-    /// A source with children uses them for its state; a source without
-    /// selectable children (accounts, for example) still owns one decision.
     pub(super) selectable: bool,
     pub(super) included: bool,
 }
@@ -183,7 +138,6 @@ impl Source {
     }
 }
 
-/// Everything the tree shows for the current discovery.
 pub(super) struct Inventory {
     pub(super) sources: Vec<Source>,
 }
@@ -247,8 +201,6 @@ impl Inventory {
         })
     }
 
-    /// The state, counts and honest limitations of every source, for the
-    /// semantic action surface and the review.
     pub(super) fn report(&self) -> serde_json::Value {
         let source_report = |source: &Source| {
             let (selected, total) = source.counts();
@@ -279,9 +231,6 @@ impl Inventory {
         })
     }
 
-    /// Render the tree. `expanded` holds the sources and groups whose children
-    /// are open; children of collapsed nodes are not built, so a large
-    /// inventory stays responsive and does not recreate hidden controls.
     pub(super) fn view(&self, expanded: &BTreeSet<String>, bind: &Bindings) -> Element {
         let (selected, total) = self.counts();
         let state = self.toggle();
@@ -350,9 +299,6 @@ fn source_view(source: &Source, expanded: &BTreeSet<String>, bind: &Bindings) ->
         .with_no_padding()
         .with_intrinsic_height()
         .with_rhythm(Rhythm::Related);
-    // A source whose decision is owned (a category, a whole mail profile, a
-    // browser's profiles) reports that state in the checkbox itself. Its
-    // children are still listed, and its caption carries the real count.
     let summary = if source.state.is_some() {
         String::new()
     } else if total > 0 {
@@ -522,8 +468,6 @@ fn item_view(item: &Item, bind: &Bindings) -> Element {
     Box::new(column)
 }
 
-/// A stable, readable widget name for a semantic identity. Selection state
-/// still lives under the semantic id; this only names the control.
 pub(super) fn slug(value: &str) -> String {
     let mut slug = String::with_capacity(value.len());
     for character in value.chars() {
@@ -536,9 +480,6 @@ pub(super) fn slug(value: &str) -> String {
     slug.trim_matches('-').to_string()
 }
 
-/// What the tree's controls do: each checkbox is bound to the page's
-/// published selection effect for its node, and a disclosure opens or closes
-/// a source.
 #[derive(Clone)]
 pub(super) struct Bindings {
     pub(super) actions: Option<ui::framework::Actions<crate::resource::Imager>>,
@@ -555,9 +496,6 @@ impl Bindings {
     }
 }
 
-/// A size a person can read, from a byte count the inventory actually read.
-/// `None` for zero bytes is deliberate: an empty folder has no size to show and
-/// content that could not be read is reported as unknown, never as 0 bytes.
 pub(super) fn size_text(bytes: u64) -> Option<String> {
     if bytes == 0 {
         return None;
@@ -587,10 +525,6 @@ pub(super) fn size_text(bytes: u64) -> Option<String> {
     Some(format!("{value} {unit}"))
 }
 
-/// The public name of a discovered folder or game. Known folders and fixed
-/// product names come from the catalogue; an unrecognized folder is called
-/// what it is and never publishes its own name. A game is named by Valve's
-/// public catalog title.
 pub(super) fn node_label(
     label: imager_backend::setup::source_tree::Label,
     title: Option<&str>,
@@ -648,14 +582,10 @@ fn cloud_key(cloud: imager_backend::setup::source_tree::CloudProvider) -> &'stat
     }
 }
 
-/// What a discovered child offers beside its name: the size the inventory read.
-/// An unknown size is left to the notes instead of becoming a zero.
 pub(super) fn node_detail(counts: &imager_backend::setup::source_tree::Counts) -> Option<String> {
     size_text(counts.local_bytes)
 }
 
-/// The limitations a discovered child carries, in the person's words. At most
-/// three, so a row stays readable; the counts above still cover everything.
 pub(super) fn fact_notes(facts: &[imager_backend::setup::source_tree::Fact]) -> Option<String> {
     use imager_backend::setup::source_tree::Fact;
     let mut notes = Vec::new();
@@ -675,8 +605,6 @@ pub(super) fn fact_notes(facts: &[imager_backend::setup::source_tree::Fact]) -> 
             Fact::ExternalSaveLocation(_) => "installer-your-data-external-save-note",
             Fact::RemoteCoverageUnknown => "installer-your-data-remote-coverage-note",
             Fact::ProtonPrefix => "installer-your-data-proton-prefix-note",
-            // The folder's own label already names the provider, and a covered
-            // root is reported by its state rather than one more sentence.
             Fact::CloudProvider(_) | Fact::AlreadyIncluded { .. } => continue,
         };
         if !notes.contains(&key) {
@@ -696,9 +624,6 @@ pub(super) fn fact_notes(facts: &[imager_backend::setup::source_tree::Fact]) -> 
     )
 }
 
-/// A count and the thing counted, in the person's words. Two catalogue
-/// messages rather than a Fluent plural select: the singular is a complete
-/// sentence, so no language has to splice a number into a noun.
 pub(super) fn count_phrase(count: usize, one: &str, many: &str) -> String {
     if count == 1 {
         super::t(one)
@@ -707,24 +632,13 @@ pub(super) fn count_phrase(count: usize, one: &str, many: &str) -> String {
     }
 }
 
-/// How the Files (or Windows) source currently stands, decided by the caller.
 pub(super) struct TreeAvailability {
-    /// Whether the copy of this source can be chosen at all.
     pub(super) selectable: bool,
-    /// Whether the migration category currently includes it.
     pub(super) included: bool,
-    /// What to say when there is nothing selectable to count.
     pub(super) summary: String,
-    /// Why the inventoried children are incomplete, when they are.
     pub(super) note: Option<String>,
 }
 
-/// The Files or Windows source, projected from the discovered tree.
-///
-/// Every selectable child carries the backend's own node identity, so its
-/// checkbox changes the exclusions the copy producer enforces. The categories
-/// stay the authority for whether the source is copied at all; the children
-/// are the authority for what within it is excluded.
 pub(super) fn tree_source(
     selection: &super::source_selection::SourceSelection,
     availability: TreeAvailability,
@@ -775,9 +689,6 @@ fn project_children(
     }
 }
 
-/// Two folders whose own name the inventory does not publish would otherwise
-/// read as the same row. Their position inside the reviewed parent tells them
-/// apart without revealing a private name.
 fn display_label(node: &imager_backend::setup::source_tree::Node, ordinal: usize) -> String {
     use imager_backend::setup::source_tree::Label;
     let label = node_label(node.label, node.title.as_deref());
@@ -788,9 +699,6 @@ fn display_label(node: &imager_backend::setup::source_tree::Node, ordinal: usize
     }
 }
 
-/// The authorized private view shows the entry's real name for an unrecognized
-/// folder or an unnamed game. Known folders keep their translated public label,
-/// and the name never enters a report or an action payload.
 fn private_label(node: &imager_backend::setup::source_tree::Node) -> Option<String> {
     use imager_backend::setup::source_tree::Label;
     if node.title.is_some()
@@ -846,10 +754,6 @@ fn tree_group(
     }
 }
 
-/// One source per browser product. Each source groups that product's actual
-/// profiles; a profile owns its bookmarks, history, saved sign-ins and saved
-/// sign-in accounts. Excluding a profile therefore clears every data class it
-/// contributed, while another profile of the same product keeps its own.
 pub(super) fn browser_sources(belongings: &super::belongings::Belongings) -> Vec<Source> {
     use imager_backend::browser_inventory::ProfileInventory;
     let browser = &belongings.browser;
@@ -867,9 +771,6 @@ pub(super) fn browser_sources(belongings: &super::belongings::Belongings) -> Vec
             .or_default()
             .push(profile);
     }
-    // Associate a website-session source only by its opaque reviewed profile
-    // identity. A label is never authority; a native Slack or Discord store
-    // keeps its own source identity and stays in the leftover groups below.
     let mut by_profile =
         std::collections::BTreeMap::<&str, Vec<&super::service_sessions::DetectedSource<'_>>>::new(
         );
@@ -932,9 +833,6 @@ pub(super) fn browser_sources(belongings: &super::belongings::Belongings) -> Vec
         source.included = source.toggle() != Toggle::None;
         sources.push(source);
     }
-    // Sign-ins whose source is not a reviewed browser profile (the Slack and
-    // Discord applications keep their own cookie stores) stay visible under
-    // their own application, exactly as the sign-in review lists them.
     let mut leftovers = std::collections::BTreeMap::<
         String,
         std::collections::BTreeMap<String, Vec<&super::service_sessions::DetectedSource<'_>>>,
@@ -968,8 +866,6 @@ pub(super) fn browser_sources(belongings: &super::belongings::Belongings) -> Vec
                 selectable: entries.iter().any(|entry| entry.selectable),
             });
         }
-        // A browser product already listed above keeps one source; the
-        // sign-in-only groups join it instead of creating a second row.
         let existing = sources
             .iter()
             .position(|source| source.id == format!("browser|{application}"));
@@ -1001,14 +897,6 @@ pub(super) fn browser_sources(belongings: &super::belongings::Belongings) -> Vec
     sources
 }
 
-/// The configured account sources found on this computer, one source per app
-/// identity: GNOME Online Accounts, Nextcloud, rclone and a profile-only app.
-///
-/// Each account is its own row and each service the source enabled is its own
-/// child, so one account or one service can stay behind without touching the
-/// rest. Accounts are selected by default; an empty selection means "every
-/// discovered service". Only GNOME Online Accounts travel through the private
-/// source journal; the other rows keep their existing account-engine flow.
 pub(super) fn account_sources(
     inventory: &imager_backend::account_sources::Inventory,
     selection: &super::accounts::SourceAccountSelection,
@@ -1033,9 +921,6 @@ pub(super) fn account_sources(
         .filter(recognized)
         .collect::<Vec<_>>();
     if gnome.is_empty() {
-        // The aggregate identity remains the way an older journey skips the
-        // optional Accounts step. It owns no account decisions; the exact app
-        // sources below own those.
         sources.push(Source {
             id: "accounts".into(),
             test_id: "installer.your-data.source.accounts".into(),
@@ -1289,8 +1174,6 @@ fn profile_group(
     } else {
         None
     };
-    // The profile itself stays a decision even while excluded: its own
-    // domains or saved sign-ins are what a person re-includes in one click.
     let selectable = profile.exportable || has_sessions;
     Group {
         private_label: None,
@@ -1308,8 +1191,6 @@ fn profile_group(
         note,
         items,
         groups: Vec::new(),
-        // The profile's checkbox is owned by its own data: the exact selected
-        // and available items below drive its all, none or mixed state.
         state: None,
         selectable,
     }
@@ -1373,8 +1254,6 @@ fn credentials_item(
             "installer-your-data-browser-one-signin",
             "installer-your-data-browser-signins",
         )),
-        // Passwords are not exported with the profile. The count is real login
-        // metadata, and the row says plainly that the person signs in again.
         note: Some(super::t("installer-your-data-browser-passwords-note")),
         eligible: false,
         included: false,
@@ -1417,8 +1296,6 @@ fn sign_in_item(
     }
 }
 
-/// One source per reviewed mail profile, with its accounts and their folders.
-/// Each checkbox edits the same `ThunderbirdSelection` the mail import takes.
 pub(super) fn mail_sources(belongings: &super::belongings::Belongings) -> Vec<Source> {
     belongings
         .thunderbird_profiles()
@@ -1553,14 +1430,10 @@ fn mail_source(
             },
         ),
         selectable: !profile.accounts.is_empty(),
-        // The export path's own validation decides whether this profile
-        // contributes to the import, so the row cannot claim more than it does.
         included: belongings.thunderbird_export(&profile.source_id).is_some(),
     }
 }
 
-/// An address book or calendar of one mail profile: profile-wide, so the
-/// decision is applied to every selected account.
 struct Personal<'a> {
     kind: &'a str,
     id: &'a str,
@@ -1737,8 +1610,6 @@ mod tests {
         let inventory = Inventory {
             sources: vec![files],
         };
-        // The category says the home is not copied even though the folder
-        // decision was left selected: the source itself reports that state.
         assert_eq!(inventory.source("files").unwrap().toggle(), Toggle::None);
         let mut none = source("files", vec![], vec![]);
         none.state = Some(Toggle::None);

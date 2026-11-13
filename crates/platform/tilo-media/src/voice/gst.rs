@@ -26,8 +26,6 @@ pub enum CaptureSource<'a> {
     PipeWire {
         node: u32,
         serial: u32,
-        /// A one-shot connected socket handed off by the native observer that
-        /// verified this exact node/serial. No other protocol reader may remain.
         remote_fd: BorrowedFd<'a>,
     },
 }
@@ -54,8 +52,6 @@ struct Capture {
     sample_diagnosed: bool,
 }
 
-/// A transmitted frame this soon after the last continues its speech:
-/// one frame duration, with half a frame of capture jitter.
 const NEXT_FRAME_WITHIN: Duration = Duration::from_millis(30);
 
 pub struct VoiceAudio {
@@ -75,17 +71,9 @@ pub struct VoiceAudio {
     /// last one, which DTX silence never adds to.
     capture_run: u32,
     capture_last: Option<Instant>,
-    /// Plays silence in place of the call: the person is deafened.
     deafened: bool,
 }
 impl VoiceAudio {
-    /// Start the persistent output pipeline on the observer's exact socket.
-    ///
-    /// # Errors
-    ///
-    /// [`AudioError::Unavailable`] without a usable `GStreamer`/`PipeWire` stack,
-    /// [`AudioError::DeviceLost`] when the socket cannot be retained, [`AudioError::Codec`] when
-    /// the pipeline cannot be built, or [`AudioError::Capacity`] without a device worker permit.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "the observed output is a one-shot custody handoff; callers must not reuse it"
@@ -197,7 +185,6 @@ impl VoiceAudio {
             Some(remote_fd),
         )
     }
-    /// A software capture: like [`Self::from_output`], no startup deadline.
     #[cfg(test)]
     fn start_capture_element(
         &mut self,
@@ -222,10 +209,10 @@ impl VoiceAudio {
         // Refusing capacity does not interrupt the existing active capture.
         let permit = Permit::acquire()?;
         let pipeline = gst::Pipeline::new();
-        // A PipeWire stream's advertised clock can start at zero before the
-        // driver begins, then jump to the graph's accumulated ticks. Keep the
-        // capture epoch on the monotonic local clock used for freshness; the
-        // source's original PTS still passes through GStreamer's live mapping.
+        // A PipeWire stream's clock can start at zero before the driver begins, then
+        // jump to the graph's accumulated ticks. Keep the capture epoch on the monotonic
+        // local clock used for freshness; the source's own PTS still passes through
+        // GStreamer's live mapping.
         pipeline.use_clock(Some(&gst::SystemClock::obtain()));
         let convert = element("audioconvert")?;
         let resample = element("audioresample")?;
@@ -286,8 +273,6 @@ impl VoiceAudio {
         self.timeline.reset_source();
         Ok(())
     }
-    /// Fences capture, shuts down the exact daemon socket, and discards samples
-    /// before returning. Driver Null cleanup stays on its bounded worker.
     pub fn stop_capture(&mut self) {
         self.captured.stop();
         self.capture = None;
@@ -429,15 +414,6 @@ impl VoiceAudio {
         }
         Ok(())
     }
-    /// Decode due frames and push at most one mixed output frame.
-    ///
-    /// A decoder this machine cannot keep up with drops the frames it is
-    /// behind on; what it holds stays bounded either way.
-    ///
-    /// # Errors
-    ///
-    /// [`AudioError::Closed`] after close, an output device failure, or a codec
-    /// failure.
     pub fn playout(&mut self, now: Instant) -> Result<(), AudioError> {
         if self.closed {
             return Err(AudioError::Closed);
@@ -455,8 +431,6 @@ impl VoiceAudio {
         for frame in self.jitter.poll(now) {
             if !self.decoders.contains_key(&frame.publisher) {
                 if self.decoders.len() >= MAX_PUBLISHERS {
-                    // A voice that gave up its slot in the jitter buffer
-                    // gives up its decoder too.
                     let jitter = &self.jitter;
                     self.decoders
                         .retain(|publisher, _| jitter.contains(publisher));
@@ -474,8 +448,6 @@ impl VoiceAudio {
                     .saturating_add(self.jitter.queued_for(&frame.publisher))
                     >= MAX_PUBLISHER_FRAMES
                 {
-                    // The pass that would overrun the publisher's capacity
-                    // drops what arrived and plays on.
                     continue;
                 }
                 decoder.push(frame, now)?;
@@ -516,10 +488,6 @@ impl VoiceAudio {
         if self.deafened {
             frames.clear();
         }
-        // Keep the playback graph clocked while listening or waiting for remote audio.
-        // An idle live appsrc can leave a shared PipeWire graph waiting for its first
-        // buffer, including independent capture streams. Empty mixing produces one
-        // silent frame; the same frame-duration fence bounds it like decoded audio.
         let refs: Vec<&[i16]> = frames.iter().map(Vec::as_slice).collect();
         let mixed = mix_frames(&refs)?;
         let bytes: Vec<u8> = mixed.into_iter().flat_map(i16::to_le_bytes).collect();
@@ -538,22 +506,16 @@ impl VoiceAudio {
         self.last_output = Some(output_at);
         Ok(())
     }
-    /// Play each publication named in `volumes` (by namespace) at its
-    /// percent of as it arrives, the rest as they arrive. Who is heard
-    /// talking stays as they speak.
     pub fn set_volumes(&mut self, volumes: BTreeMap<String, u16>) {
         self.volumes = volumes;
     }
-    /// Play silence in place of the call (`true`), or play it again.
     pub const fn set_deafened(&mut self, deafened: bool) {
         self.deafened = deafened;
     }
-    /// Whether the call plays silence here.
     #[must_use]
     pub const fn deafened(&self) -> bool {
         self.deafened
     }
-    /// The publishers heard talking at `now`.
     pub fn heard(&self, now: Instant) -> Vec<PublicationId> {
         self.jitter.heard(now).cloned().collect()
     }
@@ -682,7 +644,6 @@ impl Decoder {
             next_pts: 0,
         })
     }
-    /// Codec work in flight plus decoded frames awaiting output.
     fn outstanding(&self) -> usize {
         self.pending.len().saturating_add(self.ready.len())
     }
@@ -763,8 +724,8 @@ impl Decoder {
                 .push_buffer(buffer)
                 .map_err(|_| AudioError::Codec)?;
         } else {
-            // GstAudioDecoder discards empty buffers. Its serialized GAP event
-            // path invokes opusdec PLC; AppSrc queues it behind preceding data.
+            // Silence: a gap event keeps the stream's clock moving instead of
+            // stalling on a frame that never comes.
             if !self.source.send_event(gst::event::Gap::new(
                 gst::ClockTime::from_nseconds(pts),
                 gst::ClockTime::from_mseconds(20),
@@ -801,8 +762,6 @@ impl Decoder {
                 .map(|pair| i16::from_le_bytes(*pair))
                 .collect();
             if self.ready.len() >= MAX_PUBLISHER_FRAMES {
-                // Decoded faster than the call plays it out: this frame is
-                // given up rather than the call it belongs to.
                 continue;
             }
             self.ready.push_back(PcmFrame {
@@ -829,13 +788,12 @@ fn check_bus(pipeline: &gst::Pipeline) -> Result<(), AudioError> {
     Ok(())
 }
 
-/// 32 kbit/s 20 ms voice with DTX: in silence the encoder emits a 1-byte
-/// "nothing to send" packet ([`super::needs_transmission`]) for all but one
-/// comfort-noise update every 400 ms, so a silent participant sends ~2.5
-/// packets a second instead of 50. Opus enters DTX only after ~200 ms of
-/// inactivity and leaves it on the first active frame, so speech onsets are
-/// coded normally. In-band FEC stays off: native publishers send on QUIC
-/// streams, which already retransmit, and browser receivers cannot decode it.
+// 32 kbit/s 20 ms voice with DTX: in silence the encoder emits a 1-byte "nothing to
+// send" packet ([`super::needs_transmission`]) for all but one comfort-noise update
+// every 400 ms, so a silent participant sends ~2.5 packets a second instead of 50.
+// Opus enters DTX only after ~200 ms of inactivity and leaves it on the first active
+// frame, so speech onsets are coded normally. In-band FEC stays off: QUIC already
+// retransmits, and browser receivers cannot decode it.
 fn encoder() -> Result<gst::Element, AudioError> {
     gst::ElementFactory::make("opusenc")
         .property("bitrate", 32_000i32)
@@ -912,7 +870,6 @@ fn configure_pipewire(
     Ok(())
 }
 
-/// `frame` at `percent` of its level, clipped.
 fn louder(frame: Vec<i16>, percent: u16) -> Vec<i16> {
     let percent = i32::from(percent);
     frame
@@ -932,7 +889,6 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use tilo_lock::MutexRecover as _;
     static DEVICE_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    /// The shared test hang bound, as a pipeline timeout.
     fn hang_bound() -> gst::ClockTime {
         gst::ClockTime::from_nseconds(
             u64::try_from(tilo_test_env::hang_bound().as_nanos()).unwrap_or(u64::MAX),
@@ -956,7 +912,6 @@ mod tests {
         #[derive(Default)]
         pub struct Gate {
             pub entered: AtomicBool,
-            /// The held transition went on, released or past its bound.
             pub left: AtomicBool,
             released: std::sync::Mutex<bool>,
             wake: std::sync::Condvar,
@@ -1247,13 +1202,11 @@ mod tests {
         }
     }
 
-    /// The one device-testing lock and a software output that has started.
     fn device_audio() -> (std::sync::MutexGuard<'static, ()>, VoiceAudio) {
         let guard = device_test_lock();
         (guard, software_output())
     }
 
-    /// A live time-stamped source the capture is handed.
     fn app_source() -> gst_app::AppSrc {
         gst_app::AppSrc::builder()
             .is_live(true)
@@ -1261,7 +1214,6 @@ mod tests {
             .build()
     }
 
-    /// A live source that produces audio without a device.
     fn audio_test_source() -> gst::Element {
         gst::ElementFactory::make("audiotestsrc")
             .property("is-live", true)
@@ -1735,7 +1687,6 @@ mod tests {
             carrier_generation: 1,
             incarnation: 1,
         };
-        // One frame of the call played at `at`, read back off the output.
         let played = |audio: &mut VoiceAudio, at: Instant| {
             let mut decoder = audio
                 .decoders
@@ -1803,7 +1754,6 @@ mod tests {
         assert!(!encoder.property::<bool>("inband-fec"));
     }
 
-    /// The tilo-voice/1 object header each transmitted packet travels in.
     const OBJECT_HEADER: usize = 32;
 
     /// 48 kHz mono speech-band signal: a 140 Hz voice with formant-like
@@ -1828,7 +1778,6 @@ mod tests {
             .collect()
     }
 
-    /// (transmitted packets, transmitted Opus bytes) among `packets`.
     fn transmitted(packets: &[Vec<u8>]) -> (usize, usize) {
         let sent: Vec<&Vec<u8>> = packets
             .iter()
@@ -1884,8 +1833,6 @@ mod tests {
         let objects = bytes.saturating_add(sent.saturating_mul(OBJECT_HEADER));
         eprintln!("speaking: {sent} packets, {bytes} B Opus, {objects} B of voice objects in 3 s");
         assert_eq!(sent, 150);
-        // Constrained VBR at 32 kbit/s, with a little room for the encoder's
-        // short-term rate control.
         assert!(bytes.saturating_mul(8) <= 3 * 36_000, "{bytes} B in 3 s");
     }
 
@@ -2021,7 +1968,6 @@ mod tests {
                 assert!(sink.try_pull_sample(gst::ClockTime::ZERO).is_none());
             }
         }
-        // A long outage emits one current frame, with no catch-up burst.
         audio.playout(base + Duration::from_secs(1)).unwrap();
         assert!(sink.try_pull_sample(hang_bound()).is_some());
         audio.playout(base + Duration::from_millis(1001)).unwrap();

@@ -434,11 +434,12 @@ pub struct DesktopPolicy {
 
 impl DesktopPolicy {
     /// A policy over a desktop of one workspace with one empty strip, and
-    /// the surface the compositor hosts under its windows.
+    /// the surface the compositor hosts under its windows. Nothing of it is named: the desk names
+    /// what nobody named when it shows it, in the language of whoever reads it.
     #[must_use]
     pub fn new(salt: u16) -> (Self, DesktopSurface) {
         let mut minter = IdMinter::new(salt);
-        Self::with_tree(seed_tree(&mut minter, "Desk", Vec::new()), salt)
+        Self::with_tree(seed_tree(&mut minter, "", Vec::new()), salt)
     }
 
     /// A policy over `tree`, the desktop as last kept, minting under `salt`:
@@ -702,7 +703,9 @@ impl DesktopPolicy {
             tabs(tree)
                 .filter(|tab| foreign(tab).is_some_and(|window| shown.contains(&window)))
                 .filter_map(|tab| match &tab.tile {
-                    TileContent::Foreign { app_id, .. } => Some(app_id.clone()),
+                    TileContent::Foreign { app_id, .. } => {
+                        Some(tilo_desktop_model::AppId::new(app_id))
+                    }
                     _ => tilo_desktop_model::apps::canonical_app_id(&tab.tile),
                 })
                 .any(|shown| app_ids_match(&shown, app))
@@ -1364,7 +1367,7 @@ impl DesktopPolicy {
                 .filter(|tab| comes(tab, &held))
                 .filter_map(|tab| {
                     let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile)?;
-                    Some((tab.id, app))
+                    Some((tab.id, String::from(app)))
                 })
                 .collect()
         })
@@ -1401,9 +1404,9 @@ impl DesktopPolicy {
     /// False when the tab is gone or holds no saved window.
     pub fn adopt_tab(&mut self, tab: TabId, background: bool) -> bool {
         let Some(app) = self.handle.read(|tree| {
-            tabs(tree)
-                .find(|found| found.id == tab)
-                .and_then(|found| tilo_desktop_model::apps::canonical_app_id(&found.tile))
+            tabs(tree).find(|found| found.id == tab).and_then(|found| {
+                tilo_desktop_model::apps::canonical_app_id(&found.tile).map(String::from)
+            })
         }) else {
             return false;
         };

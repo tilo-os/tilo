@@ -7,7 +7,6 @@ use super::*;
 use crate::resource::verbs;
 use crate::workbook::Workbook;
 
-/// A workbook whose first sheet, "Data", holds `rows` from A1.
 fn workbook(rows: &[&[&str]]) -> Replica<Workbook> {
     let mut book = Replica::<Workbook>::new();
     let cells = (0u32..)
@@ -157,7 +156,6 @@ fn bold_is_stored_read_back_and_exported_to_xlsx() {
     let styles = part("xl/styles.xml");
     let sheet = part("xl/worksheets/sheet1.xml");
     assert!(styles.contains(r"<font><b/>"), "{styles}");
-    // A1 and B1 share the bold style; B2 has the currency style only.
     assert!(
         sheet.contains(r#"<c r="A1" t="inlineStr" s="1">"#),
         "{sheet}"
@@ -284,8 +282,6 @@ fn delete_rows_removes_several_rows_in_one_step_and_moves_bold() {
     assert_eq!(read_back(&book, None)["bold"], json!(["A4"]));
 }
 
-/// What `invoke` (cell edit `action`) answers its caller with, as the door
-/// computes it from the change it applied.
 fn answer(
     book: &mut Replica<Workbook>,
     action: &str,
@@ -340,8 +336,6 @@ fn cell_edits_answer_with_the_range_they_changed() {
         rows: vec![1],
     });
     let deleted = answer(&mut book, "delete-rows", invoke);
-    // Deleting rows moves everything below, so it answers what remains from
-    // the top.
     assert_eq!(deleted["range"], "A1:B3");
     assert_eq!(
         deleted["rows"],
@@ -498,9 +492,6 @@ fn an_import_into_a_blank_workbook_replaces_its_empty_sheet() {
     assert_eq!(names(&used), ["Data", "sales"]);
 }
 
-/// A formula that does not parse is kept and shows its error, as in any
-/// spreadsheet, and the edit answers which cell and why, so the writer can
-/// fix it; the cells beside it are written as usual.
 #[test]
 fn a_formula_that_does_not_parse_is_kept_and_answered() {
     let mut book = workbook(&[&["Item", "Price"], &["x", "4"]]);

@@ -13,6 +13,7 @@ use tilolang_runtime::Principal;
 use tilolang_runtime::reads::ReadRequest;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
+use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{PlanRequest, edit_action, resource_id};
 use tilolang_tilo::task::{Answered, TaskDoor, TaskSession};
 use tilolang_tilo::task_records::{RecordReads, RecordSource};
@@ -207,23 +208,23 @@ impl TaskDoor for Apps {
     fn invoke(&self, call: &Json) -> Answered {
         self.invoked.borrow_mut().push(call.clone());
         let app = call["app"].as_str().unwrap();
-        let action = call["action"].as_str().unwrap();
-        // The policy names an action by what it is called.
-        let named = self
+        // The door publishes an action by its name, which the policy names it by too; what is
+        // planned and stored of it keeps its id.
+        let named = call["action"].as_str().unwrap();
+        let action = self
             .replica(app)
             .host
             .package(app)
             .and_then(|package| {
                 package
                     .meta
-                    .actions
-                    .iter()
-                    .find(|declared| declared.id == action)
-                    .map(|declared| declared.name.clone())
+                    .action_published_as(named)
+                    .map(|a| a.id.clone())
             })
-            .unwrap_or_else(|| action.to_owned());
-        if self.refused.contains(&named.as_str()) {
-            return Answered::Refused(format!("{action}: denied by the workspace's policy"));
+            .unwrap_or_else(|| named.to_owned());
+        let action = action.as_str();
+        if self.refused.contains(&named) {
+            return Answered::Refused(format!("{named}: denied by the workspace's policy"));
         }
         let mut replica = self.replica(app);
         let prefix = resource_id(app, "");
