@@ -155,10 +155,11 @@ fn a_launch_opens_the_workspaces_notebook() {
         None,
         &temp.path().join("dump.json"),
     );
-    let workspace = data
-        .join("so.tilo.notes")
-        .join("workspaces")
-        .join("personal");
+    let workspace = std::fs::read_dir(data.join("so.tilo.notes").join("workspaces"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .next()
+        .expect("the launch kept the workspace's notebook");
     assert!(workspace.join("state.automerge").is_file(), "{workspace:?}");
     assert!(
         !workspace.join("documents").exists(),

@@ -4359,11 +4359,12 @@ mod tests {
         host.flush().unwrap();
         // Notes keeps one record per workspace: the workspace's own document.
         assert!(host.record().is_package_primary());
-        let directory = profile
-            .path()
-            .join("so.tilo.notes")
-            .join("workspaces")
-            .join("personal");
+        let workspaces = profile.path().join("so.tilo.notes").join("workspaces");
+        let directory = std::fs::read_dir(&workspaces)
+            .expect("observe the real record directory")
+            .map(|entry| entry.unwrap().path())
+            .next()
+            .expect("the profile keeps the workspace it opened");
         assert!(directory.is_dir(), "observe the real record directory");
         let backup = profile.path().join("held-record");
         std::fs::rename(&directory, &backup).unwrap();
