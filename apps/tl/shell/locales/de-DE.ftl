@@ -1284,9 +1284,24 @@ d-p5wzoqr5 = Fensterbedienelemente
     .w-close = Schließen
     .w-this-window = Dieses Fenster
 
+d-bmd7xmln = Ein Platz für eine Suche
+    .doc = Fügt `strip` einen Platz hinzu, der eine Suche nach `text` zeigt, mit den beiden Treffern, die die Notizen-App geantwortet hat, und gibt den Schlüssel des Platzes zurück: der Zustand, in dem ein Platz steht, bis die Person eine der gefundenen Ressourcen wählt.
+
+d-bmd7xmln-strip = Spalte
+
+d-bmd7xmln-text = Text
+
+d-yd725hjw = Die installierten Apps
+    .doc = Die auf diesem Gerät installierten Anwendungen, wie der Launcher sie auflistet: die, die die Aufnahmen und die Layouts des Schreibtischs zeigen.
+
+d-5o2gn6hf = Einstellungen eines Stils
+    .doc = Ein Schreibtisch mit einer Notiz im genannten Stil, dieser Platz vorn, und die eigenen Einstellungen des Stils darüber geöffnet: was eine Person sieht, die sie aus dem Stilmenü der Leiste öffnet.
+
+d-5o2gn6hf-style = Stil
+
 d-z4vc77e6 = Bedienelemente des Platzes
+    .w-this-window = Dieses Fenster
     .w-pin-place = Platz anheften
-    .w-move-to-row = In eine Zeile verschieben
     .w-close = Schließen
 
 d-oyjbbzbk = Inhalt des Platzes
@@ -1316,7 +1331,7 @@ d-6izhhsie = Desktop-Rahmen
 d-fabwkpdf = Rahmen klassisch
 
 d-efc4bnyi = Rahmenknöpfe
-    .w-move-to-row = In eine Zeile verschieben
+    .w-this-window = Dieses Fenster
     .w-close = Schließen
 
 d-u55srubm = Aktionsleiste
@@ -1487,9 +1502,6 @@ d-lfa3rl6s = Plätze am Raster einrasten
 d-lfa3rl6s-on = An
 
 d-7womqcp3 = App-Zeile
-
-d-6bfcv6wf = Fensteraktionen
-    .w-window-actions = Fensteraktionen
 
 d-6t5hb2z7 = Anfrageansicht
     .w-retry = Erneut versuchen

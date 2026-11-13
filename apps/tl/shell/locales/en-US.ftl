@@ -1079,6 +1079,21 @@ d-tnecawb6-index = Index
 
 d-tnecawb6-title = Title
 
+d-bmd7xmln = A query place
+    .doc = Adds a place showing a search for `text` to `strip`, with the two matches the notes app answered, and returns the place's key: the state a place stands in until the person chooses one of the resources it found (shell.md §8).
+
+d-bmd7xmln-strip = Strip
+
+d-bmd7xmln-text = Text
+
+d-yd725hjw = A installed apps
+    .doc = The applications installed on this device, as the launcher lists them: the ones the desk's shots and its layouts show.
+
+d-5o2gn6hf = A style settings
+    .doc = A desk of one note in the style named, with that place in front, and the style's own settings open over it: what a person sees who opens them from the bar's style menu.
+
+d-5o2gn6hf-style = Style
+
 d-u6kdedav = Query show
     .doc = Show `found` in the place `place` while it shows a query: the same place, now the found resource (shell.md §8).
 
@@ -1446,12 +1461,9 @@ d-p5wzoqr5 = Window controls
     .w-maximize = Maximize
     .w-close = Close
 
-d-6bfcv6wf = Window actions
-    .w-window-actions = Window actions
-
 d-z4vc77e6 = Place controls
+    .w-this-window = This window
     .w-pin-place = Pin place
-    .w-move-to-row = Move to row
     .w-close = Close
 
 d-oyjbbzbk = Place content
@@ -1505,7 +1517,7 @@ d-6izhhsie = Desktop frame
 d-fabwkpdf = Frame classic
 
 d-efc4bnyi = Frame buttons
-    .w-move-to-row = Move to row
+    .w-this-window = This window
     .w-close = Close
 
 d-u55srubm = Action bar

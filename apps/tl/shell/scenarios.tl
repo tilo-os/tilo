@@ -84,7 +84,7 @@ scenario "an afternoon at the desk" {
             title: "Launch checklist",
             origin_app: "Tasks",
             app_key: "so.tilo.tasks",
-            icon: "list_checks",
+            icon: "list-checks",
             strip: "Drafts",
             workspace: "Studio",
             recency: 2,
@@ -280,7 +280,7 @@ scenario "an afternoon at the desk" {
             title: "Release board",
             origin_app: "Tasks",
             app_key: "so.tilo.tasks",
-            icon: "list_checks",
+            icon: "list-checks",
             strip: "Drafts",
             workspace: "Release 4.2",
             recency: 16,
@@ -357,7 +357,7 @@ scenario "the overview" {
             title: "Launch checklist",
             origin_app: "Tasks",
             app_key: "so.tilo.tasks",
-            icon: "list_checks",
+            icon: "list-checks",
             strip: "Drafts",
             strip_key: "drafts",
             workspace: "Studio",
@@ -522,7 +522,7 @@ scenario "the overview, searching" {
             title: "Launch checklist",
             origin_app: "Tasks",
             app_key: "so.tilo.tasks",
-            icon: "list_checks",
+            icon: "list-checks",
             strip: "Drafts",
             strip_key: "drafts",
             workspace: "Studio",
@@ -704,7 +704,7 @@ scenario "the switcher, twenty windows" {
             title: "Launch checklist",
             origin_app: "Tasks",
             app_key: "so.tilo.tasks",
-            icon: "list_checks",
+            icon: "list-checks",
             strip: "Drafts",
             workspace: "Studio",
             recency: 2,
@@ -1062,12 +1062,14 @@ scenario "the switcher, this app's windows" {
     )
 }
 
-/// The launcher an empty query shows: recent windows and the desk's doors.
+/// The launcher an empty query shows: the applications installed here, recent windows and the
+/// desk's doors.
 scenario "the launcher, before typing" {
     let d = root Desk
     d.person = "Ada Lovelace"
     d.workspace = "Studio"
     d.here = "launcher"
+    a_installed_apps(d)
     d.windows.insert(
         Win(
             key: "w1",
@@ -1112,13 +1114,14 @@ scenario "the launcher, before typing" {
     )
 }
 
-/// The launcher with "mai" typed: the windows that match.
+/// The launcher with "mai" typed: the apps and the windows that match.
 scenario "the launcher, mail typed" {
     let d = root Desk
     d.person = "Ada Lovelace"
     d.workspace = "Studio"
     d.here = "launcher"
     d.spotlight = "mai"
+    a_installed_apps(d)
     d.windows.insert(
         Win(
             key: "w9",
@@ -1600,6 +1603,99 @@ action a_foreign_place(a: Arrangement, strip: Text, index: Int, title: Text) -> 
     p.key
 }
 
+/// Adds a place showing a search for `text` to `strip`, with the two matches the notes app
+/// answered, and returns the place's key: the state a place stands in until the person chooses
+/// one of the resources it found (shell.md §8).
+action a_query_place(a: Arrangement, strip: Text, text: Text) -> Text {
+    let p = a.places.insert(
+        ArrangementPlace(
+            key: "q-{strip}",
+            strip: strip,
+            title: "Search: {text}",
+            name: "Search: {text}",
+            shell: "so.tilo.shell.strips",
+        ),
+    )
+    a.queries.insert(
+        ArrangementQuery(
+            key: p.key,
+            text: text,
+            in_app: "so.tilo.lang.notes",
+            kind: "notes.note",
+            state: "several",
+        ),
+    )
+    for n in notes.notebook.notes.take(2) {
+        a.refs.insert(
+            ArrangementRef(
+                key: "m-{n.title}",
+                query: p.key,
+                address: n.id(),
+                title: n.title,
+                kind: "notes.note",
+            ),
+        )
+    }
+    p.key
+}
+
+/// The applications installed on this device, as the launcher lists them: the ones the desk's
+/// shots and its layouts show.
+action a_installed_apps(d: Desk) -> Int {
+    d.apps.insert(
+        App(
+            key: "so.tilo.lang.notes",
+            name: "Notes",
+            icon: "file-text",
+            category: "work",
+            description: "The workspace's notebooks and their pages.",
+        ),
+    )
+    d.apps.insert(
+        App(
+            key: "so.tilo.lang.chat",
+            name: "Chat",
+            icon: "message-square",
+            category: "work",
+            description: "The workspace's conversations.",
+        ),
+    )
+    d.apps.insert(
+        App(
+            key: "so.tilo.lang.tasks",
+            name: "Tasks",
+            icon: "list-checks",
+            category: "work",
+            description: "The workspace's tasks and projects.",
+        ),
+    )
+    d.apps.insert(
+        App(
+            key: "so.tilo.settings",
+            name: "Settings",
+            icon: "settings",
+            category: "system",
+            description: "This device and this person.",
+        ),
+    )
+    d.apps.len()
+}
+
+/// A desk of one note in the style named, with that place in front, and the style's own settings
+/// open over it: what a person sees who opens them from the bar's style menu.
+action a_style_settings(style: Text) -> Arrangement {
+    let v = viewing
+    v.style = style
+    let a = root Arrangement
+    let row = a_workspace(a, "Desk")
+    let one = a_strip(a, row, "Note", 667)
+    a_note_place(a, one, 0)
+    v.focused = one
+    let sh = root Shell
+    sh.settings_open = true
+    a
+}
+
 /// A working desk's places at the counts people keep: one place on its own, three across a
 /// narrow list, a wide board and a usual note, then a busy day as three strips of four. The
 /// strips stand side by side in one row, and the narrow list holds focus.
@@ -1691,6 +1787,42 @@ scenario "an empty strip" -> Arrangement {
     let used = a_strip(a, row, "In use", 667)
     a_note_place(a, used, 0)
     a
+}
+
+/// A place standing in for a search: what a person typed into it, and the matches the notes app
+/// answered, each a press that shows it in the same place (`query_view`).
+scenario "a place finding what to show" -> Arrangement {
+    let v = viewing
+    v.style = "so.tilo.shell:strips"
+    let a = root Arrangement
+    let row = a_workspace(a, "Desk")
+    let found = a_strip(a, row, "Found", 667)
+    a_query_place(a, found, "release")
+    let beside = a_strip(a, row, "Note", 667)
+    a_note_place(a, beside, 0)
+    v.focused = found
+    a
+}
+
+/// The strips style's own settings, over the desk they change: the panel the bar's style menu
+/// opens (`style_panel`).
+scenario "the strips style's settings" -> Arrangement {
+    a_style_settings("so.tilo.shell:strips")
+}
+
+/// The frames style's own settings, over the canvas they change.
+scenario "the frames style's settings" -> Arrangement {
+    a_style_settings("so.tilo.shell:frames")
+}
+
+/// The spaces style's own settings, over the places they change.
+scenario "the spaces style's settings" -> Arrangement {
+    a_style_settings("so.tilo.shell:spaces")
+}
+
+/// The desktop style's own settings, over the desk they change.
+scenario "the desktop style's settings" -> Arrangement {
+    a_style_settings("so.tilo.shell:desktop")
 }
 
 /// A reference activated from a chat place: the channel's place, and the note's place it landed
@@ -1869,7 +2001,7 @@ scenario "the traditional desktop" {
             title: "design",
             origin_app: "Chat",
             app_key: "so.tilo.chat",
-            icon: "message_square",
+            icon: "message-square",
             strip: "Desk",
             workspace: "Studio",
             recency: 3,
