@@ -1066,8 +1066,14 @@ impl TextInput {
         authored.sort_by_key(|(range, _)| (range.start, range.end));
         let mut merged: Vec<(std::ops::Range<usize>, String)> = Vec::with_capacity(authored.len());
         for (range, author) in authored {
+            // A run of the same author that starts inside the one before it is
+            // that run: Automerge split one mark where an edit landed inside it.
+            let joins = merged.last().is_some_and(|(last, same)| {
+                *same == author
+                    && last.end.partial_cmp(&range.start) != Some(std::cmp::Ordering::Less)
+            });
             match merged.last_mut() {
-                Some((last, same)) if *same == author && last.end >= range.start => {
+                Some((last, _)) if joins => {
                     last.end = last.end.max(range.end);
                 }
                 _ => merged.push((range, author)),
