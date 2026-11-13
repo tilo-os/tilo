@@ -5,10 +5,16 @@
 //!
 //! Only the literal a component shows is a message: the value given to a prop that shows words
 //! (not one the toolkit marks as data), or what such a value takes from a branch, an option or a
-//! list. A literal compared, passed to a function or used as a key stays text.
+//! list — and the same value kept in a `let`, chosen by a branch or passed on under another name,
+//! so where the words were written is nothing the author has to know. A literal compared, passed
+//! to a function or used as a key stays text.
 //!
 //! A view's text parameter is words it shows, so the literal a caller gives it is the caller's
 //! message too ([`super::template::Checker::expand`]).
+//!
+//! Which literals those are is known before any of them is lowered: a `let` comes before the prop
+//! that shows it, so the pass that lowers reads the answer of a pass that said it
+//! ([`super::check_module`]).
 
 use super::{Checker, Ex};
 use crate::abi::Imp;

@@ -534,7 +534,7 @@ view home(t: Tasks) {
     let shown = if done_place {
         found.sort_by(x -> changed(x, .done)?.at, desc)
     } else if folds { ordered.sort_by(x -> folded(found, x)) } else { ordered }
-    let title = if let p = project { p.name } else { chosen?.label ?? std.say("Tasks") }
+    let title = if let p = project { p.name } else { chosen?.label ?? "Tasks" }
     // What waits here, read from the index: the same cost at three tasks or three thousand.
     let open: Int = if let p = project {
         found.len() - t.items.matching(Task.project(p), Task.done).len()
@@ -545,11 +545,9 @@ view home(t: Tasks) {
     let header_count = if let c = chosen {
         if counted.any(k -> k == c.key) { waiting(found.counted()) }
     }
-    // The words the entry says are messages of this view: a literal kept in a variable is text,
-    // which no catalogue translates.
     let entry_placeholder = if let p = project {
-        std.say("New task in {p.name}")
-    } else if place == Task.today { std.say("New task for today") } else { std.say("New task") }
+        "New task in {p.name}"
+    } else if place == Task.today { "New task for today" } else { "New task" }
     ui.NavShell(
         content_kind: .list,
         sidebar_title: "Tasks",
