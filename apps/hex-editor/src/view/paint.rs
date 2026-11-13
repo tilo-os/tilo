@@ -1,11 +1,5 @@
-//! Painting the hex view.
-//!
-//! The byte grid is genuine content drawing — a dense, fixed-pitch canvas
-//! with a cursor synced across two parallel columns — so it paints itself,
-//! reading every colour, size and gap from the theme. Everything around it is
-//! the framework's: the inspector drawer, the status bar, the property list
-//! and the empty state. The file's name, the edit mode, the inspector's
-//! toggle, a failure's notice, search and History are the window bar's.
+//! Painting the hex view: the byte grid with its column labels, tints and cursor, the
+//! status readout and the inspector. Everything around the grid is the framework's.
 
 use ui::i18n::ArgValue;
 use ui::paint::PaintCtx;
@@ -24,7 +18,6 @@ use crate::inspector::{self, Interpretation};
 use crate::model::Column;
 use crate::resource::CATALOG;
 
-/// Hex digits, so a cell's two characters need no allocation.
 const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
 
 fn digit(nibble: u8) -> u8 {
@@ -34,13 +27,12 @@ fn digit(nibble: u8) -> u8 {
         .unwrap_or(b'0')
 }
 
-/// The two hex digits of `byte`.
 fn hex_pair(byte: u8) -> [u8; 2] {
     [digit(byte >> 4), digit(byte)]
 }
 
-/// The glyph of the ASCII column: the printable character, or a centred dot
-/// for a control or high byte (the hex-editor convention).
+/// The ASCII column's glyph: a printable character, or a centred dot (the
+/// hex-editor convention).
 fn ascii_glyph(byte: u8, buf: &mut [u8; 4]) -> &str {
     let ch = if (0x20..=0x7E).contains(&byte) {
         char::from(byte)
@@ -50,7 +42,6 @@ fn ascii_glyph(byte: u8, buf: &mut [u8; 4]) -> &str {
     ch.encode_utf8(buf)
 }
 
-/// `n` bytes, singular or plural.
 fn byte_count(n: usize) -> String {
     if n == 1 {
         "1 byte".to_string()
@@ -59,7 +50,6 @@ fn byte_count(n: usize) -> String {
     }
 }
 
-/// The part of `lo..=hi` inside the row starting at `row_off`, as columns.
 fn span_in_row(
     lo: usize,
     hi: usize,
@@ -71,7 +61,6 @@ fn span_in_row(
     (first <= last).then(|| (first - row_off, last - row_off))
 }
 
-/// What one painted row needs beyond the geometry.
 struct RowCtx<'a> {
     theme: &'a Theme,
     g: &'a Geo,
@@ -84,7 +73,6 @@ struct RowCtx<'a> {
 }
 
 impl Editor {
-    /// The whole frame.
     pub(super) fn paint(
         &mut self,
         scene: &mut Scene,
@@ -113,8 +101,6 @@ impl Editor {
         self.paint_inspector_region(scene, transform, tr, theme, presence);
     }
 
-    /// The column labels, the rules between the columns and the rows of
-    /// bytes.
     fn paint_grid(
         &self,
         scene: &mut Scene,
@@ -129,8 +115,8 @@ impl Editor {
         let code_strong = code.clone().strong();
         let head_y = g.column_head.y0 + (g.row_h - g.line_h) / 2.0;
 
-        // Column labels share the cells' style and pitch, so each label's
-        // centre is its column's centre.
+        // Column labels share the cells' pitch, so each label's centre is its
+        // column's centre.
         let label = |scene: &mut Scene, tr: &mut TextRenderer, text: &str, x: f64| {
             tr.draw_style(
                 scene,
@@ -153,8 +139,7 @@ impl Editor {
         }
         label(scene, tr, "ASCII", g.ascii_x0);
 
-        // The rules between the offset, hex and ASCII columns run from the
-        // labels to the status bar.
+        // The rules between the columns run from the labels to the status bar.
         let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
         let edge = ui::surface::edge_on(colors.surfaces.content);
         for x in [g.rule_hex, g.rule_ascii] {
@@ -189,7 +174,6 @@ impl Editor {
     }
 
     /// One row: its offset, the tint layers, the cursor, then the glyphs.
-    /// `at` is the row's first byte offset and its top edge.
     fn paint_row(
         &self,
         scene: &mut Scene,
@@ -250,8 +234,8 @@ impl Editor {
         }
     }
 
-    /// The bands under one row's glyphs, lowest to highest: the bytes the
-    /// inspector reads, find matches, the selection, then the cursor.
+    /// The bands under one row's glyphs, lowest to highest: the inspected bytes, find
+    /// matches, the selection, then the cursor.
     fn paint_row_tints(
         &self,
         scene: &mut Scene,
@@ -292,8 +276,7 @@ impl Editor {
             );
         };
 
-        // An edited byte stands on a neutral lift in both columns, in heavier
-        // ink: it is changed, not a warning and nobody's presence.
+        // An edited byte stands on a neutral lift in both columns, in heavier ink.
         let edited = colors.lift_on(colors.surfaces.content, 1.0);
         for c in 0..bpr {
             if self.model.is_dirty(row_off + c) {
@@ -310,7 +293,6 @@ impl Editor {
             fill(scene, ascii_band(a, b), wash);
         }
 
-        // Find matches: one span per row a match covers, over its cells only.
         let row_end = row_off.saturating_add(bpr);
         let first = self.matches.partition_point(|m| m.end <= row_off);
         for (index, found) in self.matches.iter().enumerate().skip(first) {
@@ -333,8 +315,8 @@ impl Editor {
             fill(scene, ascii_band(a, b), colors.intent.selection_tint);
         }
 
-        // The cursor: your colour round the cell of the column you type in,
-        // a quiet outline on its mirror in the other column.
+        // The cursor: your colour round the cell you type in, a quiet outline on its
+        // mirror in the other column.
         if let Some(c) = ctx.cursor.checked_sub(row_off).filter(|&c| c < bpr) {
             let (active, mirror) = if self.model.column() == Column::Hex {
                 (hex_band(c, c), ascii_band(c, c))
@@ -358,7 +340,7 @@ impl Editor {
         }
     }
 
-    /// Byte range the inspector reads: up to eight bytes from the cursor.
+    /// The bytes the inspector reads: up to eight from the cursor.
     pub(super) fn inspector_span(&self) -> Option<(usize, usize)> {
         let cur = self.model.cursor();
         if cur >= self.model.len() {
@@ -368,8 +350,7 @@ impl Editor {
         Some((cur, cur + width - 1))
     }
 
-    /// The persistent readout: where the cursor is (a click there opens Go
-    /// to offset), what is selected and edited, and how big the buffer is.
+    /// The status readout: the cursor's place, the selection, the edits and the size.
     fn paint_status(
         &mut self,
         scene: &mut Scene,
@@ -408,8 +389,8 @@ impl Editor {
         self.offset_readout = rects.first().copied().unwrap_or(Rect::ZERO);
     }
 
-    /// The inspector: the region it stands on, its heading, the endianness
-    /// strip and the interpretations of the bytes at the cursor.
+    /// The inspector: its region, heading, endianness strip and the interpretations of
+    /// the bytes at the cursor.
     fn paint_inspector_region(
         &mut self,
         scene: &mut Scene,
@@ -493,7 +474,6 @@ impl Editor {
         scene.pop_layer();
     }
 
-    /// The no-file zero-state: one sentence and the one action.
     fn paint_empty_state(
         &mut self,
         scene: &mut Scene,
@@ -504,8 +484,7 @@ impl Editor {
     ) {
         self.empty.apply_layout_external(self.rect);
         ui::widget::DrawChild::draw_child(&mut self.empty, scene, transform, tr, theme, presence);
-        // "New empty file" under "Open file": a second way in, secondary to
-        // opening one.
+        // "New empty file" under "Open file": a second way in.
         let open = self.empty.action_rect();
         if open.area() <= 0.0 {
             self.new_file = Rect::ZERO;

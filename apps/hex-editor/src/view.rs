@@ -1,30 +1,8 @@
-//! The hex view widget — the whole editor surface in one `Widget`.
-//!
-//! A hex editor is fundamentally a dense, fixed-pitch grid with a cursor
-//! synced across two parallel columns; that is a canvas, not a composition of
-//! stock form widgets, so the view paints the grid itself (`paint`) and
-//! reads every colour and metric from the `Theme`. Everything around the
-//! grid is the toolkit's:
-//!
-//!   * window bar — the file name as the window's location, Overwrite and
-//!     Insert as its views, the inspector's toggle as its action
-//!     (`window_bar`); the window's search finds and replaces in the bytes
-//!     (`find`) and its History control opens the record's History
-//!   * body      — offset gutter | hex byte columns | ASCII column
-//!   * inspector — a [`SidebarDrawer`] at the trailing edge: docked beside
-//!     the content when there is room, a floating drawer when there is not,
-//!     holding the endianness strip and a property list of interpretations
-//!   * status    — the persistent status bar (cursor offset, selection,
-//!     edited bytes, size); "Opened" and failures are transient notices
-//!   * go to     — a popover with one field, anchored at the status bar
-//!
-//! The bytes are the [`HexEditor`] resource's: the [`Editor`] the window
-//! shares with the view's effect handler follows the document, edits its
-//! own copy as a key is pressed so typing stays immediate, and submits each
-//! edit as the resource's action through the framework's dispatcher.
-//! Opening and saving a file are the [`HexEffect`]s it answers. The path a
-//! save writes back to stays on this device, in the editor. The
-//! [`HexView`] window hosts it, with the go-to prompt over it.
+//! The editor surface: the byte grid (offset gutter, hex columns, ASCII column),
+//! the window bar's slots, the inspector drawer and the status bar. The grid is a
+//! dense fixed-pitch canvas, so it paints itself and reads its metrics from the
+//! theme. The bytes are the [`HexEditor`] record's: the [`Editor`] edits its own copy
+//! as a key is pressed and submits each edit as the record's action.
 
 mod clipboard;
 mod find;
@@ -77,7 +55,6 @@ use crate::resource::HexEditor;
 use layout::{CellMetrics, ENDIAN_MESSAGES, Geo};
 use ui::widget::toggle_group::Segment;
 
-/// What a cancelled chooser answers.
 const CANCELLED: &str = "cancelled";
 
 fn file_open_request() -> PickRequest {
@@ -92,20 +69,17 @@ fn file_save_request(suggested_name: &str) -> PickRequest {
         .filter(FileFilter::all_files())
 }
 
-/// A file chooser in flight, and the effect waiting for it.
 enum FileIo {
     Open(PortalChannel),
-    /// A chooser delivering contents, where files have no path (the web).
     OpenContents(ContentsChannel),
     Save(PortalChannel),
     SaveContents(SaveChannel),
 }
 
-/// What a buffer started from nothing is called until it is saved.
 const NEW_FILE_NAME: &str = "Untitled.bin";
 
-/// The no-file zero-state: what the editor is for, opening a file, and
-/// (beside it, [`Editor::new_empty_file`]) starting an empty one.
+/// The no-file zero-state: what the editor is for, opening a file, and starting an
+/// empty one beside it.
 fn empty_state() -> EmptyState {
     EmptyState::new("No file open")
         .with_icon(Icon::File)
@@ -114,8 +88,8 @@ fn empty_state() -> EmptyState {
         .with_action_id("hex.open")
 }
 
-/// A segmented strip over `labels`: the strip keeps the segment the person
-/// picks, and the view reads it ([`Editor::apply_strip_picks`]).
+/// A segmented strip over `labels`; the view reads the segment the person picks
+/// ([`Editor::apply_strip_picks`]).
 fn strip(id: &str, labels: &[String]) -> ToggleGroup {
     ToggleGroup::new(labels.iter().map(|l| Segment::new(l.clone())).collect(), 0)
         .with_id(id)
@@ -123,108 +97,70 @@ fn strip(id: &str, labels: &[String]) -> ToggleGroup {
         .with_style(SegmentedStyle::Segmented)
 }
 
-// The bools below are independent view flags (redraw-pending,
-// buffer-present, focus), not a combinatorial option set, so folding them
-// into an enum would only add indirection.
+// The bools are independent view flags, not a combinatorial option set, so an enum
+// would only add indirection.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "unrelated view flags (dirty/has_file/focused/expect_open), not a combinatorial option set"
 )]
 pub(crate) struct Editor {
-    /// The view's copy of the buffer and its editor state.
     model: HexModel,
-    /// The file's name, the window's location.
     file_name: String,
     rect: Rect,
     dirty: bool,
 
-    // --- find (per-peer; not in the shared doc) ---
-    /// The query the window's search last ran.
     query: find::FindQuery,
-    /// Every match of the search's query, as byte ranges, in order.
     matches: Vec<FindMatch>,
     match_idx: Option<usize>,
     /// Moves whenever the bytes change, so an open search finds again.
     revision: u64,
 
-    // --- go to ---
-    /// The window opens the go-to prompt on its next turn.
     goto_asked: bool,
-    /// The offset readout in the status bar, which opens the prompt.
     offset_readout: Rect,
 
-    // --- chrome ---
-    /// The inspector: docked when wide, a floating drawer when narrow.
     drawer: SidebarDrawer,
-    /// The window bar's toggle of the inspector.
     inspector_entry: ui::framework::BarCommands<()>,
-    /// The endianness strip in the inspector, and the segment it shows.
     endian_group: ToggleGroup,
     endian_shown: usize,
-    /// The zero-state, shown while no file is open.
     empty: EmptyState,
-    /// How far the inspector's properties are scrolled.
     inspector_scroll: f64,
-    /// The grid's scroll bar.
     scrollbar: ui::widget::scrollbar::Scrollbar,
-    /// A capture asks for the inspector open once the window size is known.
     reveal_inspector: bool,
-    /// Where everything is; refreshed by [`Editor::relayout`].
     geo: Geo,
-    /// The monospace advance and line height measured from the renderer that
-    /// paints the grid. Layout, paint and hit-testing all derive their
-    /// pitches from this one measurement, so a byte's painted cell is its
-    /// click target.
+    /// The monospace advance and line height measured from the renderer that paints
+    /// the grid: paint, hit-testing and layout share one measurement.
     cell: CellMetrics,
-    /// The theme the last layout pass saw, so the event path resolves the
-    /// same geometry as the last paint.
+    /// The theme the last layout pass saw, so the event path resolves the same
+    /// geometry as the last paint.
     layout_theme: Theme,
-    /// Rows currently fitting in the grid viewport — read by keyboard paging
-    /// so PageUp/Down move a screenful.
+    /// Rows fitting in the grid viewport, which keyboard paging moves a screenful at
+    /// a time.
     visible_rows: usize,
-    /// Last pointer position in logical coords, tracked from `CursorMoved`
-    /// so a left-click can hit-test the cell under the cursor.
     last_mouse: Point,
 
     // --- file state ---
-    /// False until the resource holds a file — drives the composed empty
-    /// state (no fabricated buffer in the live app).
+    /// False until the record holds a file, which composes the empty state.
     has_file: bool,
-    /// Where the empty state's new-file button sits, once painted.
     new_file: Rect,
-    /// The bytes as last opened or saved, which the changed-byte marks
-    /// compare against.
+    /// The bytes as last opened or saved, which the changed marks compare against.
     saved: Vec<u8>,
-    /// How many files the resource had opened when last presented.
     opened: u64,
-    /// This view submitted the open the resource will present next.
     expect_open: bool,
-    /// The file on this device the buffer was opened from or last saved
-    /// to, if any. `Ctrl+S` writes straight back here; absent, it opens a
-    /// Save chooser.
+    /// The file this device opened the buffer from or last saved it to; `Ctrl+S`
+    /// writes straight back here, and a Save chooser opens without one.
     path: Option<PathBuf>,
-    /// A chooser in flight, drained once per frame in `sync`, and the open
-    /// or save effect it answers.
     io: Option<(FileIo, EffectReply)>,
-    /// A failed open or save: its title and the reason, shown as the bar's
-    /// notice for a notice's lifetime.
-    /// What the window's bar says for a while: a result or a failure.
+    /// What the bar says for a while: a result or a failure.
     said: Transient<(String, ToastKind)>,
 
-    /// "Opened": a change worth noticing once, floating at the
-    /// content's bottom-trailing corner and fading by itself.
-    /// The canvas is keyboard-focusable even though it is custom drawn.
     focused: bool,
-    /// Where edits and effects go, once the framework attached the view.
     dispatch: Option<Dispatcher<HexEditor>>,
-    /// The resource's state, followed as it changes and shown again when an
-    /// edit is refused; `None` for an editor outside the framework.
+    /// The record's state, followed as it changes and shown again when an edit is
+    /// refused; `None` outside the framework.
     live: Option<Live<HexEditor>>,
-    /// The document as last shown.
     presented: Option<(u64, u64)>,
 }
 
-/// The editor as the window and the view's effect handler share it.
 pub(crate) type Shared = Rc<RefCell<Editor>>;
 
 impl Editor {
@@ -274,24 +210,18 @@ impl Editor {
         }
     }
 
-    /// The editor with no file loaded — the honest live default. Shows a
-    /// composed empty state whose only affordance is opening a file; it never
-    /// fabricates a buffer.
     pub(crate) fn empty() -> Self {
         let mut v = Self::new(Vec::new(), "No file");
         v.has_file = false;
         v
     }
 
-    /// Follow the document `live` holds, editing it through `dispatch`.
     pub(crate) fn attach(&mut self, live: Live<HexEditor>, dispatch: Dispatcher<HexEditor>) {
         self.live = Some(live);
         self.dispatch = Some(dispatch);
         self.follow_document();
     }
 
-    /// Show the buffer the document holds when it changed since it was
-    /// last shown.
     pub(crate) fn follow_document(&mut self) {
         let Some(state) = self
             .live
@@ -303,17 +233,14 @@ impl Editor {
         self.present(&state);
     }
 
-    /// Mutable accessor for the decoded model — used by tests to position the
-    /// cursor / selection that drive the bound actions.
+    /// For tests that position the cursor and selection the bound actions act on.
     #[cfg(test)]
     pub fn model_mut(&mut self) -> &mut HexModel {
         &mut self.model
     }
 
-    /// Show the bundled sample as a capture does: the cursor on the IHDR
-    /// width field (offset `0x10`) with the inspector in big-endian — PNG's
-    /// native byte order — so the data inspector reads the image's
-    /// dimensions as clean `u32` values.
+    /// Show the bundled sample as a capture does: the cursor on the IHDR width field
+    /// with the inspector in big-endian, PNG's byte order, so it reads clean `u32`s.
     fn stage_sample(&mut self) {
         if self.model.endian() != Endian::Big {
             self.model.toggle_endian();
@@ -321,10 +248,9 @@ impl Editor {
         self.model.move_to(0x10, false);
     }
 
-    /// Submit the edits the last input made as the resource's actions, one
-    /// undo step per run of typing; an input that edited nothing ends the
-    /// run, so the next one is a step of its own. A refused edit shows the
-    /// resource's bytes again.
+    /// Submit the edits the last input made, one undo step per run of typing; an
+    /// input that edited nothing ends the run. A refused edit shows the record's
+    /// bytes again.
     fn commit_edits(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let edits = self.model.take_edits();
         self.dirty = true;
@@ -352,8 +278,7 @@ impl Editor {
         }
     }
 
-    /// The cursor moved or the view changed without an edit: the next edit
-    /// starts an undo step of its own.
+    /// The cursor moved or the view changed: the next edit starts its own undo step.
     fn moved(&mut self) {
         if let Some(dispatch) = &self.dispatch {
             dispatch.settle();
@@ -361,28 +286,24 @@ impl Editor {
         self.dirty = true;
     }
 
-    /// Invoke `effect` through the framework's door, as the palette does.
     fn invoke(&self, effect: &HexEffect) {
         if let Some(dispatch) = &self.dispatch {
             dispatch.effect(effect);
         }
     }
 
-    /// A change worth noticing once ("Opened"): the bar's notice.
     fn notice(&mut self, message: &str) {
         self.said.show((message.to_owned(), ToastKind::Success));
         self.dirty = true;
     }
 
-    /// A failed open or save: the bar's notice, with the reason.
     fn problem(&mut self, title: &str, reason: impl Into<String>) {
         self.said
             .show((format!("{title}: {}", reason.into()), ToastKind::Error));
         self.dirty = true;
     }
 
-    /// Start the host file chooser to open a file, answering `reply` when
-    /// it closes.
+    /// Start the host's file chooser, answering `reply` when it closes.
     fn begin_open(&mut self, reply: EffectReply) {
         let io = if tilo_files::available(tilo_files::Feature::NativePaths) {
             FileIo::Open(file_open_request().send())
@@ -392,8 +313,7 @@ impl Editor {
         self.io = Some((io, reply));
     }
 
-    /// Start the host Save chooser for a buffer with no file on this
-    /// device, answering `reply` when it closes.
+    /// Start the host's Save chooser for a buffer with no file on this device.
     fn begin_save_as(&mut self, reply: EffectReply) {
         let name = self.suggested_name();
         let io = if tilo_files::available(tilo_files::Feature::NativePaths) {
@@ -406,8 +326,8 @@ impl Editor {
         self.io = Some((io, reply));
     }
 
-    /// The filename the Save dialog seeds with — the current name, or a
-    /// sensible default for a scratch buffer.
+    /// The name the Save chooser seeds with: the current name, or a default for a
+    /// scratch buffer.
     fn suggested_name(&self) -> String {
         if self.file_name.is_empty() || !self.has_file {
             "untitled.bin".to_string()
@@ -416,13 +336,12 @@ impl Editor {
         }
     }
 
-    /// Write the current bytes to `path`, clearing the changed-byte marks on
-    /// success and noticing the outcome either way.
+    /// Write the bytes to `path`, clearing the changed marks on success.
     fn write_to(&mut self, path: &std::path::Path) -> Result<(), String> {
         match crate::file::write(path, self.model.bytes()) {
             Ok(()) => {
-                // The changed-byte marks clear; saving where the file lives
-                // says nothing more.
+                // The changed marks clear; saving where the file lives says nothing
+                // more.
                 self.saved_now();
                 self.path = Some(path.to_path_buf());
                 Ok(())
@@ -434,14 +353,13 @@ impl Editor {
         }
     }
 
-    /// The buffer now matches the file it was saved to.
     fn saved_now(&mut self) {
         self.saved = self.model.bytes().to_vec();
         self.model.clear_dirty();
         self.dirty = true;
     }
 
-    /// Open the file at `path` into the resource. The path stays here.
+    /// Open the file at `path` into the record; the path stays on this device.
     fn open_path(&mut self, path: PathBuf) -> Result<(), String> {
         match crate::file::read(&path) {
             Ok(bytes) => {
@@ -460,9 +378,8 @@ impl Editor {
         }
     }
 
-    /// Start an empty buffer to type bytes into, without any file: a way in
-    /// where no file chooser can answer, and for writing bytes from scratch.
-    /// Saving it asks where.
+    /// Start an empty buffer to type bytes into, without any file: a way in where no
+    /// chooser can answer. Saving it asks where.
     fn new_empty_file(&mut self) {
         if let Some(dispatch) = &self.dispatch {
             dispatch.submit(HexEditor::loading(NEW_FILE_NAME, Vec::new()));
@@ -471,7 +388,6 @@ impl Editor {
         self.path = None;
     }
 
-    /// Submit `bytes`, read from the file `name`, as the resource's buffer.
     fn open_bytes(&mut self, name: String, bytes: Vec<u8>) {
         let n = bytes.len();
         if let Some(dispatch) = &self.dispatch {
@@ -485,7 +401,6 @@ impl Editor {
         ));
     }
 
-    /// A file chosen by contents.
     fn open_contents(&mut self, outcome: ContentsOutcome) -> Result<(), String> {
         match outcome {
             ContentsOutcome::Picked(files) => {
@@ -503,7 +418,6 @@ impl Editor {
         }
     }
 
-    /// What a closed chooser means for the buffer; `None` while it is open.
     fn take_chooser(&mut self, io: &FileIo) -> Option<Result<(), String>> {
         let disconnected = || Some(Err("file picker disconnected".to_owned()));
         match io {
@@ -546,7 +460,6 @@ impl Editor {
         }
     }
 
-    /// Answer the open or save effect whose chooser closed.
     fn drain_chooser(&mut self) {
         let Some((io, reply)) = self.io.take() else {
             return;
@@ -562,14 +475,11 @@ impl Editor {
         }
     }
 
-    /// True while a chooser is open: the app keeps pumping frames so the
-    /// pick drains.
     fn is_busy(&self) -> bool {
         self.io.is_some()
     }
 
-    /// Parse a go-to offset: `0x1F` hex, bare hex digits that include a
-    /// letter, or plain decimal.
+    /// A go-to offset: `0x1F` hex, bare hex digits with a letter, or decimal.
     fn parse_offset(query: &str) -> Option<usize> {
         let q = query.trim();
         if let Some(hex) = q.strip_prefix("0x").or_else(|| q.strip_prefix("0X")) {
@@ -583,7 +493,6 @@ impl Editor {
         }
     }
 
-    /// Move the cursor to the offset the person typed and bring it into view.
     fn commit_goto(&mut self, query: &str) {
         if let Some(off) = Self::parse_offset(query) {
             self.model.move_to(off, false);
@@ -594,15 +503,13 @@ impl Editor {
         self.dirty = true;
     }
 
-    /// Have the window open the go-to prompt (Ctrl+G, a click on the offset
-    /// readout, the effect) at the status bar's offset readout.
+    /// Have the window open the go-to prompt at the status bar's offset readout.
     fn ask_goto(&mut self) {
         self.goto_asked = true;
         self.dirty = true;
     }
 
-    /// Where the go-to prompt hangs from: the offset readout, or the status
-    /// bar's content edge before it has been painted.
+    /// Where the go-to prompt hangs from, before the readout has been painted.
     fn goto_anchor(&self) -> Rect {
         if self.offset_readout.area() > 0.0 {
             return self.offset_readout;
@@ -612,7 +519,6 @@ impl Editor {
         Rect::new(status.x0 + inset, status.y0, status.x0 + inset, status.y1)
     }
 
-    /// Apply the segment the inspector's strip shows, once it moves.
     fn apply_strip_picks(&mut self) {
         let index = self.endian_group.selected();
         if index == self.endian_shown {
@@ -630,23 +536,21 @@ impl Editor {
         self.dirty = true;
     }
 
-    /// Hand a pointer event to the inspector's strip; true when it took it.
     fn route_to_strips(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         if self.geo.inspector_visible {
             self.endian_group.handle_event(event, ctx);
         }
         let took = *ctx.handled;
         self.apply_strip_picks();
-        // The strip repaints itself under the pointer; the view paints it,
-        // so it has to know when it changed.
+        // The view paints the strip, so it has to know when the strip changed.
         if Widget::needs_redraw(&self.endian_group) {
             self.dirty = true;
         }
         took
     }
 
-    /// The pointer moved: the thumb under it lights up, and a thumb being
-    /// dragged scrolls the grid.
+    /// The pointer moved: the thumb under it lights up, and a dragged thumb scrolls
+    /// the grid.
     fn follow_scrollbar(&mut self) {
         let (track, metrics) = (self.geo.scroll_track, self.scroll_metrics());
         if !metrics.overflows() {
@@ -677,7 +581,6 @@ impl Editor {
         true
     }
 
-    /// Show or hide the inspector, remembering the choice for this size.
     fn toggle_inspector(&mut self) {
         self.drawer.toggle();
         self.relayout_now();
@@ -702,8 +605,8 @@ impl Editor {
         self.dirty = true;
     }
 
-    /// The pointer moved or a button changed: the inspector's strip, the
-    /// scroll bar and the drawer's scrim. True when the event was consumed.
+    /// The pointer moved or a button changed over the inspector, the scroll bar and
+    /// the drawer's scrim; `true` when the event was consumed.
     fn handle_chrome_pointer(
         &mut self,
         event: &WindowEvent,
@@ -789,15 +692,13 @@ impl Editor {
     }
 }
 
-/// The editor's turn in each frame, which its window gives it.
 impl Editor {
     fn sync(&mut self) {
         self.follow_document();
-        // Drain a closed file chooser first, so a freshly opened buffer is
-        // submitted before this frame lays out.
+        // Drain a closed chooser first, so a freshly opened buffer is submitted
+        // before this frame lays out.
         self.drain_chooser();
 
-        // A result or a failure says so in the window's bar while it lasts.
         self.said.expire();
         self.said
             .publish(|(text, kind)| ToolbarNotice::new(text.clone(), *kind));
@@ -816,12 +717,11 @@ impl Editor {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames coming while a portal pick is in flight (so it drains
-        // once the host dialog closes) and while the inspector slides.
+        // Keep frames coming while a chooser is in flight and while the inspector
+        // slides.
         self.is_busy() || (self.has_file && self.drawer.is_animating())
     }
 
-    /// Lay the editor out in `rect`.
     fn place(&mut self, rect: Rect) {
         self.rect = rect;
         self.relayout_now();
@@ -835,8 +735,8 @@ impl Editor {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // The framework painted the window ground; the geometry is resolved
-        // with the renderer that paints it, then the frame follows it.
+        // The geometry is resolved with the renderer that paints it, then the frame
+        // follows it.
         self.layout_theme = theme.clone();
         // A key (Insert, Ctrl+I) changes what the bar shows without a sync.
         ui::window_toolbar::declare(Some(self.window_toolbar()));
@@ -881,7 +781,6 @@ impl Editor {
         }
     }
 
-    /// The editor's semantics, with the go-to prompt's while it is open.
     fn accessibility(&self, goto: &Popover<PopoverPrompt>) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
@@ -981,9 +880,8 @@ irrelevant"
 }
 
 impl Editor {
-    /// Show the buffer the resource holds now. A newly opened file loads
-    /// fresh; any other change (an undo, a collaborator, the palette) is
-    /// shown in place, keeping the cursor and the view settings.
+    /// Show the buffer the record holds now: a newly opened file loads fresh, any
+    /// other change is shown in place, keeping the cursor and the view settings.
     fn present(&mut self, state: &HexEditor) {
         let fresh = state.opened != self.opened || (!self.has_file && state.has_file());
         let name = state.name().unwrap_or("No file").to_owned();
@@ -1008,8 +906,8 @@ impl Editor {
         self.dirty = true;
     }
 
-    /// Answer an effect invoked by a control, the palette, an agent or a
-    /// script, on the buffer the document holds now.
+    /// Answer an effect from a control, the palette, an agent or a script, on the
+    /// buffer the record holds now.
     pub(crate) fn answer(
         &mut self,
         effect: HexEffect,
@@ -1074,7 +972,7 @@ impl Editor {
         }
     }
 
-    /// The edits at the cursor and the selection, as the resource's actions.
+    /// The edits at the cursor and the selection, as the record's actions.
     pub(crate) fn bound_declarations(&self) -> Vec<ActionDecl<HexEditor>> {
         if !self.has_file {
             return Vec::new();
@@ -1088,12 +986,10 @@ impl Editor {
 }
 
 impl Editor {
-    /// Left-click handling for the byte grid: a hit-test that moves the
-    /// cursor (optionally extending the selection). Split out of `Widget::handle_event` to keep that dispatch
-    /// under the line-count limit.
+    /// Left-click on the byte grid: move the cursor, optionally extending the
+    /// selection.
     fn handle_mouse_press(&mut self, shift: bool, handled: &mut bool) {
-        // Click position is tracked via CursorMoved; recompute on press from
-        // the last known position.
+        // The click position is tracked from `CursorMoved`.
         if let Some((off, col)) = self.hit_test(self.last_mouse) {
             self.model.set_column(col);
             self.model.move_to(off, shift);
@@ -1102,10 +998,8 @@ impl Editor {
         }
     }
 
-    /// Keyboard handling for the byte grid: global chords (open / save /
-    /// search / goto / select-all), cursor movement, and printable-character
-    /// edits. Split out of `Widget::handle_event` to keep that dispatch under
-    /// the line-count limit.
+    /// The grid's key chords (open, save, search, go to, select all), cursor
+    /// movement and printable-character edits.
     fn handle_key_event(
         &mut self,
         ke: &winit::event::KeyEvent,
@@ -1135,8 +1029,8 @@ impl Editor {
         }
     }
 
-    /// The key actions while no file is open: open one (Ctrl+O) or start
-    /// an empty one (Ctrl+N). Part of [`Self::handle_key_event`].
+    /// The keys while no file is open: open one (Ctrl+O) or start an empty one
+    /// (Ctrl+N).
     fn handle_empty_state_key(&mut self, key: &Key, ctrl: bool, handled: &mut bool) {
         let Key::Character(c) = key else {
             return;
@@ -1153,7 +1047,6 @@ impl Editor {
         }
     }
 
-    /// Open the window's search or the go-to form.
     fn open_panel(&mut self, panel: HexPanel) {
         match panel {
             HexPanel::Search => Self::open_find(SearchOpening::Find),
@@ -1161,9 +1054,7 @@ impl Editor {
         }
     }
 
-    /// Ctrl+letter global chords. Returns `true` if one matched (the caller
-    /// should stop dispatching this key further). Part of
-    /// [`Self::handle_key_event`].
+    /// Ctrl+letter chords; `true` when one matched.
     fn handle_global_chord(&mut self, key: &Key, ctrl: bool, handled: &mut bool) -> bool {
         let Key::Character(c) = key else {
             return false;
@@ -1197,9 +1088,8 @@ impl Editor {
         true
     }
 
-    /// Cursor movement / mode keys. Returns whether the cursor moved (or a
-    /// byte was edited), so the caller knows to scroll it into view and
-    /// persist. Part of [`Self::handle_key_event`].
+    /// Cursor movement and mode keys; `true` when the cursor moved or a byte was
+    /// edited.
     fn handle_navigation_key(&mut self, key: &Key, ctrl: bool, shift: bool) -> bool {
         match key {
             Key::Named(NamedKey::ArrowLeft) => self.model.move_left(shift),
@@ -1254,9 +1144,8 @@ impl Editor {
         true
     }
 
-    /// Dispatch a printable character to the active column / mode. Also
-    /// handles the unshifted single-letter shortcuts (e / r) that only
-    /// apply outside the ASCII column.
+    /// A printable character goes to the active column and mode. In the hex column the
+    /// letters e and r are shortcuts instead.
     fn handle_char(&mut self, s: &str) -> bool {
         let Some(ch) = s.chars().next() else {
             return false;
@@ -1267,8 +1156,6 @@ impl Editor {
                     return self.model.input_hex_digit(d as u8);
                 }
                 // Non-hex letters act as view shortcuts in the hex column.
-                // (Byte-width is auto-fit to the viewport, so there is no
-                // manual width toggle.)
                 match ch {
                     'e' | 'E' => {
                         self.model.toggle_endian();
@@ -1283,9 +1170,7 @@ impl Editor {
 }
 
 impl Editor {
-    /// Stage a screenshot scenario (`None` for a plain `--shots`) over the
-    /// bundled sample the scenario opened: the view state the scenario
-    /// shows. Never runs in a live window.
+    /// Stage a capture's view state over the sample it opened; never a live window.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         self.follow_document();
         if scenario == Some("empty") {
@@ -1306,7 +1191,7 @@ impl Editor {
                 for (off, value) in [(0x1D_usize, 0x01_u8), (0x1E, 0x00), (0x25, 0xFF)] {
                     self.model.set_byte(off, value);
                 }
-                // The edits are the resource's, as typing them would be.
+                // The edits are the record's, as typing them would be.
                 for edit in self.model.take_edits() {
                     if let (Some(dispatch), Some(edit)) = (&self.dispatch, byte_edit(&edit)) {
                         dispatch.submit(edit);
@@ -1322,20 +1207,18 @@ impl Editor {
     }
 }
 
-/// `edit` as the field edit of the record's bytes it is.
 fn byte_edit(edit: &BufferEdit) -> Option<ui::tilo_resource::Edit<HexEditor>> {
     HexEditor::paths().bytes.perform(edit).ok()
 }
 
-/// The hex editor's window: the [`Editor`] it shares with the view's effect
-/// handler, with the go-to prompt over it while it is open.
+/// The editor's window: the shared [`Editor`], with the go-to prompt over it while it
+/// is open.
 pub struct HexView {
     editor: Shared,
     goto: Popover<PopoverPrompt>,
 }
 
 impl HexView {
-    /// The window over `editor`.
     fn over(editor: Editor) -> Self {
         Self {
             editor: Rc::new(RefCell::new(editor)),
@@ -1350,38 +1233,33 @@ impl HexView {
         }
     }
 
-    /// A window on `bytes`, read from the file `file_name`, outside the
-    /// framework.
     pub fn new(bytes: Vec<u8>, file_name: impl Into<String>) -> Self {
         Self::over(Editor::new(bytes, file_name))
     }
 
-    /// The window with no file loaded — the honest live default. Shows a
-    /// composed empty state whose only affordance is opening a file; it never
-    /// fabricates a buffer.
+    /// The window with no file loaded: a composed empty state whose only affordance is
+    /// opening a file.
     pub fn empty() -> Self {
         Self::over(Editor::empty())
     }
 
-    /// The file on this device a save writes back to without a chooser.
+    /// The file a save writes back to without a chooser.
     #[must_use]
     pub fn with_path(self, path: Option<PathBuf>) -> Self {
         self.state().path = path;
         self
     }
 
-    /// The editor, shared with the view's effect handler.
     pub(crate) fn shared(&self) -> Shared {
         Rc::clone(&self.editor)
     }
 
-    /// What the window shows, shared with the view's effect handler.
     pub(crate) fn state(&self) -> RefMut<'_, Editor> {
         self.editor.borrow_mut()
     }
 
-    /// Open the go-to prompt when the editor asked for it, with the current
-    /// offset selected: typing replaces it, Enter keeps it.
+    /// Open the go-to prompt when the editor asked for it, with the current offset
+    /// selected.
     fn open_asked_goto(&mut self) {
         let mut editor = self.editor.borrow_mut();
         if !std::mem::take(&mut editor.goto_asked) {
@@ -1393,7 +1271,6 @@ impl HexView {
         editor.dirty = true;
     }
 
-    /// Events while the go-to popover is open: it captures input.
     fn handle_goto_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         Widget::handle_event(&mut self.goto, event, ctx);
         let mut editor = self.editor.borrow_mut();
@@ -1570,8 +1447,7 @@ mod tests {
     use super::*;
     use crate::search;
 
-    /// Present the bundled sample as the scenario's open does, then stage
-    /// `scenario` on it.
+    /// Present the bundled sample as the scenario's open does, then stage `scenario`.
     fn staged(scenario: Option<&str>) -> HexView {
         let mut view = HexView::empty();
         if scenario != Some("empty") {
@@ -1586,9 +1462,8 @@ mod tests {
         view
     }
 
-    /// The resource's state is what the view shows: an open loads fresh,
-    /// any later change keeps the cursor and marks what differs from the
-    /// opened bytes.
+    /// An open loads fresh; a later change keeps the cursor and marks what differs
+    /// from the opened bytes.
     #[test]
     fn presented_state_loads_an_open_and_shows_later_changes_in_place() {
         let mut view = Editor::empty();
@@ -1640,8 +1515,7 @@ mod tests {
         assert_eq!(view.model.bytes(), &[0x12, 0x34]);
     }
 
-    /// A view on `bytes`, with the grid in the hex column (`ascii` false) or
-    /// the ASCII one.
+    /// A view on `bytes`, in the hex column or the ASCII one.
     fn editing(bytes: &[u8], ascii: bool) -> Editor {
         let mut view = Editor::empty();
         view.present(&HexEditor {
@@ -1655,15 +1529,11 @@ mod tests {
         view
     }
 
-    /// A clipboard this test has to itself: the process clipboard is shared
-    /// with every test running beside it.
     fn own_clipboard() -> ui::host::HostScope {
         let (services, _recorder) = ui::host::HostServices::recording();
         ui::host::enter(&services)
     }
 
-    /// Copy takes the selection in the focus mode, and paste reads it back in
-    /// the same mode.
     #[test]
     fn copy_carries_the_selection_in_the_focus_mode() {
         let _clipboard = own_clipboard();
@@ -1677,7 +1547,6 @@ mod tests {
         assert_eq!(ui::clipboard_paste().as_deref(), Some("PNGD"));
     }
 
-    /// Nothing selected copies nothing and says why.
     #[test]
     fn copying_with_nothing_selected_refuses_and_leaves_the_clipboard_alone() {
         let _clipboard = own_clipboard();
@@ -1687,8 +1556,6 @@ mod tests {
         assert_eq!(ui::clipboard_paste().as_deref(), Some("untouched"));
     }
 
-    /// Find runs through the framework's `Findable` contract: hex and text
-    /// modes, the bar's case and word rules, a bounded index.
     #[test]
     fn find_matches_bytes_in_hex_and_text_modes() {
         use ui::widget::{FindMatch, FindMode, FindOptions, Findable};
@@ -1704,7 +1571,6 @@ mod tests {
         assert_eq!(view.model.cursor(), 3);
         assert_eq!(view.match_idx, Some(1));
 
-        // A text query that is not in the buffer finds nothing.
         assert!(Findable::find(&mut view, "Þ", FindOptions::default()).is_empty());
 
         let mut view = Editor::new(b"IHDR ihdr IHDRx".to_vec(), "text.bin");
@@ -1729,7 +1595,6 @@ mod tests {
         assert!(view.matches.is_empty() && view.match_idx.is_none());
     }
 
-    /// The go-to form keeps the editor's own offset policies.
     #[test]
     fn goto_accepts_hex_and_decimal_offsets() {
         let mut view = Editor::new(vec![0; 64], "bytes.bin");
@@ -1751,7 +1616,6 @@ mod tests {
         );
     }
 
-    /// Paint a frame of `view` at `theme` into a fresh scene.
     fn paint_frame(view: &mut HexView, tr: &mut TextRenderer, theme: &Theme) {
         let mut scene = Scene::new();
         ui::widget::DrawChild::draw_child(
@@ -1772,12 +1636,8 @@ mod tests {
         );
     }
 
-    /// Surface geometry and semantics.
-    ///
-    /// The grid's pitches come from the renderer's measured monospace advance
-    /// and line height, so paint and hit-testing share one geometry at every
-    /// text scale: a painted cell's centre maps back to its own byte. The
-    /// grid fills the content width and the inspector docks beside it.
+    /// The grid's pitches come from the renderer's measured advance, so paint and
+    /// hit-testing share one geometry at every text scale.
     #[test]
     fn surface_geometry_follows_measured_metrics_width_and_state() {
         let mut tr = TextRenderer::new();

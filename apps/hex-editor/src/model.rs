@@ -1,13 +1,7 @@
-//! Pure data model for the hex editor's view.
-//!
-//! Holds the view's copy of the buffer plus its presentation state — cursor
-//! position, selection, edit mode, active column, bytes-per-row, and the
-//! set of bytes that have been modified since load. A keystroke edits the
-//! copy at once and records the [`BufferEdit`] it made, which the view
-//! submits as the resource's action; the resource's state replaces the copy
-//! whenever it differs (an undo, a collaborator, the palette). None of this
-//! knows about rendering or storage; it is plain logic so every operation
-//! is unit-testable in isolation.
+//! The view's copy of the bytes with its presentation state: cursor, selection, edit
+//! mode, column, bytes per row and the changed bytes. A keystroke edits the copy at
+//! once and records the [`BufferEdit`] the view submits; the record's state replaces
+//! the copy whenever it differs. No rendering, no storage.
 
 use std::collections::BTreeSet;
 
@@ -17,24 +11,21 @@ use ui::tilo_resource::{self, JsonSchema};
 
 use crate::buffer::Hex;
 
-/// One primitive buffer mutation. Every byte edit reduces to an insert,
-/// delete, or overwrite at a concrete offset; cursor movement, selection,
-/// scroll, and mode/column/endian changes remain presentation. It is also
-/// the edit of the record's bytes at their path
-/// ([`ByteBuffer`](crate::buffer::ByteBuffer)).
+/// One primitive buffer mutation: an insert, delete or overwrite at an offset. Cursor,
+/// selection, scroll and the column and endianness settings stay presentation. It is
+/// also the edit of the record's bytes at their path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum BufferEdit {
-    /// Splice `bytes` in *before* `offset`, growing the buffer.
+    /// Splice `bytes` in before `offset`, growing the buffer.
     Insert { offset: usize, bytes: Hex },
     /// Remove `len` bytes starting at `offset`.
     Delete { offset: usize, len: usize },
-    /// Replace the bytes already at `offset..offset+bytes.len()` in place;
-    /// the buffer never grows, so bytes past its end are dropped.
+    /// Replace the bytes at `offset..offset+bytes.len()` in place; the buffer never
+    /// grows, so bytes past its end are dropped.
     Overwrite { offset: usize, bytes: Hex },
 }
 
 impl BufferEdit {
-    /// The edited span `(offset, len)`.
     fn span(&self) -> (usize, usize) {
         match self {
             Self::Insert { offset, bytes } | Self::Overwrite { offset, bytes } => {
@@ -44,8 +35,7 @@ impl BufferEdit {
         }
     }
 
-    /// Whether `next`, right after `self`, continues the same run of typing
-    /// or deleting: the next nibble or byte typed, the next byte deleted.
+    /// Whether `next`, right after `self`, continues the same run of typing or deleting.
     #[must_use]
     pub fn continues(&self, next: &Self) -> bool {
         let ((at, len), (next_at, next_len)) = (self.span(), next.span());
@@ -63,9 +53,8 @@ impl BufferEdit {
     }
 }
 
-/// Which of the two parallel columns the keyboard cursor is editing.
-/// The cursor offset is shared; only the input semantics differ — hex
-/// digits in the hex column, raw characters in the ASCII column.
+/// Which of the two parallel columns the cursor edits. The offset is shared; only the
+/// input differs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Column {
     Hex,
@@ -82,8 +71,7 @@ impl Column {
     }
 }
 
-/// Overwrite replaces the byte under the cursor; Insert splices a new
-/// byte in, growing the buffer. Classic hex-editor distinction.
+/// Overwrite replaces the byte under the cursor; Insert splices a new byte in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditMode {
     Overwrite,
@@ -107,7 +95,6 @@ impl EditMode {
     }
 }
 
-/// Byte-endianness for the data inspector and multi-byte search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Endian {
     Little,
@@ -131,7 +118,6 @@ impl Endian {
     }
 }
 
-/// How many trailing items `a` and `b` share.
 pub(crate) fn common_suffix<T: PartialEq>(a: &[T], b: &[T]) -> usize {
     a.iter()
         .rev()
@@ -140,38 +126,28 @@ pub(crate) fn common_suffix<T: PartialEq>(a: &[T], b: &[T]) -> usize {
         .count()
 }
 
-/// The full editor state: the bytes plus where we are in them.
 #[derive(Clone, Debug)]
 pub struct HexModel {
-    /// The byte buffer being edited.
     bytes: Vec<u8>,
-    /// Cursor offset into `bytes` (0..=len; the trailing position is
-    /// valid only in insert mode / for an append cursor).
+    /// The cursor's offset (0..=len; the trailing position holds in insert mode only).
     cursor: usize,
-    /// Selection anchor. When present, the selection spans
-    /// `min(anchor, cursor)..=max(anchor, cursor)` inclusive of both.
+    /// The selection spans `min(anchor, cursor)..=max(anchor, cursor)`.
     anchor: Option<usize>,
-    /// Bytes that differ from the originally-loaded buffer. Drives the
-    /// "changed byte" highlight so a reviewer can see edits at a glance.
+    /// Bytes that differ from the loaded buffer, which the view paints as changed.
     dirty: BTreeSet<usize>,
-    /// While typing the high nibble of a hex byte in overwrite mode we
-    /// stash it here; the next hex digit completes the byte. `None`
-    /// means the cursor is between bytes (clean nibble boundary).
+    /// The high nibble typed in overwrite mode, which the next digit completes; `None`
+    /// between bytes.
     pending_nibble: Option<u8>,
     column: Column,
     mode: EditMode,
     endian: Endian,
-    /// How many byte columns to render per row. 8 and 16 are the
-    /// classic choices; the model accepts any value >= 1.
+    /// Bytes per row: 8 and 16 are the classic choices, any value above 0 works.
     bytes_per_row: usize,
-    /// First row visible in the viewport (scroll position, in rows).
     top_row: usize,
-    /// The edits made since [`Self::take_edits`] last collected them.
     edits: Vec<BufferEdit>,
 }
 
 impl HexModel {
-    /// Build a model around an initial byte buffer.
     pub fn new(bytes: Vec<u8>) -> Self {
         Self {
             bytes,
@@ -188,16 +164,12 @@ impl HexModel {
         }
     }
 
-    /// The edits made since the last call, in order.
     pub fn take_edits(&mut self) -> Vec<BufferEdit> {
         std::mem::take(&mut self.edits)
     }
 
-    /// Show `bytes`, the buffer as the resource holds it now, keeping the
-    /// cursor (clamped) and the view settings. Bytes the change touched are
-    /// marked changed; where the buffer is as long as `saved`, the bytes
-    /// that differ from `saved` are exactly the changed ones (an undo
-    /// clears its byte's mark).
+    /// Show `bytes`, the buffer as the record holds it now, keeping the cursor
+    /// (clamped) and the view settings. Changed bytes are marked against `saved`.
     pub fn show_bytes(&mut self, bytes: &[u8], saved: &[u8]) {
         let unchanged = bytes == self.bytes.as_slice();
         if bytes.len() == saved.len() {
@@ -235,8 +207,8 @@ impl HexModel {
                 .chain(prefix..new_end)
                 .collect();
         }
-        // Local typing already changed the view's copy, but its dirty marks
-        // still need reconciliation against the saved file above.
+        // Local typing already changed the copy; its marks are reconciled against the
+        // saved file above.
         if unchanged {
             return;
         }
@@ -247,8 +219,6 @@ impl HexModel {
         self.clamp_cursor();
     }
 
-    /// Show `bytes` as a freshly loaded buffer: nothing changed, the cursor
-    /// at the start.
     pub fn load(&mut self, bytes: Vec<u8>) {
         self.bytes = bytes;
         self.dirty.clear();
@@ -321,15 +291,13 @@ impl HexModel {
         self.dirty.len()
     }
 
-    /// Forget every pending edit marker — the buffer now matches what is on
-    /// disk. Called after a successful save so the "changed byte" highlight
-    /// and the edited-count clear.
+    /// Forget every changed mark: the buffer matches what is on disk.
     pub fn clear_dirty(&mut self) {
         self.dirty.clear();
     }
 
-    /// Total number of rows the buffer occupies at the current width.
-    /// Always at least 1 so an empty buffer still shows one cursor row.
+    /// The rows the buffer occupies at the current width; at least 1, so an empty
+    /// buffer still shows a cursor row.
     pub fn row_count(&self) -> usize {
         match self.mode {
             EditMode::Insert => self.bytes.len() / self.bytes_per_row + 1,
@@ -337,8 +305,7 @@ impl HexModel {
         }
     }
 
-    /// Selection as an inclusive `(start, end)` byte range, normalised so
-    /// `start <= end`. `None` when there is no active selection.
+    /// The selection as an inclusive `(start, end)` range.
     pub fn selection(&self) -> Option<(usize, usize)> {
         self.anchor.map(|a| {
             let lo = a.min(self.cursor);
@@ -347,7 +314,6 @@ impl HexModel {
         })
     }
 
-    /// Length of the active selection in bytes (0 when none).
     pub fn selection_len(&self) -> usize {
         match self.selection() {
             Some((lo, hi)) => hi.saturating_sub(lo) + 1,
@@ -370,8 +336,7 @@ impl HexModel {
         self.set_top_row(next);
     }
 
-    /// Ensure `row` is within the `visible_rows`-tall viewport, scrolling
-    /// the minimum amount needed. Called after cursor moves.
+    /// Scroll the minimum so `row` is inside a `visible_rows`-tall viewport.
     pub fn scroll_into_view(&mut self, row: usize, visible_rows: usize) {
         if visible_rows == 0 {
             return;
@@ -405,9 +370,8 @@ impl HexModel {
         self.endian = self.endian.toggle();
     }
 
-    /// Move the cursor to an absolute offset, clamped to the buffer.
-    /// `extend` keeps/creates the selection anchor; otherwise the
-    /// selection is cleared.
+    /// Move the cursor to `offset`, clamped to the buffer. `extend` keeps the
+    /// selection anchor; otherwise the selection clears.
     pub fn move_to(&mut self, offset: usize, extend: bool) {
         let max = if extend {
             self.bytes.len().saturating_sub(1)
@@ -488,7 +452,6 @@ impl HexModel {
         self.anchor = None;
     }
 
-    /// The (row, col) grid position of the cursor at the current width.
     pub fn cursor_cell(&self) -> (usize, usize) {
         (
             self.cursor / self.bytes_per_row,
@@ -496,8 +459,7 @@ impl HexModel {
         )
     }
 
-    /// Set the byte at `offset` to `value`, recording it as dirty.
-    /// No-op (returns false) if `offset` is out of bounds.
+    /// Set the byte at `offset`; `false` when it is out of bounds.
     pub fn set_byte(&mut self, offset: usize, value: u8) -> bool {
         if let Some(slot) = self.bytes.get_mut(offset) {
             if *slot != value {
@@ -514,13 +476,10 @@ impl HexModel {
         }
     }
 
-    /// Insert `value` before `offset`, growing the buffer and marking the
-    /// new byte dirty. Offsets at/after the insertion point shift up, so
-    /// their dirty flags shift too.
+    /// Insert `value` before `offset`, shifting the changed marks at and after it.
     pub fn insert_byte(&mut self, offset: usize, value: u8) {
         let at = offset.min(self.bytes.len());
         self.bytes.insert(at, value);
-        // Shift dirty markers at/after the insertion point.
         let shifted: BTreeSet<usize> = self
             .dirty
             .iter()
@@ -534,8 +493,8 @@ impl HexModel {
         });
     }
 
-    /// Remove the byte at `offset`. Returns the removed byte, or None if
-    /// out of bounds. Dirty markers after the deletion shift down.
+    /// Remove the byte at `offset` and shift the later marks down; `None` when out of
+    /// bounds.
     pub fn delete_byte(&mut self, offset: usize) -> Option<u8> {
         if offset >= self.bytes.len() {
             return None;
@@ -552,9 +511,8 @@ impl HexModel {
         Some(removed)
     }
 
-    /// Remove `len` bytes starting at `offset` as one contiguous edit (the
-    /// selection-delete path), recording a single [`BufferEdit::Delete`]. Dirty
-    /// markers inside the range are dropped; those after it shift down.
+    /// Remove `len` bytes at `offset` as one [`BufferEdit::Delete`]. Marks inside the
+    /// range are dropped; those after it shift down.
     fn remove_range(&mut self, offset: usize, len: usize) {
         let end = (offset + len).min(self.bytes.len());
         if offset >= end {
@@ -582,24 +540,21 @@ impl HexModel {
         });
     }
 
-    /// Type a single hex digit (`0-9a-f`) at the cursor. In overwrite
-    /// mode the first digit sets the high nibble (pending) and the second
-    /// completes the byte and advances. In insert mode each completed
-    /// byte is spliced in. Returns true if the digit was consumed.
+    /// Type one hex digit: in overwrite mode the first sets the high nibble and the
+    /// second completes the byte, in insert mode each completed byte is spliced in.
+    /// `true` when the digit was consumed.
     pub fn input_hex_digit(&mut self, digit: u8) -> bool {
         if digit > 0xF {
             return false;
         }
         match self.mode {
             EditMode::Overwrite => {
-                // Empty buffer: nothing to overwrite — treat as insert so
-                // the user can start typing into a blank document.
+                // Empty buffer: nothing to overwrite, so insert instead.
                 if self.cursor >= self.bytes.len() {
                     return self.input_hex_digit_insert(digit);
                 }
                 match self.pending_nibble.take() {
                     None => {
-                        // In bounds: guarded by the cursor check above.
                         let cur = self.bytes.get(self.cursor).copied().unwrap_or_default();
                         let new = (digit << 4) | (cur & 0x0F);
                         self.set_byte(self.cursor, new);
@@ -609,7 +564,6 @@ impl HexModel {
                         let cur = self.bytes.get(self.cursor).copied().unwrap_or_default();
                         let new = (cur & 0xF0) | digit;
                         self.set_byte(self.cursor, new);
-                        // Byte complete — advance.
                         self.move_right(false);
                     }
                 }
@@ -622,15 +576,13 @@ impl HexModel {
     fn input_hex_digit_insert(&mut self, digit: u8) -> bool {
         match self.pending_nibble.take() {
             None => {
-                // Start a fresh byte with the high nibble; the byte exists
-                // immediately (low nibble 0) so it's visible while typing.
+                // The byte exists at once with a zero low nibble, so it shows while
+                // typing.
                 self.insert_byte(self.cursor, digit << 4);
                 self.pending_nibble = Some(digit);
                 true
             }
             Some(_high) => {
-                // In bounds: the preceding `None` arm just inserted the byte
-                // this nibble completes.
                 if let Some(cur) = self.bytes.get(self.cursor).copied() {
                     let new = (cur & 0xF0) | digit;
                     let _ = self.set_byte(self.cursor, new);
@@ -641,8 +593,7 @@ impl HexModel {
         }
     }
 
-    /// Type a raw character into the ASCII column. Overwrites or inserts
-    /// the byte per the active mode, then advances.
+    /// Type a raw character into the ASCII column, then advance.
     pub fn input_ascii_char(&mut self, ch: char) -> bool {
         if !ch.is_ascii() {
             return false;
@@ -667,8 +618,8 @@ impl HexModel {
         true
     }
 
-    /// Backspace: in insert mode deletes the byte before the cursor and
-    /// steps back; in overwrite mode just steps back (non-destructive).
+    /// In insert mode delete the byte before the cursor and step back; in overwrite
+    /// mode only step back.
     pub fn backspace(&mut self) {
         match self.mode {
             EditMode::Insert => {
@@ -684,8 +635,7 @@ impl HexModel {
         self.pending_nibble = None;
     }
 
-    /// Delete the active selection (or the single byte at the cursor when
-    /// there is no selection). Leaves the cursor at the deletion point.
+    /// Delete the selection, or the byte at the cursor, leaving the cursor there.
     pub fn delete_at_cursor(&mut self) {
         if let Some((lo, hi)) = self.selection() {
             self.remove_range(lo, hi - lo + 1);
@@ -700,16 +650,10 @@ impl HexModel {
         self.pending_nibble = None;
     }
 
-    /// Replace each of `spans` (byte ranges in ascending order, as find
-    /// returns them) with `with`, recording the edits it made. A span that
-    /// overlaps the one before it is left as it is. Overwrite mode keeps the
-    /// buffer's length, so there a replacement of another length than its
-    /// span is refused and nothing changes. The cursor lands on the first
-    /// replacement. Returns how many spans changed.
-    ///
-    /// # Errors
-    /// [`ChangesLength`] in overwrite mode when `with` is not as long as
-    /// every span.
+    /// Replace each of `spans` (ascending byte ranges, as find returns them) with `with`.
+    /// A span overlapping the one before it is left as it is, and in overwrite mode a
+    /// replacement of another length is refused. The cursor lands on the first
+    /// replacement; `Err` when overwrite mode cannot take it.
     pub fn replace_spans(
         &mut self,
         spans: &[(usize, usize)],
@@ -747,8 +691,6 @@ impl HexModel {
         Ok(changed)
     }
 
-    /// Overwrite the bytes at `offset` with `bytes` as one edit; whether any
-    /// byte changed.
     fn overwrite_range(&mut self, offset: usize, bytes: &[u8]) -> bool {
         let Some(slots) = self.bytes.get_mut(offset..offset + bytes.len()) else {
             return false;
