@@ -668,12 +668,14 @@ pub(crate) fn format_date(at_ms: i64) -> String {
     let seconds = at_ms.div_euclid(1000);
     let (year, month, day) = ui::date::civil_from_days(seconds.div_euclid(86_400));
     let of_day = seconds.rem_euclid(86_400);
-    // format: machine (RFC 3339 in UTC, as stored and exchanged, never shown)
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        of_day / 3600,
-        of_day % 3600 / 60,
-        of_day % 60
+    ui::format::machine!(
+        "RFC 3339 in UTC, as stored and exchanged, never shown",
+        format!(
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+            of_day / 3600,
+            of_day % 3600 / 60,
+            of_day % 60
+        )
     )
 }
 
