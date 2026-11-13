@@ -122,6 +122,14 @@ nav = "Errors"
 description = "Refused, RateLimited, AskPending and ProtocolError, the codes a host answers with, and keys that are turned away."
 
 [[page]]
+slug = "rest-api"
+source = "docs/api/openapi.json"
+generator = "tools/docs/reference/openapi.py"
+section = "Reference"
+nav = "REST API"
+description = "Every route under /v1, what it takes and what it answers, with a curl line for each, generated from the API's OpenAPI description."
+
+[[page]]
 slug = "python-sdk"
 source = "sdk/python/src/tilo/__init__.py"
 generator = "tools/docs/reference/python_sdk.py"
