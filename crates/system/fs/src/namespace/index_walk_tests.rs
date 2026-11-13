@@ -121,6 +121,230 @@ fn a_rebuild_reads_and_indexes_exactly_the_nodes_of_the_smallest_trees() {
     }
 }
 
+/// One replica and a peer of it, each opened from the same saved tree.
+struct Replicas {
+    here: Namespace,
+    peer: Namespace,
+}
+
+/// `saved_tree(4)` twice: a directory holding `f0` and `f2`, beside `f1` and `f3`.
+fn small_replicas() -> Replicas {
+    let saved = saved_tree(4);
+    let mut peer = Namespace::from_bytes("b", &saved).unwrap();
+    peer.prime_baseline();
+    Replicas {
+        here: Namespace::from_bytes("a", &saved).unwrap(),
+        peer,
+    }
+}
+
+fn catalogue_paths(ns: &Namespace) -> Vec<String> {
+    let mut paths: Vec<String> = ns
+        .record_index
+        .values()
+        .map(|record| record.path.clone())
+        .collect();
+    paths.sort();
+    paths
+}
+
+fn dir_of(ns: &mut Namespace) -> u64 {
+    ns.lookup(ROOT_INO, "dir").unwrap().ino.0
+}
+
+fn a_directory_removed_here(replicas: &mut Replicas) {
+    let dir = dir_of(&mut replicas.here);
+    assert!(replicas.here.remove(dir));
+}
+
+fn moves_that_are_refused(replicas: &mut Replicas) {
+    let here = &mut replicas.here;
+    let dir = dir_of(here);
+    let inner = here.create_dir(dir, "inner", 2).unwrap();
+    let revision = here.indexed_record_revision().to_owned();
+    assert!(
+        !here.rename(ROOT_INO, "dir", inner, "dir", 3),
+        "a directory moved under its own child"
+    );
+    assert!(
+        !here.rename(ROOT_INO, "dir", dir, "dir", 3),
+        "a directory moved into itself"
+    );
+    assert!(
+        !here.rename(ROOT_INO, "absent", dir, "found", 3),
+        "a name nothing has was moved"
+    );
+    assert_eq!(
+        here.indexed_record_revision(),
+        revision,
+        "a refused move moved the catalogue"
+    );
+}
+
+fn a_file_that_comes_and_goes(replicas: &mut Replicas) {
+    let here = &mut replicas.here;
+    let revision = here.indexed_record_revision().to_owned();
+    let dir = dir_of(here);
+    let brief = here.create_file(dir, "brief", Some(&h(2)), 1, 2).unwrap();
+    assert_ne!(
+        here.indexed_record_revision(),
+        revision,
+        "a new row left the revision where it was"
+    );
+    assert!(here.remove(brief));
+    assert_eq!(
+        here.indexed_record_revision(),
+        revision,
+        "the same rows have another revision"
+    );
+}
+
+fn a_directory_removed_by_the_peer(replicas: &mut Replicas) {
+    let dir = dir_of(&mut replicas.peer);
+    assert!(replicas.peer.remove(dir));
+    let delta = replicas.peer.save_incremental();
+    replicas.here.apply_incremental(&delta).unwrap();
+}
+
+fn a_peer_file_in_a_directory_removed_here(replicas: &mut Replicas) {
+    let dir = dir_of(&mut replicas.here);
+    assert!(replicas.here.remove(dir));
+    let theirs = dir_of(&mut replicas.peer);
+    replicas
+        .peer
+        .create_file(theirs, "late", Some(&h(2)), 1, 9)
+        .unwrap();
+    let delta = replicas.peer.save_incremental();
+    replicas.here.apply_remote_and_resolve(&delta).unwrap();
+}
+
+fn a_peer_move_delivered_twice(replicas: &mut Replicas) {
+    let dir = dir_of(&mut replicas.peer);
+    assert!(replicas.peer.rename(ROOT_INO, "f1", dir, "moved", 9));
+    let delta = replicas.peer.save_incremental();
+    replicas.here.apply_remote_and_resolve(&delta).unwrap();
+    let revision = replicas.here.indexed_record_revision().to_owned();
+    replicas.here.apply_remote_and_resolve(&delta).unwrap();
+    assert_eq!(
+        replicas.here.indexed_record_revision(),
+        revision,
+        "a delta delivered again moved the catalogue"
+    );
+}
+
+/// A row: its name, the change, and the catalogue's paths after it.
+type SmallChange = (&'static str, fn(&mut Replicas), &'static [&'static str]);
+
+/// The changes the 100,100-node test does not make, on a tree small enough to read. After each
+/// the indexes are what a rebuild of the document gives and the catalogue holds exactly the
+/// row's paths.
+#[test]
+fn the_catalogue_follows_each_small_change_as_a_rebuild_would() {
+    let rows: [SmallChange; 6] = [
+        (
+            "a directory removed here",
+            a_directory_removed_here,
+            &["/f1", "/f3"],
+        ),
+        (
+            "moves that are refused",
+            moves_that_are_refused,
+            &["/dir", "/dir/f0", "/dir/f2", "/dir/inner", "/f1", "/f3"],
+        ),
+        (
+            "a file that comes and goes",
+            a_file_that_comes_and_goes,
+            &["/dir", "/dir/f0", "/dir/f2", "/f1", "/f3"],
+        ),
+        (
+            "a directory removed by the peer",
+            a_directory_removed_by_the_peer,
+            &["/f1", "/f3"],
+        ),
+        (
+            "a peer's file in a directory removed here",
+            a_peer_file_in_a_directory_removed_here,
+            &["/f1", "/f3"],
+        ),
+        (
+            "a peer's move delivered twice",
+            a_peer_move_delivered_twice,
+            &["/dir", "/dir/f0", "/dir/f2", "/dir/moved", "/f3"],
+        ),
+    ];
+    for (row, change, paths) in rows {
+        // The whole-index comparison names the field that differs; this names the row.
+        eprintln!("row: {row}");
+        let mut replicas = small_replicas();
+        assert_eq!(
+            catalogue_paths(&replicas.here),
+            ["/dir", "/dir/f0", "/dir/f2", "/f1", "/f3"],
+            "{row}: the tree before the change"
+        );
+        change(&mut replicas);
+        assert_indexes_match_rebuild(&replicas.here);
+        assert_eq!(
+            catalogue_paths(&replicas.here),
+            paths,
+            "{row}: catalogue paths"
+        );
+        assert_eq!(
+            replicas.here.indexed_record_count(),
+            paths.len(),
+            "{row}: catalogue rows"
+        );
+    }
+}
+
+/// Two directories, each moved into the other on another replica. The repair puts the one with
+/// the lower node id back at the root; the catalogue re-paths everything below it, and both
+/// replicas end with the same rows.
+#[test]
+fn a_broken_move_cycle_repaths_its_subtree_in_both_catalogues() {
+    let Replicas { mut here, mut peer } = small_replicas();
+    let other = here.create_dir(ROOT_INO, "other", 2).unwrap();
+    let made = here.save_incremental();
+    peer.apply_remote_and_resolve(&made).unwrap();
+
+    let dir = dir_of(&mut here);
+    assert!(here.rename(ROOT_INO, "dir", other, "dir", 3));
+    let their_dir = dir_of(&mut peer);
+    assert!(peer.rename(ROOT_INO, "other", their_dir, "other", 3));
+    let from_here = here.save_incremental();
+    let from_peer = peer.save_incremental();
+    here.apply_remote_and_resolve(&from_peer).unwrap();
+    peer.apply_remote_and_resolve(&from_here).unwrap();
+
+    let dir_stays = here.id_for_ino(dir).unwrap() < here.id_for_ino(other).unwrap();
+    let paths: [&str; 6] = if dir_stays {
+        ["/dir", "/dir/f0", "/dir/f2", "/dir/other", "/f1", "/f3"]
+    } else {
+        [
+            "/f1",
+            "/f3",
+            "/other",
+            "/other/dir",
+            "/other/dir/f0",
+            "/other/dir/f2",
+        ]
+    };
+    for (replica, ns) in [("here", &here), ("the peer", &peer)] {
+        eprintln!("replica: {replica}");
+        assert_indexes_match_rebuild(ns);
+        assert_eq!(catalogue_paths(ns), paths, "{replica}: catalogue paths");
+        assert_eq!(
+            ns.indexed_record_count(),
+            paths.len(),
+            "{replica}: catalogue rows"
+        );
+    }
+    assert_eq!(
+        here.indexed_record_revision(),
+        peer.indexed_record_revision(),
+        "the replicas hold the same rows under different revisions"
+    );
+}
+
 #[test]
 fn a_node_under_the_reserved_root_id_keeps_the_root_record_its_own() {
     let saved = saved_tree(8);
