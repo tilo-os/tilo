@@ -88,6 +88,16 @@ impl Harness {
     }
 }
 
+/// The names of what `dir` holds, sorted: what a scenario left on disk.
+pub fn names_in(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
 /// How many probe heights the first pass of [`row_center`] steps over: 12 px, less than
 /// a row is tall.
 const ROW_SEARCH_STRIDE: usize = 4;
