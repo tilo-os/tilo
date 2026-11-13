@@ -832,6 +832,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_then_does_what_its_first_action_does() {
+        // A control that answers a message and then clears the box it was typed in acts on the
+        // message: what it does is the first action, the second only completing it.
+        let answer = ActionRef::new("answer", vec![Value::none()]);
+        let clear = ActionRef::new("$set", vec![Value::text("box"), Value::text("")]);
+        let press = ActionRef::new(
+            crate::host_ui::THEN_ACTION,
+            vec![Value::Action(answer.clone()), Value::Action(clear)],
+        );
+        assert_eq!(press.acting().action, answer.action);
+        // An action that runs nothing of its own is itself.
+        assert_eq!(answer.acting().action, "answer");
+    }
+
+    #[test]
     fn values_round_trip_through_json() {
         let target = ResourceRef::root("d1", "T").item("i-1", "U");
         let v = Value::List(vec![

@@ -154,12 +154,14 @@ fn doing(app: &str, ty: &str, action: &str) -> String {
         .join(app)
         .join("app.ids");
     let ids = std::fs::read_to_string(&lock).expect("the app's ids lock");
-    let id = ids
+    let Some((_, id)) = ids
         .lines()
         .filter_map(|line| line.split_once(" = "))
         .find(|(declared, _)| *declared == action)
-        .map(|(_, id)| id.trim().to_owned())
-        .unwrap_or_else(|| panic!("{} declares no {action}", lock.display()));
+    else {
+        panic!("{} declares no {action}", lock.display());
+    };
+    let id = id.trim().to_owned();
     format!("tl.so.tilo.lang.{app}.{ty}\u{1f}{id}")
 }
 
