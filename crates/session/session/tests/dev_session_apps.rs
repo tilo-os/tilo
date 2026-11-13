@@ -38,7 +38,11 @@ fn every_dev_session_app_is_an_installed_package() {
             .ok()
             .flatten()
             .unwrap_or_else(|| panic!("{app} is installed in the session's store"));
-        assert_eq!(found.package_id, app, "the store's row is the app's own id");
+        assert_eq!(
+            found.app_id.as_str(),
+            app,
+            "the store's row is the app's own id"
+        );
         assert!(
             found
                 .payload_root
@@ -71,7 +75,7 @@ fn a_dev_session_installs_the_apps_and_not_the_parts_they_are_made_with() {
     let apps: Vec<String> = app_catalogue::apps::read(&catalog)
         .expect("the store's apps read")
         .into_iter()
-        .map(|app| app.package_id)
+        .map(|app| app.app_id.to_string())
         .collect();
     for app in &installed {
         assert!(apps.contains(app), "{app} is installed: {apps:?}");
