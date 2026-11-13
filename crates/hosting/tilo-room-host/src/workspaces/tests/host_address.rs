@@ -101,9 +101,14 @@ async fn a_host_whose_endpoint_reaches_no_relay_opens_and_names_the_address_it_h
         .await
         .expect("a loopback endpoint binds");
     let host = WorkspaceHost::open(
+        // The fixture's own setting: a host serving other people's workspaces
+        // takes their work in them.
         HostConfig::new(
             dir.path().to_owned(),
-            tilo_relay_protocol::WorkSetting::own_person(),
+            tilo_relay_protocol::WorkSetting {
+                from: tilo_relay_protocol::WorkFrom::Anyone,
+                ..tilo_relay_protocol::WorkSetting::own_person()
+            },
         ),
         HostIdentity {
             user_public_key: cert.user_public_key,
