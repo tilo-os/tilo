@@ -11708,6 +11708,22 @@ pub mod tests {
                 .map(|invocation| (invocation.id, invocation.invocation))
         }
 
+        /// Drive `pending` until the broker answers it, taking the broker's
+        /// turn each pass: a journal write resolves on its own writer thread
+        /// and hands its answer to the turn, which nothing else takes here.
+        pub async fn drive<T>(&self, mut pending: tilo_actions::remote::Pending<T>) -> T {
+            tilo_test_env::within("the broker answers", async {
+                loop {
+                    drain_directory_bridge(self).await;
+                    if let tilo_actions::remote::PendingPoll::Ready(value) = pending.poll_ready() {
+                        break value;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+        }
+
         pub fn resolve_count(&self) -> usize {
             self.directory_state.borrow().resolve_count
         }
@@ -12249,7 +12265,7 @@ pub mod tests {
     /// listed without its gate, and nothing on that page is listed past it.
     #[tokio::test(flavor = "current_thread")]
     async fn a_row_whose_visibility_cannot_be_decoded_is_not_listed() {
-        use tilo_actions::remote::{Caller, CatalogueQuery, PendingPoll};
+        use tilo_actions::remote::{Caller, CatalogueQuery};
         tokio::task::LocalSet::new()
             .run_until(async {
                 let fixture = local_directory_fixture();
@@ -12262,17 +12278,9 @@ pub mod tests {
                     ..CatalogueQuery::default()
                 };
                 let list = || async {
-                    let mut pending = fixture.state.action_query(&caller, &query);
-                    tilo_test_env::within("bounded directory query", async {
-                        loop {
-                            drain_directory_bridge(&fixture).await;
-                            if let PendingPoll::Ready(result) = pending.poll_ready() {
-                                break result;
-                            }
-                            tokio::task::yield_now().await;
-                        }
-                    })
-                    .await
+                    fixture
+                        .drive(fixture.state.action_query(&caller, &query))
+                        .await
                 };
                 let listed = list().await.expect("a well-formed directory lists");
                 assert_eq!(
@@ -12371,9 +12379,7 @@ pub mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn directory_fixture_preserves_scoped_uuid_through_actual_completion() {
-        use tilo_actions::remote::{
-            Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
-        };
+        use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut fixture = local_directory_fixture();
@@ -12394,17 +12400,8 @@ pub mod tests {
                     wait_ms: None,
                     appearance: None,
                 };
-                let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
-                let admitted = tilo_test_env::within("bounded actual directory admission", async {
-                    loop {
-                        drain_directory_bridge(&fixture).await;
-                        if let PendingPoll::Ready(result) = pending.poll_ready() {
-                            break result;
-                        }
-                        tokio::task::yield_now().await;
-                    }
-                })
-                .await;
+                let pending = fixture.state.action_invoke(&caller, None, None, &request);
+                let admitted = fixture.drive(pending).await;
                 admitted.expect("full-envelope consumer supports scoped invocation UUIDs");
                 let (job, delivered) = fixture.take_invocation_identity().expect("actual delivery");
                 assert_eq!(delivered, request.invocation);
@@ -12505,11 +12502,10 @@ pub mod tests {
                 wait_ms: None,
                 appearance: None,
             };
+            let pending = fixture.state.action_invoke(&caller, None, None, &request);
             let receipt = fixture
-                .state
-                .action_invoke(&caller, None, None, &request)
+                .drive(pending)
                 .await
-                .expect("the host answers")
                 .expect("published ordinary action must be admitted");
             assert_eq!(receipt.invocation, request.invocation);
             let (job, delivered) = fixture.take_invocation_identity().unwrap();

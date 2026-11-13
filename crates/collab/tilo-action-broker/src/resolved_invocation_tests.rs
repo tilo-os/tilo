@@ -209,21 +209,13 @@ async fn admit_directory_invoke(
     fixture: &LocalDirectoryFixture,
     request: &tilo_actions::remote::InvokeRequest,
 ) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError> {
-    use tilo_actions::remote::{Caller, PendingPoll};
+    use tilo_actions::remote::Caller;
     let caller = Caller::local_person("fixture-owner")
         .in_workspace(fixture.cluster_id.clone())
         .in_new_execution();
-    let mut pending = fixture.state.action_invoke(&caller, None, None, request);
-    tilo_test_env::within("bounded directory admission", async {
-        loop {
-            drain_directory_bridge(fixture).await;
-            if let PendingPoll::Ready(result) = pending.poll_ready() {
-                break result;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
+    fixture
+        .drive(fixture.state.action_invoke(&caller, None, None, request))
+        .await
 }
 
 /// An invoke naming no revision asks the directory's owner to resolve the

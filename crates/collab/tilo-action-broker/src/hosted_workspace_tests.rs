@@ -260,18 +260,8 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
                 .remove(&fixture.peer_id);
             let mut listed = request(&fixture, &action);
             listed.revision = None;
-            let mut pending = fixture.state.action_invoke(&person, None, None, &listed);
-            let receipt = tilo_test_env::within("the directory's action is sent", async {
-                loop {
-                    drain_directory_bridge(&fixture).await;
-                    if let PendingPoll::Ready(result) = pending.poll_ready() {
-                        break result;
-                    }
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("the host's receipt");
+            let pending = fixture.state.action_invoke(&person, None, None, &listed);
+            let receipt = fixture.drive(pending).await.expect("the host's receipt");
             assert!(
                 matches!(receipt.status, ReceiptStatus::Completed { .. }),
                 "{receipt:?}"
