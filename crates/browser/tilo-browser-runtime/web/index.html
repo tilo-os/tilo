@@ -282,10 +282,10 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #arrival-bar > span { display: block; height: 100%; background: #6c6c76; transform-origin: left; transform: scaleX(var(--progress, 0)); transition: transform 200ms linear; }
     #arrival-retry, #arrival-own { display: none; position: fixed; z-index: 2; left: 50%; top: calc(50% + 80px); transform: translateX(-50%); font: inherit; padding: 8px 14px; border-radius: 8px; border: 0; background: #4a7dff; color: white; cursor: pointer; }
     #arrival-retry:focus-visible, #arrival-own:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
-    [data-arrival=stopped]:not([data-entry=refused]):not([data-entry=unsupported]) #arrival-retry { display: block; }
+    [data-arrival=stopped]:not([data-entry=refused]):not([data-entry=unsupported]):not([data-failure]) #arrival-retry { display: block; }
     /* A step that does not move on: Try again beside the wait (arrival.mjs, stall.inline.js). */
     [data-arrival-stalled]:not([data-arrival=done]):not([data-arrival=stopped]) body:not(:has(.tilo-entry-card)) #arrival-retry { display: block; }
-    [data-arrival=stopped][data-entry=refused][data-own-desktop] #arrival-own { display: block; }
+    [data-arrival=stopped][data-entry=refused][data-own-desktop]:not([data-failure]) #arrival-own { display: block; }
     /* Turned away for coming without an invitation: a door of its own
        (entry-page.mjs `offerDoor`). One calm group, its top fixed a little
        above the middle so nothing it reveals moves what is above: the mark,

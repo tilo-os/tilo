@@ -197,6 +197,12 @@ test('while the failure screen shows, nothing else of the page shows beside or o
   for (const part of ['#arrival', '#arrival-note', '#arrival-retry', '#arrival-own', '#arrival-reconnect', '.tilo-entry-card']) {
     assert.ok(hidden.split(',').map(item => item.trim()).includes(part), part);
   }
+  // The older rules that show the page's own Try again and own-desktop
+  // buttons on a stop are more specific than the one above: each leaves
+  // the failure screen out itself.
+  for (const rule of html.match(/^.*#arrival-(retry|own) \{ display: block; \}$/gm) ?? []) {
+    if (/^\s*\[data-arrival=stopped\]/.test(rule)) assert.match(rule, /:not\(\[data-failure\]\)/, rule);
+  }
   assert.match(html, /\[data-failure\] #status \{ position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset\(50%\)/);
   for (const id of ['arrival-failure-heading', 'arrival-failure-body', 'arrival-failure-retry', 'arrival-failure-host',
     'arrival-failure-elsewhere', 'arrival-failure-others', 'arrival-failure-details', 'arrival-failure-text']) {
