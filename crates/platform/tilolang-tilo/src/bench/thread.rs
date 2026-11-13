@@ -100,11 +100,24 @@ pub(super) fn seeded(
     n: usize,
 ) -> Result<Doc, String> {
     let principals = principals(packages);
-    let mut root = super::unwritten(&shape.root_ty)?;
-    let mut item = filled((&thread_id(), &list.item_ty), "Item 0", 0, &principals)?;
-    let mut inner = Collection::default();
+    let mut doc = Doc::new();
+    // The one item of the root's list, then its own items: each run in the actions a change
+    // records whole, as a channel's messages arrive.
+    super::seed::create_root(&mut doc, shape, super::VIEWER)?;
+    let item = filled((&thread_id(), &list.item_ty), "Item 0", 0, &principals)?;
+    super::seed::add_in_runs(
+        &mut doc,
+        shape,
+        &list.field,
+        &list.item_ty,
+        super::seed::holder_of(list).as_deref(),
+        &[(Id::from_raw(thread_id()), item)],
+        super::VIEWER,
+        super::seed::SEED_BATCH,
+    )?;
+    let mut inner = Vec::with_capacity(n);
     for i in 0..n {
-        inner.push(
+        inner.push((
             Id::from_raw(item_id(i)),
             filled(
                 (&item_id(i), &nested.item_ty),
@@ -112,32 +125,18 @@ pub(super) fn seeded(
                 1,
                 &principals,
             )?,
-        );
+        ));
     }
-    match item.get_mut(&nested.field) {
-        Some(DynValue::Collection(slot)) => *slot = inner,
-        _ => return Err("the item's collection is not one".into()),
-    }
-    let mut items = Collection::default();
-    items.push(Id::from_raw(thread_id()), item);
-    let items = super::with_holders(list, items)?;
-    match root.get_mut(&super::top_field(list)) {
-        Some(DynValue::Collection(slot)) => *slot = items,
-        _ => return Err("the list field is not a collection".into()),
-    }
-    let mut doc = Doc::new();
-    let action = DynAction {
-        app: shape.app.clone(),
-        kind: format!("tl.{}.seed", shape.app),
-        action_id: "$create".into(),
-        args: Json::Null,
-        authorship: Authorship::default(),
-        edits: vec![DynEdit::Create {
-            id: root_id(shape),
-            record: tilo_resource::Model::to_json(&root),
-        }],
-    };
-    execute(&mut doc, &action, "seed")?;
+    super::seed::add_in_runs(
+        &mut doc,
+        shape,
+        &nested.field,
+        &nested.item_ty,
+        Some(&thread_id()),
+        &inner,
+        super::VIEWER,
+        super::seed::SEED_BATCH,
+    )?;
     Doc::load(&doc.save()).map_err(|e| e.to_string())
 }
 

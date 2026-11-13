@@ -53,9 +53,9 @@ mod engines;
 mod seed;
 mod thread;
 
-pub use engines::compute_package;
-use seed::{SEED_BATCH, execute, root_id, seeded_workspace};
 pub use seed::{seeded_chunks, seeded_record, seeded_record_by, seeded_record_in_one_action};
+
+pub use engines::compute_package;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -63,8 +63,9 @@ use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value as Json, json};
+use tilo_actions::{ActionContext, ActionInvoker};
 use tilo_automerge::ApplyIncoming as _;
-use tilo_resource::{Collection, Edit, EditOp, Id, Segment};
+use tilo_resource::{Edit, EditOp, Id, Segment};
 use tilolang::source::{compile_dirs, dependency_order};
 use tilolang::{Compiled, SeededEntropy};
 use tilolang_runtime::meta::{Meta, Ty};
@@ -233,6 +234,11 @@ pub fn compile(dir: &Path) -> Result<Vec<Compiled>, String> {
     let dirs = dependency_order(dir, &search)?;
     let built = compile_dirs(&dirs, &[], &mut SeededEntropy(1)).map_err(|e| e.to_string())?;
     Ok(built.into_iter().map(|b| b.compiled).collect())
+}
+
+/// The id the seeded item number `i` has.
+fn item_id(i: usize) -> String {
+    format!("seed-{i:06}")
 }
 
 /// What a package's root holds that the scenarios fill and edit.
@@ -509,7 +515,7 @@ fn fill_registers(record: &mut DynRecord, registers: &[(String, Ty)]) -> Result<
             Ty::Bool => json!(false),
             Ty::Text => json!("bench"),
             Ty::Principal => {
-                tilolang_runtime::value::to_json(&Value::Principal(Principal::new("bench")))?
+                tilolang_runtime::value::to_json(&Value::Principal(Principal::new(VIEWER)))?
             }
             // What reads as a value unwritten (an option reads as none) is left unwritten.
             other if tilolang_runtime::meta::unwritten_value(other, None).is_ok() => continue,
@@ -591,116 +597,6 @@ fn inside(meta: &Meta, outer: &List) -> Option<List> {
     fallback
 }
 
-/// The id the seeded item number `i` has.
-fn item_id(i: usize) -> String {
-    format!("seed-{i:06}")
-}
-
-/// The root's collection, seeded with `n` items of [`List`], inside its holders.
-///
-/// A list inside holders is filled from the bottom up: the holders hold one record each (the
-/// workspace's mail accounts; a workspace has a few), and what grows is the collection in it.
-fn seeded_collection(list: &List, n: usize) -> Result<Collection<DynRecord>, String> {
-    with_holders(list, seeded_items(list, n)?)
-}
-
-/// The item's optional dates (its `Option<Date>` fields).
-fn optional_dates(ty: &str) -> Result<Vec<String>, String> {
-    let schema = lookup(ty).ok_or_else(|| format!("unregistered type {ty}"))?;
-    Ok(schema
-        .fields
-        .iter()
-        .filter(|f| f.kind == MergeKind::Register)
-        .filter(|f| matches!(&f.ty, Some(Ty::Option(inner)) if matches!(**inner, Ty::Date)))
-        .map(|f| f.id.clone())
-        .collect())
-}
-
-/// `n` items of [`List`], as its collection holds them, outside any holder.
-fn seeded_items(list: &List, n: usize) -> Result<Collection<DynRecord>, String> {
-    let n = if list.places { n.min(PLACES) } else { n };
-    let dates = optional_dates(&list.item_ty)?;
-    let mut items = Collection::default();
-    for i in 0..n {
-        let mut item = unwritten(&list.item_ty)?;
-        for (k, field) in list.texts.iter().enumerate() {
-            if let Some(DynValue::Text(text)) = item.get_mut(field) {
-                *text = if k == 0 {
-                    format!("Item {i}")
-                } else {
-                    format!("Text of item {i}")
-                };
-            }
-        }
-        for field in &list.flags {
-            if let Some(DynValue::Register(flag)) = item.get_mut(field) {
-                *flag = json!(i % 3 == 0);
-            }
-        }
-        for field in &list.sets {
-            if let Some(DynValue::Set(slot)) = item.get_mut(field) {
-                slot.insert(json!("inbox"));
-            }
-        }
-        // Every second item is dated the day the bench's clock reads, as a workspace a person adds
-        // work to day by day holds it: a filter on the day holds of some items and not of others,
-        // and a window opening on a place that filters by it shows rows of the workspace.
-        if i % 2 == 0 {
-            for field in &dates {
-                if let Some(DynValue::Register(date)) = item.get_mut(field) {
-                    *date = json!({ "some": BENCH_DAY });
-                }
-            }
-        }
-        items.push(Id::from_raw(item_id(i)), item);
-    }
-    Ok(items)
-}
-
-/// `items` of the list's collection, wrapped in the records the collection is inside: each
-/// holder is a record of its own holding the one below it, the topmost in the root.
-pub(crate) fn with_holders(
-    list: &List,
-    items: Collection<DynRecord>,
-) -> Result<Collection<DynRecord>, String> {
-    let mut items = items;
-    // Each holder's own collection holds the one below it, its own id naming it: a mail
-    // account's conversations.
-    for (level, holder) in list.holders.iter().enumerate().rev() {
-        let mut record = unwritten(&holder.ty)?;
-        for (k, field) in holder.texts.iter().enumerate() {
-            if let Some(DynValue::Text(text)) = record.get_mut(field) {
-                *text = if k == 0 {
-                    "Holder".to_owned()
-                } else {
-                    format!("Text {k}")
-                };
-            }
-        }
-        // The holder holds the record below it: the next holder, or the list itself.
-        let field = list
-            .holders
-            .get(level.saturating_add(1))
-            .map_or_else(|| list.field.clone(), |next| next.field.clone());
-        match record.get_mut(&field) {
-            Some(DynValue::Collection(slot)) => *slot = items,
-            _ => return Err("the holder's field is not a collection".into()),
-        }
-        let mut held = Collection::default();
-        held.push(Id::from_raw(holder_id(level)), record);
-        items = held;
-    }
-    Ok(items)
-}
-
-/// The field of the root the list's topmost collection is in: the first holder's, or the
-/// list's own when it stands in the root.
-pub(crate) fn top_field(list: &List) -> String {
-    list.holders
-        .first()
-        .map_or_else(|| list.field.clone(), |h| h.field.clone())
-}
-
 /// The reference to the item `id` of the list in `shape`: the root's record, or the record the
 /// item is inside (`$items` holds it either way).
 pub(crate) fn item_ref(shape: &Shape, list: &List, id: &str) -> ResourceRef {
@@ -721,35 +617,40 @@ pub(crate) fn item_path(id: &str, field: &str) -> Vec<Segment> {
     ]
 }
 
-/// The id of the holder at `level` (the record the list's collection is inside).
-fn holder_id(level: usize) -> String {
-    format!("hold-{level:03}")
+/// Commit `action` on `doc` through the executor, as a window's host does: recorded at
+/// [`BENCH_TIME`] unless it says when it was made, so what the windows show of when things
+/// changed is the same in every run.
+fn execute(doc: &mut Doc, action: &DynAction, who: &str) -> Result<(), String> {
+    let mut action = action.clone();
+    // The action records who invoked it, as the runtime's own do: what a window reads of a
+    // change is whose it was, so an action of the seed's is the person's it seeds as, not
+    // nobody's.
+    who.clone_into(&mut action.authorship.invoker);
+    if action.authorship.at.is_none() {
+        action.authorship.at = Some(BENCH_TIME.to_owned());
+    }
+    let action = &action;
+    let context = ActionContext::for_resource(
+        action.resources().first().copied().unwrap_or("workspace"),
+        &action.kind,
+        &action.kind,
+    )
+    .with_app("so.tilo.lang", "tilolang")
+    .with_invoker(ActionInvoker::actor(who.to_owned()));
+    tilo_actions::apply_local_with_context(
+        doc,
+        action,
+        action.encode().map_err(|e| e.to_string())?,
+        Some(who.as_bytes()),
+        context,
+    )
+    .map_err(|e| e.to_string())?;
+    doc.commit();
+    Ok(())
 }
 
-/// The root record with `n` items in its collection (a sidebar of places, its [`PLACES`]),
-/// each with its number in every text field, and referring to the roots it links.
-fn seeded_root(shape: &Shape, n: usize) -> Result<DynRecord, String> {
-    let mut root = unwritten(&shape.root_ty)?;
-    if let Some(list) = &shape.list {
-        let items = seeded_collection(list, n)?;
-        // The topmost collection is the root's own field: the holder chain's first field, or
-        // the list's when it stands in the root.
-        let field = top_field(list);
-        match root.get_mut(&field) {
-            Some(DynValue::Collection(slot)) => *slot = items,
-            _ => return Err("the list field is not a collection".into()),
-        }
-    }
-    for (field, linked) in &shape.links {
-        let Some(field) = field else { continue };
-        let target = ResourceRef::root(root_id(linked), linked.root_ty.clone());
-        let value = tilolang_runtime::value::to_json(&Value::some(Value::resource(&target)))?;
-        match root.get_mut(field) {
-            Some(DynValue::Register(slot)) => *slot = value,
-            _ => return Err(format!("the field {field} does not hold a reference")),
-        }
-    }
-    Ok(root)
+fn root_id(shape: &Shape) -> String {
+    format!("root-{}", shape.root_ty)
 }
 
 /// One machine's window onto the workspace: the record, the host and the open views.
@@ -826,7 +727,7 @@ fn prepare_index(doc: &Doc, packages: &[Compiled]) -> Result<(IndexDir, f64), St
                 index_dir: Some(dir.path().to_owned()),
                 device: None,
             },
-            Principal::new("bench"),
+            Principal::new(VIEWER),
             || None,
         )
         .map_err(|e| e.to_string())?;
@@ -931,6 +832,10 @@ const BENCH_TIME: &str = "2026-06-29T09:00:00Z";
 /// it makes is recorded at.
 const BENCH_DAY: &str = "2026-06-29";
 
+/// The person whose workspace the bench opens, and who made the items in it: what a window shows
+/// is the workspace they left, not the changes someone else made to it that they have not seen.
+const VIEWER: &str = "bench";
+
 impl Workspace {
     fn open(
         doc: Doc,
@@ -960,7 +865,7 @@ impl Workspace {
                 index_dir: index.as_ref().map(|dir| dir.path().to_owned()),
                 device: None,
             },
-            Principal::new("bench"),
+            Principal::new(VIEWER),
             || None,
         )
         .map_err(|e| e.to_string())?;
@@ -1592,7 +1497,10 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         })
     };
     for n in counts {
-        let sized = sized(n, seeded_workspace(&shape, n, "seed", SEED_BATCH)?)?;
+        let sized = sized(
+            n,
+            seed::seeded_workspace(&shape, n, VIEWER, seed::SEED_BATCH)?,
+        )?;
         if let Some(isolation) = &config.memory {
             out.push(memory(&sized, isolation)?);
         }
@@ -1892,7 +1800,7 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<Vec<Record>, String> {
                 index_dir: Some(index.path().to_owned()),
                 device: None,
             },
-            Principal::new("bench"),
+            Principal::new(VIEWER),
             || None,
         )
         .map_err(|e| e.to_string())?;
@@ -2677,7 +2585,7 @@ mod tests {
             panic!("the person is a register");
         };
         let read = tilolang_runtime::value::from_json(person).unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(read, Value::Principal(Principal::new("bench")));
+        assert_eq!(read, Value::Principal(Principal::new(VIEWER)));
     }
 
     /// A field of a type the seed has no value for, which a view would read as a trap, is named
