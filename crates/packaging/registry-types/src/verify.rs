@@ -84,7 +84,6 @@ pub fn verify_change_request(
     Ok(())
 }
 
-
 /// Errors name the failure mode, for the server to log.
 fn decode_pubkey_hex(hex_str: &str) -> Result<[u8; 32], VerifyError> {
     decode_fixed_hex::<32>(hex_str)
