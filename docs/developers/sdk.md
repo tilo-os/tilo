@@ -8,7 +8,9 @@ history and undo. There is no second API.
 
 Both SDKs are published as `tilo-sdk` (`uv add tilo-sdk`, `bun add tilo-sdk`). The Python module
 is `tilo`: plain `tilo` on PyPI is another project's name, so only the distribution is
-`tilo-sdk`. A release tag publishes both, at that tag's version.
+`tilo-sdk`. A release tag publishes both, at that tag's version ([Publishing the
+SDKs](../publishing.md#publishing-the-sdks) has the tag, the credentials and what the native
+packages will publish as).
 
 ## One model, four ways in
 

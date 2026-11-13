@@ -724,9 +724,10 @@ requires = ["arch=x86_64"]
 #
 # What runs on main is the same build with no token: both packages are built as a tag would
 # build them, their artifacts are packed and read back, and the version a tag would write is
-# exercised on a stand-in. A renamed package, a manifest that stops being publishable or an
-# import package that falls out of the wheel breaks here, long before a tag does. It runs again
-# in the tag's own publish run, on that tag's version, before anything is sent.
+# exercised on a stand-in. Only a check that publishes is told the reference it runs for, so this
+# one never sees the tag; the publish check builds and checks the tag's version itself before it
+# sends anything. A renamed package, a manifest that stops being publishable or an import
+# package that falls out of the wheel breaks here, long before a tag does.
 [[check]]
 name = "publish-sdks-dry-run"
 run = "bash tools/ci/publish/sdks.sh check"
@@ -743,6 +744,12 @@ image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" 
 requires = ["arch=x86_64"]
 on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 secrets = ["NPM_TOKEN", "PYPI_TOKEN"]
+
+# The SDKs' native halves are designed, not built: sdk/python/native (PyO3, wheels of the same
+# tilo-sdk project) and sdk/typescript/native (napi-rs, the tilo-sdk-native packages) do not
+# exist yet, and nothing here publishes something a tree does not build. The step that will, with
+# its names and its exact commands, is the native part of the SDKs' section of
+# docs/publishing.md; it joins this chain, beside publish-sdks, when those crates land.
 
 [[check]]
 name = "sdk-policy"
