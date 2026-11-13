@@ -550,6 +550,13 @@ impl<'a> Caller<'a> {
                 shaped::<answers::Invitation>(invited.get("result").cloned().unwrap_or_default())
                     .map(Answer::created)
             }
+            "namePerson" => {
+                let new: answers::NewName = self.json_body()?;
+                let named = json!({"path": "workspace/members#name", "args": new});
+                let listed = self.call("tilo_do", named).await?;
+                shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
             "runProgram" => {
                 let program: answers::Program = self.json_body()?;
                 let answer = self

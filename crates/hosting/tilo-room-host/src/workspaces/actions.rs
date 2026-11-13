@@ -89,6 +89,11 @@ pub(crate) const CANCEL_INVITATION: &str = "invitation.cancel";
 /// The people in the workspace and their roles: what whoever invites sees
 /// before and after inviting.
 pub(crate) const MEMBERS: &str = "member.list";
+/// The calling person's own name in the workspace: what its member list and
+/// the invitations they make show for them, from any of their devices or
+/// keys. Every member names themself, so it is no governance action and no
+/// grant gates it.
+pub(crate) const NAME: &str = "member.name";
 /// Listing the workspace as a public workspace, with its description and the
 /// role everyone who joins gets.
 pub(crate) const PUBLISH: &str = "publish";
@@ -144,7 +149,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 15] = [
+const VERBS: [Verb; 16] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -172,6 +177,15 @@ const VERBS: [Verb; 15] = [
         gate: governance::INVITE,
         kind: ActionKind::Read,
         params: Vec::new,
+    },
+    Verb {
+        id: NAME,
+        label: "Name yourself",
+        // Nothing gates it: what a person is called in a workspace is theirs,
+        // not a grant's. Whoever asks names themselves, or is refused.
+        gate: "",
+        kind: roles::GOVERNANCE_KIND,
+        params: name_params,
     },
     Verb {
         id: governance::UNBAN,
@@ -321,6 +335,14 @@ fn invitation_params() -> Vec<ActionParam> {
         "invite",
         ParamType::Text,
         "The invitation's id, 64 hex characters, as listing invitations reports it.",
+    )]
+}
+
+fn name_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "name",
+        ParamType::Text,
+        "How the workspace shows you from now on, in its member list and on the invitations you make.",
     )]
 }
 
@@ -923,6 +945,12 @@ impl Workspaces {
                 .iter()
                 .chain(confirmed)
                 .filter(|verb| {
+                    // A verb with no gate is the caller's own business (naming
+                    // themselves), which every person has and an agent's grant
+                    // does not.
+                    if verb.gate.is_empty() {
+                        return speaks_for_themselves(caller);
+                    }
                     self.permits(
                         &device,
                         Some(&workspace),
@@ -1054,14 +1082,17 @@ impl Workspaces {
             .ok_or(ActionHostError::UnknownAction)?;
         let workspace = {
             let workspace = governed.lock().await;
-            // Unknown and forbidden are the same answer.
+            // Unknown and forbidden are the same answer. A verb with no gate
+            // is the caller's own business, which its run decides: naming
+            // themselves, in [`NAME`]'s case, and nobody else.
             if address.resource != workspace_governance_resource(workspace.workspace())
-                || !self.permits(
-                    &device,
-                    Some(&workspace),
-                    WorkspaceOp::Govern(gate),
-                    tilo_clock::unix_now_ns(),
-                )
+                || (!gate.is_empty()
+                    && !self.permits(
+                        &device,
+                        Some(&workspace),
+                        WorkspaceOp::Govern(gate),
+                        tilo_clock::unix_now_ns(),
+                    ))
             {
                 return Err(ActionHostError::UnknownAction);
             }
@@ -1087,7 +1118,7 @@ impl Workspaces {
         call: GovernanceCall<'_>,
     ) -> Result<Value, ActionHostError> {
         match action {
-            governance::INVITE | INVITATIONS | CANCEL_INVITATION | MEMBERS => {
+            governance::INVITE | INVITATIONS | CANCEL_INVITATION | MEMBERS | NAME => {
                 self.governance_invitations(action, call).await
             }
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
@@ -1336,6 +1367,17 @@ impl Workspaces {
                         })
                     })
                     .collect())
+            }
+            NAME => {
+                self.name_self(
+                    workspace,
+                    device,
+                    args.required_text("name")?,
+                    tilo_clock::unix_now_ns(),
+                )
+                .await
+                .map_err(|error| refused(&error))?;
+                Ok(json!({}))
             }
             CANCEL_INVITATION => {
                 self.cancel(

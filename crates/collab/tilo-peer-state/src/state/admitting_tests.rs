@@ -95,7 +95,7 @@ fn an_administrator_admits_an_owners_invitation_and_an_editor_does_not() {
     assert!(refused.contains("may not invite"), "{refused}");
 
     peer.governance_mut()
-        .set_member_administrator(user, &owner_key, now)
+        .set_member_administrator(user, None, &owner_key, now)
         .unwrap();
     assert!(
         peer.governance_mut()
@@ -160,7 +160,7 @@ fn refusal_of_tampered_admission(
     let (_, user) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);
     let editor_key = SigningKey::from_bytes(&[6; 32]);
     peer.governance_mut()
-        .set_member_administrator(user, &owner_key, now)
+        .set_member_administrator(user, None, &owner_key, now)
         .unwrap();
     // The administrator's device admits the guest as every device does — the
     // rows its operation names beside the receipt — and then changes what

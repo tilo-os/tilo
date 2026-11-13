@@ -91,7 +91,8 @@ pub(crate) struct PolicyData {
     pub owner: Option<String>,
     pub identities: std::collections::BTreeMap<String, Vec<u8>>,
     /// The self-asserted display name beside each device row, keyed like
-    /// `identities`.
+    /// `identities`, and beside a person's user root where the workspace keeps
+    /// the name they go by without a device of theirs listed.
     pub names: std::collections::BTreeMap<String, String>,
 }
 impl From<AutoCommit> for CachedDocument {

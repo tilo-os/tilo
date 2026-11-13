@@ -341,10 +341,20 @@ impl PeerGovernance<'_> {
         for row in &mut rows {
             row.active_device_keys.sort_unstable();
             row.active_device_keys.dedup();
-            row.display_name = naming
-                .get(&row.user_public_key)
-                .and_then(Naming::name)
-                .map(str::to_owned);
+            // The name the person goes by here: the one the workspace keeps
+            // under their root, which names them before any device of theirs
+            // arrived and wherever they last renamed themselves, else the one
+            // their own oldest device says.
+            row.display_name = names
+                .get(&hex::encode(row.user_public_key))
+                .filter(|name| !name.trim().is_empty())
+                .cloned()
+                .or_else(|| {
+                    naming
+                        .get(&row.user_public_key)
+                        .and_then(Naming::name)
+                        .map(str::to_owned)
+                });
         }
         Ok(rows)
     }
@@ -423,10 +433,10 @@ impl PeerGovernance<'_> {
 /// own label or by the invitation that admitted it, so the person's row takes
 /// its name from a device of theirs and never from a key's label: "Jane Doe's
 /// agent" names the agent, not Jane. A person who names themself
-/// ([`Self::name_person`]'s caller) has that name on every identity of
-/// theirs, their own devices included, so it is what their row says. A person
-/// the workspace knows only through keys made for them has no name here, and
-/// the row says so rather than borrowing a key's.
+/// ([`Self::name_person`]'s caller) has that name kept under their root too,
+/// which is what their row says. A person the workspace knows only through
+/// keys made for them, and whom nobody named, has no name here, and the row
+/// says so rather than borrowing a key's.
 #[derive(Default)]
 struct Naming {
     /// The name of their own device whose certificate was issued earliest,
@@ -775,22 +785,26 @@ impl PeerGovernanceMut<'_> {
     /// `role`, an administrator or not, before any device of theirs is
     /// admitted here: someone a deployment's operator names as an owner while
     /// the workspace waits for them to join. Their device is admitted when it
-    /// joins, and they hold what this record says from then on.
+    /// joins, and they hold what this record says from then on. `name`, when
+    /// the caller carries one, is how the workspace names them from then on
+    /// ([`Self::name_person`]).
     ///
     /// # Errors
     ///
     /// Returns an error if the change is not `key`'s device's to make, the
-    /// person is the workspace's own owner, or governance cannot be updated.
+    /// person is the workspace's own owner, `name` is not a display name, or
+    /// governance cannot be updated.
     pub fn declare_member(
         self,
         user_public_key: [u8; 32],
         role: crate::join::Role,
         administrator: bool,
+        name: Option<&str>,
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer
-            .declare_member(user_public_key, role, administrator, key, now)
+            .declare_member(user_public_key, role, administrator, name, key, now)
     }
 
     /// Make a person an administrator of the workspace: a member as an Editor,
@@ -798,31 +812,45 @@ impl PeerGovernanceMut<'_> {
     /// ([`tilo_action_policy::roles::administrator_grant`]), whether one of
     /// their devices has joined yet or not. A declaration made before they
     /// arrive is governance like any other, so it is here when they do and
-    /// after a restart.
+    /// after a restart. `name`, when the caller carries one, is how the
+    /// workspace names them until they rename themselves.
     ///
     /// # Errors
     ///
     /// Returns an error if the change is not `key`'s device's to make, the
-    /// person is the workspace's own owner, or governance cannot be updated.
+    /// person is the workspace's own owner, `name` is not a display name, or
+    /// governance cannot be updated.
     pub fn set_member_administrator(
         self,
         user_public_key: [u8; 32],
+        name: Option<&str>,
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.declare_member(user_public_key, crate::join::Role::Editor, true, key, now)
+        self.declare_member(
+            user_public_key,
+            crate::join::Role::Editor,
+            true,
+            name,
+            key,
+            now,
+        )
     }
-    /// Name the admitted person `user_public_key` `name` in the workspace: the
-    /// name every reader of [`PeerGovernance::governed_members`] shows for
-    /// them, on each of their admitted devices' rows. A device's own label
-    /// stays on its certificate. Whether the workspace changed: naming someone
-    /// what they are already called writes nothing.
+    /// Name the person `user_public_key` `name` in the workspace: the name
+    /// every reader of [`PeerGovernance::governed_members`] shows for them.
+    /// The name is kept under the person's root, where the workspace holds
+    /// them whether or not a device of theirs has been admitted yet — someone
+    /// its operator declared an owner names themselves from a key before any
+    /// device of theirs arrives — and on each of their admitted devices' rows,
+    /// which everything else listing people reads. A device's own label stays
+    /// on its certificate. Whether the workspace changed: naming someone what
+    /// they are already called writes nothing.
     ///
     /// # Errors
     ///
     /// Returns an error if the change is not `key`'s device's to make, `name` is not
-    /// a display name ([`tilo_user_identity::display_name`]), the person has
-    /// no admitted device here, or governance cannot be updated.
+    /// a display name ([`tilo_user_identity::display_name`]), the person is no
+    /// member of the workspace, or governance cannot be updated.
     pub fn name_person(
         self,
         user_public_key: [u8; 32],
@@ -838,19 +866,34 @@ impl PeerGovernanceMut<'_> {
             .workspace_doc
             .clone()
             .ok_or("workspace governance missing")?;
-        let names = &doc.policy().names;
-        let mut devices = Vec::new();
-        for (id, identity) in doc.identities() {
-            let identity = identity.as_ref().map_err(err)?;
-            if identity.device_cert.user_public_key == user_public_key && identity.has_admission() {
-                devices.push(id.clone());
+        let root = hex::encode(user_public_key);
+        let mut rows = Vec::new();
+        {
+            let names = &doc.policy().names;
+            for (id, identity) in doc.identities() {
+                let identity = identity.as_ref().map_err(err)?;
+                if identity.device_cert.user_public_key == user_public_key
+                    && identity.has_admission()
+                    && names.get(id).map(String::as_str) != Some(name)
+                {
+                    rows.push(id.clone());
+                }
+            }
+            // A name under the root is the person's own, and the workspace
+            // keeps it for whoever holds a role here: the owner, or a member.
+            // Anyone else's would name nobody it holds.
+            let holds_a_role = doc
+                .workspace_policy(&self.peer.core.workspace)
+                .active_role(&root)
+                .is_some();
+            if rows.is_empty() && !holds_a_role {
+                return Err("the person is not a member of the workspace".into());
+            }
+            if holds_a_role && names.get(&root).map(String::as_str) != Some(name) {
+                rows.push(root);
             }
         }
-        if devices.is_empty() {
-            return Err("the person is not admitted to the workspace".into());
-        }
-        devices.retain(|id| names.get(id).map(String::as_str) != Some(name));
-        if devices.is_empty() {
+        if rows.is_empty() {
             return Ok(false);
         }
         let peers = doc
@@ -860,7 +903,7 @@ impl PeerGovernanceMut<'_> {
             .1;
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));
-        for id in &devices {
+        for id in &rows {
             doc.put(&peers, id, name).map_err(err)?;
         }
         doc.commit();

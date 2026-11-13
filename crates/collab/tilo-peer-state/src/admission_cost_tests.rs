@@ -161,7 +161,7 @@ fn every_change_reads_the_same_narrowed_as_whole() {
             "administrator",
             Box::new(|peer| {
                 peer.governance_mut()
-                    .set_member_administrator(person(3), &authority, now)
+                    .set_member_administrator(person(3), None, &authority, now)
                     .unwrap();
             }),
         ),

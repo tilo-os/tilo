@@ -1776,6 +1776,7 @@ async fn a_declared_owners_key_lists_the_workspace_and_invites_before_any_device
             workspaces.serving_certificate(),
             rand::random(),
             ada_person,
+            None,
         )
         .await
         .unwrap();

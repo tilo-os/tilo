@@ -1628,7 +1628,13 @@ mod door_tests {
         // device of theirs arrives, so the door does not see a stranger.
         let (_, declared) = guest_device();
         workspaces
-            .set_member_administrator(&workspace, &owner, rand::random(), declared.user_public_key)
+            .set_member_administrator(
+                &workspace,
+                &owner,
+                rand::random(),
+                declared.user_public_key,
+                None,
+            )
             .await
             .unwrap();
         let declared_join = DoorJoin {

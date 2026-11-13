@@ -1175,6 +1175,67 @@
         }
       }
     },
+    "/v1/workspaces/{workspace}/members/name": {
+      "post": {
+        "operationId": "namePerson",
+        "summary": "The name the key's own person goes by in the workspace",
+        "tags": [
+          "Members"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "$ref": "#/components/parameters/Run"
+          },
+          {
+            "$ref": "#/components/parameters/RunTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The name the key's own person goes by in the workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Members"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewName"
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/workspaces/{workspace}/programs": {
       "post": {
         "operationId": "runProgram",
@@ -2571,6 +2632,19 @@
         "type": "object",
         "additionalProperties": true,
         "description": "A link that signs the person in and lands them in the workspace."
+      },
+      "NewName": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name the workspace's member list and the invitations they make\nshow for them."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "How the key's person goes by in the workspace from now on."
       },
       "Program": {
         "type": "object",

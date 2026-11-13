@@ -257,6 +257,14 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         .body(Body::Json("NewInvitation"))
         .json(201, "Invitation"),
         op(
+            "namePerson",
+            Method::POST,
+            "/v1/workspaces/{workspace}/members/name",
+            "The name the key's own person goes by in the workspace",
+        )
+        .body(Body::Json("NewName"))
+        .json(200, "Members"),
+        op(
             "runProgram",
             Method::POST,
             "/v1/workspaces/{workspace}/programs",

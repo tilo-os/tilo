@@ -668,7 +668,9 @@ named by id in its `workspace` argument. To give another agent one workspace and
 an `mcp_url` and a `token` for it; revoking this key ends every key it minted. \
 To bring another person in (a reviewer, say), `tilo_do {path: \"workspace/members#invite\", \
 args: {role, email?}, workspace}` answers a `link` that signs them in and lands them there as \
-`role` (viewer, commenter or editor); `workspace/members#list` names who is in it. \
+`role` (viewer, commenter or editor); `workspace/members#list` names who is in it, and \
+`workspace/members#name {name}` sets how it names the key's own person, which is what their \
+invitations say. \
 A call that changed a record answers its `link`, and `tilo_link {path, workspace}` answers the link \
 to anything a path names: hand it to the person reviewing your work. It opens the record in its \
 app for the workspace's members and carries no secret, so invite the person first. \

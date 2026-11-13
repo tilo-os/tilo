@@ -343,6 +343,14 @@ pub struct NewInvitation {
     pub email: Option<String>,
 }
 
+/// How the key's person goes by in the workspace from now on.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NewName {
+    /// The name the workspace's member list and the invitations they make
+    /// show for them.
+    pub name: String,
+}
+
 /// A link that signs the person in and lands them in the workspace.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Invitation(pub Map<String, Value>);
@@ -481,6 +489,7 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         Members,
         NewInvitation,
         Invitation,
+        NewName,
         Program,
         ProgramAnswer,
         Uploaded,

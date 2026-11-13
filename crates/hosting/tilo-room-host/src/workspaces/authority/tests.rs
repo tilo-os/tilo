@@ -7,13 +7,14 @@
     reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
 )]
 
+use ed25519_dalek::SigningKey;
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
 use tilo_peer_state::join::Role;
 use tilo_relay_protocol::AuthenticatedPeer;
 use tilo_relay_protocol::operator::WaitListStanding;
 use tilo_relay_protocol::voice::{CallOperation, CallState};
 use tilo_relay_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
-use tilo_user_identity::{DeviceCert, sign_device_cert};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::workspaces::{
@@ -690,6 +691,131 @@ async fn an_invitation_asked_without_a_name_names_the_inviter_as_the_workspace_s
     relay.shutdown().await;
 }
 
+/// A device of `person`'s root, labelled `label`: one they hold themselves,
+/// or a key made to act for them.
+fn device_of(person: &SigningKey, label: &str, capabilities: DeviceCapabilities) -> DeviceCert {
+    let mut cert = DeviceCert {
+        user_public_key: person.verifying_key().to_bytes(),
+        device_public_key: SigningKey::from_bytes(&rand::random())
+            .verifying_key()
+            .to_bytes(),
+        device_label: label.into(),
+        capabilities,
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, person).unwrap();
+    cert
+}
+
+/// Someone a deployment's operator declares an owner of a workspace nobody is
+/// in yet, with the name they go by: the workspace lists them by it before a
+/// device of theirs has arrived, a key of theirs renames them without one, and
+/// the invitation their first device makes says who asked them in.
+#[tokio::test]
+async fn a_declared_owner_carries_the_name_they_were_declared_with() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+
+    // All the operator has of them is their root and the name they go by: no
+    // device of theirs has ever reached this workspace.
+    let person = SigningKey::from_bytes(&rand::random());
+    let root = person.verifying_key().to_bytes();
+    workspaces
+        .set_member_administrator(&workspace, &owner, rand::random(), root, Some("Quinten"))
+        .await
+        .unwrap();
+    let named = |members: &[tilo_peer_state::GovernedMember]| {
+        members
+            .iter()
+            .find(|member| member.user_public_key == root && !member.removed)
+            .unwrap_or_else(|| panic!("the declared owner is a member: {members:?}"))
+            .display_name
+            .clone()
+    };
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert_eq!(named(&members).as_deref(), Some("Quinten"));
+    assert!(
+        members
+            .iter()
+            .find(|member| member.user_public_key == root)
+            .is_some_and(|member| member.active_device_keys.is_empty()),
+        "no device of theirs has arrived yet: {members:?}"
+    );
+
+    // A key of theirs names them without one, as their Tilo on the web would,
+    // and the name it sets is what the workspace shows from then on.
+    let theirs = device_of(
+        &person,
+        "a key of Quinten's",
+        DeviceCapabilities::server_key_grant(),
+    );
+    workspaces
+        .name_self(
+            &workspace,
+            &theirs,
+            "Quinten Wolff",
+            tilo_clock::unix_now_ns(),
+        )
+        .await
+        .unwrap();
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert_eq!(named(&members).as_deref(), Some("Quinten Wolff"));
+
+    // Their first device joins, admitted through the owner's pre-admission
+    // under another name: the name they chose is the one the workspace keeps.
+    let token = [7u8; 8];
+    let issued = workspaces
+        .pre_admit(
+            &owner,
+            PreAdmitRequest {
+                request_id: [7; 32],
+                grant: signed_pre_admission(&workspace, &token),
+                recipient_user_public_key: Some(root),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let device = device_of(&person, "Quinten's laptop", DeviceCapabilities::member());
+    let reply = workspaces
+        .admit_proven(
+            issued.signed_invitation,
+            device.clone(),
+            rand::random(),
+            "Quin's laptop",
+            Some(token.as_slice()),
+        )
+        .await;
+    assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert_eq!(named(&members).as_deref(), Some("Quinten Wolff"));
+
+    // The invitation their device makes says who asked them in.
+    let issued = workspaces
+        .issue(&workspace, &device, invitation(30, Role::Viewer))
+        .await
+        .unwrap();
+    let from = tilo_peer_state::join::decode_and_verify_invitation(
+        &issued.signed_invitation,
+        None,
+        &tilo_user_identity::RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap()
+    .inviter()
+    .cloned()
+    .expect("the invitation names who it is from");
+    assert_eq!(from.name, "Quinten Wolff");
+    assert_eq!(from.user_public_key, root);
+    relay.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
     let dir = tempfile::tempdir().unwrap();
@@ -835,7 +961,7 @@ async fn roles_and_removals_follow_the_rooms_policy() {
             .is_err()
     );
     workspaces
-        .set_member_administrator(&workspace, &owner, [24; 32], cy.user_public_key)
+        .set_member_administrator(&workspace, &owner, [24; 32], cy.user_public_key, None)
         .await
         .unwrap();
     let administrator = workspaces
@@ -881,7 +1007,7 @@ async fn an_administrator_governs_within_their_role_without_further_grants() {
     set_role(workspaces, &workspace, &owner, &cy, Role::Viewer).await;
 
     workspaces
-        .set_member_administrator(&workspace, &owner, [50; 32], ada.user_public_key)
+        .set_member_administrator(&workspace, &owner, [50; 32], ada.user_public_key, None)
         .await
         .unwrap();
     an_administrator_invites_within_their_role(workspaces, &workspace, &ada).await;
@@ -1084,7 +1210,7 @@ async fn what_no_room_decides_stays_the_relay_persons() {
     }
     assert!(
         workspaces
-            .set_member_administrator(&workspace, &ada, [31; 32], bo.user_public_key)
+            .set_member_administrator(&workspace, &ada, [31; 32], bo.user_public_key, None)
             .await
             .is_err()
     );

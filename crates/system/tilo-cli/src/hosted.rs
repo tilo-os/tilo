@@ -107,6 +107,17 @@ pub enum MembersCmd {
     /// The people in the workspace (-w), with their roles, and the
     /// invitations still open.
     Ls,
+    /// How the workspace (-w) shows you from now on: the name its member list
+    /// and the invitations you make say for you.
+    #[command(
+        after_help = "Example:\n  tilo members name \"Quinten Wolff\" -w jane-doe\n\n\
+                      Any device or key of yours sets it: the workspace knows you by it before a \
+                      browser of yours joins, and whoever you invite sees who asked them in."
+    )]
+    Name {
+        /// The name to go by, as your teammates will read it.
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -835,6 +846,15 @@ pub fn members(reach: Reach<'_>, workspace: &str, cmd: MembersCmd) -> ExitCode {
                     let _ = write!(said, "\n{next}");
                 }
                 Ok(show(reach.json, &invited, &said))
+            }
+            MembersCmd::Name { name } => {
+                let named = client
+                    .post(
+                        &format!("/v1/workspaces/{workspace}/members/name"),
+                        &serde_json::json!({"name": name}),
+                    )
+                    .await?;
+                Ok(show(reach.json, &named, &members_text(&named)))
             }
         }
     })

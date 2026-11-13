@@ -883,7 +883,7 @@ async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
             .await;
         assert!(issued.is_err(), "the agent invited into {room}");
         let administrator = workspaces
-            .set_member_administrator(room, &agent.cert, [0xB2; 32], t.ann.user_pk)
+            .set_member_administrator(room, &agent.cert, [0xB2; 32], t.ann.user_pk, None)
             .await;
         assert!(
             administrator.is_err(),

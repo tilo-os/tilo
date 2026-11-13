@@ -209,10 +209,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: hosted::KeysCmd,
     },
-    /// The people in a hosted workspace, and inviting more.
+    /// The people in a hosted workspace, inviting more, and how it names you.
     #[command(
         after_help = "Examples:\n  tilo members invite --role editor -w jane-doe   A link that brings a reviewer in\n  \
-                            tilo members ls -w jane-doe"
+                            tilo members ls -w jane-doe\n  \
+                            tilo members name \"Quinten Wolff\" -w jane-doe   What its people and your invitations call you"
     )]
     Members {
         /// The answer as JSON, typed as the SDK gets it.
@@ -315,6 +316,11 @@ enum Cmd {
         /// The new identity's name, as workspaces show it.
         #[arg(long, requires = "new_identity")]
         name: Option<String>,
+        /// Print the identity as one line of JSON, `{"user_public_key": …,
+        /// "name": …}`, for a script that declares the key and wants the name
+        /// the person goes by with it.
+        #[arg(long, requires = "new_identity")]
+        json: bool,
         /// The agent that runs here, as your workspace shows it; found by
         /// itself when not given (Claude Code, Codex, Gemini CLI, ...).
         #[arg(long)]
@@ -972,8 +978,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Login {
             new_identity: true,
             name,
+            json,
             ..
-        } => identity::new_identity(name.as_deref()),
+        } => identity::new_identity(name.as_deref(), json),
         Cmd::Login {
             code, agent, site, ..
         } => login::login(

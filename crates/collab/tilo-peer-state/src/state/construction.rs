@@ -2,8 +2,9 @@
 
 use super::{
     BTreeMap, CachedDocument, DeviceCert, ExactAdmissions, GovernedIdentity, Grantee, PeerCore,
-    ROOT, RevocationList, Role, Shared, StatePeer, SystemTime, VecDeque, VerifiedCertificate,
-    administrator_grant_id, err, held, now_ns, process_default, supersedes, workspace,
+    PeerGovernanceMut, ROOT, RevocationList, Role, Shared, StatePeer, SystemTime, VecDeque,
+    VerifiedCertificate, administrator_grant_id, err, held, now_ns, process_default, supersedes,
+    workspace,
 };
 use collab_types::signer::DeviceSigner;
 use tilo_action_policy::Change;
@@ -192,23 +193,28 @@ impl StatePeer {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.put_member(user_public_key, role, administrator, true, key, now)
+        self.put_member(user_public_key, role, administrator, true, None, key, now)
     }
 
     /// Hold `user_public_key` as a member at `role`, an administrator or not,
     /// whether or not one of their devices has been admitted here yet: a
     /// workspace's declaration that someone is in it — its owner declared by a
     /// deployment's operator before they ever join — is governance, so it is
-    /// here before they arrive and stays after a restart.
+    /// here before they arrive and stays after a restart. `name`, when the
+    /// declarer carries one, is how the workspace names them from then on, as
+    /// [`PeerGovernanceMut::name_person`] would: an operator declaring someone
+    /// an owner knows the name the person goes by, and the workspace lists and
+    /// invites them by it before any device of theirs has named them.
     pub(super) fn declare_member(
         &mut self,
         user_public_key: [u8; 32],
         role: Role,
         administrator: bool,
+        name: Option<&str>,
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.put_member(user_public_key, role, administrator, false, key, now)
+        self.put_member(user_public_key, role, administrator, false, name, key, now)
     }
 
     fn put_member(
@@ -217,10 +223,20 @@ impl StatePeer {
         role: Role,
         administrator: bool,
         admitted: bool,
+        name: Option<&str>,
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.require_member_writer(key, now)?;
+        // A name the declaration carries is checked before anything is
+        // written: a change that recorded the member and refused the name
+        // would have to be asked for twice.
+        let name = name
+            .map(|name| {
+                tilo_user_identity::display_name(name)
+                    .map_err(tilo_user_identity::DisplayNameError::reason)
+            })
+            .transpose()?;
         if user_public_key == self.core.owner {
             return Err("owner role cannot be changed through member governance".into());
         }
@@ -280,13 +296,22 @@ impl StatePeer {
                 }
             }
         }
-        if before_role == Some(role) && changes.len() == 1 {
+        if before_role == Some(role) && changes.len() == 1 && name.is_none() {
             return Ok(false);
         }
         if before_role == Some(role) {
             changes.remove(0);
         }
-        let wrote = self.write_changes(doc, changes, key, now)?;
-        Ok(wrote && (before_role != Some(role) || before_admin != administrator))
+        let mut wrote = self.write_changes(doc, changes, key, now)? && {
+            before_role != Some(role) || before_admin != administrator
+        };
+        // The name the declaration carries, written after the role: the person
+        // is a member by root from the change above, which is what lets the
+        // workspace name them before any device of theirs arrives.
+        if let Some(name) = name {
+            wrote |=
+                PeerGovernanceMut { peer: self }.name_person(user_public_key, name, key, now)?;
+        }
+        Ok(wrote)
     }
 }

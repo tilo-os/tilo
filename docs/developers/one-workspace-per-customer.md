@@ -176,6 +176,7 @@ Open the workspace in Tilo, or invite the person who reviews it:
 ```sh
 tilo members invite --role editor --email ops@example.com -w applicant-jane-doe
 tilo members ls -w applicant-jane-doe
+tilo members name "Jane Doe" -w applicant-jane-doe   # what its people and your invitations call you
 ```
 
 Following the link signs them in to Tilo (with a passkey, or by approving an agent) and lands them in the

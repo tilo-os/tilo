@@ -127,10 +127,18 @@ pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
 }
 
 /// `tilo login --new-identity`: make the person, or say there is one, and
-/// print their user public key.
-pub fn new_identity(name: Option<&str>) -> Result<std::process::ExitCode> {
+/// print their user public key — or, as one line of JSON, the key and the
+/// name they go by, for a script that declares them somewhere.
+pub fn new_identity(name: Option<&str>, json: bool) -> Result<std::process::ExitCode> {
     let (person, made) = ensure(name)?;
     let dir = dir()?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"user_public_key": person.user(), "name": person.name})
+        );
+        return Ok(std::process::ExitCode::SUCCESS);
+    }
     if made {
         eprintln!(
             "Made {}'s Tilo identity on this computer ({}). Once a host's operator declares \

@@ -392,18 +392,22 @@ impl Workspaces {
 
     /// Make `user_public_key` an administrator of `workspace`: an editor holding
     /// every governance action, still bounded by their role
-    /// ([`tilo_action_policy::roles::administrator_grant`]).
+    /// ([`tilo_action_policy::roles::administrator_grant`]). `name`, when the
+    /// declaring request carries one, is how the workspace names them from
+    /// then on: its member list and the invitations they make say it before
+    /// any device of theirs has named them.
     ///
     /// # Errors
     ///
-    /// Refuses non-administrators, the structural owner and people the
-    /// workspace never admitted.
+    /// Refuses non-administrators, the structural owner, a name that is not a
+    /// display name, and governance that cannot be updated.
     pub async fn set_member_administrator(
         &self,
         workspace: &str,
         administrator: &DeviceCert,
         request_id: [u8; 32],
         user_public_key: [u8; 32],
+        name: Option<&str>,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
         self.authorize(
@@ -418,10 +422,11 @@ impl Workspaces {
         self.administer(
             &mut workspace,
             request_id,
-            request_digest(&("administrator", user_public_key))?,
+            request_digest(&("administrator", user_public_key, name))?,
             |peer| {
                 peer.governance_mut().set_member_administrator(
                     user_public_key,
+                    name,
                     &key,
                     system_time(now),
                 )
@@ -1161,10 +1166,12 @@ impl Workspaces {
     ) -> Result<(), CollaborationError> {
         let key = &self.inner.host.key;
         let mut candidate = workspace.peer().clone();
-        if !candidate
-            .governance_mut()
-            .set_member_administrator(person, key, system_time(now))?
-        {
+        if !candidate.governance_mut().set_member_administrator(
+            person,
+            None,
+            key,
+            system_time(now),
+        )? {
             return Ok(());
         }
         let state = workspace.collaboration().clone();

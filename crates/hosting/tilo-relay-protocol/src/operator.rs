@@ -15,10 +15,10 @@ use serde::{Deserialize, Serialize};
 
 /// Version of this protocol, announced in [`OperatorEvent::Started`].
 ///
-/// 9 is the operator declaring a workspace's owner
-/// ([`OperatorCommand::DeclareOwner`]): 8 was read by builds that know no such
-/// command, so a reader of that one decodes no line of it.
-pub const VERSION: u16 = 9;
+/// 10 is the operator's declaration of a workspace's owner carrying the name
+/// that person goes by ([`OperatorCommand::DeclareOwner`]); 9 declared an
+/// owner with no name, so a reader of that one decodes no line of this.
+pub const VERSION: u16 = 10;
 
 /// The child reports [`OperatorEvent::Online`] at most this often, and only
 /// when the numbers changed, so a busy workspace does not flood the service.
@@ -118,11 +118,18 @@ pub enum OperatorCommand {
     /// Declare the person with user root `user_public_key` an owner of the
     /// workspace: its door lets them in, and its governance makes them an
     /// administrator, now if they are a member and as soon as they join if they
-    /// are not. The child answers [`OperatorEvent::OwnerDeclared`] or
-    /// [`OperatorEvent::OwnerRefused`] for the same key.
+    /// are not. `name`, when the operator knows it, is how the workspace names
+    /// them from then on: its member list and the invitations they make say it
+    /// before any device of theirs has said one. The child answers
+    /// [`OperatorEvent::OwnerDeclared`] or [`OperatorEvent::OwnerRefused`] for
+    /// the same key.
     DeclareOwner {
         /// The person's user root key (hex), not a device.
         user_public_key: String,
+        /// The name the person goes by, when the operator's declaration
+        /// carries one ([`tilo_user_identity::display_name`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
 }
 
@@ -531,8 +538,8 @@ mod tests {
     }
 
     #[test]
-    fn protocol_nine_round_trips_and_pins_its_wire_form() {
-        assert_eq!(VERSION, 9);
+    fn protocol_ten_round_trips_and_pins_its_wire_form() {
+        assert_eq!(VERSION, 10);
         let wait = OperatorCommand::WaitList {
             request: "12".repeat(32),
             contact: "Ada@example.org".into(),
@@ -581,6 +588,7 @@ mod tests {
         );
         let declare = OperatorCommand::DeclareOwner {
             user_public_key: "ef".repeat(32),
+            name: None,
         };
         assert_eq!(
             declare.to_line(),
@@ -593,6 +601,18 @@ mod tests {
             OperatorCommand::from_line(&declare.to_line()).unwrap(),
             declare
         );
+        let named = OperatorCommand::DeclareOwner {
+            user_public_key: "ef".repeat(32),
+            name: Some("Ada".into()),
+        };
+        assert_eq!(
+            named.to_line(),
+            format!(
+                "{{\"op\":\"declare_owner\",\"user_public_key\":\"{}\",\"name\":\"Ada\"}}\n",
+                "ef".repeat(32)
+            )
+        );
+        assert_eq!(OperatorCommand::from_line(&named.to_line()).unwrap(), named);
     }
 
     #[test]

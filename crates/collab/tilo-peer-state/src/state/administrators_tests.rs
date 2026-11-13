@@ -41,7 +41,7 @@ fn an_administrator_governs_and_an_editor_does_not() {
 
     assert!(
         peer.governance_mut()
-            .set_member_administrator(user, &host_key, now)
+            .set_member_administrator(user, None, &host_key, now)
             .unwrap()
     );
     assert!(is_administrator(&peer, user, now));
@@ -153,7 +153,7 @@ fn an_administrator_moderates_and_an_editor_does_not() {
     assert!(!moderates(&peer));
     assert!(
         peer.governance_mut()
-            .set_member_administrator(user, &host_key, now)
+            .set_member_administrator(user, None, &host_key, now)
             .unwrap()
     );
     assert!(moderates(&peer));
@@ -178,7 +178,7 @@ fn an_administrators_own_device_changes_a_role_and_an_editors_cannot() {
             .is_err()
     );
     peer.governance_mut()
-        .set_member_administrator(user, &host_key, now)
+        .set_member_administrator(user, None, &host_key, now)
         .unwrap();
     assert!(
         peer.governance_mut()
@@ -212,7 +212,7 @@ fn a_members_membership_command_is_signed_by_their_own_device_and_decided_by_the
         "an editor's grants change no role"
     );
     peer.governance_mut()
-        .set_member_administrator(user, &host_key, now)
+        .set_member_administrator(user, None, &host_key, now)
         .unwrap();
     assert!(
         peer.clone()
@@ -330,7 +330,7 @@ fn an_administrators_own_device_changes_the_workspaces_settings_and_an_editors_c
     }
 
     peer.governance_mut()
-        .set_member_administrator(user, &host_key, now)
+        .set_member_administrator(user, None, &host_key, now)
         .unwrap();
     assert!(change_settings(&mut peer, &editor, rename, now).unwrap());
     assert_eq!(peer.governance().workspace_name().as_deref(), Some("Plans"));

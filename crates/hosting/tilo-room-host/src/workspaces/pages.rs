@@ -343,9 +343,13 @@ impl Workspaces {
         }))
     }
 
-    /// Name `device`'s person `name` in `workspace`: the name the workspace shows for
-    /// them from now on. Only a person names themself, on a device the
-    /// workspace admitted as theirs. A name they already go by writes nothing.
+    /// Name `device`'s person `name` in `workspace`: the name the workspace
+    /// shows for them from now on, in its member list and on the invitations
+    /// they make. Only a person names themself, and only in a workspace they
+    /// are a member of: from any of their devices or keys — one the workspace
+    /// admitted as theirs, or a key of theirs it holds them by their root,
+    /// which is what a declared owner's key is before any device of theirs
+    /// arrived. A name they already go by writes nothing.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the workspace stays locked from the check until the name is committed"
@@ -358,14 +362,32 @@ impl Workspaces {
         now: u64,
     ) -> Result<WorkspacesReply, CollaborationError> {
         let name = valid_name(name)?;
+        let person = hex::encode(device.user_public_key);
         let state = self.workspace(workspace).await?;
         let mut workspace = state.lock().await;
         let at = system_time(now);
-        let member = workspace.peer().permissions(device.device_public_key, at)?;
-        if member.acting.delegated()
-            || member.person_id() != Some(hex::encode(device.user_public_key).as_str())
-        {
-            return Err(CollaborationError::new("only a person names themself"));
+        // An agent's grant, a stand-in and a bot act as members of their own:
+        // they never name the person they act for.
+        let asking = workspace.peer().permissions(device.device_public_key, at);
+        let theirs = !device.capabilities.stand_in
+            && match asking {
+                Ok(member) => {
+                    !member.acting.delegated() && member.person_id() == Some(person.as_str())
+                }
+                Err(_) => device.capabilities.server_key && device.capabilities.agent.is_some(),
+            };
+        let names_themself = theirs
+            && workspace
+                .peer()
+                .governance()
+                .governed_members(at)
+                .map_err(CollaborationError::new)?
+                .iter()
+                .any(|member| member.user_public_key == device.user_public_key && !member.removed);
+        if !names_themself {
+            return Err(CollaborationError::new(
+                "only a person names themself, in a workspace they are a member of",
+            ));
         }
         let key = self.inner.host.key.clone();
         let mut candidate = workspace.peer().clone();

@@ -795,12 +795,15 @@ async fn answer_wait_list_command(
 /// its governance holds them by their root as a member with every governance
 /// action, so the door lets them in even when it takes people by invitation,
 /// and a key of theirs lists the workspace, enters it and invites before any
-/// device of theirs has joined. Answers what the operator hears.
+/// device of theirs has joined. `name`, when the operator's declaration
+/// carries one, is how the workspace names them until they rename themselves.
+/// Answers what the operator hears.
 async fn declare_owner(
     workspaces: &Workspaces,
     workspace: &str,
     host: &DeviceCert,
     key: &str,
+    name: Option<&str>,
 ) -> String {
     let Some(user) = hex32(key) else {
         return OperatorEvent::OwnerRefused {
@@ -815,6 +818,7 @@ async fn declare_owner(
             host,
             request_id(b"owner", &user, tilo_clock::unix_now_ns()),
             user,
+            name,
         )
         .await
     {
@@ -1685,12 +1689,16 @@ async fn answer_operator_socket(context: &PersistentRoom, stream: tokio::net::Un
     let answer = match reading.read_line(&mut line).await {
         Ok(0) => return,
         Ok(_) => match OperatorCommand::from_line(&line) {
-            Ok(OperatorCommand::DeclareOwner { user_public_key }) => {
+            Ok(OperatorCommand::DeclareOwner {
+                user_public_key,
+                name,
+            }) => {
                 declare_owner(
                     &context.workspaces,
                     &context.workspace,
                     &context.host_cert,
                     &user_public_key,
+                    name.as_deref(),
                 )
                 .await
             }
@@ -1780,7 +1788,10 @@ async fn serve_operator(
                 // An invitation the door mailed itself is acknowledged here:
                 // nothing else in the workspace hears of it.
                 Some(Ok(OperatorCommand::InviteMailQueued { .. })) => {}
-                Some(Ok(OperatorCommand::DeclareOwner { user_public_key })) => {
+                Some(Ok(OperatorCommand::DeclareOwner {
+                    user_public_key,
+                    name,
+                })) => {
                     println!(
                         "{}",
                         declare_owner(
@@ -1788,6 +1799,7 @@ async fn serve_operator(
                             &context.workspace,
                             &context.host_cert,
                             &user_public_key,
+                            name.as_deref(),
                         )
                         .await
                     );
@@ -2195,6 +2207,7 @@ mod tests {
             &workspace,
             &host_cert,
             &hex::encode(owner.1.user_public_key),
+            None,
         )
         .await;
         assert!(answered.contains("owner_declared"), "{answered}");
@@ -2239,7 +2252,7 @@ mod tests {
             "the declared owner governs the workspace once their device is in"
         );
         // What the operator cannot declare is nothing at all.
-        let refused = declare_owner(&workspaces, &workspace, &host_cert, "Ada").await;
+        let refused = declare_owner(&workspaces, &workspace, &host_cert, "Ada", None).await;
         assert!(refused.contains("owner_refused"), "{refused}");
         relay.shutdown().await;
     }
@@ -2376,7 +2389,13 @@ mod tests {
             assert!(walk_in(&workspaces, person, issued.signed_invitation, &token).await);
         }
         workspaces
-            .set_member_administrator(&workspace, &host_cert, [1; 32], people[0].1.user_public_key)
+            .set_member_administrator(
+                &workspace,
+                &host_cert,
+                [1; 32],
+                people[0].1.user_public_key,
+                None,
+            )
             .await
             .unwrap();
         workspaces

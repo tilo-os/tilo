@@ -20,7 +20,9 @@ use tilo_peer_state::join::Role;
 use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
 
-use super::{CANCEL_INVITATION, GovernedPlane, HostWorkspaceActions, INVITATIONS, MEMBERS};
+use super::{
+    CANCEL_INVITATION, GovernedPlane, HostWorkspaceActions, INVITATIONS, MEMBERS, NAME, VERBS,
+};
 use crate::app_serving::AppServingPlane as _;
 use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::workspaces::{PreAdmitRequest, SetMemberRoleRequest, Workspaces};
@@ -178,6 +180,17 @@ async fn invoke(
 
 const INVITE_FAMILY: [&str; 4] = [governance::INVITE, INVITATIONS, CANCEL_INVITATION, MEMBERS];
 
+/// Naming themselves, which every person is offered in a workspace they are
+/// in and no grant gives them.
+const NAME_SELF: [&str; 1] = [NAME];
+
+/// `verbs` in the order the catalogue offers them.
+fn offered_in_catalogue(verbs: impl IntoIterator<Item = &'static str>) -> Vec<String> {
+    let mut offered = verbs.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    offered.sort_by_key(|verb| VERBS.iter().position(|row| row.id == verb));
+    offered
+}
+
 #[tokio::test]
 async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
     let dir = tempfile::tempdir().unwrap();
@@ -192,25 +205,37 @@ async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
     // workspace's own governance resource, removing and banning included: their
     // own request confirms it.
     let owners = offered(&host, workspace_id, &caller(&owner)).await;
-    for verb in INVITE_FAMILY.iter().chain(&[
-        governance::UNBAN,
-        governance::CALL,
-        governance::REMOVE_MEMBER,
-        governance::BAN,
-    ]) {
+    for verb in INVITE_FAMILY
+        .iter()
+        .chain(&NAME_SELF)
+        .chain(&[
+            governance::UNBAN,
+            governance::CALL,
+            governance::REMOVE_MEMBER,
+            governance::BAN,
+        ])
+        .copied()
+    {
         assert!(
             owners.iter().any(|offered| offered == verb),
             "{verb}: {owners:?}"
         );
     }
 
-    // An Editor by role alone is offered nothing.
-    assert!(offered(&host, workspace_id, &caller(&ada)).await.is_empty());
+    // An Editor by role alone is offered naming themselves and nothing else.
+    assert_eq!(
+        offered(&host, workspace_id, &caller(&ada)).await,
+        NAME_SELF.map(str::to_owned).to_vec()
+    );
 
-    // Granted invite, Ada is offered inviting and nothing beyond it.
+    // Granted invite, Ada is offered inviting and naming themselves, and
+    // nothing beyond them.
     grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
     let granted = offered(&host, workspace_id, &caller(&ada)).await;
-    assert_eq!(granted, INVITE_FAMILY.map(str::to_owned).to_vec());
+    assert_eq!(
+        granted,
+        offered_in_catalogue(INVITE_FAMILY.iter().chain(&NAME_SELF).copied())
+    );
 
     // A Moderator is offered unbanning members below them, but no
     // invitations. Roles, restrictions and the workspace's settings are written
@@ -228,7 +253,7 @@ async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
         .await
         .unwrap();
     let moderator = offered(&host, workspace_id, &caller(&bo)).await;
-    assert_eq!(moderator, [governance::UNBAN].map(str::to_owned));
+    assert_eq!(moderator, offered_in_catalogue([NAME, governance::UNBAN]));
 
     // An agent governs nothing, even on the relay person's own key, and a
     // workspace that carries no governed workspace offers nothing.
