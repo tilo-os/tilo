@@ -54,7 +54,8 @@ fn published() -> Vec<ResourceSpec> {
 }
 
 /// The resources the desktop publishes, each with the verbs it offers, as one text a change to the
-/// catalogue shows in review.
+/// catalogue shows in review. Its snapshot is `catalogue.txt`; a failing run's left-hand text is
+/// the catalogue as it now stands.
 fn catalogue() -> String {
     let mut catalogue = String::new();
     for resource in published() {
