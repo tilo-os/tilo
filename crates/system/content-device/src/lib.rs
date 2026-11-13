@@ -1,13 +1,9 @@
-//! `tilo-content-device` — the device content store.
+//! `tilo-content-device`: the device content store.
 //!
-//! The filesystem daemon keeps this device's content and fetches what a collaborator or another
-//! of the user's devices stored. The launcher hands an app a scoped capability to it;
-//! `DeviceBackend` is the [`ContentBackend`](tilo_content::ContentBackend) over that
-//! capability, and [`device()`] the store every caller in the process shares.
-//!
-//! It is its own crate because it is a client of the daemon (`runtime-fs`): `tilo-content`
-//! itself stays free of the daemon's protocol crates, so the resource layer and the types it
-//! stores can name content without depending on the filesystem.
+//! The filesystem daemon keeps this device's content and fetches what a collaborator
+//! or another of the user's devices stored. The launcher hands an app a scoped
+//! capability to it, and [`device()`] is the one store every caller in the process
+//! shares.
 
 use tilo_content::ContentStore;
 
@@ -24,20 +20,20 @@ pub use device::SessionBackend;
 #[cfg(unix)]
 pub use public::PublicCopy;
 
-/// What reading a public copy found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PublicState {
     /// The whole copy, verified against its hash.
-    Here { bytes: Vec<u8>, hash: String },
-    /// Kept, and on its way: arriving for the first time, or again after
-    /// the device made room.
+    Here {
+        bytes: Vec<u8>,
+        hash: String,
+    },
+    /// Kept and on its way, arriving for the first time or again after the device
+    /// made room.
     Arriving,
-    /// Nobody on this device keeps it.
     NotKept,
 }
 
-/// A public file, on a host that has no device to keep one on: there is
-/// never one.
+/// A public file on a host with no device to keep one on: there is never one.
 #[cfg(not(unix))]
 #[derive(Clone)]
 pub struct PublicCopy(std::convert::Infallible);
@@ -51,31 +47,22 @@ impl PublicCopy {
         match self.0 {}
     }
 
-    /// # Errors
-    ///
-    /// Never.
     pub fn release(&self) -> std::io::Result<()> {
         match self.0 {}
     }
 
-    /// # Errors
-    ///
-    /// Never.
     pub fn here(&self) -> std::io::Result<Option<String>> {
         match self.0 {}
     }
 
-    /// # Errors
-    ///
-    /// Never.
     pub fn read(&self) -> std::io::Result<PublicState> {
         match self.0 {}
     }
 }
 
 /// The device content store, when the launcher handed this process its capability.
-/// Every returned store shares the one connection. Returns `None` on hosts without
-/// device transport; no storage fallback is opened.
+/// Every returned store shares the one connection. `None` on hosts without device
+/// transport; no storage fallback is opened.
 #[must_use]
 pub fn device() -> Option<ContentStore> {
     #[cfg(unix)]
@@ -88,8 +75,8 @@ pub fn device() -> Option<ContentStore> {
     }
 }
 
-/// The public file `name` this device may keep a copy of, when the launcher handed this
-/// process its capability.
+/// The public file `name` this device may keep a copy of, when the launcher handed
+/// this process its capability.
 #[must_use]
 pub fn public_copy(name: &'static str) -> Option<PublicCopy> {
     #[cfg(unix)]
@@ -103,22 +90,18 @@ pub fn public_copy(name: &'static str) -> Option<PublicCopy> {
     }
 }
 
-/// The store an app uses unless it is handed another: the device content store when the
-/// launcher handed this process its capability ([`device()`]), otherwise the store kept on
-/// this machine ([`ContentStore::local_for_app`]).
+/// The store an app uses unless it is handed another: the device content store
+/// ([`device()`]), otherwise the store kept on this machine
+/// ([`ContentStore::local_for_app`]).
 #[must_use]
 pub fn for_app() -> ContentStore {
     device().unwrap_or_else(ContentStore::local_for_app)
 }
 
-/// The content the session `workspace` is in serves its apps, read as the session itself: the
-/// daemon at `TILO_FS_BLOB_SOCKET` (`fs serve-media`), serving an address when a workspace this
-/// process draws references it ([`set_session_workspaces`]).
-///
-/// This is the store a process that draws what a workspace holds reads its pictures from when
-/// the launcher handed it no capability of its own — the session's own process, which composes
-/// views of records whose stills an app's connector kept. `None` when no media is served or no
-/// workspace names a scope.
+/// The content a session's apps read, as the session's own process: the daemon at
+/// `TILO_FS_BLOB_SOCKET` (`fs serve-media`), serving an address when a workspace this
+/// process draws references it ([`set_session_workspaces`]). `None` when no media is
+/// served or no workspace names a scope.
 #[must_use]
 pub fn session(workspace: &str) -> Option<ContentStore> {
     #[cfg(unix)]
@@ -132,11 +115,10 @@ pub fn session(workspace: &str) -> Option<ContentStore> {
     }
 }
 
-/// Tell every store a session's process opens from here on which workspaces it draws, the one in
-/// front first: a place of any of them reads its pictures through it.
+/// Tell every store a session's process opens from here on which workspaces it draws,
+/// the one in front first: a place of any of them reads its pictures through it.
 ///
-/// Off unix there is no device keeping a session's content, so no store opens for the workspaces
-/// to be read through: the list is taken and dropped.
+/// Off unix no store opens for those workspaces, so the list is taken and dropped.
 pub fn set_session_workspaces(workspaces: Vec<String>) {
     #[cfg(unix)]
     {
