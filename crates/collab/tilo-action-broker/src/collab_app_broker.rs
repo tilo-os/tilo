@@ -4051,7 +4051,14 @@ impl AppBrokerState {
                             .and_then(|result| {
                                 result
                                     .map(ActionDirectoryBridgeResponse::Page)
-                                    .map_err(|_| ActionDirectoryBridgeError::Unavailable)
+                                    .map_err(|reason| {
+                                        tracing::warn!(
+                                            %reason,
+                                            peer = query.peer_id,
+                                            "an app's action directory page was refused"
+                                        );
+                                        ActionDirectoryBridgeError::Unavailable
+                                    })
                             });
                         reply.send(response);
                     }
