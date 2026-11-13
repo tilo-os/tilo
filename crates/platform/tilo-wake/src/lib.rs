@@ -1,8 +1,6 @@
-//! Instance-scoped background wake routing shared by native and headless hosts.
-//!
-//! `tilo_rt::wake`, `tilo_host::wake` and `ui::wake` re-export this crate. It
-//! links no async runtime, so a document model can route wakes in a sandboxed
-//! wasm build.
+//! Instance-scoped background wake routing, shared by native and headless hosts:
+//! a scope whose owner is woken when work lands for it. No async runtime is
+//! linked, so a document model can route wakes in a sandboxed wasm build.
 use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -21,46 +19,27 @@ struct Destination {
     settling: Settling,
 }
 
-/// What [`WakeHandle::settle`] follows.
 #[derive(Default)]
 struct Settling {
-    /// Replies the owner is owed ([`Owed`]) that have not landed.
     owed: usize,
-    /// A reply landed since the last pass.
     replied: bool,
-    /// The scope was woken since the last pass.
     woken: bool,
 }
 
 struct Route {
     open: AtomicBool,
     destination: Mutex<Destination>,
-    /// Signalled whenever the scope is woken, a reply lands or it closes:
-    /// what [`WakeHandle::settle`] waits on.
     changed: Condvar,
-    /// Moves whenever something the owner reads may have changed: every
-    /// wake, and every change noted on the owner's thread
-    /// ([`WakeHandle::note_change`]). Never taken or reset, unlike the
-    /// pending flags a host drains, so an owner that compares it before
-    /// and after proves that nothing reached it in between, whoever drained
-    /// the wakes meanwhile.
+    /// Bumped on every wake and every noted change, never reset, so comparing it
+    /// before and after proves nothing reached the owner in between.
     revision: AtomicU64,
-    /// Moves with every move of [`Self::revision`] made from another thread
-    /// than the one the scope was made on: work off the frame landing (a
-    /// worker's reply, a save landing). Such a move can land while the
-    /// owner's pass runs, after the pass read what it changed: a pass it
-    /// moved during proves nothing ([`WakeHandle::crossed`]).
     crossed: AtomicU64,
-    /// The thread the scope was made on: its owner's.
     thread: std::thread::ThreadId,
-    /// The scope that was current when this one was made: a component built
-    /// inside another is part of what that one shows, so what moves this
-    /// revision moves the enclosing one's too.
+    /// The scope this one was made inside, whose revision it moves as well.
     parent: Option<Weak<Route>>,
 }
 
 impl Route {
-    /// Move this scope's input revision and every enclosing scope's.
     fn moved(&self) {
         let crossed = std::thread::current().id() != self.thread;
         self.bump(crossed);
@@ -81,16 +60,12 @@ impl Route {
 
 thread_local! {
     static CURRENT: RefCell<Option<Weak<Route>>> = const { RefCell::new(None) };
-    /// How deep the passes running here are those of a component that work
-    /// off the frame must report back to ([`FeedsComponent`]).
+    /// How deep the running passes of a component that wires work off the frame are.
     static FEEDS_COMPONENT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Marks that the component whose code runs here wires work off the frame: a
-/// wake captured while this lives and that reaches no component could never
-/// report back to it, so a debug build fails where the wire is made
-/// ([`WakeHandle::new`]), rather than at the frame that later skipped what it
-/// changed.
+/// Marks the running component as one that wires work off the frame, so a debug
+/// build fails where such a wake is made.
 #[doc(hidden)]
 #[must_use]
 pub struct FeedsComponent(());
@@ -108,12 +83,10 @@ impl Drop for FeedsComponent {
     }
 }
 
-/// The non-clone owner of one mount incarnation. Drop closes it.
 pub struct WakeScope {
     route: Arc<Route>,
 }
 
-/// Why a platform destination could not be installed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum WakeBindError {
     #[error("wake scope already has a destination")]
@@ -143,7 +116,6 @@ impl WakeScope {
         }
     }
 
-    /// The scope's input revision ([`WakeHandle::revision`]).
     pub fn revision(&self) -> u64 {
         self.route.revision.load(Ordering::Acquire)
     }
@@ -154,7 +126,6 @@ impl WakeScope {
         }
     }
 
-    /// Enter during construction or app callbacks; drop guards in reverse order.
     pub fn enter(&self) -> WakeScopeGuard {
         let previous = CURRENT.with(|current| current.replace(Some(Arc::downgrade(&self.route))));
         WakeScopeGuard {
@@ -163,9 +134,6 @@ impl WakeScope {
         }
     }
 
-    /// Enter intentional headless/no-host execution, masking an outer scope.
-    /// Drop guards in reverse entry order, on this thread. Captures made here
-    /// stay detached after the previous construction context is restored.
     pub fn enter_detached() -> WakeScopeGuard {
         let previous = CURRENT.with(|current| current.replace(None));
         WakeScopeGuard {
@@ -174,12 +142,13 @@ impl WakeScope {
         }
     }
 
-    /// Bind once and flush one wake if work arrived before startup.
-    /// The sink must capture a sender/proxy, never an owning host reference.
+    /// Bind a destination for this scope's wakes, flushing work that arrived before
+    /// startup. The sink must capture a sender or proxy, never an owning host
+    /// reference.
     ///
     /// # Errors
     ///
-    /// Returns [`WakeBindError::Closed`] when the scope has already closed, or
+    /// [`WakeBindError::Closed`] once the scope has closed,
     /// [`WakeBindError::AlreadyBound`] when a destination is already installed.
     pub fn bind(
         &mut self,
@@ -205,11 +174,9 @@ impl WakeScope {
         Ok(())
     }
 
-    /// Drain wakes recorded while no destination is bound, as
-    /// `(pending, requires_sync)`. A hosted application worker has no event
-    /// loop: its model pump is the consumer. `None` means the wakes are not
-    /// observable here (a sink is bound and received them, or the scope is
-    /// closed), so a caller must assume a model-dirty wake.
+    /// Wakes recorded while no destination was bound, as `(pending, requires_sync)`.
+    /// `None` when they are not observable here, so a caller must assume a
+    /// model-dirty wake.
     pub fn take_unbound(&self) -> Option<(bool, bool)> {
         let mut destination = self.route.destination.lock_recover();
         if !self.route.open.load(Ordering::Acquire) || destination.sink.is_some() {
@@ -221,10 +188,8 @@ impl WakeScope {
         ))
     }
 
-    /// Drain the owner's coalesced wake flags, including wakes delivered to
-    /// its event sink. An embedded application uses these flags to distinguish
-    /// presentation frames from model changes. Sink delivery and receiver-side
-    /// authorization still run normally. A closed scope returns `None`.
+    /// Take the owner's coalesced wake flags, including the wakes its event sink
+    /// received; `None` once the scope has closed.
     pub fn take_pending(&self) -> Option<(bool, bool)> {
         let mut destination = self.route.destination.lock_recover();
         if !self.route.open.load(Ordering::Acquire) {
@@ -236,15 +201,12 @@ impl WakeScope {
         ))
     }
 
-    /// Whether a wake is waiting for its owner, without taking it: work
-    /// the owner's next pass has to run.
     pub fn is_pending(&self) -> bool {
         self.route.open.load(Ordering::Acquire) && self.route.destination.lock_recover().pending
     }
 
-    /// Whether the wake waiting for its owner asks for a model pass, read
-    /// without taking it. An owner that drains wakes mid-pass asks this so
-    /// the wake stays pending: the host prepares the pass that runs it.
+    /// Whether the waiting wake asks for a model pass, without taking it: an owner
+    /// that drains wakes mid-pass keeps it pending.
     pub fn sync_pending(&self) -> Option<bool> {
         if !self.route.open.load(Ordering::Acquire) {
             return None;
@@ -252,16 +214,13 @@ impl WakeScope {
         Some(self.route.destination.lock_recover().pending_sync)
     }
 
-    /// Receiver-side validation remains mandatory after sender-side checks.
     pub fn accepts(&self, event: &WakeEvent) -> bool {
         self.route.open.load(Ordering::Acquire)
             && Weak::ptr_eq(&Arc::downgrade(&self.route), &event.route)
     }
 
-    /// Stop new authorizations without waiting for previously accepted work.
     pub fn close(&mut self) {
         self.route.open.swap(false, Ordering::AcqRel);
-        // Nothing owed to a closed scope is waited for any more.
         drop(self.route.destination.lock_recover());
         self.route.changed.notify_all();
     }
@@ -273,7 +232,8 @@ impl Drop for WakeScope {
     }
 }
 
-/// A thread-affine construction/dispatch guard, independent of an App borrow.
+/// A thread-affine construction and dispatch guard, independent of an App
+/// borrow.
 ///
 /// ```compile_fail
 /// let scope = tilo_rt::wake::WakeScope::new();
@@ -307,26 +267,20 @@ impl WakeEvent {
         self.requires_sync
     }
 
-    /// The wake says only that a record's save moved on
-    /// ([`WakeHandle::wake_save_progress`]): an owner that takes wakes
-    /// apart may show the new save status without running its model.
+    /// Says only that a record's save moved on, so an owner may show the new status
+    /// without running its model.
     #[doc(hidden)]
     pub const fn save_progress(&self) -> bool {
         self.save_progress
     }
 
-    /// Whether the wake asks its host for a frame as well as for its
-    /// owner's service. One that says only that a save moved on does not:
-    /// a save that lands in time shows nothing, and the owner's service
-    /// says when it does show something new (the window's bar), so a
-    /// keystroke's write landing draws no second frame after the key's.
+    /// Whether the wake also asks for a frame. A save-progress wake does not, so a
+    /// keystroke's write landing draws no second frame.
     pub const fn asks_for_frame(&self) -> bool {
         !self.save_progress
     }
 }
 
-/// Captures one scope, or remains detached forever. Unlike a closed scope,
-/// detached execution may publish local/headless state without waking a host.
 #[derive(Clone, Debug)]
 pub struct WakeHandle {
     route: Option<Weak<Route>>,
@@ -364,9 +318,6 @@ impl WakeHandle {
         })
     }
 
-    /// The wake of the scope that runs here: a component's own during its
-    /// construction, its passes and its callbacks. Work it starts off the
-    /// frame holds this and wakes it when there is something to take up.
     pub fn new() -> Self {
         let handle = Self {
             route: CURRENT.with(|current| current.borrow().clone()),
@@ -383,16 +334,12 @@ impl WakeHandle {
         Self { route: None }
     }
 
-    /// What tells this handle's scope from every other open one, `None` for
-    /// a detached handle.
     pub fn scope_key(&self) -> Option<usize> {
         self.route
             .as_ref()
             .map(|route| route.as_ptr().cast::<()>() as usize)
     }
 
-    /// Whether the handle was captured outside every scope: nothing it
-    /// publishes reaches an owner.
     pub const fn is_detached(&self) -> bool {
         self.route.is_none()
     }
@@ -406,10 +353,8 @@ impl WakeHandle {
         }
     }
 
-    /// Compare two original scoped routes while that route is open.
-    /// Detached handles never match. This is transient scheduling metadata,
-    /// not registration, document, callback, or publication authorization.
-    /// A successful comparison does not prevent a concurrent close.
+    /// Compare two original scoped routes while the route is open; detached handles
+    /// never match. Scheduling metadata, not authorization.
     #[doc(hidden)]
     pub fn same_open_scope(&self, other: &Self) -> bool {
         let (Some(route), Some(other_route)) = (&self.route, &other.route) else {
@@ -421,7 +366,6 @@ impl WakeHandle {
                 .is_some_and(|route| route.open.load(Ordering::Acquire))
     }
 
-    /// Authorize one publication. A prior freshness check is not authorization.
     #[doc(hidden)]
     pub fn authorize_publication(&self) -> bool {
         match &self.route {
@@ -439,12 +383,8 @@ impl WakeHandle {
         self.send_wake(true, false);
     }
 
-    /// Note, on the owner's own thread, that something its owner reads
-    /// changed, without waking it: the owner's pass that is running or due
-    /// takes it up, and an owner that rests between passes while its
-    /// [`Self::revision`] stands knows it missed nothing. A typed local
-    /// state written by another window's callback says so through its
-    /// owner's handle. Detached and closed handles note nothing.
+    /// Note on the owner's thread that something it reads changed, without waking
+    /// it: a pass that is running or due takes it up.
     pub fn note_change(&self) {
         if let Some(route) = self.route.as_ref().and_then(Weak::upgrade)
             && route.open.load(Ordering::Acquire)
@@ -453,9 +393,6 @@ impl WakeHandle {
         }
     }
 
-    /// The owner's input revision: it moves with every wake and every noted
-    /// change ([`Self::note_change`]). `None` for a detached handle, or once
-    /// the scope closed.
     pub fn revision(&self) -> Option<u64> {
         let route = self.route.as_ref()?.upgrade()?;
         route
@@ -464,10 +401,6 @@ impl WakeHandle {
             .then(|| route.revision.load(Ordering::Acquire))
     }
 
-    /// How often the owner's input revision moved from another thread than
-    /// the owner's ([`Self::revision`]): a pass that reads it before and
-    /// after knows whether work off the frame landed while it ran. `None`
-    /// for a detached handle, or once the scope closed.
     pub fn crossed(&self) -> Option<u64> {
         let route = self.route.as_ref()?.upgrade()?;
         route
@@ -476,34 +409,18 @@ impl WakeHandle {
             .then(|| route.crossed.load(Ordering::Acquire))
     }
 
-    /// Wake the owner because a record's save moved on (a write landed or
-    /// failed), and for nothing else. An owner that cannot tell wakes apart
-    /// takes it as [`Self::wake`]; one that can shows the save status
-    /// alone, without running its model again for a write that changed
-    /// nothing it holds.
+    /// Wake the owner because a record's save moved on, and for nothing else.
     pub fn wake_save_progress(&self) {
         self.send_wake(true, true);
     }
 
-    /// Wake the owner to drain an event queue. The queue consumer determines
-    /// whether the model changed; receiving a notification alone does not.
     #[doc(hidden)]
     pub fn notify_events(&self) {
         self.send_wake(false, false);
     }
 
-    /// Owe the owner a reply: work it asked for off its thread whose answer
-    /// it waits to take up, such as a worker's reply to a request. The work
-    /// holds the [`Owed`] and drops it once its answer is queued for the
-    /// owner (or it ends without one), which wakes the owner.
-    ///
-    /// What an action causes this way is part of the action: a host answers
-    /// the action once every reply owed meanwhile landed and was taken up
-    /// ([`Self::settle`]), so its effects are the action's, not the next
-    /// one's. Owe only short work answered by itself: long-running work an
-    /// action starts answers as a job instead, and nothing waits on a person
-    /// (a chooser) or on a stream that does not end. A detached handle, or
-    /// one whose scope closed, owes nothing.
+    /// Owe the owner a reply: the work holds the [`Owed`] and drops it once its
+    /// answer is queued.
     pub fn owe(&self) -> Owed {
         let route = self.route.as_ref().filter(|route| {
             route.upgrade().is_some_and(|route| {
@@ -520,7 +437,6 @@ impl WakeHandle {
         }
     }
 
-    /// Whether a reply is owed to the scope that has not landed.
     pub fn owes(&self) -> bool {
         self.route
             .as_ref()
@@ -531,11 +447,8 @@ impl WakeHandle {
             })
     }
 
-    /// Forget the replies that landed so far: the owner's next pass takes
-    /// them up, and [`Self::settled`] after it asks only about later ones.
-    /// For an owner that cannot wait ([`Self::settle`]), such as a window
-    /// whose frames also serve a person: it marks where a pass begins and
-    /// asks once it ended.
+    /// Mark where a pass begins, so [`Self::settled`] asks only about replies that
+    /// land after it.
     pub fn begin_pass(&self) {
         if let Some(route) = self.route.as_ref().and_then(Weak::upgrade) {
             let mut destination = route.destination.lock_recover();
@@ -544,10 +457,7 @@ impl WakeHandle {
         }
     }
 
-    /// Whether nothing is owed and no reply landed
-    /// since [`Self::begin_pass`]: a pass that began after it took up everything
-    /// that was owed. A closed or detached scope is settled; one that is not
-    /// is woken when a reply lands, so its owner asks again then.
+    /// Whether nothing is owed and no reply landed since [`Self::begin_pass`].
     pub fn settled(&self) -> bool {
         self.route
             .as_ref()
@@ -559,12 +469,8 @@ impl WakeHandle {
             })
     }
 
-    /// Run `pass`, one turn of the owner's loop that takes up whatever has
-    /// landed for it, until no reply is owed ([`Self::owe`]) and a pass ran
-    /// after the last one landed. Between passes it waits for the scope to
-    /// be woken: it never polls, and returns at once when the scope closes.
-    /// At least one pass runs: the one that takes up what the caller just
-    /// did. A detached handle runs that one.
+    /// Run `pass` until nothing is owed and a pass ran after the last reply landed.
+    /// One pass always runs, then it waits to be woken; it never polls.
     pub fn settle(&self, mut pass: impl FnMut()) {
         let Some(route) = self.route.as_ref().and_then(Weak::upgrade) else {
             pass();
@@ -578,8 +484,6 @@ impl WakeHandle {
                 if !route.open.load(Ordering::Acquire) {
                     return;
                 }
-                // A reply that landed after the pass began is taken up by
-                // the next one, even when it was the last owed.
                 if destination.settling.replied {
                     break;
                 }
@@ -629,9 +533,6 @@ impl WakeHandle {
     }
 }
 
-/// A reply owed to a scope's owner ([`WakeHandle::owe`]). Dropping it says
-/// the reply landed: queued for the owner, or the work ended without one.
-/// It wakes the owner.
 #[must_use = "dropping it at once says the reply already landed"]
 pub struct Owed {
     route: Option<Weak<Route>>,
@@ -661,15 +562,13 @@ impl Drop for Owed {
     }
 }
 
-/// The answering end of a request made under a wake scope, such as a system
-/// chooser's. Sending the answer wakes that scope's event loop, so an answer
-/// that arrives while the app is idle is drawn without waiting for input.
+/// The answering end of a request made under a wake scope; sending the answer
+/// wakes that scope's event loop.
 pub struct Reply<T> {
     sender: Sender<T>,
     wake: WakeHandle,
 }
 
-/// A reply channel for a request made now, under the current wake scope.
 pub fn reply<T>() -> (Reply<T>, Receiver<T>) {
     let (sender, receiver) = channel();
     (
@@ -683,22 +582,14 @@ pub fn reply<T>() -> (Reply<T>, Receiver<T>) {
 
 impl<T> Reply<T> {
     pub fn send(self, answer: T) {
-        // The requester may have moved on (window closed); a dead channel
-        // needs no wake.
         if self.sender.send(answer).is_ok() {
             self.wake.wake();
         }
     }
 }
 
-/// The report-back side of a [`waking_channel`]: the component that opened it
-/// is woken for every message, before the message can be received and again
-/// once it can.
-///
-/// Both wakes matter: a frame that finds a message has a wake to answer for
-/// it, and a message that lands between a component's drain and the end of
-/// its pass ([`WakeHandle::crossed`]) is already announced, so a component
-/// that then rests never skipped what the message changed.
+/// Wakes the component that opened a [`waking_channel`] for every message,
+/// before the message can be received and again once it can.
 struct Reporting {
     wake: WakeHandle,
 }
@@ -731,9 +622,8 @@ impl Clone for Reporting {
     }
 }
 
-/// The worker's end of a [`waking_channel`]: every message it sends wakes
-/// the scope that opened the channel, so the app drains it on its next sync
-/// instead of pumping frames to poll for it.
+/// The worker's end of a [`waking_channel`]: every send wakes the scope that
+/// opened it.
 pub struct WakingSender<T> {
     sender: Sender<T>,
     reporting: Reporting,
@@ -749,8 +639,6 @@ impl<T> Clone for WakingSender<T> {
 }
 
 impl<T> WakingSender<T> {
-    /// Queue `message` and wake the owner to take it. A gone receiver (the
-    /// window closed) is an error.
     pub fn send(&self, message: T) -> Result<(), std::sync::mpsc::SendError<T>> {
         let sender = &self.sender;
         self.reporting.announce(|| sender.send(message))
@@ -758,16 +646,15 @@ impl<T> WakingSender<T> {
 }
 
 impl<T> Drop for WakingSender<T> {
-    /// A worker that ends without replying (it failed, or panicked) wakes
-    /// the owner too, so the owner sees the channel disconnected instead of
-    /// waiting forever.
+    /// A worker that ends without replying wakes the owner too, so it sees the
+    /// channel disconnected.
     fn drop(&mut self) {
         self.reporting.wake.wake();
     }
 }
 
-/// The worker's end of a [`waking_sync_channel`]: as [`WakingSender`], for a
-/// worker that must not queue faster than its owner takes.
+/// The worker's end of a [`waking_sync_channel`], which queues no faster than
+/// its owner takes.
 pub struct WakingSyncSender<T> {
     sender: SyncSender<T>,
     reporting: Reporting,
@@ -783,12 +670,6 @@ impl<T> Clone for WakingSyncSender<T> {
 }
 
 impl<T> WakingSyncSender<T> {
-    /// Queue `message`, waiting for room when the channel is full, and wake
-    /// the owner to take it.
-    ///
-    /// # Errors
-    ///
-    /// The message back, when the receiver (the window) is gone.
     pub fn send(&self, message: T) -> Result<(), std::sync::mpsc::SendError<T>> {
         let sender = &self.sender;
         self.reporting.announce(|| sender.send(message))
@@ -796,17 +677,13 @@ impl<T> WakingSyncSender<T> {
 }
 
 impl<T> Drop for WakingSyncSender<T> {
-    /// As [`WakingSender`]: a worker that ends wakes the owner to see it end.
     fn drop(&mut self) {
         self.reporting.wake.wake();
     }
 }
 
-/// "Wake me when this worker replies": a channel opened now, under the
-/// current wake scope (the app's). A worker sends its replies through the
-/// [`WakingSender`]; each one wakes the app's event loop, which drains the
-/// [`Receiver`] in its next sync. A waiting app paints nothing until a reply
-/// lands — `needs_animation_frame` is for motion, never for polling a worker.
+/// A channel opened under the current wake scope: every reply a worker sends
+/// wakes the app's loop, which drains it on its next sync.
 #[must_use]
 pub fn waking_channel<T>() -> (WakingSender<T>, Receiver<T>) {
     let (sender, receiver) = channel();
@@ -819,9 +696,8 @@ pub fn waking_channel<T>() -> (WakingSender<T>, Receiver<T>) {
     )
 }
 
-/// [`waking_channel`] with room for `bound` messages: a worker whose replies
-/// cost memory (a picture, an analysis) sends through it, so it waits for its
-/// owner to take them instead of piling up.
+/// [`waking_channel`] with room for `bound` messages, so a worker sending costly
+/// replies waits for its owner to take them.
 #[must_use]
 pub fn waking_sync_channel<T>(bound: usize) -> (WakingSyncSender<T>, Receiver<T>) {
     let (sender, receiver) = std::sync::mpsc::sync_channel(bound);
@@ -987,8 +863,6 @@ mod tests {
         (scope, rx)
     }
 
-    /// Every wake the owner was sent, drained: a message is announced
-    /// before it can be received and again once it can.
     fn drain(rx: &Receiver<WakeEvent>) {
         while rx.try_recv().is_ok() {}
     }
@@ -1009,7 +883,6 @@ mod tests {
                 "the reply woke the owner"
             );
             assert_eq!(replies.try_recv().unwrap(), 7);
-            // The worker's end went away with its thread: one more wake.
             assert!(rx.recv().is_ok());
             drain(&rx);
         }
@@ -1020,8 +893,6 @@ mod tests {
             };
             drop(replies);
             assert!(sender.send(1).is_err(), "the message reaches nobody");
-            // Announced before it could be received, as every message is; a
-            // wake no owner takes up costs a closed window nothing.
             assert!(rx.try_recv().is_ok(), "the attempt was announced");
             assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
             drop(sender);
@@ -1060,13 +931,9 @@ mod tests {
             "the reply woke its owner before it could be received"
         );
         assert_eq!(replies.try_recv().unwrap(), 7);
-        // The worker's end went away with its thread: one more wake.
         assert!(rx.recv().is_ok());
     }
 
-    /// A component's pass wiring work off the frame must capture the
-    /// component's wake: one that reaches no scope can never report back to
-    /// it, and is caught where the wire is made.
     #[test]
     #[should_panic(expected = "reaches no component")]
     fn a_wake_wired_for_a_running_component_reaches_its_component() {
@@ -1160,8 +1027,6 @@ mod tests {
 
     #[test]
     fn same_open_scope_matches_only_the_original_open_scoped_route() {
-        // Clones and independent captures in the same actual scope match;
-        // another scope does not, and comparisons do not deliver wakes.
         {
             let (scope, rx) = bound_scope();
             let (other_scope, other_rx) = bound_scope();
@@ -1203,8 +1068,7 @@ mod tests {
             assert!(matches!(other_rx.try_recv(), Err(TryRecvError::Empty)));
         }
 
-        // Detached handles retain their existing publication behavior but
-        // never correlate, including when captured under detached entry.
+        // Detached handles never correlate, even when captured under detached entry.
         {
             let explicit = WakeHandle::detached();
             let (scope, rx) = bound_scope();
@@ -1229,8 +1093,6 @@ mod tests {
             assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
         }
 
-        // Closing invalidates correlation immediately and idempotently. A
-        // replacement scope is a distinct route even while both are alive.
         {
             let (mut scope, _) = bound_scope();
             let old = scope.handle();
@@ -1246,7 +1108,6 @@ mod tests {
             assert!(!fresh.same_open_scope(&old));
         }
 
-        // A comparison does not retain the route or its sink-captured resource.
         {
             let resource = Arc::new(());
             let weak_resource = Arc::downgrade(&resource);
@@ -1378,7 +1239,6 @@ mod tests {
         let queue = Arc::new(Mutex::new(Vec::new()));
         let mut taken = Vec::new();
 
-        // A reply landing while the owner waits wakes it for a pass.
         let owed = handle.owe();
         assert!(handle.owes());
         let worker = {
@@ -1393,8 +1253,6 @@ mod tests {
         assert_eq!(taken, [1]);
         assert!(!handle.owes());
 
-        // A reply landing during a pass, after it took up what was queued,
-        // is taken up by one more, though nothing is owed any more.
         let mut owed = Some(handle.owe());
         let mut passes = 0;
         handle.settle(|| {
@@ -1412,7 +1270,6 @@ mod tests {
         });
         assert_eq!((taken.as_slice(), passes), ([1, 2].as_slice(), 2));
 
-        // Nothing owed: one pass, however often it wakes its own scope.
         let mut passes = 0;
         handle.settle(|| {
             passes += 1;
@@ -1448,7 +1305,6 @@ mod tests {
         assert_eq!(passes, 1);
         drop(owed);
 
-        // Closing the scope ends a wait on what it was owed.
         let (mut scope, _wakes) = bound_scope();
         let handle = scope.handle();
         let owed = handle.owe();
@@ -1479,7 +1335,6 @@ mod tests {
         assert!(scope.accepts(&wake));
         assert!(wake.requires_sync());
 
-        // Nobody is listening any more: no wake for an answer nobody reads.
         let (answer, answers) = {
             let _entry = scope.enter();
             reply::<()>()
