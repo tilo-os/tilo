@@ -8302,6 +8302,12 @@
                   "null"
                 ]
               },
+              "detail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "did": {
                 "type": [
                   "string",
@@ -9402,14 +9408,43 @@
             "type": "integer"
           },
           "output": {
-            "type": [
-              "string",
-              "null"
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "oneOf": [
+                  {
+                    "items": {
+                      "maximum": 255,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "content": true,
+                    "pattern": "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$",
+                    "type": "string"
+                  },
+                  {
+                    "pattern": "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$",
+                    "type": "string"
+                  },
+                  {
+                    "properties": {
+                      "inline": {
+                        "type": "array"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
             ]
-          },
-          "output_len": {
-            "minimum": 0,
-            "type": "integer"
           },
           "truncated": {
             "type": "boolean"
@@ -9493,7 +9528,6 @@
           "started_ms",
           "ended_ms",
           "exit",
-          "output_len",
           "truncated",
           "tool",
           "undoable",
@@ -12057,23 +12091,42 @@
             "type": "boolean"
           },
           "content": {
-            "additionalProperties": false,
-            "properties": {
-              "hash": {
-                "type": "string"
+            "oneOf": [
+              {
+                "type": "null"
               },
-              "size": {
-                "minimum": 0,
-                "type": "integer"
+              {
+                "oneOf": [
+                  {
+                    "items": {
+                      "maximum": 255,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "content": true,
+                    "pattern": "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$",
+                    "type": "string"
+                  },
+                  {
+                    "pattern": "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$",
+                    "type": "string"
+                  },
+                  {
+                    "properties": {
+                      "inline": {
+                        "type": "array"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
-            },
-            "required": [
-              "hash",
-              "size"
-            ],
-            "type": [
-              "object",
-              "null"
             ]
           }
         },
@@ -12129,21 +12182,36 @@
             "type": "string"
           },
           "index": {
-            "additionalProperties": false,
-            "properties": {
-              "hash": {
+            "oneOf": [
+              {
+                "items": {
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "content": true,
+                "pattern": "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$",
                 "type": "string"
               },
-              "size": {
-                "minimum": 0,
-                "type": "integer"
+              {
+                "pattern": "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$",
+                "type": "string"
+              },
+              {
+                "properties": {
+                  "inline": {
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
               }
-            },
-            "required": [
-              "hash",
-              "size"
-            ],
-            "type": "object"
+            ]
           }
         },
         "required": [
@@ -13995,36 +14063,16 @@
             "type": "array"
           },
           "to": {
-            "oneOf": [
-              {
-                "const": "inbox",
-                "type": "string"
-              },
-              {
-                "const": "starred",
-                "type": "string"
-              },
-              {
-                "const": "sent",
-                "type": "string"
-              },
-              {
-                "const": "drafts",
-                "type": "string"
-              },
-              {
-                "const": "archive",
-                "type": "string"
-              },
-              {
-                "const": "trash",
-                "type": "string"
-              },
-              {
-                "const": "junk",
-                "type": "string"
-              }
-            ]
+            "enum": [
+              "inbox",
+              "starred",
+              "sent",
+              "drafts",
+              "archive",
+              "trash",
+              "junk"
+            ],
+            "type": "string"
           }
         },
         "required": [
@@ -14123,36 +14171,16 @@
                         "type": "string"
                       },
                       "folder": {
-                        "oneOf": [
-                          {
-                            "const": "inbox",
-                            "type": "string"
-                          },
-                          {
-                            "const": "starred",
-                            "type": "string"
-                          },
-                          {
-                            "const": "sent",
-                            "type": "string"
-                          },
-                          {
-                            "const": "drafts",
-                            "type": "string"
-                          },
-                          {
-                            "const": "archive",
-                            "type": "string"
-                          },
-                          {
-                            "const": "trash",
-                            "type": "string"
-                          },
-                          {
-                            "const": "junk",
-                            "type": "string"
-                          }
-                        ]
+                        "enum": [
+                          "inbox",
+                          "starred",
+                          "sent",
+                          "drafts",
+                          "archive",
+                          "trash",
+                          "junk"
+                        ],
+                        "type": "string"
                       },
                       "id": {
                         "type": "string"
@@ -14193,36 +14221,16 @@
                         "type": "string"
                       },
                       "from": {
-                        "oneOf": [
-                          {
-                            "const": "inbox",
-                            "type": "string"
-                          },
-                          {
-                            "const": "starred",
-                            "type": "string"
-                          },
-                          {
-                            "const": "sent",
-                            "type": "string"
-                          },
-                          {
-                            "const": "drafts",
-                            "type": "string"
-                          },
-                          {
-                            "const": "archive",
-                            "type": "string"
-                          },
-                          {
-                            "const": "trash",
-                            "type": "string"
-                          },
-                          {
-                            "const": "junk",
-                            "type": "string"
-                          }
-                        ]
+                        "enum": [
+                          "inbox",
+                          "starred",
+                          "sent",
+                          "drafts",
+                          "archive",
+                          "trash",
+                          "junk"
+                        ],
+                        "type": "string"
                       },
                       "id": {
                         "type": "string"
@@ -14231,36 +14239,16 @@
                         "type": "string"
                       },
                       "to": {
-                        "oneOf": [
-                          {
-                            "const": "inbox",
-                            "type": "string"
-                          },
-                          {
-                            "const": "starred",
-                            "type": "string"
-                          },
-                          {
-                            "const": "sent",
-                            "type": "string"
-                          },
-                          {
-                            "const": "drafts",
-                            "type": "string"
-                          },
-                          {
-                            "const": "archive",
-                            "type": "string"
-                          },
-                          {
-                            "const": "trash",
-                            "type": "string"
-                          },
-                          {
-                            "const": "junk",
-                            "type": "string"
-                          }
-                        ]
+                        "enum": [
+                          "inbox",
+                          "starred",
+                          "sent",
+                          "drafts",
+                          "archive",
+                          "trash",
+                          "junk"
+                        ],
+                        "type": "string"
                       }
                     },
                     "required": [
@@ -14288,36 +14276,16 @@
                         "type": "string"
                       },
                       "folder": {
-                        "oneOf": [
-                          {
-                            "const": "inbox",
-                            "type": "string"
-                          },
-                          {
-                            "const": "starred",
-                            "type": "string"
-                          },
-                          {
-                            "const": "sent",
-                            "type": "string"
-                          },
-                          {
-                            "const": "drafts",
-                            "type": "string"
-                          },
-                          {
-                            "const": "archive",
-                            "type": "string"
-                          },
-                          {
-                            "const": "trash",
-                            "type": "string"
-                          },
-                          {
-                            "const": "junk",
-                            "type": "string"
-                          }
-                        ]
+                        "enum": [
+                          "inbox",
+                          "starred",
+                          "sent",
+                          "drafts",
+                          "archive",
+                          "trash",
+                          "junk"
+                        ],
+                        "type": "string"
                       },
                       "id": {
                         "type": "string"
@@ -14938,36 +14906,16 @@
                 "type": "null"
               },
               {
-                "oneOf": [
-                  {
-                    "const": "inbox",
-                    "type": "string"
-                  },
-                  {
-                    "const": "starred",
-                    "type": "string"
-                  },
-                  {
-                    "const": "sent",
-                    "type": "string"
-                  },
-                  {
-                    "const": "drafts",
-                    "type": "string"
-                  },
-                  {
-                    "const": "archive",
-                    "type": "string"
-                  },
-                  {
-                    "const": "trash",
-                    "type": "string"
-                  },
-                  {
-                    "const": "junk",
-                    "type": "string"
-                  }
-                ]
+                "enum": [
+                  "inbox",
+                  "starred",
+                  "sent",
+                  "drafts",
+                  "archive",
+                  "trash",
+                  "junk"
+                ],
+                "type": "string"
               }
             ]
           },
@@ -15116,36 +15064,16 @@
                   "type": "string"
                 },
                 "folder": {
-                  "oneOf": [
-                    {
-                      "const": "inbox",
-                      "type": "string"
-                    },
-                    {
-                      "const": "starred",
-                      "type": "string"
-                    },
-                    {
-                      "const": "sent",
-                      "type": "string"
-                    },
-                    {
-                      "const": "drafts",
-                      "type": "string"
-                    },
-                    {
-                      "const": "archive",
-                      "type": "string"
-                    },
-                    {
-                      "const": "trash",
-                      "type": "string"
-                    },
-                    {
-                      "const": "junk",
-                      "type": "string"
-                    }
-                  ]
+                  "enum": [
+                    "inbox",
+                    "starred",
+                    "sent",
+                    "drafts",
+                    "archive",
+                    "trash",
+                    "junk"
+                  ],
+                  "type": "string"
                 },
                 "id": {
                   "type": "string"
@@ -16467,8 +16395,23 @@
               },
               {
                 "content": true,
-                "pattern": "^tilo\\.content:[0-9a-f]{64}$",
+                "pattern": "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$",
                 "type": "string"
+              },
+              {
+                "pattern": "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$",
+                "type": "string"
+              },
+              {
+                "properties": {
+                  "inline": {
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -16496,8 +16439,23 @@
               },
               {
                 "content": true,
-                "pattern": "^tilo\\.content:[0-9a-f]{64}$",
+                "pattern": "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$",
                 "type": "string"
+              },
+              {
+                "pattern": "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$",
+                "type": "string"
+              },
+              {
+                "properties": {
+                  "inline": {
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -16559,8 +16517,23 @@
                 },
                 {
                   "content": true,
-                  "pattern": "^tilo\\.content:[0-9a-f]{64}$",
+                  "pattern": "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$",
                   "type": "string"
+                },
+                {
+                  "pattern": "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$",
+                  "type": "string"
+                },
+                {
+                  "properties": {
+                    "inline": {
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
                 }
               ]
             },
@@ -20787,6 +20760,7 @@
             "type": "string"
           },
           "index": {
+            "minimum": 0,
             "type": "integer"
           }
         },

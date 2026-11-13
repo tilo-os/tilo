@@ -131,8 +131,9 @@ if grep -qE '(^|/)(Cargo\.toml|lib\.rs|main\.rs)$|^docs/codemap\.md$' <<< "$lock
   fi
 fi
 
-# The SDK's types are generated from the apps' surfaces and manifests
-# (`tilo sdk gen`), so a change to either leaves them stale: they are what an
+# The SDK's types and the API's description (docs/api/openapi.json) are
+# generated from the apps' surfaces and manifests (`tilo sdk gen`), so a
+# change to either leaves them stale: they are what an
 # agent or a script reads an app's actions from, and nothing else in a commit
 # notices. Regenerating them is not a judgement call, so do it here with this
 # tree's own generator and stage what it wrote; a tree that has not built one
@@ -153,15 +154,16 @@ if grep -qE '^apps/[^/]+/(surface|tilo-app)\.toml$' <<< "$lock_staged_names"; th
       esac
     done < <(ls -td -- "${sdk_found[@]}" 2>/dev/null || true)
   fi
-  sdk_paths="sdk/python/src/tilo/types sdk/typescript/src/types"
+  sdk_paths="sdk/python/src/tilo/types sdk/typescript/src/types docs/api"
   if [ -n "$sdk_gen" ]; then
     # Which generated files the person is editing by hand: those are left
     # alone, since staging them would stage their edits too.
     sdk_dirty=$(git diff --name-only -- $sdk_paths)
-    for lang in python ts; do
+    for lang in python ts openapi; do
       case "$lang" in
         python) out=sdk/python/src/tilo/types ;;
         ts) out=sdk/typescript/src/types ;;
+        openapi) out=docs/api ;;
       esac
       (cd "$root" && "$sdk_gen" sdk gen --lang "$lang" --out "$out") >/dev/null || {
         note "the SDK's types could not be written with $sdk_gen; run 't fix sdk-types'"
