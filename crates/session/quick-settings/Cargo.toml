@@ -1,4 +1,6 @@
 [package]
+# tests/layout.rs and tests/scale.rs are modules of tests/it.rs, not binaries of their own
+autotests = false
 name = "tilo-quick-settings"
 description = "The desktop's Quick Settings panel as an app: its resource, effects and views, the readings the desktop lends it, and the device status line the top bar shares."
 version = "0.1.0"
@@ -9,6 +11,24 @@ license.workspace = true
 [[bin]]
 name = "tilo-quick-settings"
 path = "src/main.rs"
+
+# The panel's headless tests, one binary: its files are modules of `tests/it.rs`
+# (a file per binary linked the whole panel and its toolkit once each).
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+# The panel in a session that starts it: these link the compositor and the
+# session, which the headless tests never start.
+[[test]]
+name = "session"
+path = "tests/session.rs"
+
+# The panel read over AT-SPI: these name their private buses in the process's
+# environment, for the panel they start.
+[[test]]
+name = "accessibility"
+path = "tests/accessibility.rs"
 
 [features]
 # The radio dispatcher fixture and the panel's test hooks, for the shell's

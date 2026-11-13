@@ -10,9 +10,7 @@
 
 use std::rc::Rc;
 
-mod common;
-
-use common::{click, drawn_on_each_other, has, hosted_at, target};
+use crate::common::{click, drawn_on_each_other, has, hosted_at, target};
 use tilo_quick_settings::host::FixtureHost;
 use tilo_quick_settings::{
     Page, QsEffect, QsSection, QuickSettings, QuickSettingsApp, RowPart, scenarios,
