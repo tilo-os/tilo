@@ -697,6 +697,23 @@ run = "bash tools/ci/sdk-typescript.sh"
 image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
 requires = ["arch=x86_64"]
 
+# The SDKs' native part (tools/ci/sdk-native.sh): the Python extension and the Node addon that
+# bind the one Rust client of Tilo's API, so a program reaches a Tilo host directly as a device
+# of its person. The first check builds both beside the api-on-relay harness; the second drives
+# each SDK's native test through them against that harness's relay, in the SDKs' image.
+[[check]]
+name = "sdk-native-build"
+run = "bash tools/ci/sdk-native.sh build /target/sdk-native"
+requires = ["arch=x86_64"]
+outputs = ["/target/sdk-native/**"]
+
+[[check]]
+name = "sdk-native"
+run = "bash tools/ci/sdk-native.sh test /target/sdk-native"
+needs = ["sdk-native-build"]
+image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
+requires = ["arch=x86_64"]
+
 # The developer docs' code examples, run the way a reader runs them: every block of an example
 # is a whole program that reaches the API with TILO_API_URL and TILO_API_KEY (tools/docs/
 # doc_examples.py). The host that serves them is the api-on-relay example of
@@ -2013,7 +2030,7 @@ default = false
 
 [[check]]
 name = "source-date-ci-sdk"
-run = "bash tools/ci/publish/source-date.sh /target/source-date/ci-sdk os/Containerfile.ci-sdk sdk/python/pyproject.toml sdk/python/uv.lock sdk/python/src sdk/typescript/package.json sdk/typescript/bun.lock"
+run = "bash tools/ci/publish/source-date.sh /target/source-date/ci-sdk os/Containerfile.ci-sdk sdk/python/pyproject.toml sdk/python/uv.lock sdk/typescript/package.json sdk/typescript/bun.lock"
 git = true
 outputs = ["/target/source-date/ci-sdk"]
 default = false
@@ -2053,7 +2070,7 @@ id_token = ["registry.tilo.so"]
 
 [[check]]
 name = "image-ci-sdk"
-run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/ci-sdk)\nexport SOURCE_DATE_EPOCH\n# The SDKs' locks and the Python SDK's sources are the image's context: the pins and the\n# dependencies they name are baked in, so this context is the only thing the build reads.\ncontext=$TMPDIR/ci-sdk-context\nrm -rf \"$context\"\nmkdir -p \"$context/sdk/python\" \"$context/sdk/typescript\"\ncp sdk/python/pyproject.toml sdk/python/uv.lock sdk/python/README.md \"$context/sdk/python/\"\ncp -a sdk/python/src \"$context/sdk/python/src\"\ncp sdk/typescript/package.json sdk/typescript/bun.lock \"$context/sdk/typescript/\"\nbash tools/ci/publish/oci-build.sh \"$context\" os/Containerfile.ci-sdk /target/publish/ci-sdk\n"
+run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/ci-sdk)\nexport SOURCE_DATE_EPOCH\n# The SDKs' manifests and locks are the image's context: the pins and the dependencies they\n# name are baked in, so this context is the only thing the build reads.\ncontext=$TMPDIR/ci-sdk-context\nrm -rf \"$context\"\nmkdir -p \"$context/sdk/python\" \"$context/sdk/typescript\"\ncp sdk/python/pyproject.toml sdk/python/uv.lock \"$context/sdk/python/\"\ncp sdk/typescript/package.json sdk/typescript/bun.lock \"$context/sdk/typescript/\"\nbash tools/ci/publish/oci-build.sh \"$context\" os/Containerfile.ci-sdk /target/publish/ci-sdk\n"
 needs = ["source-date-ci-sdk"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]

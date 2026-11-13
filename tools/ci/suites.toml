@@ -2185,6 +2185,12 @@ check = "sdk-python"
 suite = "sdk/python/tests/test_keys.py"
 check = "sdk-python"
 
+# The native part's test skips in the suite above and runs in sdk-native, under the api-on-relay
+# harness, which hands it a key file (TILO_KEY_FILE).
+[[covered]]
+suite = "sdk/python/tests/test_native.py"
+check = "sdk-native"
+
 [[covered]]
 suite = "sdk/python/tests/test_session.py"
 check = "sdk-python"
