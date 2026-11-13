@@ -1792,6 +1792,10 @@ function offerSignIn({workspace, named, messages}) {
       // does: the home workspace's shared desktop is where people meet, not
       // where someone starts.
       try { globalThis.sessionStorage?.setItem(OPEN_OWN, '1'); } catch { /* Then the home workspace stays in front. */ }
+      // Someone who signs in has been here: the first screen of a first
+      // visit is not theirs, and would name a new workspace for them that
+      // their host does not keep.
+      setupDone();
       location.reload();
     } catch (error) {
       console.warn('signing in at the door:', error);
