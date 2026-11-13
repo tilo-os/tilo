@@ -7,7 +7,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use crate::common::{Harness, row_center};
+use crate::common::{Harness, names_in, row_center};
 use file_explorer::views::file_view::drag_threshold;
 
 use vello::kurbo::Point;
@@ -40,6 +40,7 @@ fn drag_and_drop_moves_files_selections_and_up_but_not_into_itself() {
     dragging_a_multi_selection_moves_every_item();
     dropping_on_the_up_affordance_moves_to_the_parent();
     dropping_a_folder_on_itself_is_a_noop();
+    a_carried_folder_takes_no_drop_and_control_copies();
 }
 
 fn dragging_a_file_onto_a_folder_moves_it() {
@@ -151,5 +152,60 @@ fn dropping_a_folder_on_itself_is_a_noop() {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(names, ["keep"], "carried {moved} px: nothing else appeared");
+    }
+}
+
+/// A folder carried with the rest of a selection takes no drop, so letting the
+/// selection go on it moves nothing; and a file let go on a folder with Control held is
+/// copied there, not moved. The first leaves the directory as it was (asserted), so the
+/// second starts from the same two entries in a window of its own.
+fn a_carried_folder_takes_no_drop_and_control_copies() {
+    let d = tempfile::tempdir().unwrap();
+    let dest = d.path().join("dest");
+    std::fs::create_dir(&dest).unwrap(); // row 0
+    std::fs::write(d.path().join("a.txt"), b"a").unwrap(); // row 1
+
+    let file_pt = row_center(d.path(), 1);
+
+    let mut h = Harness::new(d.path());
+    let dest_pt = folder_center(&h, "dest");
+    h.w.state().debug_select(&[0, 1]);
+    h.layout();
+    drag_from_to(&mut h, file_pt, dest_pt);
+    assert_eq!(
+        names_in(d.path()),
+        ["a.txt", "dest"],
+        "a selection let go on a folder it holds stays where it was"
+    );
+    assert_eq!(
+        names_in(&dest),
+        [""; 0],
+        "nothing of the selection went into the folder it holds"
+    );
+
+    let mut h = Harness::new(d.path());
+    let dest_pt = folder_center(&h, "dest");
+    h.move_cursor(file_pt);
+    h.press();
+    h.move_cursor(Point::new(file_pt.x + 16.0, file_pt.y));
+    assert!(
+        h.w.state().debug_pin_dragging(),
+        "the threshold-crossing move started a drag"
+    );
+    h.move_cursor(dest_pt);
+    h.release_with_control();
+    assert_eq!(
+        names_in(d.path()),
+        ["a.txt", "dest"],
+        "a drop with Control held leaves the file where it was"
+    );
+    assert_eq!(names_in(&dest), ["a.txt"], "and puts a copy in the folder");
+    for file in [d.path().join("a.txt"), dest.join("a.txt")] {
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            b"a",
+            "{} holds the file's contents",
+            file.display()
+        );
     }
 }

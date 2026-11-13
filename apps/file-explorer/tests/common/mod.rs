@@ -21,6 +21,7 @@ use file_explorer::FileExplorerWidget;
 use ui::headless::Framed;
 use vello::kurbo::Point;
 use winit::event::{Modifiers, WindowEvent};
+use winit::keyboard::ModifiersState;
 
 pub const VIEWPORT: (f32, f32) = (1200.0, 760.0);
 
@@ -85,6 +86,13 @@ impl Harness {
     }
     pub fn release(&mut self) {
         self.dispatch(&ui::synthetic_input::mouse_release());
+    }
+    /// Let the button go with Control held, which makes a drop a copy.
+    pub fn release_with_control(&mut self) {
+        Framed::harness_mut(&mut self.w).dispatch_to_root_with(
+            &ui::synthetic_input::mouse_release(),
+            &Modifiers::from(ModifiersState::CONTROL),
+        );
     }
 }
 
