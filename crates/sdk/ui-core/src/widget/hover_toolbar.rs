@@ -49,37 +49,54 @@ impl HoverToolbar {
     /// `row`, with `controls` shown over it on hover and focus.
     #[must_use]
     pub fn new(row: Element, controls: Vec<Element>) -> Self {
-        Self::around(crate::widget::arrange::Slot::new(row), controls)
+        Self::around(crate::widget::arrange::Slot::new(row), controls, true)
     }
 
     /// `row` filling the room it is given — content standing at a size of its own, a place on a
-    /// canvas — with `controls` shown over it on hover and focus.
+    /// canvas — with `controls` shown inside its top trailing corner, a step in from its edges,
+    /// on hover and focus: the controls stay over what they belong to, so the pointer that went
+    /// to them is still over it.
     #[must_use]
     pub fn filling(row: Element, controls: Vec<Element>) -> Self {
         let mut slot = crate::widget::arrange::Slot::new(row);
         slot.fit = crate::widget::arrange::Fit::fill(1.0);
-        Self::around(slot, controls)
+        Self::around(slot, controls, false)
     }
 
-    /// The row in `row`, with `controls` shown over it on hover and focus.
-    fn around(row: crate::widget::arrange::Slot, controls: Vec<Element>) -> Self {
+    /// The row in `row`, with `controls` shown over it on hover and focus: straddling its top
+    /// edge, or inside its top trailing corner.
+    fn around(row: crate::widget::arrange::Slot, controls: Vec<Element>, straddle: bool) -> Self {
         let shown = Rc::new(Shown::default());
         let mut bar = Row::row().gap(Rhythm::Tight);
         for control in controls {
             bar = bar.push(control);
         }
+        // A floating surface, as every control that stands over content.
+        let surface: Element = Box::new(
+            crate::widget::Surface::new(crate::widget::SurfaceLevel::Floating, Box::new(bar))
+                .padded(Rhythm::Tight),
+        );
+        let bar: Element = if straddle {
+            surface
+        } else {
+            // A step in from the corner, on the rhythm's related gap.
+            Box::new(
+                crate::widget::Container::new()
+                    .with_padding(crate::tokens::RhythmScale::BASE.related)
+                    .with_child(surface),
+            )
+        };
         let face = ToolbarFace {
-            // A floating surface, as every control that stands over content.
-            bar: Box::new(
-                crate::widget::Surface::new(crate::widget::SurfaceLevel::Floating, Box::new(bar))
-                    .padded(Rhythm::Tight),
-            ),
+            bar,
             shown: Rc::clone(&shown),
         };
-        let layers = Layers::layers()
-            .push_slot(row)
+        let layers = Layers::layers().push_slot(row);
+        let layers = if straddle {
             // Over the row's top edge, half above it: a one-line message keeps its text clear.
-            .push_straddling(Box::new(face), At::TopTrailing);
+            layers.push_straddling(Box::new(face), At::TopTrailing)
+        } else {
+            layers.push_at(Box::new(face), At::TopTrailing)
+        };
         Self {
             layers,
             shown,

@@ -612,6 +612,11 @@ name = "dy"
 required = false
 type = "int"
 
+[[resources.verbs.params]]
+name = "beside"
+required = false
+type = "text"
+
 [[resources.verbs]]
 id = "place-found"
 kind = "undoable"
@@ -810,13 +815,18 @@ kind = "undoable"
 
 [[resources.verbs.params]]
 name = "x"
-required = true
+required = false
 type = "int"
 
 [[resources.verbs.params]]
 name = "y"
-required = true
+required = false
 type = "int"
+
+[[resources.verbs.params]]
+name = "beside"
+required = false
+type = "text"
 
 [[resources.verbs]]
 id = "size"

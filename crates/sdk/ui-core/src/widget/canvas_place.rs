@@ -2,7 +2,7 @@
 //!
 //! A place is its view on the window surface's own ground — rounded, with the surface's soft
 //! edge and shadow — and nothing else: no title bar, no border of a window. Its handle (what it
-//! is, the resource's actions, pin and close) comes over its top trailing corner while the
+//! is, the resource's actions, pin and close) comes inside its top trailing corner while the
 //! pointer is over it or something in it holds focus, the way a message's toolbar does, and
 //! fades away after. Picking the handle up carries the place's resource on the drag bus, so
 //! letting it go over the canvas moves the place there and over a composer attaches it.

@@ -160,6 +160,7 @@ fn arrangement(record: &str, shows: &str, shown_as: &str) -> ArrangementReading 
             record: record.to_owned(),
             ..ArrangementPlaceReading::default()
         }],
+        queries: Vec::new(),
     }
 }
 

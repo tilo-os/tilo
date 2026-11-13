@@ -729,6 +729,7 @@ fn one_window_arrangement() -> ArrangementReading {
             shows: "Terminal".to_owned(),
             ..ArrangementPlaceReading::default()
         }],
+        queries: Vec::new(),
     }
 }
 

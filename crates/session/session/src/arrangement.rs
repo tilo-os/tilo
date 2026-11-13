@@ -23,10 +23,10 @@ use crate::activity::{Activity, now_seconds};
 
 pub use tilo_session_core::arrangement::{
     Answer, AnswerRef, Arrangement, ArrangementAction, ArrangementQueryReading,
-    ArrangementRefReading, Ask, AskOrigin, Asked, Busy, Catalog, Find, Found, Item, OPERATION, PLACE_KIND,
-    PlaceReading, QUERY_KIND, RECORD_RESOURCE, RESOURCE, ROW_KIND, Reading, RowReading, STRIP_KIND,
-    StripReading, Surface, TURN_VIEW, Target, WorkspaceReading, found, place_kind_resource, placed, resources,
-    row_kind_resource, strip_kind_resource, tab_app,
+    ArrangementRefReading, Ask, AskOrigin, Asked, Busy, Catalog, Find, Found, Item, OPERATION,
+    PLACE_KIND, PlaceReading, QUERY_KIND, RECORD_RESOURCE, RESOURCE, ROW_KIND, Reading, RowReading,
+    STRIP_KIND, StripReading, Surface, TURN_VIEW, Target, WorkspaceReading, found,
+    place_kind_resource, placed, resources, row_kind_resource, strip_kind_resource, tab_app,
 };
 
 /// `person` 's arrangement of `handle` 's desk, whose changes `activity` keeps: a device that kept
