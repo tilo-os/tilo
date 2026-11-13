@@ -17,54 +17,216 @@ fn the_shipped_catalogue_is_the_one_the_toolkit_generates() {
     );
 }
 
-#[test]
-fn every_description_is_documented_and_consistent() {
-    let catalogue = catalogue();
-    let mut seen: Vec<&str> = catalogue
-        .components
-        .iter()
-        .map(|d| d.name.as_str())
-        .collect();
-    let all = seen.len();
-    seen.sort_unstable();
-    seen.dedup();
-    assert_eq!(
-        seen.len(),
-        all,
-        "the catalogue names each component once: a hand-written entry next to the widget's \
-         own description registers it twice"
-    );
-    for d in &catalogue.components {
-        assert!(!d.doc.is_empty(), "{} has its doc text", d.name);
-        let mut names: Vec<&str> = d
-            .props
+tilo_test_env::scenario! {
+    fn every_described_widget_is_documented_builds_and_keeps_its_children;
+
+    phase every_description_is_documented_and_consistent;
+    {
+        let catalogue = catalogue();
+        let mut seen: Vec<&str> = catalogue
+            .components
             .iter()
-            .map(|p| p.name.as_str())
-            .chain(d.slots.iter().map(|s| s.name.as_str()))
-            .chain(d.events.iter().map(|e| e.name.as_str()))
-            .chain(d.bindings.iter().map(|b| b.name.as_str()))
-            .chain(d.state.iter().map(|s| s.name.as_str()))
+            .map(|d| d.name.as_str())
             .collect();
-        let all = names.len();
-        names.sort_unstable();
-        names.dedup();
-        assert_eq!(names.len(), all, "{} names each part once", d.name);
-        assert!(d.slots.iter().filter(|s| s.default).count() <= 1);
-        for slot in &d.slots {
-            let names = match &slot.accepts {
-                Accepts::View => Vec::new(),
-                Accepts::Component(name) => vec![name.clone()],
-                Accepts::OneOf(names) => names.clone(),
-            };
-            for name in names {
-                assert!(
-                    catalogue.get(&name).is_some(),
-                    "{}.{} accepts described components, and {name} is one",
-                    d.name,
-                    slot.name
-                );
+        let all = seen.len();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(
+            seen.len(),
+            all,
+            "the catalogue names each component once: a hand-written entry next to the widget's \
+             own description registers it twice"
+        );
+        for d in &catalogue.components {
+            assert!(!d.doc.is_empty(), "{} has its doc text", d.name);
+            let mut names: Vec<&str> = d
+                .props
+                .iter()
+                .map(|p| p.name.as_str())
+                .chain(d.slots.iter().map(|s| s.name.as_str()))
+                .chain(d.events.iter().map(|e| e.name.as_str()))
+                .chain(d.bindings.iter().map(|b| b.name.as_str()))
+                .chain(d.state.iter().map(|s| s.name.as_str()))
+                .collect();
+            let all = names.len();
+            names.sort_unstable();
+            names.dedup();
+            assert_eq!(names.len(), all, "{} names each part once", d.name);
+            assert!(d.slots.iter().filter(|s| s.default).count() <= 1);
+            for slot in &d.slots {
+                let names = match &slot.accepts {
+                    Accepts::View => Vec::new(),
+                    Accepts::Component(name) => vec![name.clone()],
+                    Accepts::OneOf(names) => names.clone(),
+                };
+                for name in names {
+                    assert!(
+                        catalogue.get(&name).is_some(),
+                        "{}.{} accepts described components, and {name} is one",
+                        d.name,
+                        slot.name
+                    );
+                }
             }
         }
+    }
+
+    phase every_described_widget_builds_from_its_required_props;
+    {
+        for entry in registry() {
+            let description = (entry.describe)();
+            let props: Vec<(&str, Value)> = description
+                .props
+                .iter()
+                .filter(|p| p.required)
+                .map(|p| (p.name.as_str(), sample(&p.ty)))
+                .collect();
+            let mut source = given("k", &props);
+            assert!(
+                (entry.build)(&mut source).is_ok(),
+                "{} builds",
+                description.name
+            );
+        }
+    }
+
+    phase every_described_widget_lists_the_children_it_hands_out;
+    {
+        use crate::widget::Widget;
+
+        type Child = (*const (), String);
+
+        fn child(widget: &dyn Widget) -> Child {
+            (
+                std::ptr::from_ref(widget).cast::<()>(),
+                widget.name().to_owned(),
+            )
+        }
+
+        fn children(widget: &mut dyn Widget) -> (usize, Option<String>) {
+            let listed: Vec<Child> = widget.children().into_iter().map(child).collect();
+            let mut walked = Vec::new();
+            widget.for_each_child(&mut |child_widget| walked.push(child(child_widget)));
+            let handed: Vec<Child> = widget
+                .children_mut()
+                .into_iter()
+                .map(|child_widget| child(child_widget))
+                .collect();
+            let read = |children: &[Child]| {
+                children
+                    .iter()
+                    .map(|(_, name)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let apart = if listed != handed {
+                Some(format!(
+                    "children lists {} ({}), children_mut hands out {} ({})",
+                    listed.len(),
+                    read(&listed),
+                    handed.len(),
+                    read(&handed)
+                ))
+            } else if listed != walked {
+                Some(format!(
+                    "children lists {} ({}), for_each_child visits {} ({})",
+                    listed.len(),
+                    read(&listed),
+                    walked.len(),
+                    read(&walked)
+                ))
+            } else {
+                None
+            };
+            (listed.len(), apart)
+        }
+
+        let mut disagreeing = Vec::new();
+        let mut holding: Vec<String> = Vec::new();
+        for entry in registry() {
+            let description = (entry.describe)();
+            // Twice: with its required props only, and with every prop it takes: a widget shows
+            // parts for props a person switched on, and its lists must agree whatever it shows.
+            for every_prop in [false, true] {
+                let props: Vec<(&str, Value)> = description
+                    .props
+                    .iter()
+                    .filter(|p| every_prop || p.required)
+                    .map(|p| (p.name.as_str(), sample(&p.ty)))
+                    .collect();
+                let mut source = given_with_views("k", &props, 2);
+                let Ok(mut widget) = (entry.build)(&mut source) else {
+                    continue;
+                };
+                let (count, apart) = children(widget.as_mut());
+                if count != 0 && !holding.contains(&description.name) {
+                    holding.push(description.name.clone());
+                }
+                if let Some(apart) = apart {
+                    disagreeing.push(format!("{}: {apart}", description.name));
+                }
+            }
+        }
+        assert!(
+            !holding.is_empty(),
+            "no described widget held a child, so this check proves nothing: give the harness views \
+             in the slots the widgets ask for (`Given::views`)"
+        );
+        assert!(
+            disagreeing.is_empty(),
+            "these widgets list one set of children read-only, walk another and hand out a third, so \
+             a route by index reaches a different widget than the walk found:\n  {}",
+            disagreeing.join("\n  ")
+        );
+    }
+
+    phase every_described_widget_takes_its_props_where_it_stands;
+    {
+        let mut no_type = Vec::new();
+        let mut built_again = Vec::new();
+        for entry in registry() {
+            let description = (entry.describe)();
+            let props: Vec<(&str, Value)> = description
+                .props
+                .iter()
+                .filter(|p| p.required)
+                .map(|p| (p.name.as_str(), sample(&p.ty)))
+                .collect();
+            let mut source = given("k", &props);
+            let Ok(mut widget) = (entry.build)(&mut source) else {
+                continue;
+            };
+            if widget.as_any_mut().is_none() {
+                no_type.push(description.name.clone());
+                continue;
+            }
+            let before = std::ptr::from_ref::<dyn crate::widget::Widget>(widget.as_ref());
+            let mut next = given("k", &props);
+            let taken = (entry.update)(&mut widget, &mut next);
+            if taken != Ok(true) {
+                built_again.push(description.name.clone());
+                continue;
+            }
+            assert_eq!(
+                before,
+                std::ptr::from_ref::<dyn crate::widget::Widget>(widget.as_ref()),
+                "{} is the instance it was",
+                description.name
+            );
+        }
+        assert!(
+            no_type.is_empty(),
+            "these described widgets answer no type of their own, so a change to them builds them \
+             again: declare `described!();` inside their `impl Widget`:\n  {}",
+            no_type.join("\n  ")
+        );
+        assert!(
+            built_again.is_empty(),
+            "these described widgets are built again when their own props are given to them, which \
+             loses the person's focus, press and whatever they opened: take the props in place in \
+             `set_props`:\n  {}",
+            built_again.join("\n  ")
+        );
     }
 }
 
@@ -178,358 +340,221 @@ fn sample(ty: &Type) -> Value {
     }
 }
 
-#[test]
-fn every_described_widget_builds_from_its_required_props() {
-    for entry in registry() {
-        let description = (entry.describe)();
-        let props: Vec<(&str, Value)> = description
-            .props
-            .iter()
-            .filter(|p| p.required)
-            .map(|p| (p.name.as_str(), sample(&p.ty)))
-            .collect();
-        let mut source = given("k", &props);
+tilo_test_env::scenario! {
+    fn a_described_instance_reads_builds_and_updates_from_its_props;
+
+    // Props given in place carry no built views, so a widget that shows its parts' views — a map's
+    // pins, a board's cards — keeps each part's view where it is and takes from the props only
+    // what it says *around* them. It therefore takes the props in place only while they name the
+    // parts it already has, and is built again when they name others.
+    //
+    // The alternative is what left a stale node behind after `5fab1bdd584`: a map patched the pins
+    // it recognised and kept the pin of a place the arrangement had closed, so a closed window's
+    // title stayed on the canvas and in the accessibility tree; and a board rebuilt its cards from
+    // props that carried none of their views, so every card showed empty.
+    phase a_widget_holding_parts_takes_other_parts_only_by_being_built_again;
+    {
+        use crate::widget::{
+            Board, BoardCardProps, BoardLaneProps, BoardProps, Map, MapPinProps, MapProps, Text,
+        };
+
+        fn pin(key: &str, body: &str) -> MapPinProps {
+            MapPinProps {
+                key: key.into(),
+                body: vec![Box::new(Text::new(body))],
+                ..MapPinProps::default()
+            }
+        }
+
+        fn map(pins: Vec<MapPinProps>) -> Map {
+            <Map as Described>::from_props(
+                "map",
+                MapProps {
+                    name: Some("Canvas".into()),
+                    ground: false,
+                    pins,
+                    ..MapProps::default()
+                },
+            )
+        }
+
+        fn said(root: &dyn crate::widget::Widget) -> Vec<String> {
+            fn walk(w: &dyn crate::widget::Widget, out: &mut Vec<String>) {
+                if let Some(node) = w.accessibility() {
+                    out.extend(node.name);
+                }
+                for child in w.children() {
+                    walk(child, out);
+                }
+            }
+            let mut out = Vec::new();
+            walk(root, &mut out);
+            out
+        }
+
+        fn laid_out<W: crate::widget::Widget + 'static>(
+            widget: W,
+        ) -> (crate::headless::FrameHarness, Vec<String>) {
+            let host = crate::headless::FrameHarness::for_root(
+                crate::State::new(),
+                widget,
+                (900, 600),
+                crate::theme::Theme::dark(),
+            );
+            let said = said(host.root::<W>());
+            (host, said)
+        }
+
+        let pins = |keys: &[&str]| -> Vec<MapPinProps> {
+            keys.iter()
+                .map(|key| pin(key, &format!("the place {key}")))
+                .collect()
+        };
+        let props = |keys: &[&str]| MapProps {
+            name: Some("Canvas".into()),
+            ground: false,
+            pins: pins(keys),
+            ..MapProps::default()
+        };
+
+        let (mut host, before) = laid_out(map(pins(&["a", "b"])));
         assert!(
-            (entry.build)(&mut source).is_ok(),
-            "{} builds",
-            description.name
+            before.iter().any(|name| name.contains("the place b")),
+            "the map shows its pins' views: {before:?}"
         );
-    }
-}
-
-#[test]
-fn every_described_widget_lists_the_children_it_hands_out() {
-    use crate::widget::Widget;
-
-    type Child = (*const (), String);
-
-    fn child(widget: &dyn Widget) -> Child {
-        (
-            std::ptr::from_ref(widget).cast::<()>(),
-            widget.name().to_owned(),
-        )
-    }
-
-    fn children(widget: &mut dyn Widget) -> (usize, Option<String>) {
-        let listed: Vec<Child> = widget.children().into_iter().map(child).collect();
-        let mut walked = Vec::new();
-        widget.for_each_child(&mut |child_widget| walked.push(child(child_widget)));
-        let handed: Vec<Child> = widget
-            .children_mut()
-            .into_iter()
-            .map(|child_widget| child(child_widget))
-            .collect();
-        let read = |children: &[Child]| {
-            children
-                .iter()
-                .map(|(_, name)| name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        let apart = if listed != handed {
-            Some(format!(
-                "children lists {} ({}), children_mut hands out {} ({})",
-                listed.len(),
-                read(&listed),
-                handed.len(),
-                read(&handed)
-            ))
-        } else if listed != walked {
-            Some(format!(
-                "children lists {} ({}), for_each_child visits {} ({})",
-                listed.len(),
-                read(&listed),
-                walked.len(),
-                read(&walked)
-            ))
-        } else {
-            None
-        };
-        (listed.len(), apart)
-    }
-
-    let mut disagreeing = Vec::new();
-    let mut holding: Vec<String> = Vec::new();
-    for entry in registry() {
-        let description = (entry.describe)();
-        // Twice: with its required props only, and with every prop it takes: a widget shows
-        // parts for props a person switched on, and its lists must agree whatever it shows.
-        for every_prop in [false, true] {
-            let props: Vec<(&str, Value)> = description
-                .props
-                .iter()
-                .filter(|p| every_prop || p.required)
-                .map(|p| (p.name.as_str(), sample(&p.ty)))
-                .collect();
-            let mut source = given_with_views("k", &props, 2);
-            let Ok(mut widget) = (entry.build)(&mut source) else {
-                continue;
-            };
-            let (count, apart) = children(widget.as_mut());
-            if count != 0 && !holding.contains(&description.name) {
-                holding.push(description.name.clone());
-            }
-            if let Some(apart) = apart {
-                disagreeing.push(format!("{}: {apart}", description.name));
-            }
-        }
-    }
-    assert!(
-        !holding.is_empty(),
-        "no described widget held a child, so this check proves nothing: give the harness views \
-         in the slots the widgets ask for (`Given::views`)"
-    );
-    assert!(
-        disagreeing.is_empty(),
-        "these widgets list one set of children read-only, walk another and hand out a third, so \
-         a route by index reaches a different widget than the walk found:\n  {}",
-        disagreeing.join("\n  ")
-    );
-}
-
-#[test]
-fn every_described_widget_takes_its_props_where_it_stands() {
-    let mut no_type = Vec::new();
-    let mut built_again = Vec::new();
-    for entry in registry() {
-        let description = (entry.describe)();
-        let props: Vec<(&str, Value)> = description
-            .props
-            .iter()
-            .filter(|p| p.required)
-            .map(|p| (p.name.as_str(), sample(&p.ty)))
-            .collect();
-        let mut source = given("k", &props);
-        let Ok(mut widget) = (entry.build)(&mut source) else {
-            continue;
-        };
-        if widget.as_any_mut().is_none() {
-            no_type.push(description.name.clone());
-            continue;
-        }
-        let before = std::ptr::from_ref::<dyn crate::widget::Widget>(widget.as_ref());
-        let mut next = given("k", &props);
-        let taken = (entry.update)(&mut widget, &mut next);
-        if taken != Ok(true) {
-            built_again.push(description.name.clone());
-            continue;
-        }
-        assert_eq!(
-            before,
-            std::ptr::from_ref::<dyn crate::widget::Widget>(widget.as_ref()),
-            "{} is the instance it was",
-            description.name
+        assert!(
+            host.root_mut::<Map>().set_props(props(&["a", "b"])),
+            "a map given the pins it holds takes where they stand"
         );
-    }
-    assert!(
-        no_type.is_empty(),
-        "these described widgets answer no type of their own, so a change to them builds them \
-         again: declare `described!();` inside their `impl Widget`:\n  {}",
-        no_type.join("\n  ")
-    );
-    assert!(
-        built_again.is_empty(),
-        "these described widgets are built again when their own props are given to them, which \
-         loses the person's focus, press and whatever they opened: take the props in place in \
-         `set_props`:\n  {}",
-        built_again.join("\n  ")
-    );
-}
+        let after = said(host.root::<Map>());
+        assert!(
+            after.iter().any(|name| name.contains("the place b")),
+            "the pins' views stay: {after:?}"
+        );
+        for other in [&["a"][..], &["a", "b", "c"][..], &["b", "a"][..]] {
+            let mut held = map(pins(&["a", "b"]));
+            assert!(
+                !held.set_props(props(other)),
+                "a map given pins it does not hold shows another canvas, and is built again: \
+                 {other:?}"
+            );
+        }
 
-/// Props given in place carry no built views, so a widget that shows its parts' views — a map's
-/// pins, a board's cards — keeps each part's view where it is and takes from the props only
-/// what it says *around* them. It therefore takes the props in place only while they name the
-/// parts it already has, and is built again when they name others.
-///
-/// The alternative is what left a stale node behind after `5fab1bdd584`: a map patched the pins
-/// it recognised and kept the pin of a place the arrangement had closed, so a closed window's
-/// title stayed on the canvas and in the accessibility tree; and a board rebuilt its cards from
-/// props that carried none of their views, so every card showed empty.
-#[test]
-fn a_widget_holding_parts_takes_other_parts_only_by_being_built_again() {
-    use crate::widget::{
-        Board, BoardCardProps, BoardLaneProps, BoardProps, Map, MapPinProps, MapProps, Text,
-    };
-
-    fn pin(key: &str, body: &str) -> MapPinProps {
-        MapPinProps {
+        let card = |key: &str| BoardCardProps {
             key: key.into(),
-            body: vec![Box::new(Text::new(body))],
-            ..MapPinProps::default()
+            body: vec![Box::new(Text::new(&format!("the card {key}")))],
+            ..BoardCardProps::default()
+        };
+        let board = |cards: &[&str]| BoardProps {
+            name: Some("Plan".into()),
+            lanes: vec![BoardLaneProps {
+                key: "todo".into(),
+                title: Some("To do".into()),
+                cards: cards.iter().map(|key| card(key)).collect(),
+                ..BoardLaneProps::default()
+            }],
+        };
+        let (mut host, before) = laid_out(<Board as Described>::from_props(
+            "board",
+            board(&["a", "b"]),
+        ));
+        assert!(
+            before.iter().any(|name| name.contains("the card b")),
+            "the board shows its cards' views: {before:?}"
+        );
+        assert!(
+            host.root_mut::<Board>().set_props(board(&["a", "b"])),
+            "a board given the lanes and cards it holds takes where it stands"
+        );
+        let after = said(host.root::<Board>());
+        assert!(
+            after.iter().any(|name| name.contains("the card b")),
+            "the cards' views stay: {after:?}"
+        );
+        for other in [&["a"][..], &["a", "b", "c"][..], &["b", "a"][..]] {
+            let mut held = <Board as Described>::from_props("board", board(&["a", "b"]));
+            assert!(
+                !held.set_props(board(other)),
+                "a board whose cards changed shows another board, and is built again: {other:?}"
+            );
         }
     }
 
-    fn map(pins: Vec<MapPinProps>) -> Map {
-        <Map as Described>::from_props(
-            "map",
-            MapProps {
-                name: Some("Canvas".into()),
-                ground: false,
-                pins,
-                ..MapProps::default()
-            },
-        )
+    phase a_missing_required_prop_or_a_value_of_another_type_is_refused;
+    {
+        let mut nothing = given("k", &[]);
+        let error = build("EmptyState", &mut nothing).err();
+        assert_eq!(error, Some(Error::missing("EmptyState", "title")));
+        let mut wrong = given("k", &[("title", Value::Int(3))]);
+        assert!(build("EmptyState", &mut wrong).is_err());
+        let mut unknown = given("k", &[]);
+        assert!(build("Gauge", &mut unknown).is_err());
     }
 
-    fn said(root: &dyn crate::widget::Widget) -> Vec<String> {
-        fn walk(w: &dyn crate::widget::Widget, out: &mut Vec<String>) {
-            if let Some(node) = w.accessibility() {
-                out.extend(node.name);
-            }
-            for child in w.children() {
-                walk(child, out);
-            }
-        }
-        let mut out = Vec::new();
-        walk(root, &mut out);
-        out
-    }
-
-    fn laid_out<W: crate::widget::Widget + 'static>(
-        widget: W,
-    ) -> (crate::headless::FrameHarness, Vec<String>) {
-        let host = crate::headless::FrameHarness::for_root(
-            crate::State::new(),
-            widget,
-            (900, 600),
-            crate::theme::Theme::dark(),
+    phase props_read_the_values_an_instance_gives;
+    {
+        let mut source = given(
+            "row",
+            &[
+                ("title", Value::Text("Q3 plan".into())),
+                ("secondary", Value::Text("Ship it".into())),
+                ("mark", Value::Icon("pin".into())),
+                ("selected", Value::Bool(true)),
+            ],
         );
-        let said = said(host.root::<W>());
-        (host, said)
-    }
-
-    let pins = |keys: &[&str]| -> Vec<MapPinProps> {
-        keys.iter()
-            .map(|key| pin(key, &format!("the place {key}")))
-            .collect()
-    };
-    let props = |keys: &[&str]| MapProps {
-        name: Some("Canvas".into()),
-        ground: false,
-        pins: pins(keys),
-        ..MapProps::default()
-    };
-
-    let (mut host, before) = laid_out(map(pins(&["a", "b"])));
-    assert!(
-        before.iter().any(|name| name.contains("the place b")),
-        "the map shows its pins' views: {before:?}"
-    );
-    assert!(
-        host.root_mut::<Map>().set_props(props(&["a", "b"])),
-        "a map given the pins it holds takes where they stand"
-    );
-    let after = said(host.root::<Map>());
-    assert!(
-        after.iter().any(|name| name.contains("the place b")),
-        "the pins' views stay: {after:?}"
-    );
-    for other in [&["a"][..], &["a", "b", "c"][..], &["b", "a"][..]] {
-        let mut held = map(pins(&["a", "b"]));
-        assert!(
-            !held.set_props(props(other)),
-            "a map given pins it does not hold shows another canvas, and is built again: \
-             {other:?}"
+        source.events.push("activate");
+        let props = ListRowProps::from_source(&mut source).unwrap_or_default();
+        assert_eq!(props.key, "row");
+        assert_eq!(props.title, "Q3 plan");
+        assert_eq!(props.secondary.as_deref(), Some("Ship it"));
+        assert_eq!(props.mark, Some(crate::icons::Icon::Pin));
+        assert!(props.selected);
+        assert!(!props.activate.is_none(), "the event is the host's intent");
+        props.activate.fire(None);
+        assert_eq!(
+            source.queue.take(),
+            vec![Fired {
+                key: "row".into(),
+                event: "activate".into(),
+                value: None
+            }]
         );
     }
 
-    let card = |key: &str| BoardCardProps {
-        key: key.into(),
-        body: vec![Box::new(Text::new(&format!("the card {key}")))],
-        ..BoardCardProps::default()
-    };
-    let board = |cards: &[&str]| BoardProps {
-        name: Some("Plan".into()),
-        lanes: vec![BoardLaneProps {
-            key: "todo".into(),
-            title: Some("To do".into()),
-            cards: cards.iter().map(|key| card(key)).collect(),
-            ..BoardLaneProps::default()
-        }],
-    };
-    let (mut host, before) = laid_out(<Board as Described>::from_props(
-        "board",
-        board(&["a", "b"]),
-    ));
-    assert!(
-        before.iter().any(|name| name.contains("the card b")),
-        "the board shows its cards' views: {before:?}"
-    );
-    assert!(
-        host.root_mut::<Board>().set_props(board(&["a", "b"])),
-        "a board given the lanes and cards it holds takes where it stands"
-    );
-    let after = said(host.root::<Board>());
-    assert!(
-        after.iter().any(|name| name.contains("the card b")),
-        "the cards' views stay: {after:?}"
-    );
-    for other in [&["a"][..], &["a", "b", "c"][..], &["b", "a"][..]] {
-        let mut held = <Board as Described>::from_props("board", board(&["a", "b"]));
-        assert!(
-            !held.set_props(board(other)),
-            "a board whose cards changed shows another board, and is built again: {other:?}"
+    phase a_changed_text_is_taken_in_place_and_another_role_is_built_again;
+    {
+        let mut first = given("t", &[("value", Value::Text("1".into()))]);
+        let mut text =
+            build("Text", &mut first).unwrap_or_else(|_| Box::new(crate::widget::Spacer::fixed(0.0)));
+        let mut next = given("t", &[("value", Value::Text("2".into()))]);
+        assert_eq!(update("Text", &mut text, &mut next), Ok(true));
+        let mut titled = given(
+            "t",
+            &[
+                ("value", Value::Text("2".into())),
+                ("role", Value::Choice("title".into())),
+            ],
         );
+        assert_eq!(update("Text", &mut text, &mut titled), Ok(false));
+        assert_eq!(text.test_id(), Some("t"));
     }
-}
 
-#[test]
-fn a_missing_required_prop_or_a_value_of_another_type_is_refused() {
-    let mut nothing = given("k", &[]);
-    let error = build("EmptyState", &mut nothing).err();
-    assert_eq!(error, Some(Error::missing("EmptyState", "title")));
-    let mut wrong = given("k", &[("title", Value::Int(3))]);
-    assert!(build("EmptyState", &mut wrong).is_err());
-    let mut unknown = given("k", &[]);
-    assert!(build("Gauge", &mut unknown).is_err());
-}
-
-#[test]
-fn props_read_the_values_an_instance_gives() {
-    let mut source = given(
-        "row",
-        &[
-            ("title", Value::Text("Q3 plan".into())),
-            ("secondary", Value::Text("Ship it".into())),
-            ("mark", Value::Icon("pin".into())),
-            ("selected", Value::Bool(true)),
-        ],
-    );
-    source.events.push("activate");
-    let props = ListRowProps::from_source(&mut source).unwrap_or_default();
-    assert_eq!(props.key, "row");
-    assert_eq!(props.title, "Q3 plan");
-    assert_eq!(props.secondary.as_deref(), Some("Ship it"));
-    assert_eq!(props.mark, Some(crate::icons::Icon::Pin));
-    assert!(props.selected);
-    assert!(!props.activate.is_none(), "the event is the host's intent");
-    props.activate.fire(None);
-    assert_eq!(
-        source.queue.take(),
-        vec![Fired {
-            key: "row".into(),
-            event: "activate".into(),
-            value: None
-        }]
-    );
-}
-
-#[test]
-fn a_changed_text_is_taken_in_place_and_another_role_is_built_again() {
-    let mut first = given("t", &[("value", Value::Text("1".into()))]);
-    let mut text =
-        build("Text", &mut first).unwrap_or_else(|_| Box::new(crate::widget::Spacer::fixed(0.0)));
-    let mut next = given("t", &[("value", Value::Text("2".into()))]);
-    assert_eq!(update("Text", &mut text, &mut next), Ok(true));
-    let mut titled = given(
-        "t",
-        &[
-            ("value", Value::Text("2".into())),
-            ("role", Value::Choice("title".into())),
-        ],
-    );
-    assert_eq!(update("Text", &mut text, &mut titled), Ok(false));
-    assert_eq!(text.test_id(), Some("t"));
+    phase an_icon_only_button_is_a_plain_glyph_unless_given_a_role;
+    {
+        let mut source = given(
+            "pin",
+            &[
+                ("label", Value::Text("Pin".into())),
+                ("icon", Value::Icon("pin".into())),
+                ("icon_only", Value::Bool(true)),
+                ("toggled", Value::Bool(true)),
+            ],
+        );
+        let props = crate::widget::ButtonProps::from_source(&mut source).expect("reads");
+        let button = <crate::widget::Button as Described>::from_props("pin", props);
+        assert_eq!(button.role_of(), crate::widget::ButtonRole::Plain);
+        assert!(button.is_toggled());
+    }
 }
 
 struct Item {
@@ -851,204 +876,191 @@ fn item(key: &str, title: &str, avatar: bool) -> Item {
     }
 }
 
-#[test]
-fn a_list_of_rendered_rows_reads_them_from_its_host_and_its_menu_from_the_row() {
-    let (mut list, queue) = rendered_list(vec![
-        item("a", "Q3 plan", false),
-        item("b", "Groceries", false),
-    ]);
-    let virtual_list = list.list_mut().expect("the list");
-    assert_eq!(crate::widget::ListModel::len(virtual_list.model()), 2);
-    assert_eq!(
-        crate::widget::ListModel::label(virtual_list.model(), 1).as_deref(),
-        Some("Groceries"),
-        "a row is named by its title, for type-ahead"
-    );
-    assert!(virtual_list.reveal(&"b".to_owned()));
-    let area = list.menu_area_mut().expect("the rows share one menu");
-    assert!(area.open_at(vello::kurbo::Point::ZERO, false));
-    let labels: Vec<Option<&str>> = area
-        .menu()
-        .items()
-        .iter()
-        .map(crate::widget::MenuItem::label)
-        .collect();
-    assert_eq!(labels, vec![Some("Delete")]);
-    assert!(queue.take().iter().any(|fired| fired.event == "select"
-        && fired.value == Some(Value::Resource("doc/notes:b".into()))));
-    area.choose(0);
-    assert!(
-        queue
-            .take()
+tilo_test_env::scenario! {
+    fn a_described_list_reads_rows_groups_and_measure_from_its_host;
+
+    phase a_list_of_rendered_rows_reads_them_from_its_host_and_its_menu_from_the_row;
+    {
+        let (mut list, queue) = rendered_list(vec![
+            item("a", "Q3 plan", false),
+            item("b", "Groceries", false),
+        ]);
+        let virtual_list = list.list_mut().expect("the list");
+        assert_eq!(crate::widget::ListModel::len(virtual_list.model()), 2);
+        assert_eq!(
+            crate::widget::ListModel::label(virtual_list.model(), 1).as_deref(),
+            Some("Groceries"),
+            "a row is named by its title, for type-ahead"
+        );
+        assert!(virtual_list.reveal(&"b".to_owned()));
+        let area = list.menu_area_mut().expect("the rows share one menu");
+        assert!(area.open_at(vello::kurbo::Point::ZERO, false));
+        let labels: Vec<Option<&str>> = area
+            .menu()
+            .items()
             .iter()
-            .any(|fired| fired.key == "delete" && fired.event == "choose"),
-        "choosing it fires the command's event"
-    );
-    assert!(list.select_presenting(Some("doc/notes:a")));
-    let selected: Vec<String> = list
-        .list()
-        .unwrap()
-        .selection()
-        .stored_keys()
-        .cloned()
-        .collect();
-    assert_eq!(selected, ["a".to_owned()]);
-    assert!(!list.select_presenting(Some("doc/notes:a")), "already so");
-}
+            .map(crate::widget::MenuItem::label)
+            .collect();
+        assert_eq!(labels, vec![Some("Delete")]);
+        assert!(queue.take().iter().any(|fired| fired.event == "select"
+            && fired.value == Some(Value::Resource("doc/notes:b".into()))));
+        area.choose(0);
+        assert!(
+            queue
+                .take()
+                .iter()
+                .any(|fired| fired.key == "delete" && fired.event == "choose"),
+            "choosing it fires the command's event"
+        );
+        assert!(list.select_presenting(Some("doc/notes:a")));
+        let selected: Vec<String> = list
+            .list()
+            .unwrap()
+            .selection()
+            .stored_keys()
+            .cloned()
+            .collect();
+        assert_eq!(selected, ["a".to_owned()]);
+        assert!(!list.select_presenting(Some("doc/notes:a")), "already so");
+    }
 
-#[test]
-fn a_rendered_row_that_changes_keeps_the_windows_tree() {
-    let (list, _queue, rows) = rendered_list_and_rows(vec![
-        item("a", "Q3 plan", false),
-        item("b", "Groceries", false),
-    ]);
-    let mut harness = crate::headless::FrameHarness::for_root(
-        crate::State::new(),
-        list,
-        (400, 300),
-        crate::theme::Theme::dark(),
-    );
-    harness.relayout();
-    let (rebuilt, nodes) = (harness.rebuilt_frames(), harness.layout_node_ids());
-
-    for title in ["Q3 plan!", "Q3 plan!!", "Q3 plan!!!"] {
-        {
-            let mut rows = rows.borrow_mut();
-            rows.items[0].title = title.into();
-            rows.changed.push("a".into());
-        }
+    phase a_rendered_row_that_changes_keeps_the_windows_tree;
+    {
+        let (list, _queue, rows) = rendered_list_and_rows(vec![
+            item("a", "Q3 plan", false),
+            item("b", "Groceries", false),
+        ]);
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            list,
+            (400, 300),
+            crate::theme::Theme::dark(),
+        );
         harness.relayout();
+        let (rebuilt, nodes) = (harness.rebuilt_frames(), harness.layout_node_ids());
+
+        for title in ["Q3 plan!", "Q3 plan!!", "Q3 plan!!!"] {
+            {
+                let mut rows = rows.borrow_mut();
+                rows.items[0].title = title.into();
+                rows.changed.push("a".into());
+            }
+            harness.relayout();
+            assert!(
+                harness.last_relayout().remounted,
+                "the row is mounted in place"
+            );
+        }
+        assert_eq!(
+            harness.rebuilt_frames() - rebuilt,
+            0,
+            "three changed rows rebuilt nothing"
+        );
+        assert_eq!(
+            harness.layout_node_ids().len(),
+            nodes.len(),
+            "the window's tree keeps its shape"
+        );
+        let shown = harness.inspection_json().expect("inspects");
         assert!(
-            harness.last_relayout().remounted,
-            "the row is mounted in place"
+            shown.contains("Q3 plan!!!"),
+            "the row shows what it says now"
         );
     }
-    assert_eq!(
-        harness.rebuilt_frames() - rebuilt,
-        0,
-        "three changed rows rebuilt nothing"
-    );
-    assert_eq!(
-        harness.layout_node_ids().len(),
-        nodes.len(),
-        "the window's tree keeps its shape"
-    );
-    let shown = harness.inspection_json().expect("inspects");
-    assert!(
-        shown.contains("Q3 plan!!!"),
-        "the row shows what it says now"
-    );
-}
 
-#[test]
-fn a_page_column_holds_the_readable_measure_from_its_first_row() {
-    fn pages<'a>(
-        node: &'a crate::headless::InspectionNode,
-        out: &mut Vec<&'a crate::headless::InspectionNode>,
-    ) {
-        if node.widget == "Page" {
-            out.push(node);
+    phase a_page_column_holds_the_readable_measure_from_its_first_row;
+    {
+        fn pages<'a>(
+            node: &'a crate::headless::InspectionNode,
+            out: &mut Vec<&'a crate::headless::InspectionNode>,
+        ) {
+            if node.widget == "Page" {
+                out.push(node);
+            }
+            for child in &node.children {
+                pages(child, out);
+            }
         }
-        for child in &node.children {
-            pages(child, out);
-        }
-    }
 
-    let mut source = WholeList {
-        props: BTreeMap::from([
-            ("page_column".to_owned(), Value::Bool(true)),
-            ("at_measure".to_owned(), Value::Bool(true)),
-        ]),
-        items: ["a", "b", "c"]
+        let mut source = WholeList {
+            props: BTreeMap::from([
+                ("page_column".to_owned(), Value::Bool(true)),
+                ("at_measure".to_owned(), Value::Bool(true)),
+            ]),
+            items: ["a", "b", "c"]
+                .iter()
+                .map(|key| given(key, &[("title", Value::Text((*key).into()))]))
+                .collect(),
+        };
+        let props = crate::widget::VirtualListProps::from_source(&mut source).expect("reads");
+        let list = <crate::widget::DescribedList as Described>::from_props("list", props);
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            list,
+            (1600, 900),
+            crate::theme::Theme::dark(),
+        );
+        harness.relayout();
+        let inspection = harness.inspection();
+        let mut found = Vec::new();
+        pages(&inspection.root, &mut found);
+        assert_eq!(found.len(), 3, "one page row per message");
+        let measure = f64::from(crate::widget::arrange::MEASURE_REM)
+            * f64::from(crate::widget::arrange::rem_of(&crate::theme::Theme::dark()));
+        for page in &found {
+            let width = page.children.first().expect("a row").rect[2];
+            assert!(
+                (width - measure).abs() <= 1.0,
+                "a row at the readable measure: {width}"
+            );
+        }
+        let first = found
             .iter()
-            .map(|key| given(key, &[("title", Value::Text((*key).into()))]))
-            .collect(),
-    };
-    let props = crate::widget::VirtualListProps::from_source(&mut source).expect("reads");
-    let list = <crate::widget::DescribedList as Described>::from_props("list", props);
-    let mut harness = crate::headless::FrameHarness::for_root(
-        crate::State::new(),
-        list,
-        (1600, 900),
-        crate::theme::Theme::dark(),
-    );
-    harness.relayout();
-    let inspection = harness.inspection();
-    let mut found = Vec::new();
-    pages(&inspection.root, &mut found);
-    assert_eq!(found.len(), 3, "one page row per message");
-    let measure = f64::from(crate::widget::arrange::MEASURE_REM)
-        * f64::from(crate::widget::arrange::rem_of(&crate::theme::Theme::dark()));
-    for page in &found {
-        let width = page.children.first().expect("a row").rect[2];
+            .map(|row| row.rect[1])
+            .fold(f64::INFINITY, f64::min);
         assert!(
-            (width - measure).abs() <= 1.0,
-            "a row at the readable measure: {width}"
+            first < 100.0,
+            "the first message under the top of the column: {first}"
         );
     }
-    let first = found
-        .iter()
-        .map(|row| row.rect[1])
-        .fold(f64::INFINITY, f64::min);
-    assert!(
-        first < 100.0,
-        "the first message under the top of the column: {first}"
-    );
-}
 
-#[test]
-fn rows_that_name_no_group_stand_under_their_own_heading() {
-    use crate::widget::RowGroup;
-    let list = grouped_list(
-        Some("No date"),
-        &[("a", "Jul 1"), ("b", ""), ("c", "Jul 1")],
-    );
-    let model = list.list().expect("the list").model();
-    assert_eq!(
-        crate::widget::ListModel::group_at(model, 0),
-        Some(RowGroup::heading("Jul 1"))
-    );
-    assert_eq!(
-        crate::widget::ListModel::group_at(model, 1),
-        Some(RowGroup::heading("No date")),
-        "a row whose item names no group is not the last group's"
-    );
-    let list = grouped_list(None, &[("a", "Jul 1"), ("b", "")]);
-    let model = list.list().expect("the list").model();
-    assert_eq!(crate::widget::ListModel::group_at(model, 1), None);
-    let mut props = BTreeMap::new();
-    props.insert("ungrouped_title".to_owned(), Value::Text("No date".into()));
-    let mut source = WholeList {
-        props,
-        items: vec![given(
-            "a",
-            &[
-                ("group", Value::Text("Jul 1".into())),
-                ("removed", Value::Bool(true)),
-            ],
-        )],
-    };
-    let props = crate::widget::VirtualListProps::from_source(&mut source).expect("reads");
-    let list = <crate::widget::DescribedList as Described>::from_props("list", props);
-    assert_eq!(
-        crate::widget::ListModel::group_at(list.list().expect("the list").model(), 0),
-        None
-    );
-}
-
-#[test]
-fn an_icon_only_button_is_a_plain_glyph_unless_given_a_role() {
-    let mut source = given(
-        "pin",
-        &[
-            ("label", Value::Text("Pin".into())),
-            ("icon", Value::Icon("pin".into())),
-            ("icon_only", Value::Bool(true)),
-            ("toggled", Value::Bool(true)),
-        ],
-    );
-    let props = crate::widget::ButtonProps::from_source(&mut source).expect("reads");
-    let button = <crate::widget::Button as Described>::from_props("pin", props);
-    assert_eq!(button.role_of(), crate::widget::ButtonRole::Plain);
-    assert!(button.is_toggled());
+    phase rows_that_name_no_group_stand_under_their_own_heading;
+    {
+        use crate::widget::RowGroup;
+        let list = grouped_list(
+            Some("No date"),
+            &[("a", "Jul 1"), ("b", ""), ("c", "Jul 1")],
+        );
+        let model = list.list().expect("the list").model();
+        assert_eq!(
+            crate::widget::ListModel::group_at(model, 0),
+            Some(RowGroup::heading("Jul 1"))
+        );
+        assert_eq!(
+            crate::widget::ListModel::group_at(model, 1),
+            Some(RowGroup::heading("No date")),
+            "a row whose item names no group is not the last group's"
+        );
+        let list = grouped_list(None, &[("a", "Jul 1"), ("b", "")]);
+        let model = list.list().expect("the list").model();
+        assert_eq!(crate::widget::ListModel::group_at(model, 1), None);
+        let mut props = BTreeMap::new();
+        props.insert("ungrouped_title".to_owned(), Value::Text("No date".into()));
+        let mut source = WholeList {
+            props,
+            items: vec![given(
+                "a",
+                &[
+                    ("group", Value::Text("Jul 1".into())),
+                    ("removed", Value::Bool(true)),
+                ],
+            )],
+        };
+        let props = crate::widget::VirtualListProps::from_source(&mut source).expect("reads");
+        let list = <crate::widget::DescribedList as Described>::from_props("list", props);
+        assert_eq!(
+            crate::widget::ListModel::group_at(list.list().expect("the list").model(), 0),
+            None
+        );
+    }
 }

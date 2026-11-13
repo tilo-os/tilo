@@ -78,68 +78,72 @@ fn every_public_widget_is_a_component_or_says_why_not() {
     );
 }
 
-#[test]
-fn a_described_widget_does_not_also_say_it_is_not_one() {
-    let scan = scan();
-    for w in &scan.widgets {
-        if let Some((kind, reason)) = &w.exempt {
-            assert!(
-                !scan.is_described(&w.name),
-                "{} is described and also marked not a component ({kind}: {reason})",
-                w.name
-            );
-            assert!(
-                !reason.trim().is_empty(),
-                "{} says why it is not a component",
-                w.name
-            );
+tilo_test_env::scenario! {
+    fn the_scan_and_the_gallery_agree_with_the_described_widgets;
+
+    phase a_described_widget_does_not_also_say_it_is_not_one;
+    {
+        let scan = scan();
+        for w in &scan.widgets {
+            if let Some((kind, reason)) = &w.exempt {
+                assert!(
+                    !scan.is_described(&w.name),
+                    "{} is described and also marked not a component ({kind}: {reason})",
+                    w.name
+                );
+                assert!(
+                    !reason.trim().is_empty(),
+                    "{} says why it is not a component",
+                    w.name
+                );
+            }
         }
     }
-}
 
-#[test]
-fn the_scan_finds_the_toolkits_declarations() {
-    let scan = scan();
-    for name in ["Button", "Card", "NavShell", "Toggle", "Slider"] {
-        assert!(
-            scan.widgets.iter().any(|w| w.name == name),
-            "{name} is found as a public widget"
+    phase the_scan_finds_the_toolkits_declarations;
+    {
+        let scan = scan();
+        for name in ["Button", "Card", "NavShell", "Toggle", "Slider"] {
+            assert!(
+                scan.widgets.iter().any(|w| w.name == name),
+                "{name} is found as a public widget"
+            );
+        }
+        assert!(scan.is_described("Button"));
+        let catalogue = super::catalogue();
+        let mut generated: Vec<&str> = catalogue.names();
+        generated.sort_unstable();
+        let mut declared: Vec<String> = scan
+            .described
+            .iter()
+            .map(|d| d.props.clone())
+            .chain(scan.custom.iter().flat_map(|c| c.props.clone()))
+            .chain(scan.parts().into_iter().map(|p| p.name.clone()))
+            .collect();
+        declared.sort_unstable();
+        assert_eq!(
+            declared.len(),
+            generated.len(),
+            "the catalogue holds one component per declared props: {declared:?} against {generated:?}"
         );
     }
-    assert!(scan.is_described("Button"));
-    let catalogue = super::catalogue();
-    let mut generated: Vec<&str> = catalogue.names();
-    generated.sort_unstable();
-    let mut declared: Vec<String> = scan
-        .described
-        .iter()
-        .map(|d| d.props.clone())
-        .chain(scan.custom.iter().flat_map(|c| c.props.clone()))
-        .chain(scan.parts().into_iter().map(|p| p.name.clone()))
-        .collect();
-    declared.sort_unstable();
-    assert_eq!(
-        declared.len(),
-        generated.len(),
-        "the catalogue holds one component per declared props: {declared:?} against {generated:?}"
-    );
-}
 
-/// The gallery app (`apps/tl/gallery`) shows every described component of the toolkit as
-/// `ui.<Name>`, so a widget described here is seen in one window the day it is written, and
-/// tilolang's check lays it out there. A component a window cannot meaningfully show says so at
-/// its declaration (`#[component(not_in_gallery = "…")]`).
-#[test]
-fn the_gallery_shows_every_described_component() {
-    let sources = gallery_sources();
-    let coverage = super::gallery::coverage(&sources);
-    let problems = coverage.problems();
-    assert!(problems.is_empty(), "{}", problems.join("\n"));
-    for name in ["Button", "Section", "Text"] {
-        assert!(
-            super::gallery::names(&sources, name),
-            "the gallery's sources are read: `ui.{name}` is found in them"
-        );
+    // The gallery app (`apps/tl/gallery`) shows every described component of the toolkit as
+    // `ui.<Name>`, so a widget described here is seen in one window the day it is written, and
+    // tilolang's check lays it out there. A component a window cannot meaningfully show says so at
+    // its declaration (`#[component(not_in_gallery = "…")]`).
+    phase the_gallery_shows_every_described_component;
+    {
+        let sources = gallery_sources();
+        let coverage = super::gallery::coverage(&sources);
+        let problems = coverage.problems();
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+        for name in ["Button", "Section", "Text"] {
+            assert!(
+                super::gallery::names(&sources, name),
+                "the gallery's sources are read: `ui.{name}` is found in them"
+            );
+        }
     }
 }
 
