@@ -376,6 +376,50 @@ fail('seeds-after')
         self.assertEqual((self.root / 'expiry').read_text(), '-1')
         self.assertTrue(self.credential.exists())
 
+    def test_an_intent_that_proves_no_ownership_changes_nothing(self):
+        lock = '!tilo-firstboot-' + 'a' * 32
+        valid = 'fixtureuser:' + lock + '\n'
+        rows = [
+            # what the intent is, its record, whether the intent is a link to
+            # that record, the shadow of the account when one exists
+            ('another user', 'otheruser:' + lock + '\n', False, None),
+            ('another user, account present', 'otheruser:' + lock + '\n', False, lock),
+            ('an upper-case digest', 'fixtureuser:!tilo-firstboot-' + 'A' * 32 + '\n', False, None),
+            ('a short digest', 'fixtureuser:' + lock[:-1] + '\n', False, None),
+            ('a long digest', 'fixtureuser:' + lock + 'a\n', False, None),
+            ('a trailing field', 'fixtureuser:' + lock + ':0\n', False, None),
+            ('the lock mark alone', 'fixtureuser:!\n', False, None),
+            ('empty', '', False, None),
+            ('a link to a valid record', valid, True, None),
+            ("another transaction's lock on the account", valid, False, '!tilo-firstboot-' + 'b' * 32),
+        ]
+        for name, record, linked, shadow in rows:
+            with self.subTest(intent=name):
+                # Each row has its own fixture: a boot that wrongly went through
+                # would have consumed the seed the next row starts from.
+                self.setUp()
+                intent = self.root / 'etc/install-user.transaction'
+                written = self.root / 'elsewhere' if linked else intent
+                written.write_text(record)
+                written.chmod(0o600)
+                if linked:
+                    intent.symlink_to(written)
+                account = [self.root / 'shadow', self.root / 'expiry']
+                if shadow is not None:
+                    account[0].write_text(shadow)
+                    account[1].write_text('-1')
+                result = self.run_boot()
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertNotIn('created account', result.stdout)
+                self.assertEqual(intent.is_symlink(), linked)
+                self.assertEqual(intent.read_text(), record)
+                self.assertEqual([file.read_text() if file.exists() else None for file in account],
+                                 [None, None] if shadow is None else [shadow, '-1'])
+                self.assertFalse((self.root / 'useradd').exists())
+                self.assertFalse((self.root / 'home/fixtureuser/default').exists())
+                self.assertTrue(self.credential.exists())
+                self.assertTrue(self.full_name.exists())
+
     def test_intent_is_durable_before_account_creation(self):
         self.assertNotEqual(self.run_boot('intent').returncode, 0)
         self.assertFalse((self.root / 'shadow').exists())
