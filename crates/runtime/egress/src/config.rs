@@ -1,4 +1,5 @@
-//! Host configuration shared by portable policy clients and Linux enforcement.
+//! Host configuration that portable policy clients and Linux enforcement
+//! share.
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -10,8 +11,8 @@ pub fn nameservers(resolv_conf: &str) -> Vec<SocketAddr> {
         .filter_map(|line| line.trim().strip_prefix("nameserver"))
         .filter_map(|rest| {
             let addr = rest.trim();
-            // A scoped link-local resolver (`fe80::1%eth0`) can't be named
-            // by a SocketAddr; it is skipped.
+            // A scoped link-local resolver (`fe80::1%eth0`) cannot be a SocketAddr, so it
+            // is skipped.
             addr.parse::<IpAddr>()
                 .ok()
                 .map(|ip| SocketAddr::new(ip, 53))
@@ -19,7 +20,6 @@ pub fn nameservers(resolv_conf: &str) -> Vec<SocketAddr> {
         .collect()
 }
 
-/// Find the pasta binary without starting it.
 pub fn find_pasta() -> PathBuf {
     std::env::var_os("PATH")
         .and_then(|path| {
