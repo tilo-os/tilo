@@ -73,6 +73,8 @@ export function describeError(error) {
   if (error.status) parts.push(`HTTP ${error.status}`);
   if (error.retryAfter) parts.push(`retry after ${error.retryAfter} s`);
   if (error.reason && error.reason !== error.message) parts.push(`host said: ${error.reason}`);
+  if (error.phase) parts.push(`session ${error.phase}${error.connected ? ', connected' : ''}`);
+  if (error.sessionError) parts.push(`session said: ${error.sessionError}${error.sessionErrorCode ? ` (${error.sessionErrorCode})` : ''}`);
   return redact(parts.join(' · '));
 }
 

@@ -1256,8 +1256,12 @@ async function connect({
           if (error) reject(error); else resolve(value);
         };
         const abort = () => finish(signal.reason ?? new DOMException('Aborted', 'AbortError'));
-        // Not a refusal: the host has not answered yet.
-        const timedOut = () => finish(new DOMException('Workspace admission timed out', 'TimeoutError'));
+        // Not a refusal: the host has not let the page in yet. What the
+        // session last said goes with it (whether the host answered at all,
+        // and why it waits), for the page to say which of the two it was.
+        const timedOut = () => finish(Object.assign(new DOMException('Workspace admission timed out', 'TimeoutError'), {
+          phase: snapshot.phase ?? null, sessionError: snapshot.error ?? null, sessionErrorCode: snapshot.errorCode ?? null,
+          connected: snapshot.health?.transport?.phase === 'connected'}));
         const check = current => {
           if (disposed) finish(new Error('Shared resource connection closed'));
           else if (current.phase === 'ready') finish(undefined, current);

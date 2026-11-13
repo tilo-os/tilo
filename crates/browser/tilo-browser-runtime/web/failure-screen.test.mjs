@@ -30,6 +30,9 @@ test('each failure is told apart by what the page knows of it', () => {
     [Object.assign(new Error('join: HTTP 502'), {status: 502}), {}, 'host-error'],
     [new Error('admit: HTTP 500'), {}, 'host-error'],
     [new Error('the peer has no replicated room'), {admitted: true}, 'desktop'],
+    // Reached the host, which never let the page in: no connection problem.
+    [Object.assign(new DOMException('Workspace admission timed out', 'TimeoutError'), {connected: true}), {}, 'host-silent'],
+    [Object.assign(new DOMException('Workspace admission timed out', 'TimeoutError'), {connected: false}), {}, 'unreachable'],
     [new Error('device lost'), {admitted: true, drawn: true}, 'stopped'],
     [new Error('RuntimeError: unreachable executed'), {}, 'loading'],
   ];
@@ -78,6 +81,18 @@ test('a desktop that did not start says where it stopped and why trying again is
   assert.match(failureScreen('desktop', {step: 'open'}).body, /^It stopped while setting up its desktop\./);
   assert.match(failureScreen('loading', {step: 'join'}).body, /^It stopped while joining\. Try again\. If it stops again, copy the technical details/);
   assert.equal(failureScreen('refused', {error: new Error('You did not join')}).body, 'You did not join');
+});
+
+test('a host that never let the page in is not called unreachable, and its details say what the session said', () => {
+  const error = Object.assign(new DOMException('Workspace admission timed out', 'TimeoutError'),
+    {connected: true, phase: 'admitting', sessionError: 'device not in workspace membership', sessionErrorCode: 'permission-required'});
+  const screen = failureScreen(failureCause(error), {workspace: 'Mine', host: 'https://127.0.0.1:24100'});
+  assert.equal(screen.heading, '127.0.0.1:24100 didn’t let this tab into Mine');
+  assert.doesNotMatch(screen.body, /connection|certificate/);
+  assert.equal(screen.retry, true);
+  const text = failureDetails({cause: 'host-silent', host: 'https://127.0.0.1:24100', step: 'load', error});
+  assert.match(text, /session admitting, connected/);
+  assert.match(text, /session said: device not in workspace membership \(permission-required\)/);
 });
 
 test('the details name the cause, host, step and error, never a secret', () => {

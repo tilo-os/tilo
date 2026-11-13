@@ -51,6 +51,7 @@ function answeredWithError(error) {
  *   address, the browser refused its certificate); `no-connection`: neither
  *   answered; a file of this site's own that did not come while the site
  *   answers is no host that is down (`hostIsSite`), and reads as below;
+ * - `host-silent`: the page reached the host, which never let it in;
  * - `host-error`: the host answered with an error;
  * - `desktop`: the host let the person in and the desktop did not start;
  *   `stopped`: the desktop stopped after it was drawn;
@@ -69,6 +70,8 @@ export function failureCause(error, {settled = null, admitted = false, drawn = f
   if (error?.name === 'AdmissionError') return code === 'no-access' ? 'no-access' : 'refused';
   if (error?.name === 'CustodyError' && code === 'custody-busy') return 'custody-busy';
   if (drawn) return 'stopped';
+  // Connected, and the host never let the page in.
+  if (error?.name === 'TimeoutError' && error.connected) return 'host-silent';
   if (unanswered(error)) {
     if (online === false) return 'offline';
     if (!siteAnswers) return 'no-connection';
@@ -113,6 +116,8 @@ export const SCREENS = {
     'This site loads, so your connection works. Either the host is down, or this browser doesn’t trust its certificate. Open { $host } to see which, then try again.'],
   'no-connection': ['Can’t connect to { $host }', 'Can’t connect to { $host }',
     'This site doesn’t answer either. Check your connection, then try again.'],
+  'host-silent': ['{ $host } didn’t let this tab into { $workspace }', '{ $host } didn’t let this tab in',
+    'The host answered, but didn’t let this tab in within 30 seconds. Try again. If it stops again, copy the technical details below and send them to whoever runs this site.'],
   'host-error': ['{ $host } couldn’t open { $workspace }', '{ $host } couldn’t open this workspace',
     'It answered with an error. If it was restarting, trying again in a moment opens it.'],
   desktop: ['{ $workspace } didn’t start', 'This workspace didn’t start',
