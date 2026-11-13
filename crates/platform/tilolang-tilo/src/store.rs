@@ -705,6 +705,15 @@ fn invalid(what: impl Into<String>) -> StoreError {
     StoreError::Invalid(what.into())
 }
 
+/// `error` as the store answers it: a reason a window tells someone stays the reason, so the
+/// window can say what happened instead of the plumbing, and every other fault is its words.
+fn edit_refused(error: tilo_actions::ActionError) -> StoreError {
+    match error {
+        tilo_actions::ActionError::Declined(reason) => StoreError::Declined(reason),
+        other => invalid(other.to_string()),
+    }
+}
+
 fn not_found(what: impl Into<String>) -> StoreError {
     StoreError::NotFound(what.into())
 }
@@ -1983,7 +1992,7 @@ impl Inner {
             self.derive_write(&mut write);
         }
         self.touch(&write);
-        applied.map_err(|error| invalid(error.to_string()))?;
+        applied.map_err(edit_refused)?;
         let reached = write.touched.clone();
         self.local.push(write);
         Ok(reached)

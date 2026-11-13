@@ -440,7 +440,7 @@ fn an_empty_table_still_replays_as_it_always_has() {
 }
 
 /// A paste of a long document into one paragraph is one text past a mebibyte, and kept whole.
-/// A text longer than an action may carry is refused, and nothing is written.
+/// A text longer than one text may hold is refused, and nothing is written.
 #[test]
 fn a_paragraph_pasted_past_a_mebibyte_is_kept() {
     let mut replica = document(1);
@@ -465,9 +465,78 @@ fn a_paragraph_pasted_past_a_mebibyte_is_kept() {
     );
 
     let heads = replica.heads();
-    let past = "x".repeat(action::MAX_ACTION_TEXT_CHARS + 1);
+    let past = "x".repeat(action::MAX_ACTION_TEXT_BYTES + 1);
     assert!(replica.apply_action(&paste(past)).is_err());
     assert_eq!(replica.heads(), heads, "nothing was written");
+}
+
+/// A text is held to its bytes, not its characters: two bytes a character is half as many
+/// characters for the same text, and one past the limit is refused for being too long.
+#[test]
+fn a_multibyte_text_past_what_one_text_may_hold_is_refused_for_its_size() {
+    use tilo_actions::Action;
+    let replica = document(1);
+    let id = replica.state().unwrap().body().id_at(1).unwrap().to_owned();
+    let paste = |ins: String| RichTextAction::ReplaceSelection {
+        region: RegionKind::Body,
+        start_block: id.clone(),
+        start: 0,
+        end_block: id.clone(),
+        end: 0,
+        ins,
+    };
+    let mut doc = replica.doc().clone();
+    // Every character two bytes: exactly one text's worth is kept whole.
+    let kept = "é".repeat(action::MAX_ACTION_TEXT_BYTES / 2);
+    paste(kept)
+        .apply(&mut doc)
+        .expect("a text of the whole limit is kept");
+    let heads = doc.get_heads();
+    let too_long = paste("é".repeat(action::MAX_ACTION_TEXT_BYTES / 2 + 1)).apply(&mut doc);
+    assert!(
+        matches!(
+            too_long,
+            Err(tilo_actions::ActionError::Declined(
+                tilo_actions::Declined::TooLong
+            ))
+        ),
+        "one character more is a text too long to keep: {too_long:?}"
+    );
+    assert_eq!(doc.get_heads(), heads, "nothing was written");
+}
+
+/// What an action names not being what it read is a different reason: the text moved on, and
+/// nothing the person pasted was too long.
+#[test]
+fn a_paste_into_a_paragraph_that_is_gone_is_refused_as_changed() {
+    use tilo_actions::Action;
+    let replica = document(1);
+    let id = replica.state().unwrap().body().id_at(1).unwrap().to_owned();
+    let mut doc = replica.doc().clone();
+    RichTextAction::RemoveBlocks {
+        blocks: vec![id.clone()],
+    }
+    .apply(&mut doc)
+    .unwrap();
+    let heads = doc.get_heads();
+    let late = RichTextAction::SpliceText {
+        region: RegionKind::Body,
+        block: id,
+        at: 0,
+        del: 0,
+        ins: "late".into(),
+    }
+    .apply(&mut doc);
+    assert!(
+        matches!(
+            late,
+            Err(tilo_actions::ActionError::Declined(
+                tilo_actions::Declined::Changed
+            ))
+        ),
+        "the paragraph it names is gone: {late:?}"
+    );
+    assert_eq!(doc.get_heads(), heads, "nothing was written");
 }
 
 #[test]
@@ -481,7 +550,7 @@ fn a_filled_table_outside_the_limits_is_refused_before_it_writes() {
         vec![row(3, "a"), row(2, "b")],
         vec![row(action::MAX_TABLE_DIMENSION + 1, "")],
         vec![row(1, ""); action::MAX_TABLE_DIMENSION + 1],
-        vec![row(2, &"x".repeat(action::MAX_ACTION_TEXT_CHARS / 2 + 1))],
+        vec![row(2, &"x".repeat(action::MAX_ACTION_TEXT_BYTES / 2 + 1))],
     ];
     let heads = replica.heads();
     for cells in hostile {
@@ -1024,7 +1093,7 @@ fn replace_matches_refuses_invalid_batches_before_any_mutation() {
         (vec![span(0, 1); 10_001], String::new()),
         (
             vec![span(0, 1), span(2, 3)],
-            "x".repeat(action::MAX_ACTION_TEXT_CHARS / 2 + 1),
+            "x".repeat(action::MAX_ACTION_TEXT_BYTES / 2 + 1),
         ),
     ] {
         assert!(

@@ -598,6 +598,21 @@ pub fn widget_text_with(key: &str, args: Option<&fluent::FluentArgs<'_>>) -> Str
     I18nManager::lookup(key, args)
 }
 
+/// What a window says about an edit an app declined ([`tilo_actions::Declined`]) in the language
+/// this thread reads, for a window that draws it itself.
+#[must_use]
+pub fn declined_text(reason: tilo_actions::Declined) -> String {
+    let (key, args) = reason.words();
+    if args.is_empty() {
+        return widget_text(&key);
+    }
+    let mut fluent = FluentArgs::new();
+    for (name, value) in &args {
+        fluent.set(name.as_str(), value.as_str());
+    }
+    widget_text_with(&key, Some(&fluent))
+}
+
 /// The name a control is announced by: `name` taken as text when the caller resolved it (`resolved`,
 /// the row's caption an app localized itself), else as the message id [`widget_text`] resolves.
 #[must_use]
@@ -1765,6 +1780,32 @@ mod tests {
             I18nManager::lookup_plain("date-field-add"),
             "Add date",
             "the toolkit's own words follow the window's language"
+        );
+    }
+
+    /// An edit an app declined is said in the person's own language, with the limit it is held
+    /// to: the one word set a native and a hosted window both read.
+    #[test]
+    fn a_refused_edit_is_said_in_the_windows_language() {
+        let _restore = RestoreLookupState::capture();
+        I18nManager::register_widget_messages();
+        I18nManager::set_locale("en-US");
+        assert_eq!(
+            declined_text(tilo_actions::Declined::TooLong),
+            "This paste is too long to keep (limit 8 MB). Paste it in smaller parts."
+        );
+        assert_eq!(
+            declined_text(tilo_actions::Declined::Changed),
+            "This paragraph changed while you were typing. Your edit wasn't kept."
+        );
+        I18nManager::set_locale("de-DE");
+        assert_eq!(
+            declined_text(tilo_actions::Declined::TooLong),
+            "Der eingefügte Text ist zu lang (höchstens 8 MB). Füge ihn in kleineren Stücken ein."
+        );
+        assert_eq!(
+            declined_text(tilo_actions::Declined::Changed),
+            "Dieser Absatz hat sich beim Tippen geändert. Deine Änderung wurde nicht übernommen."
         );
     }
 

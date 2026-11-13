@@ -395,7 +395,10 @@ pub struct DynAction {
 }
 
 fn refused(error: &ModelError) -> ActionError {
-    ActionError::Refused(error.to_string())
+    match error {
+        ModelError::Declined(reason) => ActionError::Declined(*reason),
+        other => ActionError::Refused(other.to_string()),
+    }
 }
 
 impl DynAction {

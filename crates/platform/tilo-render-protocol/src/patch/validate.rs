@@ -53,7 +53,9 @@ pub struct PatchLimits {
     pub nodes: u32,
     /// How deep a tree nests.
     pub depth: u32,
-    /// Bytes of one string: a prop's text, a bound value, a splice.
+    /// Bytes of one string: a prop's text, a bound value, a splice — as much
+    /// as one text an action carries ([`tilo_actions::MAX_TEXT_BYTES`]), so a
+    /// text an edit keeps is always a text a window can show.
     pub string_bytes: u32,
     /// Bytes of one key or name.
     pub key_bytes: u32,
@@ -67,12 +69,21 @@ pub struct PatchLimits {
     pub messages: u32,
 }
 
+/// One text's bytes as a window counts one string: the same number
+/// ([`tilo_actions::MAX_TEXT_BYTES`]), so a text an edit keeps is never one the
+/// window refuses to show.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "one text's bytes, 8 MiB, fit a window's count of a string"
+)]
+const STRING_BYTES: u32 = tilo_actions::MAX_TEXT_BYTES as u32;
+
 impl Default for PatchLimits {
     fn default() -> Self {
         Self {
             nodes: 200_000,
             depth: 128,
-            string_bytes: 8 << 20,
+            string_bytes: STRING_BYTES,
             key_bytes: 4096,
             path: 128,
             props: 128,
@@ -853,6 +864,17 @@ mod tests {
             tree,
             front: None,
         }]
+    }
+
+    /// A text an edit keeps is one the window can carry: the bytes of one string here are the
+    /// bytes of one text an action carries, so a paste at the limit is shown and a longer one is
+    /// refused where it is made.
+    #[test]
+    fn a_text_an_edit_keeps_is_one_a_window_carries() {
+        assert_eq!(
+            PatchLimits::default().string_bytes as usize,
+            tilo_actions::MAX_TEXT_BYTES
+        );
     }
 
     #[test]

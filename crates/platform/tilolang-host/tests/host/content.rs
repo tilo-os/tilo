@@ -118,8 +118,9 @@ fn one_paragraph_pasted_past_a_mebibyte_is_kept_and_undoes() {
     pastes_past_a_mebibyte(1);
 }
 
-/// A paragraph longer than one text may hold is refused: Ada hears it, and the note keeps what
-/// she typed.
+/// A paragraph longer than one text may hold is refused: Ada hears what happened and what to do,
+/// in the words every window says, and the note keeps what she typed. A text is held to its
+/// bytes, so two bytes a character runs out at half the characters.
 #[test]
 fn a_paragraph_past_what_a_text_may_hold_is_refused_aloud() {
     let route = RouteSpec::app(NOTES, uuid::Uuid::new_v4());
@@ -137,7 +138,10 @@ fn a_paragraph_past_what_a_text_may_hold_is_refused_aloud() {
     press_new_note(&mut window);
     settle(&mut host, &mut window);
     let (field, note) = body_field(&window);
-    for text in ["draft".to_owned(), "words ".repeat(1_500_000)] {
+    for text in [
+        "draft".to_owned(),
+        format!("words {}", "é".repeat(tilo_actions::MAX_TEXT_BYTES / 2)),
+    ] {
         window.send(&[ToApp::EditRich {
             lane: Lane::Root,
             target: note.clone(),
@@ -151,7 +155,45 @@ fn a_paragraph_past_what_a_text_may_hold_is_refused_aloud() {
         "draft",
         "the note keeps what was typed"
     );
-    assert_eq!(window.notices.len(), 1, "Ada hears the paste was refused");
+    assert_eq!(
+        window.notices,
+        [patch::Words::Phrase {
+            id: "rich-text-too-long".to_owned(),
+            args: vec![("limit".to_owned(), "8 MB".to_owned())],
+        }],
+        "Ada hears why the paste was not kept, and what to do"
+    );
+}
+
+/// A paragraph of the whole limit is one the window can carry: it is kept, and nothing is said.
+#[test]
+fn a_paragraph_of_the_whole_limit_is_kept_aloud() {
+    let route = RouteSpec::app(NOTES, uuid::Uuid::new_v4());
+    let mut host = TilolangHost::new(None, wake());
+    let (mut window, _sent, _inbox) = instance_on(
+        &mut host,
+        spec(1, "ada", &route),
+        notes(),
+        &route,
+        Rc::default(),
+        Rc::default(),
+        automerge::AutoCommit::new(),
+    );
+    settle(&mut host, &mut window);
+    press_new_note(&mut window);
+    settle(&mut host, &mut window);
+    let (field, note) = body_field(&window);
+    // Every character two bytes: half as many characters is the same text in bytes.
+    let kept = "é".repeat(tilo_actions::MAX_TEXT_BYTES / 2);
+    window.send(&[ToApp::EditRich {
+        lane: Lane::Root,
+        target: note.clone(),
+        key: field,
+        rich: typed_rich(&kept),
+    }]);
+    settle(&mut host, &mut window);
+    assert!(window.notices.is_empty(), "{:?}", window.notices);
+    assert_eq!(body_of(&host, &note), kept, "the paste is kept whole");
 }
 
 /// Ada pastes `paragraphs` paragraphs past a mebibyte in all over what she typed.

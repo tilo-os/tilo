@@ -89,6 +89,65 @@ fn verb(context: &ui::tilo_actions::ActionContext) -> &str {
     }
 }
 
+/// The words the window's bar says about an edit it did not keep, in the language it reads.
+fn notice() -> Option<String> {
+    ui::window_toolbar::notice().map(|notice| notice.text)
+}
+
+/// A paste of text longer than one text may hold is refused where it is made: the paragraph
+/// keeps what it had, nothing is written, and the bar says what happened and what to do. A text
+/// is held to its bytes, so two bytes a character runs out at half the characters.
+#[test]
+fn a_paste_past_what_one_text_may_hold_is_not_kept_and_says_why() {
+    let mut app = open();
+    app.harness().type_text("kept");
+    let before = app.versions().len();
+    app.harness()
+        .commit_text(&"é".repeat(ui::tilo_actions::MAX_TEXT_BYTES / 2 + 1));
+    assert_eq!(
+        paragraphs(&app),
+        ["kept"],
+        "the paragraph keeps what was typed"
+    );
+    assert_eq!(app.versions().len(), before, "nothing was written");
+    assert_eq!(
+        notice().as_deref(),
+        Some("This paste is too long to keep (limit 8 MB). Paste it in smaller parts.")
+    );
+}
+
+/// The same edit in a window reading German.
+#[test]
+fn a_paste_past_what_one_text_may_hold_is_said_in_german() {
+    ui::i18n::I18nManager::init("de-DE");
+    let mut app = TestApp::<Document>::new().unwrap();
+    let target = app
+        .harness()
+        .targets()
+        .get("block_editor")
+        .copied()
+        .expect("the editor is addressable");
+    app.harness().click_at(target.x0 + 20.0, target.y0 + 10.0);
+    app.harness()
+        .commit_text(&"é".repeat(ui::tilo_actions::MAX_TEXT_BYTES / 2 + 1));
+    assert_eq!(
+        notice().as_deref(),
+        Some(
+            "Der eingefügte Text ist zu lang (höchstens 8 MB). Füge ihn in kleineren Stücken ein."
+        )
+    );
+}
+
+/// A text of the whole limit is one the window can carry: it is kept, whole.
+#[test]
+fn a_paste_of_the_whole_limit_is_kept() {
+    let mut app = open();
+    let kept = "é".repeat(ui::tilo_actions::MAX_TEXT_BYTES / 2);
+    app.harness().commit_text(&kept);
+    assert_eq!(paragraphs(&app), [kept], "the paragraph holds the paste");
+    assert_eq!(notice(), None, "the bar is quiet");
+}
+
 #[test]
 fn a_keystroke_is_an_action_and_undo_takes_back_a_word_at_a_time() {
     let mut app = open();

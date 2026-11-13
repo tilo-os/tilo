@@ -23241,6 +23241,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-actions",
  "tilo-app-id",
  "tilo-automerge",
  "tilo-automerge-fork",

@@ -19,6 +19,7 @@ pub mod block_edit;
 pub mod block_markdown;
 pub mod field;
 mod replace_text;
+mod validate;
 
 pub use field::{blocks_of_plain, convert_field};
 

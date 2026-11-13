@@ -157,8 +157,8 @@ pub mod task_step;
 pub mod terminal_text;
 
 pub use action::{
-    Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind, asks_first,
-    undo_takes_back,
+    Action, ActionError, ActionId, Declined, Doc, EncodedAction, ExecutionLocus, MAX_TEXT_BYTES,
+    OperationKind, asks_first, undo_takes_back,
 };
 pub use agent_disclosure::hidden_from_agents;
 pub use appearance::{Appearance, AppearanceError, Persona};

@@ -2080,8 +2080,21 @@ impl Instance {
             Ok(EditOutcome::Applied) => Ok(()),
             Ok(EditOutcome::NeedsApproval) => Err(Words::phrase("tilolang-ask-needs-approval")),
             Ok(EditOutcome::Denied) => Err(Words::phrase("tilolang-ask-denied")),
-            Err(error) => Err(Words::Plain(error.to_string())),
+            Err(error) => Err(Self::refusal(&error)),
         }
+    }
+
+    /// What the window says about an edit that did not apply: the reason in the person's own
+    /// words when the app declined for one they can act on, else the fault as it is.
+    fn refusal(error: &tilolang_runtime::RuntimeError) -> Words {
+        if let tilolang_runtime::RuntimeError::Store(
+            tilolang_runtime::store::StoreError::Declined(reason),
+        ) = error
+        {
+            let (id, args) = reason.words();
+            return Words::Phrase { id, args };
+        }
+        Words::Plain(error.to_string())
     }
 
     fn resolve(&self, lane: Lane, key: &str, approve: bool) -> Result<(), Words> {

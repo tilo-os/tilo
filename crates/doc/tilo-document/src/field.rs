@@ -78,6 +78,7 @@ impl RichText {
 fn refused(error: tilo_actions::ActionError) -> ModelError {
     match error {
         tilo_actions::ActionError::Refused(reason) => ModelError::Refused(reason),
+        tilo_actions::ActionError::Declined(reason) => ModelError::Declined(reason),
         other => ModelError::invalid(other.to_string()),
     }
 }

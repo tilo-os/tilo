@@ -10,7 +10,7 @@ use tilo_document::{BodyOrder, ClipAttr};
 
 use super::participant::{FindState, ParticipantView, PendingCaret, ViewPoint};
 use super::{
-    MAX_ACTION_TEXT_CHARS, MAX_RESOURCE_SEARCH_HITS, MarkVal, RegionKind, RichTextAction,
+    MAX_ACTION_TEXT_BYTES, MAX_RESOURCE_SEARCH_HITS, MarkVal, RegionKind, RichTextAction,
     SearchTarget, SelectionTarget, Span, WpResourceCtx, apply_named_style_action,
     paste_fragment_action, replace_selection_action, set_mark_action, set_paragraph_style_action,
     splice_text_action, split_block_action, valid_hyperlink_target,
@@ -1084,7 +1084,7 @@ fn literal_matches(blocks: &[tilo_doc::snapshot::BlockView], query: &str) -> Vec
 fn clip_blocks(content: &PasteContent) -> Result<Vec<ClipBlock>, EditingError> {
     match content {
         PasteContent::Text(text) => {
-            if text.chars().count() > MAX_ACTION_TEXT_CHARS {
+            if text.len() > MAX_ACTION_TEXT_BYTES {
                 return Err(EditingError::Invalid("pasted text is too long".into()));
             }
             Ok(text
@@ -1106,7 +1106,7 @@ fn clip_blocks(content: &PasteContent) -> Result<Vec<ClipBlock>, EditingError> {
 }
 
 fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> {
-    if markdown.chars().count() > MAX_ACTION_TEXT_CHARS {
+    if markdown.len() > MAX_ACTION_TEXT_BYTES {
         return Err(EditingError::Invalid("pasted Markdown is too long".into()));
     }
     // Pasted Markdown references no content this document keeps.

@@ -7,7 +7,7 @@ use automerge::AutoCommit;
 use tilo_doc::DocMut;
 use tilo_doc::model::Containers;
 
-use crate::action::{MAX_ACTION_TEXT_CHARS, Written};
+use crate::action::{MAX_ACTION_TEXT_BYTES, Written};
 
 /// One occurrence: its block and its characters `start..end`.
 struct Found {
@@ -70,12 +70,8 @@ pub(crate) fn check(
                 .to_owned(),
         );
     }
-    if find.chars().count() > MAX_ACTION_TEXT_CHARS
-        || replace.chars().count() > MAX_ACTION_TEXT_CHARS
-    {
-        return Err(format!(
-            "text is longer than {MAX_ACTION_TEXT_CHARS} characters"
-        ));
+    if find.len() > MAX_ACTION_TEXT_BYTES || replace.len() > MAX_ACTION_TEXT_BYTES {
+        return Err(format!("text is longer than {MAX_ACTION_TEXT_BYTES} bytes"));
     }
     if occurrences(doc, c, find, false).is_empty() {
         return Err(format!(

@@ -41,6 +41,10 @@ pub enum ModelError {
     /// A [`check`](Model::check) refused the change, in its own words.
     #[error("{0}")]
     Refused(String),
+    /// A [`check`](Model::check) refused the change for a reason a window tells
+    /// the person in their own language.
+    #[error("{0}")]
+    Declined(tilo_actions::Declined),
 }
 
 /// Where an error was found, as its message begins: `clips.title: `, or
@@ -82,7 +86,7 @@ impl ModelError {
                     format!("{segment}.{path}")
                 };
             }
-            Self::Automerge(_) | Self::Refused(_) => {}
+            Self::Automerge(_) | Self::Refused(_) | Self::Declined(_) => {}
         }
         self
     }
@@ -1428,6 +1432,7 @@ impl Model for String {
         let text = slot.object(doc, ObjType::Text)?;
         edit.apply_under(doc, &text).map_err(|error| match error {
             tilo_actions::ActionError::Refused(reason) => ModelError::Refused(reason),
+            tilo_actions::ActionError::Declined(reason) => ModelError::Declined(reason),
             other => ModelError::invalid(other.to_string()),
         })
     }

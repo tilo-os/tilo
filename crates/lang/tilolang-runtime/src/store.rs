@@ -25,6 +25,9 @@ pub enum StoreError {
     Invalid(String),
     #[error("store failure: {0}")]
     Backend(String),
+    /// The app declined the write for a reason a window tells the person in their own language.
+    #[error("{0}")]
+    Declined(tilo_actions::Declined),
 }
 
 /// The content of a register field. Composite runtime values travel as `Json`.

@@ -686,6 +686,8 @@ widget-mention-bot = Bot
 widget-mention-list = Personen zum Erwähnen
 rich-text-reference-unreadable = Nicht mit dir geteilt
 rich-text-edit-not-kept = Deine letzte Änderung wurde nicht übernommen
+rich-text-too-long = Der eingefügte Text ist zu lang (höchstens { $limit }). Füge ihn in kleineren Stücken ein.
+rich-text-changed-while-typing = Dieser Absatz hat sich beim Tippen geändert. Deine Änderung wurde nicht übernommen.
 widget-block-duplicate = Block mit Unterelementen duplizieren
 
 widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizieren

@@ -43,6 +43,8 @@ chrono-tz = "0.10.4"
 tilo-reference = { path = "../../collab/reference" }
 # Order keys of placed items (`place`): the fractional keys every collection orders by.
 tilo-resource = { path = "../../sdk/tilo-resource" }
+# Why an app declined an edit: the reason a window tells the person in their own language.
+tilo-actions = { path = "../../collab/actions" }
 serde.workspace = true
 serde_json.workspace = true
 # A draw comes from the system's CSPRNG, on the device the invocation runs on.

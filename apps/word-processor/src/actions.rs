@@ -846,9 +846,10 @@ mod tests {
                     }
                 }
             }
+            // A text is held to its bytes: every character two bytes here, so half as many fit.
             for (count, expected) in [
-                (MAX_ACTION_TEXT_CHARS, true),
-                (MAX_ACTION_TEXT_CHARS + 1, false),
+                (MAX_ACTION_TEXT_BYTES / 2, true),
+                (MAX_ACTION_TEXT_BYTES / 2 + 1, false),
             ] {
                 let action = RichTextAction::SpliceText {
                     region: RegionKind::Body,
