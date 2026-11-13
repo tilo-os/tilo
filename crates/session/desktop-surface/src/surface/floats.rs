@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use tilo_desktop_model::{CanvasPlace, DesktopTree, FloatPlace, StripId, Workspace, WorkspaceSlot};
 use ui::kurbo::{Point, Rect};
 use ui::num::{f64_of_i64, i32_of_f64, u32_of_f64};
-use ui::widget::{FLOAT_CARD_SIZE, FloatAsk, GroupRow, Widget};
+use ui::widget::{FLOAT_CARD_ROOM, FLOAT_CARD_SIZE, FloatAsk, GroupRow, Widget};
 
 use super::Shared;
 
@@ -150,6 +150,9 @@ pub(super) struct Dock {
     pub(super) slots: std::collections::BTreeMap<u64, Rect>,
     /// The docked windows folded to their header, with the size they open to again.
     pub(super) collapsed: std::collections::BTreeMap<u64, (f64, f64)>,
+    /// The windows that opened here as cards: snapped into their strip and floated again, they go
+    /// back to the column as the card they were, not over the desk at a window's size.
+    pub(super) born: std::collections::BTreeSet<u64>,
 }
 
 /// The place a card docked in the work area `area` keeps in the record: the layer's corner, until
@@ -170,37 +173,48 @@ impl super::DesktopSurface {
     /// opened beside: the strip shows that one, clear of the column.
     pub(super) fn dock(&self, strip: StripId, group: u64) -> Option<u64> {
         let row = self.rows.get(&strip)?;
-        let sender = opened_beside(row, group);
-        let area = area_of(row.get_rect());
-        let at = docked_place(row.get_rect());
-        let mut shared = self.shared.borrow_mut();
-        set(
-            &mut shared,
-            strip,
+        dock(&mut self.shared.borrow_mut(), strip, row, group);
+        opened_beside(row, group)
+    }
+}
+
+/// Float the window `group` of `strip` as a card in the floating layer's column. Returns whether
+/// the tree changed.
+pub(super) fn dock(shared: &mut Shared, strip: StripId, row: &GroupRow, group: u64) -> bool {
+    let area = area_of(row.get_rect());
+    let at = docked_place(row.get_rect());
+    shared.dock.born.insert(group);
+    shared.dock.cards.insert(
+        group,
+        DockedCard {
             group,
-            Some(FloatPlace::of_rect(area, place_of(at))),
-        );
-        shared.dock.cards.insert(
-            group,
-            DockedCard {
-                group,
-                size: (at.width(), at.height()),
-            },
-        );
-        sender
+            size: (at.width(), at.height()),
+        },
+    );
+    set(
+        shared,
+        strip,
+        group,
+        Some(FloatPlace::of_rect(area, place_of(at))),
+    )
+}
+
+/// Float the window `group` of `strip` again: a window that opened as a card goes back to the
+/// column, the window beside it giving up the room the card stands in as when it opened, and any
+/// other is lifted over the place it stands ([`lift`]). Returns whether the tree changed.
+pub(super) fn float(shared: &mut Shared, strip: StripId, row: &mut GroupRow, group: u64) -> bool {
+    if shared.dock.born.contains(&group) {
+        row.share_with_floating_neighbour(group, FLOAT_CARD_SIZE.0 + 2.0 * FLOAT_CARD_ROOM);
+        dock(shared, strip, row, group)
+    } else {
+        lift(shared, strip, row, group)
     }
 }
 
 /// Lift the window `group` above the desk where it stands: a chord or a
 /// menu row asked, so it takes the floating size over the middle of the
 /// place it had in its strip. Returns whether the tree changed.
-pub(super) fn lift(
-    shared: &mut Shared,
-    strip: StripId,
-    row: &GroupRow,
-    group: u64,
-    area: CanvasPlace,
-) -> bool {
+fn lift(shared: &mut Shared, strip: StripId, row: &GroupRow, group: u64) -> bool {
     let Some(rect) = row
         .groups
         .iter()
@@ -210,6 +224,7 @@ pub(super) fn lift(
         return false;
     };
     let at = row.float_rect_at(rect.center());
+    let area = area_of(row.get_rect());
     set(
         shared,
         strip,

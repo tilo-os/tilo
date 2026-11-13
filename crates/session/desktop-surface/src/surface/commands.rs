@@ -93,21 +93,26 @@ impl DesktopSurface {
                         shared.tree.set_fullscreen(ids.strip, ids.group, fullscreen);
                     }
                     Admitted::Float(ids, on) if live(&shared.tree, ids) => {
-                        // A chord or a menu row lifts the window over the place it stands, or puts
-                        // it back in its strip; the row reads it in `present` .
-                        let lifted = match self.rows.get(&ids.strip) {
-                            Some(row) => {
-                                let area = floats::area_of(row.get_rect());
-                                if on {
-                                    floats::lift(&mut shared, ids.strip, row, ids.group, area)
-                                } else {
-                                    floats::set(&mut shared, ids.strip, ids.group, None)
-                                }
+                        // A chord, a menu row or an agent floats the window — a card back to the
+                        // column, any other over the place it stands — or puts it back in its strip;
+                        // the row reads it in `present` .
+                        let lifted = match self.rows.get_mut(&ids.strip) {
+                            Some(row) if on => {
+                                floats::float(&mut shared, ids.strip, row, ids.group)
                             }
+                            Some(_) => floats::set(&mut shared, ids.strip, ids.group, None),
                             None => false,
                         };
                         if lifted {
                             shared.tree.set_active_group(ids.strip, ids.group);
+                        }
+                        // A card back in the column shows the window beside it, clear of it.
+                        if lifted && shared.dock.cards.contains_key(&ids.group) {
+                            self.reveal = self
+                                .rows
+                                .get(&ids.strip)
+                                .and_then(|row| floats::opened_beside(row, ids.group))
+                                .map(|beside| (ids.strip, beside));
                         }
                     }
                     Admitted::Rename(ids, name) if live(&shared.tree, ids) => {
