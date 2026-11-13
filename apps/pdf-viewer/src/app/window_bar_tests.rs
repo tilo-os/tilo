@@ -299,14 +299,13 @@ fn a_drive_of_a_scenario_zooms_and_fits_by_address() {
 #[test]
 #[serial(pdfium)]
 fn a_drive_of_every_scenario_reaches_every_published_action() {
-    for scenario in crate::scenarios::SCENARIOS {
-        let mut app = TestApp::<PdfViewerShell>::drive(scenario)
-            .unwrap_or_else(|error| panic!("{scenario}: {error}"));
-        assert_eq!(
-            ui::framework::testing::unreachable_actions(&mut app),
-            Vec::<String>::new(),
-            "{scenario}: published actions a drive cannot invoke"
-        );
+    // One drive of each scenario answers both questions: which published
+    // actions an agent is never shown, asked of the scenario as it opens,
+    // and which a drive cannot invoke.
+    if let Err(failures) =
+        ui::framework::testing::check_scenarios_reach_every_action::<PdfViewerShell>(0, 1, &[])
+    {
+        panic!("{failures}");
     }
 }
 
