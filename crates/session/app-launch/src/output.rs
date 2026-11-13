@@ -286,57 +286,61 @@ mod tests {
         output.read(std::io::Cursor::new(text.as_bytes().to_vec()), stream, None);
     }
 
-    #[test]
-    fn the_lines_an_app_writes_are_the_ones_it_is_read_back_with() {
-        let app = output();
-        read(&app, "one\ntwo\nthree without a newline", "stderr");
-        assert_eq!(
-            app.tail().stderr,
-            ["one", "two", "three without a newline"],
-            "every line is kept, the last one without its terminator too"
-        );
-        assert_eq!(app.tail().dropped, 0);
-    }
+    tilo_test_env::scenario! {
+        fn an_apps_output_is_kept_cut_and_rate_limited;
 
-    #[test]
-    fn a_line_is_cut_at_the_bound_and_says_so() {
-        let app = output();
-        let long = "x".repeat(LINE_BYTES.saturating_mul(2));
-        read(&app, &format!("{long}\n"), "stdout");
-        let kept = app.tail().stderr;
-        assert!(kept.is_empty(), "a stdout line is not the stderr tail");
-    }
-
-    #[test]
-    fn a_chatty_app_is_rate_limited_and_the_log_says_how_much_it_left_out() {
-        let app = output();
-        // Written at once, well past the burst.
-        let burst = usize::try_from(BURST_LINES).unwrap_or(0);
-        let text = "line\n".repeat(burst.saturating_add(500));
-        read(&app, &text, "stderr");
-        let output = app.tail();
-        assert!(
-            output.dropped > 0,
-            "lines past the burst are not relayed: {output:?}"
-        );
-        assert_eq!(
-            output.stderr.len(),
-            TAIL_LINES,
-            "the tail keeps the newest lines whatever the rate"
-        );
-    }
-
-    #[test]
-    fn a_launch_relays_at_most_its_bound_of_lines() {
-        let app = output();
-        let mut bucket = Bucket::full();
-        let mut partial = Vec::new();
-        let mut truncated = false;
-        for _ in 0..5000 {
-            // The bucket refilled between each, as lines over time are.
-            bucket.tokens = BURST_LINES;
-            app.keep("stdout", &mut partial, &mut truncated, None, &mut bucket);
+        phase the_lines_an_app_writes_are_the_ones_it_is_read_back_with;
+        {
+            let app = output();
+            read(&app, "one\ntwo\nthree without a newline", "stderr");
+            assert_eq!(
+                app.tail().stderr,
+                ["one", "two", "three without a newline"],
+                "every line is kept, the last one without its terminator too"
+            );
+            assert_eq!(app.tail().dropped, 0);
         }
-        assert_eq!(app.relayed.load(Ordering::Relaxed), RELAY_LINES_MAX);
+
+        phase a_line_is_cut_at_the_bound_and_says_so;
+        {
+            let app = output();
+            let long = "x".repeat(LINE_BYTES.saturating_mul(2));
+            read(&app, &format!("{long}\n"), "stdout");
+            let kept = app.tail().stderr;
+            assert!(kept.is_empty(), "a stdout line is not the stderr tail");
+        }
+
+        phase a_chatty_app_is_rate_limited_and_the_log_says_how_much_it_left_out;
+        {
+            let app = output();
+            // Written at once, well past the burst.
+            let burst = usize::try_from(BURST_LINES).unwrap_or(0);
+            let text = "line\n".repeat(burst.saturating_add(500));
+            read(&app, &text, "stderr");
+            let output = app.tail();
+            assert!(
+                output.dropped > 0,
+                "lines past the burst are not relayed: {output:?}"
+            );
+            assert_eq!(
+                output.stderr.len(),
+                TAIL_LINES,
+                "the tail keeps the newest lines whatever the rate"
+            );
+        }
+
+        phase a_launch_relays_at_most_its_bound_of_lines;
+        {
+            let app = output();
+            let mut bucket = Bucket::full();
+            let mut partial = Vec::new();
+            let mut truncated = false;
+            for _ in 0..5000 {
+                // The bucket refilled between each, as lines over time are.
+                bucket.tokens = BURST_LINES;
+                app.keep("stdout", &mut partial, &mut truncated, None, &mut bucket);
+            }
+            assert_eq!(app.relayed.load(Ordering::Relaxed), RELAY_LINES_MAX);
+        }
     }
 }

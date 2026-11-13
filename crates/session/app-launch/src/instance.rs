@@ -207,60 +207,112 @@ mod tests {
         (launch, instance)
     }
 
-    /// An app that keeps one window is raised: a second launch of it starts
-    /// nothing, whether its window announces the package id or the toolkit's
-    /// own short id for it.
-    #[test]
-    fn a_second_launch_of_a_running_app_raises_the_window_it_has() {
-        let notes = notes();
-        assert_eq!(notes.windows, Windows::One);
-        let launch = Launch::parse("so.tilo.notes").expect("a launch");
-        for announced in ["so.tilo.notes", "notes"] {
-            let shown = Shown::new([(4, "so.tilo.chat".to_owned()), (12, announced.to_owned())]);
+    tilo_test_env::scenario! {
+        fn a_launch_is_answered_by_the_windows_its_app_already_shows;
+
+        phase a_second_launch_of_a_running_app_raises_the_window_it_has;
+        // An app that keeps one window is raised: a second launch of it starts
+        // nothing, whether its window announces the package id or the toolkit's
+        // own short id for it.
+        {
+            let notes = notes();
+            assert_eq!(notes.windows, Windows::One);
+            let launch = Launch::parse("so.tilo.notes").expect("a launch");
+            for announced in ["so.tilo.notes", "notes"] {
+                let shown = Shown::new([(4, "so.tilo.chat".to_owned()), (12, announced.to_owned())]);
+                assert_eq!(
+                    notes.answer(&launch, &shown),
+                    Answer::Raise { tab: 12 },
+                    "the window announcing itself as {announced}"
+                );
+            }
             assert_eq!(
-                notes.answer(&launch, &shown),
-                Answer::Raise { tab: 12 },
-                "the window announcing itself as {announced}"
+                notes.answer(&launch, &Shown::new([(4, "so.tilo.chat".to_owned())])),
+                Answer::Start { new_window: false },
+                "a window of another app is not the one it has"
+            );
+            assert_eq!(
+                notes.answer(&launch, &Shown::default()),
+                Answer::Start { new_window: false }
             );
         }
-        assert_eq!(
-            notes.answer(&launch, &Shown::new([(4, "so.tilo.chat".to_owned())])),
-            Answer::Start { new_window: false },
-            "a window of another app is not the one it has"
-        );
-        assert_eq!(
-            notes.answer(&launch, &Shown::default()),
-            Answer::Start { new_window: false }
-        );
-    }
 
-    /// An app whose entry declares one main window is raised too, and its
-    /// window is found by the class it sets.
-    #[test]
-    fn an_app_that_declares_one_main_window_is_raised() {
-        let (launch, editor) = editor("SingleMainWindow=true\n");
-        assert_eq!(editor.windows, Windows::One);
-        let shown = Shown::new([(7, "org.example.Editor".to_owned())]);
-        assert_eq!(editor.answer(&launch, &shown), Answer::Raise { tab: 7 });
-    }
+        phase an_app_that_declares_one_main_window_is_raised;
+        // An app whose entry declares one main window is raised too, and its
+        // window is found by the class it sets.
+        {
+            let (launch, editor) = editor("SingleMainWindow=true\n");
+            assert_eq!(editor.windows, Windows::One);
+            let shown = Shown::new([(7, "org.example.Editor".to_owned())]);
+            assert_eq!(editor.answer(&launch, &shown), Answer::Raise { tab: 7 });
+        }
 
-    /// An app that opens another window each time is started again when it is
-    /// already showing, and asked for a new window: its entry's own New
-    /// Window action is what the plan uses.
-    #[test]
-    fn an_app_that_opens_more_windows_gets_another_one_when_asked() {
-        let (launch, editor) = editor("");
-        assert_eq!(editor.windows, Windows::Many);
-        let shown = Shown::new([(7, "org.example.Editor.desktop".to_owned())]);
-        assert_eq!(
-            editor.answer(&launch, &shown),
-            Answer::Start { new_window: true }
-        );
-        assert_eq!(
-            editor.answer(&launch, &Shown::default()),
-            Answer::Start { new_window: false },
-            "nothing showing: the entry's own command line, no new-window action"
-        );
+        phase an_app_that_opens_more_windows_gets_another_one_when_asked;
+        // An app that opens another window each time is started again when it is
+        // already showing, and asked for a new window: its entry's own New
+        // Window action is what the plan uses.
+        {
+            let (launch, editor) = editor("");
+            assert_eq!(editor.windows, Windows::Many);
+            let shown = Shown::new([(7, "org.example.Editor.desktop".to_owned())]);
+            assert_eq!(
+                editor.answer(&launch, &shown),
+                Answer::Start { new_window: true }
+            );
+            assert_eq!(
+                editor.answer(&launch, &Shown::default()),
+                Answer::Start { new_window: false },
+                "nothing showing: the entry's own command line, no new-window action"
+            );
+        }
+
+        phase a_launch_of_an_app_that_is_starting_goes_to_the_place_it_holds;
+        // A launch of an app whose window is on its way goes to the place the
+        // desk holds for it: the tab a saved window waits in, or the one a
+        // launch already holds — the record the launch names is open in that
+        // very process, and a second one could not read it.
+        {
+            let notes = notes();
+            let record = Launch::parse("record:so.tilo.notes:ideas").expect("a record launch");
+            let on_its_way = Shown::new([(9, "so.tilo.notes".to_owned())]);
+            assert_eq!(
+                notes.answer(&record, &on_its_way),
+                Answer::Raise { tab: 9 },
+                "the launch in flight is the app's window on its way"
+            );
+            assert_eq!(
+                notes.answer(
+                    &Launch::parse("so.tilo.notes").expect("a launch"),
+                    &on_its_way
+                ),
+                Answer::Raise { tab: 9 },
+                "opening the app brings the window that is coming"
+            );
+            let content = Launch::parse("content:so.tilo.notes:aa11").expect("a content launch");
+            assert_eq!(
+                notes.answer(&content, &on_its_way),
+                Answer::Raise { tab: 9 }
+            );
+        }
+
+        phase a_launch_naming_no_installed_app_decides_nothing;
+        // A launch that names no app installed here, or no app at all, decides
+        // nothing: planning it says why it starts nothing.
+        {
+            let scan = Scan::default();
+            for launch in ["window:12", "host:org.example.Missing.desktop"] {
+                let launch = Launch::parse(launch).expect("a launch");
+                assert_eq!(Instance::of(&launch, &scan), None, "{launch:?}");
+            }
+            assert_eq!(
+                Instance::of(
+                    &Launch::parse("crashed:so.tilo.canvas").expect("a notice"),
+                    &scan
+                ),
+                None,
+                "a notice starts nothing until the person asks for the app again"
+            );
+        }
     }
 
     /// A machine app's document or link starts its own command line: the app
@@ -301,54 +353,6 @@ mod tests {
             notes.answer(&record, &shown),
             Answer::Raise { tab: 12 },
             "a record the app already has is not a second process"
-        );
-    }
-
-    /// A launch of an app whose window is on its way goes to the place the
-    /// desk holds for it: the tab a saved window waits in, or the one a
-    /// launch already holds — the record the launch names is open in that
-    /// very process, and a second one could not read it.
-    #[test]
-    fn a_launch_of_an_app_that_is_starting_goes_to_the_place_it_holds() {
-        let notes = notes();
-        let record = Launch::parse("record:so.tilo.notes:ideas").expect("a record launch");
-        let on_its_way = Shown::new([(9, "so.tilo.notes".to_owned())]);
-        assert_eq!(
-            notes.answer(&record, &on_its_way),
-            Answer::Raise { tab: 9 },
-            "the launch in flight is the app's window on its way"
-        );
-        assert_eq!(
-            notes.answer(
-                &Launch::parse("so.tilo.notes").expect("a launch"),
-                &on_its_way
-            ),
-            Answer::Raise { tab: 9 },
-            "opening the app brings the window that is coming"
-        );
-        let content = Launch::parse("content:so.tilo.notes:aa11").expect("a content launch");
-        assert_eq!(
-            notes.answer(&content, &on_its_way),
-            Answer::Raise { tab: 9 }
-        );
-    }
-
-    /// A launch that names no app installed here, or no app at all, decides
-    /// nothing: planning it says why it starts nothing.
-    #[test]
-    fn a_launch_naming_no_installed_app_decides_nothing() {
-        let scan = Scan::default();
-        for launch in ["window:12", "host:org.example.Missing.desktop"] {
-            let launch = Launch::parse(launch).expect("a launch");
-            assert_eq!(Instance::of(&launch, &scan), None, "{launch:?}");
-        }
-        assert_eq!(
-            Instance::of(
-                &Launch::parse("crashed:so.tilo.canvas").expect("a notice"),
-                &scan
-            ),
-            None,
-            "a notice starts nothing until the person asks for the app again"
         );
     }
 }

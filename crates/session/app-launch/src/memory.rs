@@ -330,149 +330,159 @@ mod tests {
         put_in_tiers(&[launch(app, opening)], visible, own, Some(32 * GIB))
     }
 
-    #[test]
-    fn pressure_reclaims_from_the_app_nobody_can_see_before_the_one_in_front() {
-        let home = tempfile::tempdir().unwrap();
-        let in_front = app_cgroup(&home.path().join("app-in-front"), Tier::Startup, 3 * GIB);
-        let hidden = app_cgroup(&home.path().join("app-hidden"), Tier::Startup, 2 * GIB);
-        let apps = [in_front.clone(), hidden.clone()];
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
+        fn an_apps_cgroup_takes_the_tier_of_what_the_person_sees;
 
-        // The desk shows a window of the first app and none of the other, and
-        // both have opened: the pass moves one up and the other down, writing
-        // the launch's own tier files.
-        let moved = put_in_tiers(
-            &[launch(&in_front, false), launch(&hidden, false)],
-            std::slice::from_ref(&in_front.0),
-            None,
-            Some(32 * GIB),
-        );
-        assert_eq!(moved, 2, "both launches take the tier of what is on screen");
-        assert_eq!(weight(&in_front), "800");
-        assert_eq!(weight(&hidden), "50", "an app nobody sees yields");
-        assert_eq!(
-            std::fs::read_to_string(hidden.0.join("memory.low")).unwrap(),
-            "0"
-        );
+        phase pressure_reclaims_from_the_app_nobody_can_see_before_the_one_in_front;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let in_front = app_cgroup(&home.path().join("app-in-front"), Tier::Startup, 3 * GIB);
+            let hidden = app_cgroup(&home.path().join("app-hidden"), Tier::Startup, 2 * GIB);
+            let apps = [in_front.clone(), hidden.clone()];
 
-        // The watch samples what those cgroups say, and rising pressure takes
-        // from the app nobody can see and never from the one in front.
-        let units = units_of(&apps);
-        assert_eq!(units.len(), 2);
-        let tiers: Vec<Tier> = units.iter().map(|unit| unit.tier).collect();
-        assert_eq!(tiers, [Tier::Foreground, Tier::Background]);
-        let mut policy = Policy::new();
-        let (mut reclaimed, mut ended) = (Vec::new(), Vec::new());
-        for system in [CALM, RISING, RISING] {
-            for action in policy.tick(system, &units) {
-                match action {
-                    Action::Reclaim { dir, .. } => reclaimed.push(dir),
-                    Action::End { unit, .. } => ended.push(unit.dir),
+            // The desk shows a window of the first app and none of the other, and
+            // both have opened: the pass moves one up and the other down, writing
+            // the launch's own tier files.
+            let moved = put_in_tiers(
+                &[launch(&in_front, false), launch(&hidden, false)],
+                std::slice::from_ref(&in_front.0),
+                None,
+                Some(32 * GIB),
+            );
+            assert_eq!(moved, 2, "both launches take the tier of what is on screen");
+            assert_eq!(weight(&in_front), "800");
+            assert_eq!(weight(&hidden), "50", "an app nobody sees yields");
+            assert_eq!(
+                std::fs::read_to_string(hidden.0.join("memory.low")).unwrap(),
+                "0"
+            );
+
+            // The watch samples what those cgroups say, and rising pressure takes
+            // from the app nobody can see and never from the one in front.
+            let units = units_of(&apps);
+            assert_eq!(units.len(), 2);
+            let tiers: Vec<Tier> = units.iter().map(|unit| unit.tier).collect();
+            assert_eq!(tiers, [Tier::Foreground, Tier::Background]);
+            let mut policy = Policy::new();
+            let (mut reclaimed, mut ended) = (Vec::new(), Vec::new());
+            for system in [CALM, RISING, RISING] {
+                for action in policy.tick(system, &units) {
+                    match action {
+                        Action::Reclaim { dir, .. } => reclaimed.push(dir),
+                        Action::End { unit, .. } => ended.push(unit.dir),
+                    }
                 }
             }
+            assert_eq!(
+                reclaimed,
+                [hidden.0],
+                "the app nobody can see gives memory back, the one in front keeps it"
+            );
+            assert!(ended.is_empty(), "rising pressure ends nothing");
         }
-        assert_eq!(
-            reclaimed,
-            [hidden.0],
-            "the app nobody can see gives memory back, the one in front keeps it"
-        );
-        assert!(ended.is_empty(), "rising pressure ends nothing");
-    }
 
-    #[test]
-    fn an_app_that_comes_back_to_the_front_is_restored() {
-        let home = tempfile::tempdir().unwrap();
-        let app = app_cgroup(&home.path().join("app-probe"), Tier::Startup, GIB);
-        assert_eq!(tiered(&app, false, false, None), 1);
-        assert_eq!(weight(&app), "50");
-        // Its window is on screen again: the same pass, the other way.
-        assert_eq!(tiered(&app, true, false, None), 1);
-        assert_eq!(weight(&app), "800");
-        // Already there: the pass writes nothing.
-        assert_eq!(tiered(&app, true, false, None), 0);
-        assert!(
-            has_floor(&app.0.join("memory.low")),
-            "a foreground app keeps its floor"
-        );
-    }
+        phase an_app_that_comes_back_to_the_front_is_restored;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let app = app_cgroup(&home.path().join("app-probe"), Tier::Startup, GIB);
+            assert_eq!(tiered(&app, false, false, None), 1);
+            assert_eq!(weight(&app), "50");
+            // Its window is on screen again: the same pass, the other way.
+            assert_eq!(tiered(&app, true, false, None), 1);
+            assert_eq!(weight(&app), "800");
+            // Already there: the pass writes nothing.
+            assert_eq!(tiered(&app, true, false, None), 0);
+            assert!(
+                has_floor(&app.0.join("memory.low")),
+                "a foreground app keeps its floor"
+            );
+        }
 
-    #[test]
-    fn an_app_that_is_opening_is_served_before_everything_else() {
-        let home = tempfile::tempdir().unwrap();
-        let app = app_cgroup(&home.path().join("app-probe"), Tier::Foreground, GIB);
-        // Opening, and the desk already shows its window: it keeps the
-        // startup tier until its startup window has passed.
-        assert_eq!(tiered(&app, true, true, None), 1);
-        assert_eq!(weight(&app), "10000");
-        assert!(
-            has_floor(&app.0.join("memory.low")),
-            "an app that is opening keeps the floor it opens with"
-        );
-        assert_eq!(tiered(&app, true, true, None), 0, "nothing to write");
-        // Opened: the tier of what the person can see.
-        assert_eq!(tiered(&app, true, false, None), 1);
-        assert_eq!(weight(&app), "800");
-    }
+        phase an_app_that_is_opening_is_served_before_everything_else;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let app = app_cgroup(&home.path().join("app-probe"), Tier::Foreground, GIB);
+            // Opening, and the desk already shows its window: it keeps the
+            // startup tier until its startup window has passed.
+            assert_eq!(tiered(&app, true, true, None), 1);
+            assert_eq!(weight(&app), "10000");
+            assert!(
+                has_floor(&app.0.join("memory.low")),
+                "an app that is opening keeps the floor it opens with"
+            );
+            assert_eq!(tiered(&app, true, true, None), 0, "nothing to write");
+            // Opened: the tier of what the person can see.
+            assert_eq!(tiered(&app, true, false, None), 1);
+            assert_eq!(weight(&app), "800");
+        }
 
-    #[test]
-    fn a_launch_in_the_sessions_cgroup_keeps_the_sessions_weight_once_it_has_opened() {
-        let home = tempfile::tempdir().unwrap();
-        // A host with no user manager runs the launch in the session's own
-        // cgroup: while it opens, that cgroup is the launch's; afterwards it is
-        // the desk's, and never the background tier of an app nobody sees.
-        let session = app_cgroup(&home.path().join("session.scope"), Tier::Session, GIB);
-        let own = session.0.clone();
-        std::fs::write(session.0.join("memory.low"), "0").unwrap();
-        assert_eq!(tiered(&session, false, true, Some(&own)), 1);
-        assert_eq!(weight(&session), "10000");
-        assert_eq!(tiered(&session, false, false, Some(&own)), 1);
-        assert_eq!(weight(&session), "1000", "the desk keeps its own weight");
-        assert!(!has_floor(&session.0.join("memory.low")));
-        // A second app opening in the same cgroup is not demoted by the first
-        // one having opened.
-        let apps = [launch(&session, false), launch(&session, true)];
-        assert_eq!(
-            put_in_tiers(&apps, &[], Some(&own), Some(32 * GIB)),
-            1,
-            "still opening, so still the startup tier"
-        );
-        assert_eq!(weight(&session), "10000");
+        phase a_launch_in_the_sessions_cgroup_keeps_the_sessions_weight_once_it_has_opened;
+        {
+            let home = tempfile::tempdir().unwrap();
+            // A host with no user manager runs the launch in the session's own
+            // cgroup: while it opens, that cgroup is the launch's; afterwards it is
+            // the desk's, and never the background tier of an app nobody sees.
+            let session = app_cgroup(&home.path().join("session.scope"), Tier::Session, GIB);
+            let own = session.0.clone();
+            std::fs::write(session.0.join("memory.low"), "0").unwrap();
+            assert_eq!(tiered(&session, false, true, Some(&own)), 1);
+            assert_eq!(weight(&session), "10000");
+            assert_eq!(tiered(&session, false, false, Some(&own)), 1);
+            assert_eq!(weight(&session), "1000", "the desk keeps its own weight");
+            assert!(!has_floor(&session.0.join("memory.low")));
+            // A second app opening in the same cgroup is not demoted by the first
+            // one having opened.
+            let apps = [launch(&session, false), launch(&session, true)];
+            assert_eq!(
+                put_in_tiers(&apps, &[], Some(&own), Some(32 * GIB)),
+                1,
+                "still opening, so still the startup tier"
+            );
+            assert_eq!(weight(&session), "10000");
+        }
     }
 
     fn has_floor(path: &Path) -> bool {
         std::fs::read_to_string(path).unwrap_or_default() != "0"
     }
 
-    #[test]
-    fn an_app_the_watch_closed_says_why_once_and_the_kernels_kill_says_so_too() {
-        let home = tempfile::tempdir().unwrap();
-        let ends: Ends = Ends::default();
-        let closed = app_cgroup(&home.path().join("app-closed"), Tier::Background, GIB);
-        assert_eq!(take_end(&ends, &closed.0), None);
-        recorded(&ends).insert(closed.0.clone(), Cause::Runaway);
-        assert_eq!(take_end(&ends, &closed.0), Some(Cause::Runaway));
-        assert_eq!(take_end(&ends, &closed.0), None, "asked once");
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
+        fn the_watch_reads_what_an_apps_cgroup_says_of_it;
 
-        let killed = app_cgroup(&home.path().join("app-killed"), Tier::Foreground, GIB);
-        std::fs::write(
-            killed.0.join("memory.events"),
-            "low 0\nhigh 0\nmax 0\noom 1\noom_kill 4\noom_group_kill 0\n",
-        )
-        .unwrap();
-        assert_eq!(take_end(&ends, &killed.0), Some(Cause::Kernel));
-    }
+        phase an_app_the_watch_closed_says_why_once_and_the_kernels_kill_says_so_too;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let ends: Ends = Ends::default();
+            let closed = app_cgroup(&home.path().join("app-closed"), Tier::Background, GIB);
+            assert_eq!(take_end(&ends, &closed.0), None);
+            recorded(&ends).insert(closed.0.clone(), Cause::Runaway);
+            assert_eq!(take_end(&ends, &closed.0), Some(Cause::Runaway));
+            assert_eq!(take_end(&ends, &closed.0), None, "asked once");
 
-    #[test]
-    fn an_app_that_holds_more_than_it_gives_back_is_read_whole() {
-        let home = tempfile::tempdir().unwrap();
-        let app = app_cgroup(&home.path().join("app-probe"), Tier::Background, 2 * GIB);
-        std::fs::write(app.0.join("memory.swap.current"), format!("{}\n", 64 * MIB)).unwrap();
-        let units = units_of(std::slice::from_ref(&app));
-        assert_eq!(units.len(), 1);
-        assert_eq!(units[0].footprint, 2 * GIB + 64 * MIB, "swapped-out too");
-        assert_eq!(units[0].charged, 2 * GIB);
-        assert_eq!(units[0].app_id, "so.tilo.probe");
-        // A cgroup whose app went away is no unit, and reading it is no error.
-        std::fs::remove_dir_all(&app.0).unwrap();
-        assert!(units_of(&[app]).is_empty());
+            let killed = app_cgroup(&home.path().join("app-killed"), Tier::Foreground, GIB);
+            std::fs::write(
+                killed.0.join("memory.events"),
+                "low 0\nhigh 0\nmax 0\noom 1\noom_kill 4\noom_group_kill 0\n",
+            )
+            .unwrap();
+            assert_eq!(take_end(&ends, &killed.0), Some(Cause::Kernel));
+        }
+
+        phase an_app_that_holds_more_than_it_gives_back_is_read_whole;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let app = app_cgroup(&home.path().join("app-probe"), Tier::Background, 2 * GIB);
+            std::fs::write(app.0.join("memory.swap.current"), format!("{}\n", 64 * MIB)).unwrap();
+            let units = units_of(std::slice::from_ref(&app));
+            assert_eq!(units.len(), 1);
+            assert_eq!(units[0].footprint, 2 * GIB + 64 * MIB, "swapped-out too");
+            assert_eq!(units[0].charged, 2 * GIB);
+            assert_eq!(units[0].app_id, "so.tilo.probe");
+            // A cgroup whose app went away is no unit, and reading it is no error.
+            std::fs::remove_dir_all(&app.0).unwrap();
+            assert!(units_of(&[app]).is_empty());
+        }
     }
 }

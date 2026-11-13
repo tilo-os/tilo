@@ -335,61 +335,65 @@ mod tests {
         );
     }
 
-    /// A package installed outside the build directory finds the catalog the
-    /// session verified, not one beside an executable that has none.
-    #[test]
-    fn a_package_is_told_the_catalog_the_session_verified() {
-        let session = SessionEnvironment::reading(|name| match name {
-            "TILO_FONT_CATALOG" => Some("/var/tmp/fonts".into()),
-            "TILO_FONT_ASSET_CACHE" => Some("/var/tmp/artifacts".into()),
-            "TILO_REQUIRE_FONTS" => Some("1".into()),
-            _ => None,
-        });
-        let variables = session.variables();
-        for (name, value) in [
-            ("TILO_FONT_CATALOG", "/var/tmp/fonts"),
-            ("TILO_FONT_ASSET_CACHE", "/var/tmp/artifacts"),
-            ("TILO_REQUIRE_FONTS", "1"),
-        ] {
-            assert_eq!(
-                variables.get(name).map(String::as_str),
-                Some(value),
-                "{name}"
-            );
+    tilo_test_env::scenario! {
+        fn a_launch_is_told_the_sessions_catalog_and_displays;
+
+        phase a_package_is_told_the_catalog_the_session_verified;
+        // A package installed outside the build directory finds the catalog the
+        // session verified, not one beside an executable that has none.
+        {
+            let session = SessionEnvironment::reading(|name| match name {
+                "TILO_FONT_CATALOG" => Some("/var/tmp/fonts".into()),
+                "TILO_FONT_ASSET_CACHE" => Some("/var/tmp/artifacts".into()),
+                "TILO_REQUIRE_FONTS" => Some("1".into()),
+                _ => None,
+            });
+            let variables = session.variables();
+            for (name, value) in [
+                ("TILO_FONT_CATALOG", "/var/tmp/fonts"),
+                ("TILO_FONT_ASSET_CACHE", "/var/tmp/artifacts"),
+                ("TILO_REQUIRE_FONTS", "1"),
+            ] {
+                assert_eq!(
+                    variables.get(name).map(String::as_str),
+                    Some(value),
+                    "{name}"
+                );
+            }
         }
-    }
 
-    #[test]
-    fn the_workspace_display_is_handed_on_and_no_cookie_is() {
-        let mut session = environment();
-        session.x11_display = Some(":7".into());
-        let variables = session.variables();
-        assert_eq!(variables.get("DISPLAY").map(String::as_str), Some(":7"));
-        assert!(
-            !variables.contains_key("XAUTHORITY"),
-            "a workspace display authenticates no one"
-        );
+        phase the_workspace_display_is_handed_on_and_no_cookie_is;
+        {
+            let mut session = environment();
+            session.x11_display = Some(":7".into());
+            let variables = session.variables();
+            assert_eq!(variables.get("DISPLAY").map(String::as_str), Some(":7"));
+            assert!(
+                !variables.contains_key("XAUTHORITY"),
+                "a workspace display authenticates no one"
+            );
 
-        let session = environment();
-        let variables = session.variables();
-        assert!(!variables.contains_key("DISPLAY"));
-        assert!(!variables.contains_key("XAUTHORITY"));
-    }
+            let session = environment();
+            let variables = session.variables();
+            assert!(!variables.contains_key("DISPLAY"));
+            assert!(!variables.contains_key("XAUTHORITY"));
+        }
 
-    #[test]
-    fn a_host_launch_takes_the_same_displays() {
-        let session = SessionEnvironment {
-            wayland_socket: Some("/run/user/1000/wayland-3".into()),
-            x11_display: Some(":9".into()),
-            ..SessionEnvironment::default()
-        };
-        let env = session.host_launch_env();
-        assert_eq!(
-            env.wayland_socket.as_deref(),
-            Some(std::path::Path::new("/run/user/1000/wayland-3"))
-        );
-        assert_eq!(env.x11_display.as_deref(), Some(":9"));
-        assert!(env.files.is_empty() && env.urls.is_empty());
+        phase a_host_launch_takes_the_same_displays;
+        {
+            let session = SessionEnvironment {
+                wayland_socket: Some("/run/user/1000/wayland-3".into()),
+                x11_display: Some(":9".into()),
+                ..SessionEnvironment::default()
+            };
+            let env = session.host_launch_env();
+            assert_eq!(
+                env.wayland_socket.as_deref(),
+                Some(std::path::Path::new("/run/user/1000/wayland-3"))
+            );
+            assert_eq!(env.x11_display.as_deref(), Some(":9"));
+            assert!(env.files.is_empty() && env.urls.is_empty());
+        }
     }
 
     /// The language the person chose reaches an app as its messages' locale, over the locale the

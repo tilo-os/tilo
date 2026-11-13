@@ -133,76 +133,80 @@ fn until_logged(
     }
 }
 
-#[test]
-fn an_app_that_writes_and_exits_leaves_its_lines_in_the_log() {
-    let said = logging();
-    let app = "so.tilo.probe.writes";
-    let mut spawner = Spawner::default();
-    spawner
-        .start(&shell(
-            app,
-            "printf 'a note it could not open\\n' >&2\n\
+tilo_test_env::scenario! {
+    fn what_an_app_writes_reaches_the_sessions_log;
+
+    phase an_app_that_writes_and_exits_leaves_its_lines_in_the_log;
+    {
+        let said = logging();
+        let app = "so.tilo.probe.writes";
+        let mut spawner = Spawner::default();
+        spawner
+            .start(&shell(
+                app,
+                "printf 'a note it could not open\\n' >&2\n\
              printf 'and what it read first\\n'\n\
              exit 1",
-        ))
-        .expect("the app starts");
-    let event = ended(&spawner, "the app exited");
-    assert_eq!(event.end.to_string(), "exited with 1");
-    let lines = until_logged(&said, app, "the app's own lines reach the log", |lines| {
-        lines
-            .iter()
-            .any(|line| line.contains("a note it could not open"))
-            && lines
+            ))
+            .expect("the app starts");
+        let event = ended(&spawner, "the app exited");
+        assert_eq!(event.end.to_string(), "exited with 1");
+        let lines = until_logged(&said, app, "the app's own lines reach the log", |lines| {
+            lines
                 .iter()
-                .any(|line| line.contains("and what it read first"))
-    });
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("[app so.tilo.probe.writes stderr] a note it could not open")),
-        "its standard error is labelled with the app and the stream: {lines:#?}"
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("[app so.tilo.probe.writes stdout] and what it read first")),
-        "its standard output too: {lines:#?}"
-    );
-    // What it said last is kept for the session's own report of the end.
-    assert_eq!(
-        event.said.stderr,
-        ["a note it could not open"],
-        "the launch hands its stderr tail to the session"
-    );
-}
+                .any(|line| line.contains("a note it could not open"))
+                && lines
+                    .iter()
+                    .any(|line| line.contains("and what it read first"))
+        });
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("[app so.tilo.probe.writes stderr] a note it could not open")),
+            "its standard error is labelled with the app and the stream: {lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("[app so.tilo.probe.writes stdout] and what it read first")),
+            "its standard output too: {lines:#?}"
+        );
+        // What it said last is kept for the session's own report of the end.
+        assert_eq!(
+            event.said.stderr,
+            ["a note it could not open"],
+            "the launch hands its stderr tail to the session"
+        );
+    }
 
-#[test]
-fn an_app_that_chatters_does_not_flood_the_log() {
-    let said = logging();
-    let app = "so.tilo.probe.chatty";
-    let mut spawner = Spawner::default();
-    // Far more lines than a relay allows, written as fast as the pipe takes
-    // them.
-    spawner
-        .start(&shell(
-            app,
-            "i=0\nwhile [ $i -lt 3000 ]; do printf 'line %s\\n' \"$i\" >&2; i=$((i+1)); done\nexit 1",
-        ))
-        .expect("the app starts");
-    let event = ended(&spawner, "the app exited");
-    let lines = until_logged(&said, app, "the log says how much it left out", |lines| {
-        lines
-            .iter()
-            .any(|line| line.contains("lines of this app were not relayed"))
-    });
-    let relayed = lines.iter().filter(|line| line.contains("] line ")).count();
-    assert!(
-        relayed < 3000,
-        "the log does not carry every line a chatty app wrote: {relayed}"
-    );
-    assert_eq!(
-        event.said.stderr.last().map(String::as_str),
-        Some("line 2999"),
-        "the tail keeps the newest line, which is the one a failure is near"
-    );
+    phase an_app_that_chatters_does_not_flood_the_log;
+    {
+        let said = logging();
+        let app = "so.tilo.probe.chatty";
+        let mut spawner = Spawner::default();
+        // Far more lines than a relay allows, written as fast as the pipe takes
+        // them.
+        spawner
+            .start(&shell(
+                app,
+                "i=0\nwhile [ $i -lt 3000 ]; do printf 'line %s\\n' \"$i\" >&2; i=$((i+1)); done\nexit 1",
+            ))
+            .expect("the app starts");
+        let event = ended(&spawner, "the app exited");
+        let lines = until_logged(&said, app, "the log says how much it left out", |lines| {
+            lines
+                .iter()
+                .any(|line| line.contains("lines of this app were not relayed"))
+        });
+        let relayed = lines.iter().filter(|line| line.contains("] line ")).count();
+        assert!(
+            relayed < 3000,
+            "the log does not carry every line a chatty app wrote: {relayed}"
+        );
+        assert_eq!(
+            event.said.stderr.last().map(String::as_str),
+            Some("line 2999"),
+            "the tail keeps the newest line, which is the one a failure is near"
+        );
+    }
 }

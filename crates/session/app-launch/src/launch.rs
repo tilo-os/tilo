@@ -170,99 +170,103 @@ impl Launch {
 mod tests {
     use super::*;
 
-    #[test]
-    fn each_kind_of_launch_is_read_back_as_what_asked_for_it() {
-        assert_eq!(
-            Launch::parse("so.tilo.notes"),
-            Some(Launch::Package {
-                app: "so.tilo.notes".into(),
-                open: None
-            })
-        );
-        assert_eq!(
-            Launch::parse("host:org.gnome.TextEditor.desktop"),
-            Some(Launch::Host {
-                desktop_id: "org.gnome.TextEditor.desktop".into(),
-                open: None
-            })
-        );
-        assert_eq!(Launch::parse("window:41"), Some(Launch::Window { id: 41 }));
-        assert_eq!(
-            Launch::parse("record:so.tilo.sheets:budget"),
-            Some(Launch::Record {
-                app: "so.tilo.sheets".into(),
-                record: "budget".into(),
-                visitor: false
-            })
-        );
-        assert_eq!(
-            Launch::parse(&format!("content:so.tilo.photos:{}", "0".repeat(64))),
-            Some(Launch::Content {
-                app: "so.tilo.photos".into(),
-                hash: "0".repeat(64)
-            })
-        );
-        assert_eq!(
-            Launch::crashed("so.tilo.canvas"),
-            "crashed:so.tilo.canvas",
-            "the notice reopens the app it names"
-        );
-        assert_eq!(
-            Launch::parse("crashed:so.tilo.canvas"),
-            Some(Launch::Crashed {
-                app: "so.tilo.canvas".into()
-            })
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_launch_string_reads_as_the_launch_it_names_or_as_nothing;
 
-    #[test]
-    fn a_launch_writes_itself_back_as_the_string_that_asked_for_it() {
-        for launch in [
-            "so.tilo.notes",
-            "host:org.gnome.TextEditor.desktop",
-            "window:41",
-            "record:so.tilo.sheets:budget",
-            "crashed:so.tilo.canvas",
-        ] {
-            let parsed = Launch::parse(launch).expect("a launch");
-            assert_eq!(parsed.id(), launch, "{launch} is asked for again as it was");
+        phase each_kind_of_launch_is_read_back_as_what_asked_for_it;
+        {
+            assert_eq!(
+                Launch::parse("so.tilo.notes"),
+                Some(Launch::Package {
+                    app: "so.tilo.notes".into(),
+                    open: None
+                })
+            );
+            assert_eq!(
+                Launch::parse("host:org.gnome.TextEditor.desktop"),
+                Some(Launch::Host {
+                    desktop_id: "org.gnome.TextEditor.desktop".into(),
+                    open: None
+                })
+            );
+            assert_eq!(Launch::parse("window:41"), Some(Launch::Window { id: 41 }));
+            assert_eq!(
+                Launch::parse("record:so.tilo.sheets:budget"),
+                Some(Launch::Record {
+                    app: "so.tilo.sheets".into(),
+                    record: "budget".into(),
+                    visitor: false
+                })
+            );
+            assert_eq!(
+                Launch::parse(&format!("content:so.tilo.photos:{}", "0".repeat(64))),
+                Some(Launch::Content {
+                    app: "so.tilo.photos".into(),
+                    hash: "0".repeat(64)
+                })
+            );
+            assert_eq!(
+                Launch::crashed("so.tilo.canvas"),
+                "crashed:so.tilo.canvas",
+                "the notice reopens the app it names"
+            );
+            assert_eq!(
+                Launch::parse("crashed:so.tilo.canvas"),
+                Some(Launch::Crashed {
+                    app: "so.tilo.canvas".into()
+                })
+            );
         }
-    }
 
-    #[test]
-    fn a_launch_naming_nothing_usable_starts_nothing() {
-        for launch in [
-            "",
-            "window:",
-            "window:soon",
-            "host:",
-            "record:so.tilo.sheets",
-            "record::budget",
-            "content:so.tilo.photos",
-            "crashed:",
-            "not a package id",
-            "some:unknown:kind",
-        ] {
-            assert_eq!(Launch::parse(launch), None, "{launch:?}");
-        }
-    }
-
-    #[test]
-    fn a_launch_names_the_app_a_notice_or_a_title_wants() {
-        let launch = Launch::parse("record:so.tilo.sheets:budget").expect("a record launch");
-        assert_eq!(launch.app(), "so.tilo.sheets");
-        let launch = Launch::Host {
-            desktop_id: "org.gnome.Nautilus.desktop".into(),
-            open: None,
-        }
-        .opening(Some(Open::File("/home/you/report.odt".into())));
-        assert_eq!(launch.app(), "org.gnome.Nautilus.desktop");
-        assert_eq!(
-            launch,
-            Launch::Host {
-                desktop_id: "org.gnome.Nautilus.desktop".into(),
-                open: Some(Open::File("/home/you/report.odt".into())),
+        phase a_launch_writes_itself_back_as_the_string_that_asked_for_it;
+        {
+            for launch in [
+                "so.tilo.notes",
+                "host:org.gnome.TextEditor.desktop",
+                "window:41",
+                "record:so.tilo.sheets:budget",
+                "crashed:so.tilo.canvas",
+            ] {
+                let parsed = Launch::parse(launch).expect("a launch");
+                assert_eq!(parsed.id(), launch, "{launch} is asked for again as it was");
             }
-        );
+        }
+
+        phase a_launch_naming_nothing_usable_starts_nothing;
+        {
+            for launch in [
+                "",
+                "window:",
+                "window:soon",
+                "host:",
+                "record:so.tilo.sheets",
+                "record::budget",
+                "content:so.tilo.photos",
+                "crashed:",
+                "not a package id",
+                "some:unknown:kind",
+            ] {
+                assert_eq!(Launch::parse(launch), None, "{launch:?}");
+            }
+        }
+
+        phase a_launch_names_the_app_a_notice_or_a_title_wants;
+        {
+            let launch = Launch::parse("record:so.tilo.sheets:budget").expect("a record launch");
+            assert_eq!(launch.app(), "so.tilo.sheets");
+            let launch = Launch::Host {
+                desktop_id: "org.gnome.Nautilus.desktop".into(),
+                open: None,
+            }
+            .opening(Some(Open::File("/home/you/report.odt".into())));
+            assert_eq!(launch.app(), "org.gnome.Nautilus.desktop");
+            assert_eq!(
+                launch,
+                Launch::Host {
+                    desktop_id: "org.gnome.Nautilus.desktop".into(),
+                    open: Some(Open::File("/home/you/report.odt".into())),
+                }
+            );
+        }
     }
 }

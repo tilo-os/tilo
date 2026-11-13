@@ -205,204 +205,220 @@ mod tests {
         )
     }
 
-    #[test]
-    fn a_document_goes_to_the_installed_app_that_claims_its_type_before_the_hosts() {
-        let host = host_entry(
-            "org.example.Viewer",
-            "Viewer",
-            &["text/plain", "application/pdf"],
-        );
-        let notes = app("so.tilo.notes", &["txt", "note"], &["text/plain"], &[]);
-        let (personal, workspace, chain) = nothing();
-        let defaults = Defaults {
-            person: "ada",
-            personal: &personal,
-            workspace: Some(&workspace),
-            host: Some(&chain),
-        };
-        assert_eq!(
-            document(
-                Path::new("/home/you/todo.txt"),
-                &[host, notes.clone()],
-                &defaults
-            ),
-            Some(Launch::Package {
-                app: "so.tilo.notes".into(),
-                open: Some(Open::File("/home/you/todo.txt".into())),
-            }),
-            "a Tilo app runs confined, so it is asked first"
-        );
-        assert_eq!(
-            document(Path::new("/home/you/report.odt"), &[notes], &defaults),
-            None,
-            "nobody claims it, so the person is asked"
-        );
-        let viewer = host_entry("org.example.Viewer", "Viewer", &["application/pdf"]);
-        assert_eq!(
-            document(Path::new("/home/you/paper.pdf"), &[viewer], &defaults),
-            Some(Launch::Host {
-                desktop_id: "org.example.Viewer".into(),
-                open: Some(Open::File("/home/you/paper.pdf".into())),
-            })
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_document_goes_to_the_app_that_claims_or_was_chosen_for_its_kind;
 
-    #[test]
-    fn every_claiming_app_is_listed_with_the_one_opening_it_today_first() {
-        let host = host_entry("org.example.Viewer", "Viewer", &["text/plain"]);
-        let notes = app("so.tilo.notes", &["txt"], &["text/plain"], &[]);
-        // Claims the extension only, and the same type as Notes: listed once.
-        let writer = app("so.tilo.word-processor", &["txt"], &[], &[]);
-        let (personal, workspace, chain) = nothing();
-        let defaults = Defaults {
-            person: "ada",
-            personal: &personal,
-            workspace: Some(&workspace),
-            host: Some(&chain),
-        };
-        let listed = documents(
-            Path::new("/home/you/todo.txt"),
-            &[writer, notes.clone(), host],
-            &defaults,
-        );
-        assert_eq!(
-            listed,
-            vec![
-                Launch::Package {
+        phase a_document_goes_to_the_installed_app_that_claims_its_type_before_the_hosts;
+        {
+            let host = host_entry(
+                "org.example.Viewer",
+                "Viewer",
+                &["text/plain", "application/pdf"],
+            );
+            let notes = app("so.tilo.notes", &["txt", "note"], &["text/plain"], &[]);
+            let (personal, workspace, chain) = nothing();
+            let defaults = Defaults {
+                person: "ada",
+                personal: &personal,
+                workspace: Some(&workspace),
+                host: Some(&chain),
+            };
+            assert_eq!(
+                document(
+                    Path::new("/home/you/todo.txt"),
+                    &[host, notes.clone()],
+                    &defaults
+                ),
+                Some(Launch::Package {
                     app: "so.tilo.notes".into(),
                     open: Some(Open::File("/home/you/todo.txt".into())),
-                },
-                Launch::Package {
+                }),
+                "a Tilo app runs confined, so it is asked first"
+            );
+            assert_eq!(
+                document(Path::new("/home/you/report.odt"), &[notes], &defaults),
+                None,
+                "nobody claims it, so the person is asked"
+            );
+            let viewer = host_entry("org.example.Viewer", "Viewer", &["application/pdf"]);
+            assert_eq!(
+                document(Path::new("/home/you/paper.pdf"), &[viewer], &defaults),
+                Some(Launch::Host {
+                    desktop_id: "org.example.Viewer".into(),
+                    open: Some(Open::File("/home/you/paper.pdf".into())),
+                })
+            );
+        }
+
+        phase every_claiming_app_is_listed_with_the_one_opening_it_today_first;
+        {
+            let host = host_entry("org.example.Viewer", "Viewer", &["text/plain"]);
+            let notes = app("so.tilo.notes", &["txt"], &["text/plain"], &[]);
+            // Claims the extension only, and the same type as Notes: listed once.
+            let writer = app("so.tilo.word-processor", &["txt"], &[], &[]);
+            let (personal, workspace, chain) = nothing();
+            let defaults = Defaults {
+                person: "ada",
+                personal: &personal,
+                workspace: Some(&workspace),
+                host: Some(&chain),
+            };
+            let listed = documents(
+                Path::new("/home/you/todo.txt"),
+                &[writer, notes.clone(), host],
+                &defaults,
+            );
+            assert_eq!(
+                listed,
+                vec![
+                    Launch::Package {
+                        app: "so.tilo.notes".into(),
+                        open: Some(Open::File("/home/you/todo.txt".into())),
+                    },
+                    Launch::Package {
+                        app: "so.tilo.word-processor".into(),
+                        open: Some(Open::File("/home/you/todo.txt".into())),
+                    },
+                    Launch::Host {
+                        desktop_id: "org.example.Viewer".into(),
+                        open: Some(Open::File("/home/you/todo.txt".into())),
+                    },
+                ],
+                "the type's claims before the extension's, the host's last"
+            );
+            assert_eq!(
+                document(Path::new("/home/you/todo.txt"), &[notes], &defaults),
+                Some(listed[0].clone()),
+                "opening a document uses the same order"
+            );
+        }
+
+        phase the_workspaces_default_app_for_the_type_opens_it_and_leads_the_list;
+        {
+            let notes = app("so.tilo.notes", &["txt"], &["text/plain"], &[]);
+            let writer = app("so.tilo.word-processor", &["txt"], &[], &[]);
+            let host = host_entry("org.example.TextEditor", "Text Editor", &["text/plain"]);
+            let (personal, mut workspace, chain) = nothing();
+            workspace.policy.insert(
+                ResourceKind::extension("txt").unwrap(),
+                WorkspaceDefaultPolicy::App("so.tilo.word-processor".into()),
+            );
+            let defaults = Defaults {
+                person: "ada",
+                personal: &personal,
+                workspace: Some(&workspace),
+                host: Some(&chain),
+            };
+            let candidates = [host, notes, writer];
+            let wanted = Launch::Package {
+                app: "so.tilo.word-processor".into(),
+                open: Some(Open::File("/home/you/Budget.txt".into())),
+            };
+            assert_eq!(
+                documents(Path::new("/home/you/Budget.txt"), &candidates, &defaults).first(),
+                Some(&wanted),
+                "the workspace said which app opens `.txt` files, and it opens them"
+            );
+            assert_eq!(
+                document(Path::new("/home/you/Budget.txt"), &candidates, &defaults),
+                Some(wanted)
+            );
+        }
+
+        phase the_machines_own_default_opens_a_type_no_tilo_app_claims;
+        {
+            let viewer = host_entry("org.example.Viewer", "Viewer", &["application/pdf"]);
+            let other = host_entry("org.example.Other", "Aardvark", &["application/pdf"]);
+            let (personal, workspace, _) = nothing();
+            let chain = MimeAppsChain::new(vec![MimeAppsList::parse(
+                "[Default Applications]\napplication/pdf=gone.desktop;org.example.Viewer.desktop;\n",
+            )]);
+            let defaults = Defaults {
+                person: "ada",
+                personal: &personal,
+                workspace: Some(&workspace),
+                host: Some(&chain),
+            };
+            assert_eq!(
+                document(
+                    Path::new("/home/you/paper.pdf"),
+                    &[other, viewer],
+                    &defaults
+                ),
+                Some(Launch::Host {
+                    desktop_id: "org.example.Viewer".into(),
+                    open: Some(Open::File("/home/you/paper.pdf".into())),
+                }),
+                "the machine's own default decides between its apps, not their names"
+            );
+        }
+
+        phase a_choice_of_a_tilo_app_for_the_mime_type_does_not_beat_one_for_the_extension;
+        {
+            let notes = app("so.tilo.notes", &["txt"], &["text/plain"], &[]);
+            let writer = app("so.tilo.word-processor", &["txt"], &["text/plain"], &[]);
+            let mut personal = PersonalDefaults::default();
+            personal.handlers.insert(
+                ResourceKind::mime("text/plain").unwrap(),
+                "so.tilo.notes".into(),
+            );
+            personal.handlers.insert(
+                ResourceKind::extension("txt").unwrap(),
+                "so.tilo.word-processor".into(),
+            );
+            let workspace = WorkspaceDefaults::default();
+            let chain = MimeAppsChain::default();
+            let defaults = Defaults {
+                person: "ada",
+                personal: &personal,
+                workspace: Some(&workspace),
+                host: Some(&chain),
+            };
+            assert_eq!(
+                document(Path::new("/home/you/todo.txt"), &[notes, writer], &defaults),
+                Some(Launch::Package {
                     app: "so.tilo.word-processor".into(),
                     open: Some(Open::File("/home/you/todo.txt".into())),
-                },
-                Launch::Host {
-                    desktop_id: "org.example.Viewer".into(),
-                    open: Some(Open::File("/home/you/todo.txt".into())),
-                },
-            ],
-            "the type's claims before the extension's, the host's last"
-        );
-        assert_eq!(
-            document(Path::new("/home/you/todo.txt"), &[notes], &defaults),
-            Some(listed[0].clone()),
-            "opening a document uses the same order"
-        );
-    }
+                }),
+                "a choice about `.txt` is narrower than one about `text/plain`"
+            );
+        }
 
-    #[test]
-    fn the_workspaces_default_app_for_the_type_opens_it_and_leads_the_list() {
-        let notes = app("so.tilo.notes", &["txt"], &["text/plain"], &[]);
-        let writer = app("so.tilo.word-processor", &["txt"], &[], &[]);
-        let host = host_entry("org.example.TextEditor", "Text Editor", &["text/plain"]);
-        let (personal, mut workspace, chain) = nothing();
-        workspace.policy.insert(
-            ResourceKind::extension("txt").unwrap(),
-            WorkspaceDefaultPolicy::App("so.tilo.word-processor".into()),
-        );
-        let defaults = Defaults {
-            person: "ada",
-            personal: &personal,
-            workspace: Some(&workspace),
-            host: Some(&chain),
-        };
-        let candidates = [host, notes, writer];
-        let wanted = Launch::Package {
-            app: "so.tilo.word-processor".into(),
-            open: Some(Open::File("/home/you/Budget.txt".into())),
-        };
-        assert_eq!(
-            documents(Path::new("/home/you/Budget.txt"), &candidates, &defaults).first(),
-            Some(&wanted),
-            "the workspace said which app opens `.txt` files, and it opens them"
-        );
-        assert_eq!(
-            document(Path::new("/home/you/Budget.txt"), &candidates, &defaults),
-            Some(wanted)
-        );
-    }
+        phase a_tilo_apps_own_extension_is_a_claim_of_its_own;
+        {
+            let (personal, workspace, chain) = nothing();
+            let defaults = Defaults {
+                person: "ada",
+                personal: &personal,
+                workspace: Some(&workspace),
+                host: Some(&chain),
+            };
+            let sheets = app("so.tilo.sheets", &["tilosheet"], &[], &[]);
+            // A format no host knows: only the app that made it claims it.
+            assert_eq!(
+                document(
+                    Path::new("/home/you/budget.tilosheet"),
+                    &[sheets],
+                    &defaults
+                ),
+                Some(Launch::Package {
+                    app: "so.tilo.sheets".into(),
+                    open: Some(Open::File("/home/you/budget.tilosheet".into())),
+                })
+            );
+        }
 
-    #[test]
-    fn the_machines_own_default_opens_a_type_no_tilo_app_claims() {
-        let viewer = host_entry("org.example.Viewer", "Viewer", &["application/pdf"]);
-        let other = host_entry("org.example.Other", "Aardvark", &["application/pdf"]);
-        let (personal, workspace, _) = nothing();
-        let chain = MimeAppsChain::new(vec![MimeAppsList::parse(
-            "[Default Applications]\napplication/pdf=gone.desktop;org.example.Viewer.desktop;\n",
-        )]);
-        let defaults = Defaults {
-            person: "ada",
-            personal: &personal,
-            workspace: Some(&workspace),
-            host: Some(&chain),
-        };
-        assert_eq!(
-            document(
-                Path::new("/home/you/paper.pdf"),
-                &[other, viewer],
-                &defaults
-            ),
-            Some(Launch::Host {
-                desktop_id: "org.example.Viewer".into(),
-                open: Some(Open::File("/home/you/paper.pdf".into())),
-            }),
-            "the machine's own default decides between its apps, not their names"
-        );
-    }
-
-    #[test]
-    fn a_choice_of_a_tilo_app_for_the_mime_type_does_not_beat_one_for_the_extension() {
-        let notes = app("so.tilo.notes", &["txt"], &["text/plain"], &[]);
-        let writer = app("so.tilo.word-processor", &["txt"], &["text/plain"], &[]);
-        let mut personal = PersonalDefaults::default();
-        personal.handlers.insert(
-            ResourceKind::mime("text/plain").unwrap(),
-            "so.tilo.notes".into(),
-        );
-        personal.handlers.insert(
-            ResourceKind::extension("txt").unwrap(),
-            "so.tilo.word-processor".into(),
-        );
-        let workspace = WorkspaceDefaults::default();
-        let chain = MimeAppsChain::default();
-        let defaults = Defaults {
-            person: "ada",
-            personal: &personal,
-            workspace: Some(&workspace),
-            host: Some(&chain),
-        };
-        assert_eq!(
-            document(Path::new("/home/you/todo.txt"), &[notes, writer], &defaults),
-            Some(Launch::Package {
-                app: "so.tilo.word-processor".into(),
-                open: Some(Open::File("/home/you/todo.txt".into())),
-            }),
-            "a choice about `.txt` is narrower than one about `text/plain`"
-        );
-    }
-
-    #[test]
-    fn a_tilo_apps_own_extension_is_a_claim_of_its_own() {
-        let (personal, workspace, chain) = nothing();
-        let defaults = Defaults {
-            person: "ada",
-            personal: &personal,
-            workspace: Some(&workspace),
-            host: Some(&chain),
-        };
-        let sheets = app("so.tilo.sheets", &["tilosheet"], &[], &[]);
-        // A format no host knows: only the app that made it claims it.
-        assert_eq!(
-            document(
-                Path::new("/home/you/budget.tilosheet"),
-                &[sheets],
-                &defaults
-            ),
-            Some(Launch::Package {
-                app: "so.tilo.sheets".into(),
-                open: Some(Open::File("/home/you/budget.tilosheet".into())),
-            })
-        );
+        phase a_document_is_known_by_its_extension_before_the_type_it_names;
+        {
+            assert_eq!(
+                document_kinds(Path::new("/home/you/Budget.TXT")),
+                vec![
+                    ResourceKind::extension("txt").unwrap(),
+                    ResourceKind::mime("text/plain").unwrap(),
+                ]
+            );
+            assert!(document_kinds(Path::new("/home/you/Makefile")).is_empty());
+        }
     }
 
     #[test]
@@ -428,108 +444,100 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_link_goes_to_the_app_that_claims_its_scheme() {
-        let (personal, workspace, _) = nothing();
-        let chain = MimeAppsChain::new(vec![MimeAppsList::parse(
-            "[Default Applications]\nx-scheme-handler/https=org.example.Viewer.desktop;\n",
-        )]);
-        let defaults = Defaults {
-            person: "ada",
-            personal: &personal,
-            workspace: Some(&workspace),
-            host: Some(&chain),
-        };
-        let browser = host_entry(
-            "org.example.Viewer",
-            "Browser",
-            &["x-scheme-handler/https", "x-scheme-handler/http"],
-        );
-        assert_eq!(
-            link(
-                "https://code.tilo.so",
-                std::slice::from_ref(&browser),
-                &defaults
-            ),
-            Some(Launch::Host {
-                desktop_id: "org.example.Viewer".into(),
-                open: Some(Open::Uri("https://code.tilo.so".into())),
-            })
-        );
-        let tilo_browser = app("so.tilo.browser", &[], &[], &["https"]);
-        assert_eq!(
-            link(
-                "https://code.tilo.so",
-                &[browser, tilo_browser],
-                &Defaults {
-                    person: "ada",
-                    personal: &personal,
-                    workspace: Some(&workspace),
-                    host: None,
-                }
-            ),
-            Some(Launch::Package {
-                app: "so.tilo.browser".into(),
-                open: Some(Open::Uri("https://code.tilo.so".into())),
-            }),
-            "a Tilo app that claims the scheme comes first"
-        );
-        assert_eq!(link("mailto:person@example.com", &[], &defaults), None);
-        assert_eq!(
-            link("/home/you/a:b", &[], &defaults),
-            None,
-            "an absolute path is not a link"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_link_goes_to_the_app_for_its_scheme;
 
-    #[test]
-    fn a_link_follows_the_persons_choice_of_app_for_its_scheme() {
-        let browser = host_entry(
-            "org.example.Browser",
-            "Browser",
-            &["x-scheme-handler/https"],
-        );
-        let mut personal = PersonalDefaults::default();
-        personal.handlers.insert(
-            ResourceKind::scheme("https").unwrap(),
-            "org.example.Browser.desktop".into(),
-        );
-        let workspace = WorkspaceDefaults::default();
-        let chain = MimeAppsChain::default();
-        let defaults = Defaults {
-            person: "ada",
-            personal: &personal,
-            workspace: Some(&workspace),
-            host: Some(&chain),
-        };
-        assert_eq!(
-            link("https://code.tilo.so", &[browser], &defaults),
-            Some(Launch::Host {
-                desktop_id: "org.example.Browser".into(),
-                open: Some(Open::Uri("https://code.tilo.so".into())),
-            })
-        );
-    }
+        phase a_link_goes_to_the_app_that_claims_its_scheme;
+        {
+            let (personal, workspace, _) = nothing();
+            let chain = MimeAppsChain::new(vec![MimeAppsList::parse(
+                "[Default Applications]\nx-scheme-handler/https=org.example.Viewer.desktop;\n",
+            )]);
+            let defaults = Defaults {
+                person: "ada",
+                personal: &personal,
+                workspace: Some(&workspace),
+                host: Some(&chain),
+            };
+            let browser = host_entry(
+                "org.example.Viewer",
+                "Browser",
+                &["x-scheme-handler/https", "x-scheme-handler/http"],
+            );
+            assert_eq!(
+                link(
+                    "https://code.tilo.so",
+                    std::slice::from_ref(&browser),
+                    &defaults
+                ),
+                Some(Launch::Host {
+                    desktop_id: "org.example.Viewer".into(),
+                    open: Some(Open::Uri("https://code.tilo.so".into())),
+                })
+            );
+            let tilo_browser = app("so.tilo.browser", &[], &[], &["https"]);
+            assert_eq!(
+                link(
+                    "https://code.tilo.so",
+                    &[browser, tilo_browser],
+                    &Defaults {
+                        person: "ada",
+                        personal: &personal,
+                        workspace: Some(&workspace),
+                        host: None,
+                    }
+                ),
+                Some(Launch::Package {
+                    app: "so.tilo.browser".into(),
+                    open: Some(Open::Uri("https://code.tilo.so".into())),
+                }),
+                "a Tilo app that claims the scheme comes first"
+            );
+            assert_eq!(link("mailto:person@example.com", &[], &defaults), None);
+            assert_eq!(
+                link("/home/you/a:b", &[], &defaults),
+                None,
+                "an absolute path is not a link"
+            );
+        }
 
-    #[test]
-    fn only_a_real_scheme_names_a_link() {
-        assert_eq!(scheme_of("https://example.com"), Some("https".into()));
-        assert_eq!(scheme_of("web+tilo:thing"), Some("web+tilo".into()));
-        assert_eq!(scheme_of("1http://example.com"), None);
-        assert_eq!(scheme_of("ht tp://example.com"), None);
-        assert_eq!(scheme_of("https:"), None);
-        assert_eq!(scheme_of("no-scheme-here"), None);
-    }
+        phase a_link_follows_the_persons_choice_of_app_for_its_scheme;
+        {
+            let browser = host_entry(
+                "org.example.Browser",
+                "Browser",
+                &["x-scheme-handler/https"],
+            );
+            let mut personal = PersonalDefaults::default();
+            personal.handlers.insert(
+                ResourceKind::scheme("https").unwrap(),
+                "org.example.Browser.desktop".into(),
+            );
+            let workspace = WorkspaceDefaults::default();
+            let chain = MimeAppsChain::default();
+            let defaults = Defaults {
+                person: "ada",
+                personal: &personal,
+                workspace: Some(&workspace),
+                host: Some(&chain),
+            };
+            assert_eq!(
+                link("https://code.tilo.so", &[browser], &defaults),
+                Some(Launch::Host {
+                    desktop_id: "org.example.Browser".into(),
+                    open: Some(Open::Uri("https://code.tilo.so".into())),
+                })
+            );
+        }
 
-    #[test]
-    fn a_document_is_known_by_its_extension_before_the_type_it_names() {
-        assert_eq!(
-            document_kinds(Path::new("/home/you/Budget.TXT")),
-            vec![
-                ResourceKind::extension("txt").unwrap(),
-                ResourceKind::mime("text/plain").unwrap(),
-            ]
-        );
-        assert!(document_kinds(Path::new("/home/you/Makefile")).is_empty());
+        phase only_a_real_scheme_names_a_link;
+        {
+            assert_eq!(scheme_of("https://example.com"), Some("https".into()));
+            assert_eq!(scheme_of("web+tilo:thing"), Some("web+tilo".into()));
+            assert_eq!(scheme_of("1http://example.com"), None);
+            assert_eq!(scheme_of("ht tp://example.com"), None);
+            assert_eq!(scheme_of("https:"), None);
+            assert_eq!(scheme_of("no-scheme-here"), None);
+        }
     }
 }
