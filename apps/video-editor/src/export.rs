@@ -1402,6 +1402,82 @@ mod tests {
         assert_eq!(std::fs::read(&source).expect("source survives"), original);
     }
 
+    /// The refusal compares files, not spellings: a destination that reaches the source by
+    /// another path or through a symbolic link would be truncated just the same.
+    #[test]
+    #[cfg(unix)]
+    fn exporting_over_source_media_is_refused_however_the_destination_spells_it() {
+        let dir = tempfile::tempdir().expect("source fixture directory");
+        let source = dir.path().join("source.mp4");
+        let original = b"source bytes must survive even a failed export";
+        std::fs::write(&source, original).expect("write source fixture");
+        let beside = dir.path().join("beside");
+        std::fs::create_dir(&beside).expect("a directory to walk back out of");
+        let link = dir.path().join("render.mp4");
+        std::os::unix::fs::symlink(&source, &link).expect("link to the source");
+        let project = one_clip_over(source.to_str().expect("UTF-8 fixture path"));
+        for (spelling, destination) in [
+            (
+                "a path through another directory",
+                beside.join("..").join("source.mp4"),
+            ),
+            ("a symbolic link", link),
+        ] {
+            let status = start_export(&project, &ExportSettings::default(), destination).join();
+            assert!(
+                matches!(&status, ExportStatus::Failed { reason } if reason.contains("source media")),
+                "{spelling}: {status:?}"
+            );
+            assert_eq!(
+                std::fs::read(&source).expect("source survives"),
+                original,
+                "{spelling}"
+            );
+        }
+    }
+
+    /// Whether a missing source refuses the export is decided at the marks, to the edge: a
+    /// clip that starts where the range ends, or ends where it starts, has no frame in it.
+    #[test]
+    fn a_missing_source_is_needed_only_by_a_range_its_clip_reaches_into() {
+        use crate::model::{MediaItem, MediaKind};
+        let mut p = one_clip_over("no/such/directory/definitely-not-here-42.mp4");
+        let late = uuid::Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: late,
+            name: "late".into(),
+            kind: MediaKind::Video,
+            path: "no/such/directory/nor-this-43.mp4".into(),
+            duration: 0.2,
+            ..Default::default()
+        });
+        let track = p.tracks[0].id;
+        let cut = p.clips[0].end();
+        p.add_clip(track, late, cut).expect("media exists");
+        let frame = 1.0 / 30.0;
+        let rows: [(Option<f64>, Option<f64>, &[&str]); 5] = [
+            (None, None, &["clip", "late"]),
+            (None, Some(cut), &["clip"]),
+            (None, Some(cut + frame), &["clip", "late"]),
+            (Some(cut), None, &["late"]),
+            (Some(cut - frame), None, &["clip", "late"]),
+        ];
+        for (mark_in, mark_out, needed) in rows {
+            p.clear_marks();
+            if let Some(t) = mark_in {
+                p.set_mark_in(t);
+            }
+            if let Some(t) = mark_out {
+                p.set_mark_out(t);
+            }
+            let named: Vec<String> = unreadable_sources(&p)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
+            assert_eq!(named, needed, "marked {mark_in:?} to {mark_out:?}");
+        }
+    }
+
     #[test]
     fn cut_render_plans_do_not_pad_short_clips_or_add_roundoff_frames() {
         let mut project = Project::new("short cut");
