@@ -2,7 +2,9 @@
 //! view stands where the person asked, and the places the agent's steps in it make fill the
 //! rectangle the person dragged, or stand beside the turn.
 
-use super::{Arrangement, ArrangementAction, Asked, Busy, locate};
+use serde_json::Value as Json;
+
+use super::{Arrangement, ArrangementAction, Asked, Busy, Door, locate};
 
 /// The view a turn stands on the canvas through (canvas.md §3): the person's line, the agent's
 /// reply under it, its steps folded.
@@ -186,5 +188,84 @@ impl Arrangement {
         self.handle
             .read(|tree| locate(tree, turn.place).is_some())
             .then_some(turn)
+    }
+}
+
+impl Arrangement {
+    /// The conversation of the turn asked on the canvas that `action` would cover, while the
+    /// turn stands (canvas.md §3): a `show` that re-points the turn's own place, or a `place` that
+    /// joins the strip the turn stands in (`names_strip`: it named one). `None` for a step that
+    /// covers no turn.
+    pub(super) fn turn_covered_by(
+        &self,
+        action: &ArrangementAction,
+        names_strip: bool,
+    ) -> Option<String> {
+        let turns: Vec<(String, u64)> = self
+            .turns
+            .borrow()
+            .iter()
+            .map(|(conversation, anchor)| (conversation.clone(), anchor.place))
+            .collect();
+        self.handle.read(|tree| {
+            let strip_of = |place: u64| {
+                let (workspace, row, group, _) = locate(tree, place)?;
+                Some(
+                    tree.workspaces
+                        .get(workspace)?
+                        .strips
+                        .get(row)?
+                        .window_groups
+                        .get(group)?
+                        .id,
+                )
+            };
+            turns.into_iter().find_map(|(conversation, turn)| {
+                let covered = match action {
+                    ArrangementAction::Show { place, .. } => *place == turn,
+                    ArrangementAction::Place { strip, .. } if names_strip => {
+                        strip_of(turn) == Some(*strip)
+                    }
+                    _ => false,
+                };
+                (covered && locate(tree, turn).is_some()).then_some(conversation)
+            })
+        })
+    }
+}
+
+impl Door {
+    /// Keep a turn asked on the canvas its own place (canvas.md §3): a step that would show
+    /// something else in the turn's place, or join it as a tab, stands what it shows where the
+    /// turn's answer goes instead — the room of the rectangle the person dragged while it is
+    /// free, else beside the turn — and the turn's view stays. Whether it did; `false` leaves any
+    /// other step as it is.
+    pub(super) fn kept_turn(
+        &self,
+        asked: &str,
+        arguments: &serde_json::Map<String, Json>,
+        action: &ArrangementAction,
+    ) -> Result<bool, tilo_actions::DoorError> {
+        let names_strip = arguments.get("strip").is_some_and(|strip| !strip.is_null());
+        let (ArrangementAction::Show { resource, view, .. }
+        | ArrangementAction::Place { resource, view, .. }) = action
+        else {
+            return Ok(false);
+        };
+        let covered = self
+            .arrangement
+            .borrow()
+            .turn_covered_by(action, names_strip);
+        let Some(conversation) = covered else {
+            return Ok(false);
+        };
+        self.arrangement
+            .borrow_mut()
+            .open_place(asked, resource, view, &conversation)
+            .map_err(|why| tilo_actions::DoorError::Unavailable {
+                code: "nowhere_to_place".to_owned(),
+                reason: why,
+            })?;
+        Ok(true)
     }
 }
