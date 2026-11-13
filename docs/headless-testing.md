@@ -411,11 +411,11 @@ t outputs layout-check/390x844 --to ~/layout-shots
 That writes `~/layout-shots/target/layout-check/390x844/`, which holds `report.txt` (the report the
 job's log prints: every finding with its app, view, node and source line, the allow-list lines
 that no longer show and the views no layout reached, then the counts), `dump.txt` (the toolkit's
-inspection of every layout at that size: each widget's box, clip and semantics — hundreds of
-megabytes, so fetch it when you need to see inside a layout) and one PNG per window per theme
-(`<app>-<view>-<theme>.png`, light and dark; about nine hundred for the tl apps), as each scenario
-leaves the window. `t outputs` starts the run for this state if none ran, so the shot is always of
-the code as it stands here.
+inspection of the layouts at that size a finding was read from: each widget's box, clip and
+semantics; `tilolang layout-check --dump 390x844` over the apps you are looking at prints every
+frame instead) and one PNG per window per theme (`<app>-<view>-<theme>.png`, light and dark; about
+nine hundred for the tl apps), as each scenario leaves the window. `t outputs` starts the run for
+this state if none ran, so the shot is always of the code as it stands here.
 
 The check lays the apps out as their scenarios leave them, with no input of its own: a layout
 reached by a press, a key or a staged view state is the CLI's `--press`, `--key` and `--state`
