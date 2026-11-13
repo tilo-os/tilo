@@ -18,10 +18,10 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use tilo_action_policy::Standing;
+use tilo_action_policy::{Standing, same_person};
 use tilo_app::framework::WorkspaceRecord;
 use tilo_app::tilo_workspace_agent::{
-    OWNER, WorkspaceAgents as Record, same_person, workspace_agents as actions,
+    OWNER, WorkspaceAgents as Record, workspace_agents as actions,
 };
 use tilo_desktop::authority::WorkspaceAuthority as _;
 use tilo_desktop::collaborators::PeopleNames;
