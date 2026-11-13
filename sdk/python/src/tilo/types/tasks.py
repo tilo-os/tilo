@@ -106,7 +106,7 @@ class TrackerArea(TypedDict):
 
 class Tracker(Resource):
     """Tasks — `tasks.tracker`."""
-    __surface__ = "so.tilo.tasks@092d27174044c60d"
+    __surface__ = "so.tilo.tasks@dc607ef0bfe199ca"
     issues: list[Issue]
     areas: list[TrackerArea]
     @property
@@ -150,6 +150,14 @@ class Tracker(Resource):
         if kind is not None:
             args["kind"] = kind
         return self.action("create-area", **args)
+
+    def rename(self,
+        *,
+        issue: str,
+        title: str,
+    ) -> Run | None:
+        """Runs the app's action."""
+        return self.action("rename", issue=issue, title=title)
 
     def rename_area(self,
         *,

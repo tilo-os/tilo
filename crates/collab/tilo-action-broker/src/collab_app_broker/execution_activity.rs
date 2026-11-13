@@ -148,6 +148,48 @@ fn text_region(action: &PublishedAction) -> String {
         .unwrap_or_else(|| "text".to_owned())
 }
 
+/// The characters a field edit writes into a rich text: the field's region, the
+/// paragraph it splices, and the range it leaves in it — what it inserts where
+/// a caret was, or the characters it replaces. `None` for a field edit of
+/// anything else.
+fn written_text(
+    argument: &serde_json::Map<String, serde_json::Value>,
+) -> Option<(String, String, u64, u64)> {
+    let edit = argument.get("edit")?.as_object()?;
+    if edit.get("op")?.as_str()? != "rich" {
+        return None;
+    }
+    let splice = edit
+        .get("rich")?
+        .as_object()?
+        .get("SpliceText")?
+        .as_object()?;
+    let block = splice.get("block")?.as_str()?.to_owned();
+    let at = splice.get("at")?.as_u64()?;
+    let del = splice
+        .get("del")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let inserted = splice
+        .get("ins")
+        .and_then(serde_json::Value::as_str)
+        .map_or(0, |inserted| inserted.chars().count() as u64);
+    // The region the field names: the last field of the edit's path (`body`).
+    let region = edit
+        .get("path")?
+        .as_array()?
+        .iter()
+        .rev()
+        .find_map(|segment| segment.get("field")?.as_str())?
+        .to_owned();
+    let end = if inserted == 0 {
+        at + del
+    } else {
+        at + inserted
+    };
+    Some((region, block, at, end))
+}
+
 /// How many characters of a text an invocation writes: what its parameter of
 /// type [`Text`](tilo_actions::ParamType::Text) holds, counted as characters
 /// because a place counts them that way.
@@ -175,6 +217,18 @@ fn anchor_of(
     argument: Option<&str>,
 ) -> tilo_actions::InteractionAnchor {
     use tilo_actions::InteractionAnchor;
+    let parsed = tilo_actions::remote::InvokeArgument::from_slot(argument);
+    // A field edit that splices a rich text names the characters it writes,
+    // whatever it is addressed to: the editor showing that text draws them as
+    // the writer's, and their caret where the write ends.
+    if let tilo_actions::remote::InvokeArgument::Json(argument) = &parsed
+        && let Some((region, block, start, end)) = written_text(argument)
+    {
+        return InteractionAnchor::Text {
+            region,
+            ranges: vec![tilo_actions::InteractionTextRange { block, start, end }],
+        };
+    }
     // An item published as its own resource (`<kind>/<field>/<item>`) is what
     // its actions act on, and the view draws it as a row.
     if let Some(item) = item_of_resource(&resource.id, &resource.kind)
@@ -185,9 +239,7 @@ fn anchor_of(
     {
         return InteractionAnchor::ListItems { ids: vec![item] };
     }
-    let tilo_actions::remote::InvokeArgument::Json(argument) =
-        tilo_actions::remote::InvokeArgument::from_slot(argument)
-    else {
+    let tilo_actions::remote::InvokeArgument::Json(argument) = parsed else {
         return InteractionAnchor::Resource;
     };
     let Some(place) = action
@@ -539,6 +591,64 @@ mod anchor_tests {
         assert_eq!(
             anchor_of(&action, &resource, None),
             tilo_actions::InteractionAnchor::Resource
+        );
+    }
+
+    /// A field edit of rich text names the characters it writes, so the editor showing that
+    /// text draws them as the writer's and its caret where the write ends — the same mark a
+    /// note's body shows of an agent's write, in Tasks' descriptions as in Notes.
+    #[test]
+    fn a_rich_text_field_edit_names_the_characters_it_writes() {
+        let (action, resource) = published(
+            "so.tilo.tasks",
+            "tasks.tracker",
+            "field-edit",
+            vec![ActionParam::required_owned(
+                "edit",
+                ParamType::Object,
+                "The field and what to do to it",
+            )],
+        );
+        let spliced = slot(&serde_json::json!({
+            "edit": {
+                "path": [{"field": "issues"}, {"item": "7d2b"}, {"field": "body"}],
+                "op": "rich",
+                "rich": {
+                    "SpliceText": {"region": "Body", "block": "b3", "at": 4, "del": 0, "ins": "héllo"}
+                }
+            }
+        }));
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&spliced))),
+            ("body".into(), "b3".into(), 4, 9),
+            "the characters it wrote, counted as the block counts them",
+        );
+        // Replacing a range leaves the range it wrote: what it inserts there.
+        let replaced = slot(&serde_json::json!({
+            "edit": {
+                "path": [{"field": "issues"}, {"item": "7d2b"}, {"field": "body"}],
+                "op": "rich",
+                "rich": {
+                    "SpliceText": {"region": "Body", "block": "b3", "at": 2, "del": 6, "ins": "new"}
+                }
+            }
+        }));
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&replaced))),
+            ("body".into(), "b3".into(), 2, 5),
+        );
+        // A field edit that writes no characters (a whole value set) names the
+        // record, not a run.
+        let set = slot(&serde_json::json!({
+            "edit": {
+                "path": [{"field": "issues"}, {"item": "7d2b"}, {"field": "title"}],
+                "op": "set",
+                "value": "Book room four"
+            }
+        }));
+        assert_eq!(
+            anchor_of(&action, &resource, Some(&set)),
+            tilo_actions::InteractionAnchor::Resource,
         );
     }
 

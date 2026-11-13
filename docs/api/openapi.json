@@ -22283,6 +22283,24 @@
         ],
         "description": ""
       },
+      "tasks.tracker.rename.Arguments": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "issue",
+          "title"
+        ],
+        "description": ""
+      },
       "tasks.tracker.rename-area.Arguments": {
         "type": "object",
         "properties": {
@@ -29539,6 +29557,12 @@
       "resource": "tasks.tracker",
       "action": "create-area",
       "arguments": "#/components/schemas/tasks.tracker.create-area.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.tracker",
+      "action": "rename",
+      "arguments": "#/components/schemas/tasks.tracker.rename.Arguments"
     },
     {
       "app": "so.tilo.tasks",

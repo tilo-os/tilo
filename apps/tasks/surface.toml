@@ -71,6 +71,15 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "rename"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", type = "text", required = true, schema = { type = "string" } },
+  { name = "title", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+]
+
+[[resources.verbs]]
 id = "rename-area"
 kind = "undoable"
 writes = ["record", "areas.*"]

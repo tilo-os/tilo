@@ -378,6 +378,71 @@ fn a_create_names_the_collection_it_makes_one_of() {
     );
 }
 
+/// An agent renames an issue by the tracker's own verb: the title it writes
+/// is the issue's, the change is the agent's, and a blank or over-long title
+/// is refused before anything is written.
+#[test]
+fn rename_writes_the_issue_title_and_refuses_a_blank_one() {
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE.with(create("Book the room", None, None)))
+        .unwrap();
+    let issue = id_of(&person, "Book the room");
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    agent
+        .apply(Tracker::RENAME.with(tracker::Rename {
+            issue: issue.clone(),
+            title: nb("Book room four"),
+        }))
+        .unwrap();
+    assert_eq!(
+        agent.state().unwrap().issues.get(&issue).unwrap().title,
+        "Book room four"
+    );
+    let spent = agent
+        .versions()
+        .iter()
+        .rev()
+        .find_map(|version| version.context.clone())
+        .expect("the rename is a version with what it did");
+    assert_eq!(
+        spent.invoker.expect("the change names its actor").actor,
+        AGENT
+    );
+    assert!(
+        agent
+            .apply(Tracker::RENAME.with(tracker::Rename {
+                issue,
+                title: NonBlank::parse(&"x".repeat(241)).unwrap(),
+            }))
+            .is_err(),
+        "a title that runs past a line is refused"
+    );
+}
+
+/// The step line a person reads says what each of the tracker's main actions
+/// does there — it edits, makes, deletes or writes — never merely that work
+/// happens in Tasks.
+#[test]
+fn the_main_actions_declare_the_kind_of_step_they_take() {
+    use tilo_actions::StepKind;
+
+    let person = ada();
+    let tree = person.published().unwrap();
+    let kind_of = |id: &str| {
+        tree.actions
+            .iter()
+            .find(|action| action.id == id)
+            .unwrap_or_else(|| panic!("the tracker publishes {id}"))
+            .contract
+            .step
+    };
+    assert_eq!(kind_of("create"), Some(StepKind::Create));
+    assert_eq!(kind_of("rename"), Some(StepKind::Edit));
+    assert_eq!(kind_of("comment"), Some(StepKind::Write));
+    assert_eq!(kind_of("delete"), Some(StepKind::Delete));
+}
+
 #[test]
 fn a_project_holds_the_tasks_that_work_towards_it_and_the_people_involved() {
     use crate::model::{Kind, area_goal};

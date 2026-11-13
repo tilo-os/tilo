@@ -56,6 +56,19 @@ impl TextInput {
         if self.holds_secret() {
             return;
         }
+        // The runs the text itself records as someone's, in that person's colour: the marks a
+        // body's paragraphs carry, in a field.
+        for (range, author) in &self.authored {
+            if presence.is_own_identity(author) {
+                continue;
+            }
+            let bands: Vec<Rect> = self
+                .selection_rects(theme, range.start, range.end)
+                .into_iter()
+                .map(|band| transform.transform_rect_bbox(band))
+                .collect();
+            presence.draw_peer_authorship(scene, theme, &UserId(author.clone()), &bands);
+        }
         let (Some((identity, _)), Some((start, end))) = (&self.change, self.written_span()) else {
             return;
         };

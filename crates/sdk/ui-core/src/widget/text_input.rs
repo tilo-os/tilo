@@ -35,7 +35,7 @@ use crate::widget::control_size::ControlSize;
 use crate::widget::mention_picker::MentionCandidate;
 use crate::widget::text_completion::{CompletionKey, CompletionList, TextCompletion};
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
-use automerge::{AutoCommit, ObjId, ReadDoc};
+use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -320,6 +320,10 @@ pub struct TextInput {
     change: Option<(String, String)>,
     /// What the field held before that change, when it is known: what it wrote is the rest.
     change_before: Option<String>,
+    /// Who wrote each run of the bound text, as its own document records it: byte ranges of
+    /// `text` and the writer's id. Drawn in the writer's colour, one's own runs left plain, the
+    /// marks a body's paragraphs carry ([`crate::widget::BlockEditor`]) in a field.
+    authored: Vec<(std::ops::Range<usize>, String)>,
     is_focused: bool,
     /// Paint-only suppression for drag previews; focus, selection and IME remain intact.
     caret_paint_suppressed: bool,
@@ -823,6 +827,7 @@ impl TextInput {
             invalid: false,
             change: None,
             change_before: None,
+            authored: Vec::new(),
             is_focused: false,
             caret_paint_suppressed: false,
             host_shows_text: false,
@@ -997,6 +1002,7 @@ impl TextInput {
     pub fn clear_text_binding(&mut self) {
         self.repaint = true;
         self.bound_text = None;
+        self.authored.clear();
     }
 
     /// For `BlockEditor` to match local blocks to doc list elements by object identity.
@@ -1011,21 +1017,56 @@ impl TextInput {
     ) -> Result<(), crate::view::ThawError> {
         let obj = self
             .bound_text
-            .as_ref()
+            .clone()
             .ok_or_else(|| crate::view::ThawError::State("text is not bound".into()))?;
-        let seen = preparation::Adopted::of(state, obj, &self.text);
+        let seen = preparation::Adopted::of(state, &obj, &self.text);
         if self.adopted.as_ref() == Some(&seen) {
             return Ok(());
         }
         let text = state
-            .text(obj)
+            .text(&obj)
             .map_err(|e| crate::view::ThawError::State(e.to_string()))?;
         // Showing the document's text is not a user edit.
-        self.adopt_model_text(text);
+        self.adopt_model_text(text.clone());
+        self.adopt_authored(state, &obj, &text);
         self.clamp_to_text();
         self.last_notified_text.clone_from(&self.text);
         self.adopted = Some(seen.showing(&self.text));
         Ok(())
+    }
+
+    /// Who wrote each run of the bound text `obj`, as the document records it: the `author`
+    /// marks over it, merged where neighbouring runs name the same person (Automerge splits a
+    /// mark wherever a concurrent edit landed inside it), as byte ranges of `text`.
+    fn adopt_authored(&mut self, state: &AutoCommit, obj: &ObjId, text: &str) {
+        let mut authored: Vec<(std::ops::Range<usize>, String)> = state
+            .marks(obj)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|mark| mark.name.as_str() == AUTHOR_MARK)
+            .filter_map(|mark| {
+                let ScalarValue::Str(author) = &mark.value else {
+                    return None;
+                };
+                let start = byte_of_char(text, mark.start);
+                let end = byte_of_char(text, mark.end);
+                (start < end).then(|| (start..end, author.to_string()))
+            })
+            .collect();
+        authored.sort_by_key(|(range, _)| (range.start, range.end));
+        let mut merged: Vec<(std::ops::Range<usize>, String)> = Vec::with_capacity(authored.len());
+        for (range, author) in authored {
+            match merged.last_mut() {
+                Some((last, same)) if *same == author && last.end >= range.start => {
+                    last.end = last.end.max(range.end);
+                }
+                _ => merged.push((range, author)),
+            }
+        }
+        if self.authored != merged {
+            self.repaint = true;
+            self.authored = merged;
+        }
     }
 
     /// Replace text read from model state without reporting a user edit.
@@ -6827,3 +6868,11 @@ mod touch_tests;
 mod component;
 pub use component::TextInputProps;
 mod completion;
+
+/// `char_index` as a byte offset of `text`: Automerge marks count characters, the field's
+/// geometry counts bytes. Clamps to the end.
+fn byte_of_char(text: &str, char_index: usize) -> usize {
+    text.char_indices()
+        .nth(char_index)
+        .map_or(text.len(), |(byte, _)| byte)
+}

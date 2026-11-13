@@ -217,7 +217,7 @@ impl Tracker {
     ///
     /// # Errors
     /// Refuses a name too long, or an id already taken.
-    #[action(writes = areas)]
+    #[action(step = "create", writes = areas)]
     pub fn create_area(
         &mut self,
         cx: &mut ActionCx,
@@ -239,8 +239,19 @@ impl Tracker {
         Ok(())
     }
 
+    /// Rename an issue: its title, as the board and its page show it.
+    #[action(item = issues, step = "edit", writes = issues)]
+    pub fn rename(&mut self, issue: &Id, title: NonBlank) -> Result<(), Refusal> {
+        let title = title.into_string();
+        if title.chars().count() > crate::model::issue::MAX_TITLE_CHARS {
+            return Err(Refusal::new("An issue's title fits on a line"));
+        }
+        self.issue_mut(issue)?.title = title.trim().to_owned();
+        Ok(())
+    }
+
     /// Rename the project or area `area`.
-    #[action(item = areas, writes = areas)]
+    #[action(item = areas, step = "edit", writes = areas)]
     pub fn rename_area(&mut self, area: &Id, name: NonBlank) -> Result<(), Refusal> {
         let target = self.area_mut(area)?;
         if name.chars().count() > crate::model::tracker_area::MAX_NAME_CHARS {
@@ -252,7 +263,7 @@ impl Tracker {
 
     /// Say whether the project or area `area` reaches an end or goes on: a
     /// project with a goal, or an area that is a standing responsibility.
-    #[action(item = areas, writes = areas)]
+    #[action(item = areas, step = "edit", writes = areas)]
     pub fn set_kind(
         &mut self,
         area: &Id,
@@ -265,7 +276,7 @@ impl Tracker {
     /// Say who is involved in the project or area `area`, and what they do
     /// there. Naming someone grants them nothing: who may read the project
     /// is the sharing it was given, never a list of people.
-    #[action(item = areas, writes = areas)]
+    #[action(item = areas, step = "create", writes = areas)]
     pub fn involve(
         &mut self,
         cx: &mut ActionCx,
@@ -287,14 +298,14 @@ impl Tracker {
 
     /// Take someone out of the list of people involved in `area`. They keep
     /// their access to it: that is the project's sharing, not this list.
-    #[action(item = areas, writes = areas)]
+    #[action(item = areas, step = "delete", writes = areas)]
     pub fn remove_person(&mut self, area: &Id, person: &Id) -> Result<(), Refusal> {
         self.area_mut(area)?.people.remove(person);
         Ok(())
     }
 
     /// Move an issue under another one, or to the top level.
-    #[action(item = issues, writes = issues)]
+    #[action(item = issues, step = "move", writes = issues)]
     pub fn move_under(&mut self, issue: &Id, parent: Option<Id>) -> Result<(), Refusal> {
         self.check_parent(parent.as_ref())?;
         if let Some(parent) = &parent
@@ -309,7 +320,7 @@ impl Tracker {
     }
 
     /// Assign an issue to a person or an agent, or to nobody.
-    #[action(item = issues, writes = issues)]
+    #[action(item = issues, step = "edit", writes = issues)]
     pub fn assign(
         &mut self,
         issue: &Id,
@@ -326,7 +337,7 @@ impl Tracker {
     ///
     /// # Errors
     /// Refuses an issue at its 32 labels.
-    #[action(item = issues, writes = issues)]
+    #[action(item = issues, step = "edit", writes = issues)]
     pub fn add_label(&mut self, issue: &Id, label: NonBlank) -> Result<(), Refusal> {
         self.issue_mut(issue)?.labels.insert(label.into_string());
         Ok(())
@@ -334,7 +345,7 @@ impl Tracker {
 
     /// Place an issue on the board: in a status column, before another
     /// issue or at the end.
-    #[action(item = issues, writes = issues)]
+    #[action(item = issues, step = "move", writes = issues)]
     pub fn place(
         &mut self,
         issue: &Id,
@@ -357,7 +368,7 @@ impl Tracker {
     }
 
     /// Comment on an issue.
-    #[action(item = issues, field = "comments", writes = issues)]
+    #[action(item = issues, field = "comments", step = "write", writes = issues)]
     pub fn comment(
         &mut self,
         cx: &mut ActionCx,
@@ -384,7 +395,7 @@ impl Tracker {
     }
 
     /// Link an issue to another resource.
-    #[action(item = issues, writes = issues)]
+    #[action(item = issues, step = "edit", writes = issues)]
     pub fn link(
         &mut self,
         cx: &mut ActionCx,
@@ -413,7 +424,7 @@ impl Tracker {
     /// Link a note
     ///
     /// Link an issue to an existing note in Notes, picked by its title.
-    #[action(item = issues, writes = issues)]
+    #[action(item = issues, step = "edit", writes = issues)]
     pub fn link_note(
         &mut self,
         cx: &mut ActionCx,
@@ -441,7 +452,7 @@ impl Tracker {
     }
 
     /// Delete an issue. Its sub-issues move up to its parent.
-    #[action(item = issues, destructive, writes = issues)]
+    #[action(item = issues, step = "delete", destructive, writes = issues)]
     pub fn delete(&mut self, issue: &Id) -> Result<(), Refusal> {
         let removed = self.issues.remove(issue).ok_or_else(no_issue)?;
         let orphans: Vec<Id> = self
@@ -462,7 +473,7 @@ impl Tracker {
     ///
     /// # Errors
     /// Refuses a goal that is not a resource, or an urgency outside 1 to 4.
-    #[action(item = issues, audience = "people", writes = issues)]
+    #[action(item = issues, step = "edit", audience = "people", writes = issues)]
     pub fn plan(
         &mut self,
         issue: &Id,
@@ -491,7 +502,7 @@ impl Tracker {
 
     /// Import tasks the workspace kept before the tracker. A task
     /// already imported is left alone.
-    #[action(housekeeping, writes = issues)]
+    #[action(step = "create", housekeeping, writes = issues)]
     pub fn import(&mut self, tasks: Vec<Imported>) {
         for task in tasks {
             if self.imported.contains(&task.task) {
