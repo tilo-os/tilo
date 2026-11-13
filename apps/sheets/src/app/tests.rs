@@ -2122,16 +2122,21 @@ fn a_relative_path_is_refused_for_every_path_action() {
         "export-xlsx",
         "export-ods",
     ] {
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("path".into(), "Budget.csv".into());
-        let error = SheetsEffect::decode(id, &arguments).expect_err(id);
-        assert!(
-            matches!(
-                &error,
-                ui::tilo_resource::EffectDecodeError::Argument { name, source }
-                    if name == "path" && source.to_string().contains("absolute")
-            ),
-            "{id}: {error}"
-        );
+        // A bare name, one relative to where the app runs or to its parent, and no path at all.
+        for path in ["Budget.csv", "./Budget.csv", "../Budget.csv", ""] {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("path".into(), path.into());
+            let Err(error) = SheetsEffect::decode(id, &arguments) else {
+                panic!("{id} takes `{path}`");
+            };
+            assert!(
+                matches!(
+                    &error,
+                    ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                        if name == "path" && source.to_string().contains("absolute")
+                ),
+                "{id} `{path}`: {error}"
+            );
+        }
     }
 }
