@@ -2499,7 +2499,7 @@ imager-write-setup-wifi-psk = Wi-Fi password
 imager-write-setup-ssh-key = Owner SSH public key
 imager-write-setup-device-label = Device name
 imager-write-setup-enroll = Enroll as a new device
-imager-write-setup-enroll-note = Certifies the new device. The root secret stays on this computer.
+imager-write-setup-enroll-note = The new device becomes one of yours. Your account key stays on this computer.
 
 ## Where a release runs, and the filesystem it installs
 imager-release-target-arm64 = Generic ARM64

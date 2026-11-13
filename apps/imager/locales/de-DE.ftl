@@ -1710,7 +1710,7 @@ imager-write-setup-wifi-psk = WLAN-Passwort
 imager-write-setup-ssh-key = Öffentlicher SSH-Schlüssel der Eigentümerin
 imager-write-setup-device-label = Gerätename
 imager-write-setup-enroll = Als neues Gerät aufnehmen
-imager-write-setup-enroll-note = Zertifiziert das neue Gerät. Das Hauptgeheimnis bleibt auf diesem Computer.
+imager-write-setup-enroll-note = Das neue Gerät wird eines deiner Geräte. Dein Kontoschlüssel bleibt auf diesem Computer.
 
 ## Where a release runs, and the filesystem it installs
 imager-release-target-arm64 = Generisch ARM64
