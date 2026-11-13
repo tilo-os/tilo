@@ -34,7 +34,6 @@ pub(crate) fn headings(source: &str) -> Vec<Heading> {
     headings_in(&Source::detached(source))
 }
 
-/// [`headings`] of a source already parsed (the one a compile reads).
 pub(crate) fn headings_in(source: &Source) -> Vec<Heading> {
     let mut result = Vec::new();
     collect_headings(&LinkedNode::new(source.root()), source, &mut result);
@@ -131,11 +130,8 @@ fn outline_items(headings: &[Heading]) -> Vec<NavItem> {
 pub(crate) struct Outline {
     drawer: SidebarDrawer,
     list: NavList,
-    /// The heading row chosen since the host last looked.
     chosen: Rc<RefCell<Option<String>>>,
     headings: Vec<Heading>,
-    /// The drawer opened or closed since the host's layout tree was built:
-    /// the list joins the window's children only while it shows.
     structure_dirty: bool,
 }
 
@@ -154,7 +150,6 @@ impl Outline {
         }
     }
 
-    /// Follow the open document's headings, as its last compile read them.
     pub(crate) fn set_headings(&mut self, headings: Vec<Heading>) {
         if headings != self.headings {
             self.list.set_sections(vec![
@@ -174,12 +169,10 @@ impl Outline {
         heading_line(&id).map(|line| TypstEffect::GoToHeading { line })
     }
 
-    /// Size the drawer for `theme`'s scale.
     pub(crate) fn scale_for(&mut self, theme: &Theme) {
         self.drawer.scale_for(theme);
     }
 
-    /// Lay the drawer out in `body`; returns what it leaves the panes.
     pub(crate) fn layout(&mut self, body: Rect) -> Rect {
         let remaining = self.drawer.resolve(body);
         self.list.place_at(self.drawer.list_rect());
@@ -192,7 +185,6 @@ impl Outline {
         self.structure_dirty = true;
     }
 
-    /// Whether the list joined or left the window since the last call.
     pub(crate) fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.structure_dirty) | self.list.take_structure_dirty()
     }
@@ -205,12 +197,10 @@ impl Outline {
         self.drawer.sidebar_rect()
     }
 
-    /// The list, while the drawer shows.
     pub(crate) fn widget(&self) -> Option<&dyn Widget> {
         self.visible().then_some(&self.list as &dyn Widget)
     }
 
-    /// The list, while the drawer shows.
     pub(crate) fn widget_mut(&mut self) -> Option<&mut dyn Widget> {
         if self.visible() {
             Some(&mut self.list)
@@ -234,7 +224,6 @@ impl Outline {
         ui::widget::DrawChild::draw_child(&mut self.list, scene, transform, tr, &panel, presence);
     }
 
-    /// A floating drawer gets out of the way once a heading was chosen.
     pub(crate) fn dismiss_if_overlay(&mut self) {
         if self.drawer.is_overlay() {
             self.drawer.close();
@@ -243,7 +232,6 @@ impl Outline {
         }
     }
 
-    /// A press on a floating drawer's scrim closes it.
     pub(crate) fn dismiss_at(&mut self, point: Point) -> bool {
         if self.drawer.press_dismisses(point) {
             self.drawer.snap(false);
@@ -254,7 +242,6 @@ impl Outline {
         }
     }
 
-    /// The headings as live rows, each with the effect that goes to it.
     pub(crate) fn rows(&self) -> Option<LiveRow> {
         (!self.headings.is_empty()).then(|| {
             self.headings.iter().fold(

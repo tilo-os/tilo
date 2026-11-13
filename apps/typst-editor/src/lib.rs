@@ -40,7 +40,6 @@ pub mod samples;
 
 pub mod worker;
 
-/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(TypstEditorShell)
 }

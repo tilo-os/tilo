@@ -1,17 +1,13 @@
-//! Typst compilation + raster rendering.
+//! Typst compilation and raster rendering.
 //!
-//! This module owns the entire interface to the `typst` crate. The rest of
-//! the app never touches a `typst::*` type directly — it sees only the plain
-//! [`CompileOutput`] (decoded page bitmaps + flattened diagnostics), which is
-//! `Send` and trivially cacheable in widget state.
+//! The one interface to the `typst` crate: the rest of the app sees only
+//! [`CompileOutput`] (decoded page bitmaps and flattened diagnostics).
 //!
-//! A minimal [`World`] implementation backs compilation. We need only one
-//! in-memory source file (`/main.typ`) plus the fonts embedded by
-//! `typst-assets` (plus the shared Windows emoji face). In the browser the
-//! same fonts arrive as host data after the editor opens, keeping 9 MiB out
-//! of the page's first download. There is no package resolution, no
-//! filesystem, and the only clock is the toolkit's (`ui::clock`), so a capture
-//! shows the same date on every run.
+//! A minimal [`World`] backs compilation with one in-memory source
+//! (`/main.typ`) and the fonts `typst-assets` embeds; in the browser they arrive
+//! as host data after the editor opens, keeping 9 MiB out of the first download.
+//! There is no package resolution, no filesystem, and the only clock is
+//! `ui::clock`, so a capture shows the same date on every run.
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -26,48 +22,29 @@ use typst_layout::PagedDocument;
 
 use crate::pages::TypstPages;
 
-/// Severity of a flattened diagnostic — decoupled from `typst::Severity` so
-/// downstream widgets need no typst dependency.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiagKind {
     Error,
     Warning,
 }
 
-/// One compiler message, already resolved to a 1-based line/column in the
-/// main source (when the span points into it).
 #[derive(Clone, Debug)]
 pub struct Diagnostic {
     pub kind: DiagKind,
     pub message: String,
-    /// 1-based line number of the span start in the main source, if resolvable.
     pub line: Option<usize>,
-    /// 1-based column (in chars) of the span start, if resolvable.
     pub col: Option<usize>,
-    /// 1-based line number of the span end (inclusive of the marked range), if
-    /// resolvable. Equals `line` for a single-line span.
     pub end_line: Option<usize>,
-    /// 1-based column (in chars) just past the last marked character, if
-    /// resolvable. Always `>= col` on the same line so the inline squiggle has
-    /// a positive width.
     pub end_col: Option<usize>,
     pub hints: Vec<String>,
 }
 
-/// The full result of one compile pass.
 #[derive(Clone)]
 pub struct CompileOutput {
-    /// The laid-out pages, rasterised on demand as the preview shows them;
-    /// `None` when compilation failed.
     pub document: Option<Arc<TypstPages>>,
     pub diagnostics: Vec<Diagnostic>,
-    /// The headings the source writes, read from the syntax the compile
-    /// parsed.
     pub(crate) headings: Vec<crate::outline::Heading>,
-    /// Wall-clock compile time in milliseconds.
     pub elapsed_ms: u128,
-    /// True when compilation produced a document (even with warnings); false
-    /// when a fatal error stopped layout.
     pub ok: bool,
 }
 
@@ -90,13 +67,10 @@ impl CompileOutput {
     }
 }
 
-/// Whether a [`WorldParts`] has every font it will ever have.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Fonts {
     Ready,
-    /// The host is still fetching some; build again once it relayouts.
     Loading,
-    /// The host could not supply some; compile with the rest.
     Failed(String),
 }
 
@@ -108,7 +82,6 @@ mod fonts {
 
     use super::Fonts;
 
-    /// The bundled fonts available now.
     pub fn bundled() -> (Vec<Font>, Fonts) {
         if tilo_typst_fonts::EMBEDDED {
             (embedded(), Fonts::Ready)
@@ -117,8 +90,6 @@ mod fonts {
         }
     }
 
-    /// Parsed inside the engine library, so this executable never retains
-    /// the font table.
     #[cfg(feature = "runtime-engine")]
     fn embedded() -> Vec<Font> {
         tilo_typst_engine::typst_fonts()
@@ -157,9 +128,8 @@ mod fonts {
     }
 }
 
-/// Immutable, reusable pieces of a [`World`]: the standard library, the font
-/// book, and the parsed fonts. Built once (parsing every embedded font is the
-/// expensive part) and shared by `Arc` across every compile.
+/// The immutable parts of a [`World`]: the standard library, the font book and
+/// the parsed fonts, built once and shared by `Arc`.
 pub struct WorldParts {
     library: LazyHash<Library>,
     book: LazyHash<FontBook>,
@@ -168,10 +138,8 @@ pub struct WorldParts {
 }
 
 impl WorldParts {
-    /// Build the default library and font book once per process, then share
-    /// their immutable data across documents and compilation workers. While
-    /// the host is still supplying fonts the parts are rebuilt on each call
-    /// and kept only once complete.
+    /// The shared parts, built once per process. While the host still supplies
+    /// fonts they are rebuilt on each call and kept only once complete.
     pub fn new() -> Arc<Self> {
         static PARTS: OnceLock<Arc<WorldParts>> = OnceLock::new();
         if let Some(parts) = PARTS.get() {
@@ -188,8 +156,6 @@ impl WorldParts {
         &self.state
     }
 
-    /// Whether the host is still fetching bundled fonts: cheap, so a caller
-    /// can wait for it before building again.
     pub fn fonts_loading() -> bool {
         fonts::loading()
     }
@@ -222,8 +188,6 @@ impl WorldParts {
     }
 }
 
-/// Per-compile world: shares the heavy [`WorldParts`] by `Arc`, owns only the
-/// one in-memory source file.
 struct TypstWorld {
     parts: Arc<WorldParts>,
     main_id: FileId,
@@ -294,7 +258,6 @@ impl World for TypstWorld {
     }
 }
 
-/// The proleptic Gregorian `(year, month, day)` of `days` since 1970-01-01.
 fn civil_from_days(days: i64) -> (i32, u8, u8) {
     let (year, month, day) = ui::date::civil_from_days(days);
     (
@@ -304,9 +267,8 @@ fn civil_from_days(days: i64) -> (i32, u8, u8) {
     )
 }
 
-/// Compile `src` and lay out its pages; nothing is rasterised here, the
-/// preview renders the pages it shows. Never panics on bad input — compiler
-/// errors are returned as [`Diagnostic`]s with no document.
+/// Compile `src` and lay out its pages; the preview rasterises what it shows.
+/// Bad input yields [`Diagnostic`]s and no document, never a panic.
 pub fn compile_source(parts: &Arc<WorldParts>, src: &str) -> CompileOutput {
     let started = ui::time::now();
     let world = TypstWorld::new(parts.clone(), src);

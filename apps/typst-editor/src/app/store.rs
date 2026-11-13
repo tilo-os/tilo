@@ -20,17 +20,10 @@ use crate::resource::Workspace;
 /// publishes beside the workspace.
 #[derive(Default)]
 pub(crate) struct Store {
-    /// Effects the window does when it next looks.
     pub(super) asks: Vec<TypstEffect>,
-    /// The answer owed to the file effect still running, given when its
-    /// chooser or its write settles.
     pub(super) file_reply: Option<EffectReply>,
-    /// A file effect's read or write, done on the next sync.
     pub(super) pending_resource_io: Option<ResourceIo>,
-    /// The Problems rows and preview pages the window shows.
     pub(super) rows: Vec<LiveRow>,
-    /// The scenario a capture staged, staged by the window when it next
-    /// looks.
     pub(super) staged: Option<Staged>,
 }
 
@@ -41,7 +34,6 @@ pub(super) struct Staged(pub(super) Option<String>);
 pub(crate) type Shared = Rc<RefCell<Store>>;
 
 impl Store {
-    /// Whether the window has something to do that it was asked to.
     pub(super) fn waiting(&self) -> bool {
         !self.asks.is_empty() || self.pending_resource_io.is_some() || self.staged.is_some()
     }

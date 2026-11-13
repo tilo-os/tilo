@@ -29,7 +29,6 @@ pub struct DiagnosticsPanel {
     diags: Vec<Diagnostic>,
     scroll_y: f64,
     hover: Option<usize>,
-    /// Measured for the theme the panel was last drawn or laid out in.
     heights: Vec<f64>,
     header_h: f64,
     empty_h: f64,
@@ -51,7 +50,6 @@ impl Default for DiagnosticsPanel {
     }
 }
 
-/// The text of a diagnostic's location column.
 fn location(d: &Diagnostic) -> Option<String> {
     match (d.line, d.col) {
         (Some(l), Some(col)) => Some(format!("{l}:{col}")),
@@ -61,7 +59,6 @@ fn location(d: &Diagnostic) -> Option<String> {
 }
 
 impl DiagnosticsPanel {
-    /// Where row `row` is now, scrolled: it may lie outside the visible list.
     pub(crate) fn row_rect(&self, row: usize) -> Rect {
         let top = self.list_rect().y0 + self.heights.iter().take(row).sum::<f64>() - self.scroll_y;
         Rect::new(
@@ -103,7 +100,6 @@ impl DiagnosticsPanel {
         Self::default()
     }
 
-    /// A fingerprint of what the panel paints.
     pub fn look(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -185,7 +181,6 @@ impl DiagnosticsPanel {
         self.clamp_scroll();
     }
 
-    /// The row for `d`, without interaction state.
     fn face<'a>(&self, d: &'a Diagnostic) -> ListRowFace<'a> {
         let (badge, status) = match d.kind {
             DiagKind::Error => (ERROR_BADGE, RowStatus::Error),
@@ -263,13 +258,11 @@ impl DiagnosticsPanel {
         None
     }
 
-    /// Returns the 1-based line to jump to, if the clicked row has one.
     pub fn on_mouse_down(&mut self, p: Point) -> Option<usize> {
         let i = self.row_at(p)?;
         self.diags.get(i).and_then(|d| d.line)
     }
 
-    /// The header's summary of what the list holds; empty when it holds nothing.
     fn summary(&self) -> String {
         let (errs, warns) = (self.error_count(), self.warning_count());
         match (errs, warns) {

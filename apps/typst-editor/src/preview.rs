@@ -1,18 +1,12 @@
 //! The rendered-document preview pane.
 //!
-//! Shows the compiled pages stacked vertically with cursor-anchored zoom, pan,
-//! scrollbars, and — when the document has more than one page — a clickable
-//! thumbnail strip. Zoom/pan is delegated to the toolkit's shared
-//! [`ui::widget::ViewportState`] (the same kernel the PDF, ebook, and maps
-//! viewers use), so the interaction is consistent across the OS: Ctrl+wheel
-//! zooms toward the cursor, a plain wheel scrolls, and the content stays
-//! reachable when it overflows the pane.
+//! The compiled pages stacked vertically with cursor-anchored zoom, pan,
+//! scrollbars and, past one page, a clickable thumbnail strip. Zoom and pan are
+//! the toolkit's shared [`ui::widget::ViewportState`].
 //!
-//! The pane also carries a **text layer**: `typst`'s compiled frames expose the
-//! placed glyphs with positions, so a drag over the rendered page selects the
-//! covered text (mapped back through the same content→screen transform) and
-//! Ctrl+C copies it. Selection is glyph-precise horizontally and line-precise
-//! vertically.
+//! It also has a text layer: the compiled frames expose the placed glyphs with
+//! positions, so a drag over the page selects the covered text and Ctrl+C copies
+//! it.
 
 use std::sync::Arc;
 
@@ -41,17 +35,11 @@ use crate::resource::CATALOG;
 mod damage;
 mod raster;
 
-/// The preview's geometry, every length a step of the theme's spacing scale.
 #[derive(Clone, Copy, PartialEq)]
 struct Metrics {
-    /// Vertical gap between stacked pages, in **content** (page-point) units,
-    /// so it scales with zoom exactly like the pages.
     page_gap_pt: f64,
-    /// Screen padding the viewport reserves around the page stack.
     view_pad: f64,
-    /// Width of a page thumbnail.
     thumb_w: f64,
-    /// Space around and between the thumbnails.
     thumb_gap: f64,
 }
 
@@ -65,29 +53,22 @@ impl Metrics {
         }
     }
 
-    /// Width of the thumbnail strip.
     fn strip_w(&self) -> f64 {
         self.thumb_w + 2.0 * self.thumb_gap
     }
 }
 
-/// Why the pane shows no pages.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Empty {
     Compiling,
     NoPages,
     Failed,
-    /// The source holds nothing yet: a blank page would only glare.
     Blank,
 }
 
-/// A page's placement within the content-space page stack (all in page points).
 #[derive(Clone, Copy)]
 struct PageBox {
-    /// Horizontal offset of the page's left edge inside the content box
-    /// (centres narrower pages). Page points.
     x_off: f64,
-    /// Top of the page inside the content box. Page points.
     top: f64,
     w_pt: f64,
     h_pt: f64,
@@ -98,8 +79,6 @@ struct PageBox {
 #[derive(Clone, Copy)]
 struct Cell<'a> {
     rect: Rect,
-    /// A stable key for the visual line the cell sits on (page + quantised
-    /// baseline), used to insert newlines when copying across lines.
     line_key: (usize, i64),
     text: &'a str,
 }
@@ -112,58 +91,27 @@ struct Cell<'a> {
 )]
 pub struct PreviewPane {
     rect: Rect,
-    /// Shared zoom/pan kernel; its rect is the main viewport (pane minus the
-    /// thumbnail strip).
     viewport: ViewportState,
-    /// The pages' bitmaps, rendered on demand.
     raster: raster::PageRaster,
-    /// Page placement in the content-space stack (page points).
     boxes: Vec<PageBox>,
-    /// Each page's top and bottom in the stack, for finding the pages in
-    /// view by bisection.
     tops: Vec<f64>,
     bottoms: Vec<f64>,
-    /// Content-space dimensions of the whole page stack (page points).
     content_w: f64,
     content_h: f64,
-    /// Where each page's glyph cells start in the reading-order index of
-    /// every selectable cell, with the total last; the cells themselves stay
-    /// with the pages' text.
     cell_starts: Vec<usize>,
-    /// Active selection as shared anchor/cursor state over cell-boundary
-    /// indices. The rendered page is read-only, so this is the same shared
-    /// selection model used by the other non-editable readers.
     selection: Selection,
-    /// Shared click-count classifier for char/word/line selection gestures.
     drag_select: DragSelect,
-    /// The whole unit selected by the press that started a word/line drag.
     drag_anchor_span: (usize, usize),
-    /// A drag-to-pan (hand-tool) gesture is in progress. Only begins when the
-    /// page is zoomed past fit-width and therefore overflows the pane.
     panning: bool,
-    /// A scrollbar thumb drag is in progress.
     dragging_bar: bool,
-    /// Whether "fit width" is the active zoom intent (vs. a pinned custom zoom).
     fit_width: bool,
-    /// Page index considered "current" (top-most visible) — drives the
-    /// thumbnail highlight and the status bar.
     current: usize,
-    /// Why there are no pages to show.
     empty: Empty,
     metrics: Metrics,
-    /// Intrinsic page sizes in page points, for re-stacking when the spacing
-    /// scale changes.
     page_pt: Vec<(f64, f64)>,
-    /// Height of the stale-render banner, reserved above the pages while it
-    /// shows; measured at paint.
     banner_h: f64,
-    /// Height of one thumbnail number label; measured at paint.
     thumb_label_h: f64,
-    /// The pages on screen are from an earlier successful compile — the latest
-    /// compile failed, so we keep the last good render and flag it as stale
-    /// rather than blanking the pane and losing the reader's place.
     stale: bool,
-    /// What the frame being drawn shows and what the frame on screen showed.
     shown: ui::scroll_copy::ShownFrames<damage::PreviewShown>,
 }
 
@@ -219,10 +167,9 @@ impl PreviewPane {
         // pane; a pinned custom zoom is left untouched.
         if self.fit_width {
             self.viewport.set_zoom(self.viewport.fit_width_zoom());
-            // `set_zoom` preserves the viewport centre, which is right for a
-            // reader who deliberately scrolled.  On a fresh/top-of-document
-            // preview it would instead manufacture a scroll offset while the
-            // initial fit-width zoom grows, hiding the document title.
+            // `set_zoom` keeps the viewport centre, which is right for a reader who
+            // scrolled. At the top of a fresh preview it would manufacture a scroll offset
+            // as the fit-width zoom grows, hiding the document title.
             if was_at_top {
                 self.viewport.set_scroll(self.viewport.scroll_x(), 0.0);
             }
@@ -313,12 +260,10 @@ impl PreviewPane {
         self.recompute_current();
     }
 
-    /// How many selectable glyph cells the pages hold.
     fn cell_count(&self) -> usize {
         self.cell_starts.last().copied().unwrap_or(0)
     }
 
-    /// Cell `local` of `page`, in content space.
     fn page_cell(&self, page: usize, local: usize) -> Option<Cell<'_>> {
         let text = self.raster.text(page)?;
         let cell = text.cells().get(local)?;
@@ -335,7 +280,6 @@ impl PreviewPane {
         })
     }
 
-    /// The cells `range` of the reading order, in content space.
     fn cells_in(&self, range: std::ops::Range<usize>) -> impl Iterator<Item = Cell<'_>> + '_ {
         let end = range.end.min(self.cell_count());
         let first_page = self
@@ -360,9 +304,6 @@ impl PreviewPane {
             })
     }
 
-    /// Show that the source is empty instead of its blank page: until the
-    /// person writes something there is nothing to preview, and a page-sized
-    /// white rectangle says nothing but glares.
     pub fn set_blank(&mut self) {
         self.raster.clear();
         self.page_pt.clear();
@@ -372,7 +313,6 @@ impl PreviewPane {
         self.restack(true);
     }
 
-    /// Whether it shows nothing because the source is empty.
     pub fn is_blank(&self) -> bool {
         self.page_pt.is_empty() && self.empty == Empty::Blank
     }
@@ -391,14 +331,12 @@ impl PreviewPane {
         }
     }
 
-    /// Mark the on-screen pages as stale (the latest compile failed) or fresh.
-    /// A stale render keeps showing but wears a banner so the user knows the
-    /// preview no longer matches the source.
+    /// Mark the on-screen pages stale (the latest compile failed) or fresh. A stale
+    /// render keeps showing, with a banner saying it no longer matches the source.
     pub fn set_stale(&mut self, stale: bool) {
         self.stale = stale;
     }
 
-    /// Whether the on-screen pages are from an earlier, superseded compile.
     pub fn is_stale(&self) -> bool {
         self.stale
     }
@@ -506,7 +444,6 @@ impl PreviewPane {
         slots
     }
 
-    /// Reduce a mouse-wheel event: Ctrl/Cmd → cursor-anchored zoom; Shift →
     /// horizontal pan; otherwise vertical pan. A tilt (horizontal) wheel is
     /// folded into the vertical pan when the page can't scroll sideways, so a
     /// tall zoomed page still scrolls no matter which wheel axis fires.
@@ -561,7 +498,6 @@ impl PreviewPane {
         self.current = best;
     }
 
-    /// Scroll so page `i` sits near the top of the viewport.
     pub fn scroll_to_page(&mut self, i: usize) {
         let Some(b) = self.boxes.get(i).copied() else {
             return;
@@ -584,10 +520,8 @@ impl PreviewPane {
             self.dragging_bar = true;
             return true;
         }
-        // Zoomed past fit-width the page overflows the pane, so a drag is a
-        // hand-tool pan (the same gesture the PDF/ebook/maps viewers use). At
-        // fit-width there's nothing to pan, so a drag selects text instead —
-        // keeping both gestures reachable without a modifier key.
+        // Past fit-width the page overflows the pane, so a drag pans; at fit-width
+        // there is nothing to pan, so a drag selects text.
         if self.viewport.overflows_x() {
             self.viewport.begin_pan(p);
             self.panning = true;
@@ -676,9 +610,8 @@ impl PreviewPane {
         self.viewport.update_scrollbar_hover(p)
     }
 
-    /// Map a screen point to the nearest selectable cell boundary on the
-    /// page with text nearest it. Clamps to the nearest line when the
-    /// pointer is in the margin. `None` when no page carries selectable text.
+    /// The nearest selectable cell boundary on the page with text nearest the
+    /// point, clamped to the nearest line. `None` when no page has text.
     fn boundary_at(&self, p: Point) -> Option<usize> {
         let cp = self.viewport.screen_to_content(p);
         let page = self.text_page_nearest(cp.y)?;
@@ -760,10 +693,8 @@ impl PreviewPane {
             })
     }
 
-    /// Reconstruct the logical read-only text used by the shared boundary
-    /// walkers. Glyph cells are kept as the selectable units; visual line
-    /// breaks become newlines only for word/line boundary calculation and
-    /// clipboard output.
+    /// The text the shared boundary walkers read: glyph cells as the selectable
+    /// units, with visual line breaks as newlines.
     fn logical_text(&self) -> String {
         let mut text = String::new();
         let mut previous = None;
@@ -779,9 +710,9 @@ impl PreviewPane {
         text
     }
 
-    /// Byte offset before each cell in [`Self::logical_text`]. The extra
-    /// newline between visual lines is deliberately included so the shared
-    /// line-boundary result maps back to the first cell of the next line.
+    /// Byte offset before each cell in [`Self::logical_text`], the newline between
+    /// visual lines included, so a shared line boundary maps back to the next
+    /// line's first cell.
     fn logical_offsets(&self) -> Vec<usize> {
         let mut offsets = Vec::with_capacity(self.cell_count() + 1);
         let mut byte = 0usize;
@@ -800,9 +731,8 @@ impl PreviewPane {
         offsets
     }
 
-    /// Convert a byte boundary returned by `text_selection` into the nearest
-    /// cell boundary. This keeps all UTF-8/word/line arithmetic in the shared
-    /// module while the preview continues to select shaped glyph cells.
+    /// The cell boundary nearest a byte boundary from `text_selection`, so word and
+    /// line arithmetic stays in the shared module.
     fn cell_boundary_for_byte(&self, byte: usize, offsets: &[usize]) -> usize {
         offsets
             .iter()
@@ -881,8 +811,6 @@ impl PreviewPane {
         Some(out)
     }
 
-    /// Zoom the preview to `display_zoom`× fit-width and scroll to `scroll_frac`
-    /// of the way down. Used only by the offscreen `--shots` renderer.
     pub fn demo_set_view(&mut self, display_zoom: f64, scroll_frac: f64) {
         self.fit_width = false;
         let fw = self.viewport.fit_width_zoom();
@@ -893,9 +821,6 @@ impl PreviewPane {
         self.recompute_current();
     }
 
-    /// Zoom past fit-width and pan to `(pan_x_frac, pan_y_frac)` of the reachable
-    /// scroll range, so an offscreen capture can prove the page pans on both
-    /// axes once it overflows the pane. Used only by the `--shots` renderer.
     #[allow(
         clippy::similar_names,
         reason = "pan_x_frac/pan_y_frac are a standard x/y coordinate-pair naming convention"
@@ -913,8 +838,6 @@ impl PreviewPane {
         self.recompute_current();
     }
 
-    /// Select the cells between two fractions of the reading-order text. Used
-    /// only by the offscreen `--shots` renderer.
     pub fn demo_select_fraction(&mut self, lo: f64, hi: f64) {
         let n = self.cell_count();
         if n == 0 {
@@ -943,7 +866,6 @@ impl PreviewPane {
             .collect()
     }
 
-    /// Pages on screen drawn with no pixels at all (paper only).
     #[cfg(test)]
     pub(crate) fn blank_pages_on_screen(&self) -> usize {
         self.pages_on_screen()
@@ -952,13 +874,11 @@ impl PreviewPane {
             .count()
     }
 
-    /// The pages asked of the renderer and not yet delivered.
     #[cfg(test)]
     pub(crate) fn pending_pages(&self) -> std::collections::BTreeSet<usize> {
         self.raster.pending_pages()
     }
 
-    /// The number of the chapter whose heading is on page `page`.
     #[cfg(test)]
     pub(crate) fn chapter_on(&self, page: usize) -> Option<usize> {
         let text = self.raster.text(page)?;
@@ -982,7 +902,6 @@ impl PreviewPane {
         self.raster.rendered()
     }
 
-    /// The pages delivered since the document shown now was set, in order.
     #[cfg(test)]
     pub(crate) fn delivered_pages(&self) -> Vec<usize> {
         let generation = self.raster.delivered.last().map(|(g, _)| *g);
@@ -996,8 +915,6 @@ impl PreviewPane {
             .collect()
     }
 
-    /// Paint the preview on the ground of `theme`, which is the region the
-    /// pane sits in: the pane fills nothing of its own.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -1042,8 +959,6 @@ impl PreviewPane {
         self.note_shown(transform, theme, &frame, &slots);
     }
 
-    /// The banner across the top of the preview telling the user the pages
-    /// below are from the last good compile, not the current source.
     fn draw_stale_banner(
         &self,
         scene: &mut Scene,
@@ -1141,9 +1056,6 @@ impl PreviewPane {
         self.viewport.draw_scrollbars(scene, transform, theme);
     }
 
-    /// Paint the selection as translucent bands, merging adjacent selected
-    /// cells on the same line into one rect so it reads as a continuous
-    /// highlight.
     fn draw_selection(&self, scene: &mut Scene, transform: Affine, theme: &Theme, main: Rect) {
         if !self.has_selection() {
             return;
@@ -1256,8 +1168,6 @@ impl PreviewPane {
         scene.pop_layer();
     }
 
-    /// The pane while it has no pages: the compile is running, produced
-    /// nothing, or failed before anything rendered.
     fn draw_empty(
         &self,
         scene: &mut Scene,
@@ -1293,8 +1203,6 @@ impl PreviewPane {
     }
 }
 
-/// Normalise a wheel delta into logical pixels per axis (matching the shared
-/// viewport kernel's own scaling so wheel feel is identical across apps).
 fn wheel_px(delta: &MouseScrollDelta, scale_factor: f64) -> (f64, f64) {
     match delta {
         MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 56.0, f64::from(*y) * 56.0),
@@ -1313,8 +1221,6 @@ mod tests {
         Arc::new(TypstPages::blank(sizes))
     }
 
-    /// A page of the lines `(y, chars, x0)`: each starts at `x0`, each of
-    /// its cells 8pt wide, its line box `[y, y+12]`, in page points.
     fn page_text(lines: &[(f64, &str, f64)]) -> PageText {
         let mut text = PageText::default();
         for (y, chars, x0) in lines {
@@ -1339,7 +1245,6 @@ mod tests {
         Arc::new(TypstPages::blank(&[size]).with_text(vec![text]))
     }
 
-    /// A 200×800pt single-page preview in a 400×300 pane with one text line.
     fn pane() -> PreviewPane {
         let mut p = PreviewPane::new();
         p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
