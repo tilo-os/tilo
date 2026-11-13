@@ -2446,6 +2446,28 @@ mod directory_query_input_tests {
     }
 }
 
+/// A directory target names a resource of the app, never one of its rows (only the app's own door
+/// resolves a row), and a revision.
+fn check_directory_target(
+    target: &DirectoryActionTarget,
+    argument: Option<&str>,
+    confirmation: Option<&DirectoryActionConfirmation>,
+) -> Result<(), ActionDirectoryBridgeError> {
+    let address = &target.address;
+    if address.item.is_some() || target.revision.is_empty() {
+        return Err(ActionDirectoryBridgeError::InvalidRequest);
+    }
+    validate_directory_target_input(
+        &target.cluster_id,
+        &target.revision,
+        &address.resource,
+        &address.action,
+        argument,
+        confirmation,
+    )
+    .map_err(|_| ActionDirectoryBridgeError::InvalidRequest)
+}
+
 fn validate_directory_target_input(
     cluster_id: &str,
     revision: &str,
@@ -4389,28 +4411,12 @@ impl AppBrokerState {
             address:
                 tilo_actions::ActionAddress {
                     resource,
-                    item,
+                    item: _,
                     action,
                 },
         } = target;
-        // The directory lists resources, never the rows of one: an address that names a row says
-        // which record of the app's it acts on, which only the app's own door resolves.
-        if item.is_some() {
-            return Err(ActionDirectoryBridgeError::InvalidRequest);
-        }
+        check_directory_target(target, argument, confirmation.as_ref())?;
         let peer_id = *peer_id;
-        if revision.is_empty() {
-            return Err(ActionDirectoryBridgeError::InvalidRequest);
-        }
-        validate_directory_target_input(
-            cluster_id,
-            revision,
-            resource,
-            action,
-            argument,
-            confirmation.as_ref(),
-        )
-        .map_err(|_| ActionDirectoryBridgeError::InvalidRequest)?;
         let registered = directories
             .registered(peer_id, cluster_id)
             .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;

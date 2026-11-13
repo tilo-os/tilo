@@ -458,9 +458,7 @@ fn shows_nothing_under_its_title(node: &InspectionNode, own: Rect) -> Option<(Re
     let title = headings.first().copied()?;
     let mut shown = Vec::new();
     showing_boxes(node, own, &mut shown);
-    let Some(top) = shown.iter().map(|line| line.y0).reduce(f64::min) else {
-        return None;
-    };
+    let top = shown.iter().map(|line| line.y0).reduce(f64::min)?;
     // What stands beside the title is the header's own band: a subtitle, a count, the control that
     // closes it. What stands under the band is the surface's body.
     let band = shown

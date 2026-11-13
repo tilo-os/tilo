@@ -623,7 +623,11 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
             .put_room_grants(
                 &created.workspace,
                 &cert,
-                uuid::Uuid::new_v4().into_bytes(),
+                {
+                    let mut request = [0; 32];
+                    request[..8].copy_from_slice(&index.to_le_bytes());
+                    request
+                },
                 vec![grant],
             )
             .await
