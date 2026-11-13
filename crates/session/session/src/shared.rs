@@ -265,13 +265,22 @@ impl Shared {
         if let Some(engine) = &self.engine {
             self.session_doors.keep_awaiting(&self.handle, engine);
         }
+        // What a place can show, as a find's answer holds it: the borrow ends here, since an
+        // answer is heard on a later pass, off the pass that asked.
+        let shows: std::rc::Rc<dyn Fn(&str) -> bool> = {
+            let catalog = std::rc::Rc::clone(&catalog);
+            std::rc::Rc::new(move |resource| catalog.borrow().get(resource).is_some())
+        };
         self.session_doors.answer(
             &self.doors,
             &self.services,
             &self.search,
-            &|resource| catalog.borrow().get(resource).is_some(),
+            std::rc::Rc::clone(&shows),
             look,
         );
+        // The finds the door asked on an earlier pass whose sources answered since: answered here,
+        // where the catalogue a place reads is, and never by the pass that asked them.
+        self.search.poll_finds();
         if let Some(power) = &self.power {
             for effect in power.take_asked() {
                 power.presentation().close();

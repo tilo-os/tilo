@@ -361,13 +361,20 @@ impl Session {
         // The search is made further down, from what the session mounts in
         // between; it is in place before the session runs any action.
         let session_search: Rc<std::cell::OnceCell<Rc<SessionSearch>>> = Rc::default();
+        // Text typed on the canvas is asked of the same search, off the pass that places it: the
+        // sources answer on their own threads, and what they found reaches `done` on a later pass,
+        // where the place stands. A source that never answers is cut off at the canvas's own
+        // deadline with what is in, so a wedged index costs the person a place, never a frame.
         let find: crate::arrangement::Find = {
             let search = Rc::clone(&session_search);
-            Rc::new(move |needle: &str| {
-                search
-                    .get()
-                    .map(|search| search.find(needle))
-                    .unwrap_or_default()
+            Rc::new(move |needle: &str, done: crate::arrangement::FindDone| {
+                let Some(search) = search.get() else {
+                    done(Vec::new());
+                    return;
+                };
+                // What the text finds is what the arrangement places, through its own catalogue:
+                // the hits reach the door's callback, which places what a place can show.
+                search.place_soon(needle, None, crate::arrangement::canvas_find_within(), done);
             })
         };
         // The conversations this session's agents answer in, and the agents each workspace keeps,

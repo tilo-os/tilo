@@ -21818,6 +21818,7 @@ dependencies = [
  "tilo-lock",
  "tilo-ui",
  "tokio",
+ "tracing",
  "web-time",
  "workspace-hack",
 ]

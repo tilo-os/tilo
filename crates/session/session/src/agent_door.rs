@@ -1435,6 +1435,12 @@ fn unanswered() -> ActionHostError {
     }
 }
 
+/// How long a door's `find` waits for its sources before answering with the rows that came: a
+/// source reading a disk, a mailbox or a service off the loop has its own time, and the find is
+/// answered with what is in rather than the loop or the caller waiting longer than this. The
+/// answer says in its log which source did not (a called tool reads the rows, not the log).
+const FIND_WITHIN: Duration = Duration::from_secs(10);
+
 impl crate::platform::steps::SessionSteps for SessionDoors {
     /// Run the session's own action `address` as `actor` with `slot` (its
     /// arguments in the slot form the broker carries), as a step of an agent's
@@ -1634,7 +1640,7 @@ impl SessionDoors {
         doors: &tilo_session_core::door::Doors,
         services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
         search: &crate::search::SessionSearch,
-        shows: &dyn Fn(&str) -> bool,
+        shows: std::rc::Rc<dyn Fn(&str) -> bool>,
         look: &mut tilo_session_core::door::Look<'_>,
     ) {
         let asked = std::mem::take(&mut *self.asks.lock_recover());
@@ -1645,11 +1651,16 @@ impl SessionDoors {
                     workspace,
                     done,
                 } => {
-                    done.complete(crate::search::found_all(
+                    // Asked, never waited for here: the sources answer on their own threads, and
+                    // the loop takes the answer up on a later pass ([`crate::search::SessionSearch::poll_finds`]).
+                    // A source that never answers cuts the find off at the caller's own deadline.
+                    search.find_soon(
                         &needle,
-                        search.find_in(&needle, workspace.as_deref()),
-                        shows,
-                    ));
+                        workspace.as_deref(),
+                        std::rc::Rc::clone(&shows),
+                        FIND_WITHIN,
+                        done,
+                    );
                 }
                 DoorAsk::Step {
                     actor,

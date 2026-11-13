@@ -34,6 +34,16 @@ const DEFAULT_WIDTH: i64 = 720;
 /// See [`DEFAULT_WIDTH`].
 const DEFAULT_HEIGHT: i64 = 520;
 
+/// How long a text typed on the canvas waits for its search before answering with the hits that
+/// came: a source reading a disk, a mailbox or a service has its own time, and the pass that placed
+/// waits for none of them. The canvas is the person's own typing, so it is heard within a moment;
+/// a search that has not answered by then places what it found so far, or sends the text on as a
+/// question to their agent as it always did when nothing matched.
+#[must_use]
+pub const fn canvas_find_within() -> std::time::Duration {
+    std::time::Duration::from_secs(2)
+}
+
 /// Where a place floats when the action names nothing else: the work area's bottom-right corner, a
 /// window's inset from its edges, at a floating size smaller than a canvas window.
 const FLOAT_INSET: i64 = 24;
@@ -254,11 +264,12 @@ pub enum ArrangementAction {
         float: Option<FloatPlace>,
     },
     /// Text typed on the canvas: the top result of the system's `find` stands there as its primary
-    /// view (or `view` ). The session resolves it into a [`Place`] when the action is invoked, so
+    /// view (or `view` ). The session resolves it into a [`Place`] when the search answers, so
     /// the record only ever holds what was placed, never the words it was found by. A `strip` names
     /// the strip the found resource joins as a tab, in front, instead of a strip of its own: how a
     /// person opens a found thing beside what they are in (shell.md §2, §3), as pressing a
-    /// reference does.
+    /// reference does. The search is asked off the pass that invoked this — its sources may read a
+    /// disk, a mailbox or a service — so the place stands on a later pass, never a frame's cost.
     PlaceFound {
         text: String,
         #[serde(default)]
@@ -316,7 +327,31 @@ pub struct Surface {
 /// palette and an agent's `tilo` tool run. The session sets it, so text typed
 /// on the canvas finds a resource through the one index and the one ranking,
 /// never a search of its own (shell.md §8, "Finding what to place").
-pub type Find = Rc<dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>>;
+///
+/// A host whose search may wait for a source (its sources read a disk, a
+/// mailbox or a service off the thread that asked) hands the find to `done`
+/// later rather than answering it here: the host's own loop, which runs the
+/// action, must never wait on one.
+pub type Find = Rc<dyn Fn(&str, FindDone)>;
+
+/// Where a [`Find`] puts what its text found, when it answers later than the
+/// call: the hits, in the ranking's order.
+pub type FindDone = Box<dyn FnOnce(Vec<tilo_desktop_search::Hit>)>;
+
+/// What a text typed on the canvas names among `hits`, as the canvas places it:
+/// the resource a place can show ([`placed`]), or `None`. The one reading of a
+/// search's order the canvas and an agent's `find` share, so both lead with the
+/// same row.
+#[must_use]
+pub fn found_resource(
+    hits: &[tilo_desktop_search::Hit],
+    text: &str,
+    shows: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let at = placed(hits, text, shows)?;
+    let (resource, _) = placeable(hits.get(at)?)?;
+    Some(resource.to_owned())
+}
 
 /// What the canvas does with text that is a question, or that nothing matches (shell.md §8.1,
 /// "Asking from the canvas"): the session sends it as the person to the workspace's agent, as a
@@ -339,8 +374,10 @@ pub struct Found<'a> {
     pub strip: Option<u64>,
     /// Where on the canvas it stands.
     pub at: (i64, i64),
-    /// The system's search, [`Find`].
-    pub find: &'a dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>,
+    /// The hits the text found, in the ranking's order, from the system's [`Find`]: answered
+    /// before the place is made, so a host whose search waits for a source does so on its own
+    /// thread and never in the pass that places.
+    pub hits: &'a [tilo_desktop_search::Hit],
     /// The ask for text that asks, [`Ask`].
     pub ask: &'a dyn Fn(&str) -> bool,
     /// Whether anyone else's change is still in flight.
@@ -385,21 +422,6 @@ pub fn placed(
         .filter(|(_, resource, _)| shows(resource))
         .collect();
     most_specific(&named, text)
-}
-
-/// The first resource `text` finds that a place can show, as the arrangement places it: the
-/// resource of the hit [`placed`] chooses, else `None` for a query no result answers with something
-/// placeable.
-#[must_use]
-pub fn found(
-    text: &str,
-    find: &dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>,
-    shows: impl Fn(&str) -> bool,
-) -> Option<String> {
-    let hits = find(text);
-    let at = placed(&hits, text, shows)?;
-    let (resource, _) = placeable(hits.get(at)?)?;
-    Some(resource.to_owned())
 }
 
 /// The app a window shows, by its id, when its tab holds a window at all.
@@ -706,13 +728,17 @@ impl Arrangement {
     }
 
     /// Place the resource a text typed at `at` finds on the canvas, as `asked`'s:
-    /// the top result of the system's `find` (`find`) that a place can show,
-    /// resolved against what the session publishes now ([`Catalog`]), standing at
-    /// `at` through the arranging action [`ArrangementAction::Place`] — one
-    /// attributed, undoable change of the person's record (shell.md §8). `view`
-    /// empty shows the resource's primary view. `strip` names the strip the
-    /// found resource joins as a tab (a strip id on the desk), else it takes a
-    /// strip of its own.
+    /// the top of the `hits` the system's search answered for it that a place can
+    /// show ([`found_resource`]), resolved against what the session publishes now
+    /// ([`Catalog`]), standing at `at` through the arranging action
+    /// [`ArrangementAction::Place`] — one attributed, undoable change of the
+    /// person's record (shell.md §8). `view` empty shows the resource's primary
+    /// view. `strip` names the strip the found resource joins as a tab (a strip
+    /// id on the desk), else it takes a strip of its own.
+    ///
+    /// The hits are the search's answer, which a host whose sources read a disk,
+    /// a mailbox or a service asks for off the loop and passes here when it
+    /// comes (`Find`, `FindDone`): this never searches.
     ///
     /// Returns the place's id, or `None` when nothing the text finds is a
     /// resource the arrangement can place.
@@ -733,7 +759,7 @@ impl Arrangement {
             view,
             strip,
             at,
-            find,
+            hits,
             ask,
             busy,
         } = inputs;
@@ -741,13 +767,13 @@ impl Arrangement {
         if text.is_empty() {
             return Err("nothing is typed to place".into());
         }
-        let found_resource = found(text, find, |resource| {
+        let named = found_resource(hits, text, |resource| {
             self.catalog.borrow().get(resource).is_some()
         });
         // A question is answered even when it happens to match something the search holds: the
         // person asked, so the text they typed is a message to their agent, not a thing to stand
         // (shell.md §8.1).
-        let resource = match found_resource {
+        let resource = match named {
             Some(resource) if !tilo_desktop_search::answers::question::asks(text) => resource,
             _ if ask(text) => return Ok(None),
             _ => return Err(format!("nothing matches {text:?}")),
@@ -2266,6 +2292,7 @@ fn text(args: &ActionArgs, name: &str) -> String {
 
 /// The arrangement's published side: the one door the palette, a script, an agent and the host's
 /// own calls reach its actions through, beside the desktop's own.
+#[derive(Clone)]
 pub struct Door {
     arrangement: Rc<RefCell<Arrangement>>,
     /// How the host says whether the person is mid-gesture or typing, as it last saw it.
@@ -2367,8 +2394,11 @@ impl Door {
         } else {
             (self.busy)()
         };
-        // A place found by text is resolved here, where the search and what is published now are:
-        // the record only ever holds what was placed.
+        // A place found by text is resolved where the search and what is published now are: the
+        // record only ever holds what was placed. The search runs first, on whatever thread it
+        // needs (a host whose sources read a disk, a mailbox or a service answers later), and this
+        // returns before the place stands: the place appears on a later pass, the person's step as
+        // any other.
         if let ArrangementAction::PlaceFound {
             text,
             view,
@@ -2380,20 +2410,32 @@ impl Door {
             let spot = (*x, *y);
             let find = Rc::clone(&self.find);
             let ask = Rc::clone(&self.ask);
-            let placed = self.arrangement.borrow_mut().place_found(Found {
-                asked: &asked,
-                text,
-                view,
-                strip: *strip,
-                at: spot,
-                find: &*find,
-                ask: &*ask,
-                busy,
-            });
-            placed.map_err(|why| tilo_actions::DoorError::Unavailable {
-                code: "nothing_to_place".to_owned(),
-                reason: why,
-            })?;
+            let door = self.clone();
+            let needle = text.trim().to_owned();
+            let (text, view, strip) = (text.clone(), view.clone(), *strip);
+            find(
+                &needle,
+                Box::new(move |hits| {
+                    if let Err(why) = door.arrangement.borrow_mut().place_found(Found {
+                        asked: &asked,
+                        text: &text,
+                        view: &view,
+                        strip,
+                        at: spot,
+                        hits: &hits,
+                        ask: &*ask,
+                        busy,
+                    }) {
+                        // The text named nothing a place can show, and nothing answered it: the
+                        // person sees no place, so the log says why.
+                        tracing::warn!(%why, %text, "what the text found is not placed");
+                    }
+                }),
+            );
+            // The search is under way and the place stands on a later pass: the door answers as it
+            // always did for an arranging action, which is complete when the ask is taken. Nothing
+            // of the place is left for the caller to read back, so it is not a pending invocation
+            // (`Accepted` would be, and nothing completes it).
             return Ok(ui::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ));
@@ -2525,7 +2567,7 @@ impl Door {
 
 #[cfg(test)]
 mod tests {
-    use super::{found, most_specific, placed};
+    use super::{found_resource, most_specific, placed};
     use tilo_desktop_search::{Hit, InvokeTarget, ResourceKind, Target};
 
     /// A row text typed on the canvas would stand for: what it opens, and what it is.
@@ -2579,12 +2621,12 @@ mod tests {
         ];
         let showable = |resource: &str| resource == "tl:so.tilo.lang.chat";
         assert_eq!(
-            found("Chat", &|_| hits.clone(), showable).as_deref(),
+            found_resource(&hits, "Chat", showable).as_deref(),
             Some("tl:so.tilo.lang.chat"),
             "a hit the arrangement cannot place does not stand in the way of one it can"
         );
         assert_eq!(
-            found("Chat", &|_| hits.clone(), |_| false),
+            found_resource(&hits, "Chat", |_| false),
             None,
             "and with nothing placeable, nothing is placed"
         );
@@ -2631,7 +2673,7 @@ mod tests {
              not another row about it"
         );
         assert_eq!(
-            found("my mails", &|_| hits.clone(), |_| true).as_deref(),
+            found_resource(&hits, "my mails", |_| true).as_deref(),
             Some("tl:so.tilo.lang.mail:root"),
             "and the canvas stands its resource"
         );

@@ -817,11 +817,18 @@ impl Repl {
 
     /// Send `method` with `params` and wait for its answer.
     pub fn ask(&mut self, session: &mut Session, method: &str, params: &Value) -> Value {
+        self.send(method, params);
+        self.answer(session)
+    }
+
+    /// Send `method` with `params`, and answer nothing here: the caller runs the session until it
+    /// likes, and reads the answer with [`Self::answer`] when it is in. What a test that drives
+    /// frames meanwhile, or counts them, needs: the door's thread works on while the loop passes.
+    pub fn send(&mut self, method: &str, params: &Value) {
         self.next = self.next.saturating_add(1);
         self.asks
             .send(json!({"jsonrpc": "2.0", "id": self.next, "method": method, "params": params}))
             .unwrap();
-        self.answer(session)
     }
 
     /// Call the door's tool `name` : its text, and whether it is an error.

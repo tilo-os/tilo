@@ -44,6 +44,12 @@ struct Job {
     wake: ui::wake::WakeHandle,
 }
 
+/// What wakes a host's own loop when an answer is in: the loop that asked
+/// from off the toolkit's frames (the session's, which owns its search), where
+/// no frame's [`ui::wake::WakeHandle`] reaches. `None` where the frame's wake
+/// is the host's.
+pub type LoopWake = Arc<dyn Fn() + Send + Sync>;
+
 #[derive(Default)]
 struct State {
     /// The sources whose query is running now.
@@ -64,6 +70,9 @@ pub struct SearchWorkers {
     /// How the host runs work: a thread pool natively, the page's own queue
     /// in a browser.
     background: ui::background::Background,
+    /// What asks the host's own loop for its next pass as a search off the frames
+    /// answers, where the frames' wake reaches nothing.
+    loop_wake: Option<LoopWake>,
 }
 
 impl Default for SearchWorkers {
@@ -83,12 +92,39 @@ impl std::fmt::Debug for SearchWorkers {
 }
 
 impl SearchWorkers {
-    /// A palette's work, on the host's own background threads.
+    /// A palette's work, on the host's own background threads, its answers waking
+    /// the desk's own frames.
     #[must_use]
     pub fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(State::default())),
             background: ui::background::Background::current(),
+            loop_wake: None,
+        }
+    }
+
+    /// A host's search that no frame answers: its answers wake the host's loop
+    /// through `wake` (the session's own, whose search runs on the loop's thread
+    /// but never holds it), and never a frame's wake, which reaches nothing there.
+    #[must_use]
+    pub fn waking(wake: LoopWake) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(State::default())),
+            background: ui::background::Background::current(),
+            loop_wake: Some(wake),
+        }
+    }
+
+    /// A pool of the same host with its own searches: a host that asks several
+    /// finds at once gives each this, so a newer one never retires an older one's
+    /// sources — what `begin` does inside one palette, where a newer query does
+    /// replace the older.
+    #[must_use]
+    pub fn fork(&self) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(State::default())),
+            background: self.background.clone(),
+            loop_wake: self.loop_wake.clone(),
         }
     }
 
@@ -136,6 +172,7 @@ impl SearchWorkers {
             answer,
             wake: ui::wake::WakeHandle::new(),
         };
+        let loop_wake = self.loop_wake.clone();
         {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             if generation < state.generation {
@@ -150,13 +187,14 @@ impl SearchWorkers {
             }
             state.running.insert(key.to_owned());
         }
-        self.start(job, key);
+        self.start(job, key, loop_wake);
     }
 
     /// Run `job` away from the frame, and once it is done let the query that
     /// waited for its source run. The answer wakes the desk: no frame is
-    /// drawn for the search while its sources work.
-    fn start(&self, job: Job, key: &str) {
+    /// drawn for the search while its sources work. `loop_wake` is the host's
+    /// own wake, where it asks the search from off the frames.
+    fn start(&self, job: Job, key: &str, loop_wake: Option<LoopWake>) {
         let workers = self.clone();
         let key = key.to_owned();
         let done = key.clone();
@@ -169,6 +207,7 @@ impl SearchWorkers {
         } = job;
         let unanswered = answer.clone();
         let asker = wake.clone();
+        let asked_loop = loop_wake.clone();
         let spawned = self.background.spawn("tilo-search", move || {
             // A source that panics answers nothing rather than taking the
             // worker down with it.
@@ -178,6 +217,11 @@ impl SearchWorkers {
             // and the wake finds no search waiting.
             let _ = answer.send(Answer { source, hits });
             wake.wake();
+            if let Some(loop_wake) = &asked_loop {
+                // The asking host has no frame to wake: its loop is asked for
+                // the pass that takes this answer up.
+                loop_wake();
+            }
             workers.finished(&done);
         });
         if spawned.is_err() {
@@ -193,6 +237,9 @@ impl SearchWorkers {
                 hits: Vec::new(),
             });
             asker.wake();
+            if let Some(loop_wake) = &loop_wake {
+                loop_wake();
+            }
         }
     }
 
@@ -213,8 +260,9 @@ impl SearchWorkers {
             }
             next
         };
+        let loop_wake = self.loop_wake.clone();
         if let Some(job) = next {
-            self.start(job, key);
+            self.start(job, key, loop_wake);
         }
     }
 }

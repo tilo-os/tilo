@@ -22,10 +22,10 @@ use tilo_session_core::door::{Look, Published};
 use crate::activity::{Activity, now_seconds};
 
 pub use tilo_session_core::arrangement::{
-    Arrangement, ArrangementAction, Ask, Busy, Catalog, Find, Found, Item, OPERATION, PLACE_KIND,
-    PlaceReading, RECORD_RESOURCE, RESOURCE, ROW_KIND, Reading, RowReading, STRIP_KIND,
-    StripReading, Surface, Target, WorkspaceReading, found, place_kind_resource, placed, resources,
-    row_kind_resource, strip_kind_resource, tab_app,
+    Arrangement, ArrangementAction, Ask, Busy, Catalog, Find, FindDone, Found, Item, OPERATION,
+    PLACE_KIND, PlaceReading, RECORD_RESOURCE, RESOURCE, ROW_KIND, Reading, RowReading, STRIP_KIND,
+    StripReading, Surface, Target, WorkspaceReading, canvas_find_within, found_resource,
+    place_kind_resource, placed, resources, row_kind_resource, strip_kind_resource, tab_app,
 };
 
 /// `person` 's arrangement of `handle` 's desk, whose changes `activity` keeps: a device that kept
