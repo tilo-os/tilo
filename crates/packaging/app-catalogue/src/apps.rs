@@ -1,10 +1,8 @@
-//! The installed half of the catalogue: the applications this device can
-//! launch, with the signed manifest each was admitted with.
-//!
-//! Every installed package ([`package_store::Catalog`]) read through the
-//! view of its manifest ([`tilo_app_package::view`]), and what each declared
-//! it may do on the action door under its own identity. The desktop session,
-//! the per-user runtime and app-host launch from this one answer.
+//! The installed half of the catalogue: the applications this device can launch, with the signed
+//! manifest each was admitted with. Every installed package ([`package_store::Catalog`]) read
+//! through the view of its manifest ([`tilo_app_package::view`]), and what each declared it may do
+//! on the action door under its own identity. The desktop session, the per-user runtime and
+//! app-host launch from this one answer.
 
 use std::path::PathBuf;
 
@@ -15,29 +13,24 @@ use tilo_app_id::AppId;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledApp {
     pub app_id: AppId,
-    /// Human-facing name — the manifest's `[package].name`, or derived
-    /// from the package id's trailing component when unset.
+    /// `[package].name`, or derived from the package id's trailing component when unset.
     pub display_name: String,
-    /// The manifest's `[package.names]`: the name in other languages, by
-    /// BCP 47 tag. Search matches these alongside `display_name`.
+    /// `[package.names]`: the name in other languages, by BCP 47 tag. Search matches these alongside
+    /// `display_name`.
     pub localized_names: std::collections::BTreeMap<String, String>,
-    /// The manifest's `[package.keywords]`, every language's together: the
-    /// other words the app is known by. Search matches these alongside the
-    /// name ("youtube" finds a video app).
+    /// `[package.keywords]`, every language's together: search matches these alongside the name
+    /// ("youtube" finds a video app).
     pub keywords: Vec<String>,
-    /// The manifest's `[package].category`, when declared; matched by
-    /// the Applications search provider.
+    /// `[package].category`, when declared; matched by the Applications search provider.
     pub category: Option<String>,
     pub version: String,
     pub manifest_path: PathBuf,
     pub payload_root: PathBuf,
-    /// Whether the package declares a GUI entrypoint; CLI-only packages
-    /// have no window, so the applications list hides them.
+    /// Whether the package declares a GUI entrypoint; CLI-only packages have no window, so the
+    /// applications list hides them.
     pub has_gui: bool,
-    /// The manifest's `[providers].ext` — file extensions this package
-    /// opens (lowercased, no leading dot). The desktop's only answer to
-    /// "which app owns `.odt`": installing an app is what teaches the
-    /// desktop its file types.
+    /// `[providers].ext`: file extensions this package opens (lowercased, no leading dot). Installing
+    /// an app is what teaches the desktop its file types.
     pub opens_extensions: Vec<String>,
     /// Concrete normalized MIME claims from `[providers].mime`.
     pub opens_mime_types: Vec<String>,
@@ -48,12 +41,11 @@ pub struct InstalledApp {
     /// The resource kinds `[providers].resources` says the app opens
     /// (`mail.message`): an address of one opens in this app.
     pub opens_resource_kinds: Vec<String>,
-    /// The signed manifest's `[[offers]]`: actions the app offers while it
-    /// is not running, which the action catalogue lists for it.
+    /// `[[offers]]`: actions the app offers while it is not running, which the action catalogue lists
+    /// for it.
     pub offers: Vec<tilo_app_package::manifest::OfferedAction>,
-    /// The signed manifest as it was decoded when the app was read: what a
-    /// host answers questions about the app from, without reading the file
-    /// again. The fields above are its normalized view.
+    /// The signed manifest as it was decoded when the app was read, which the fields above are a
+    /// normalized view of.
     pub manifest: tilo_app_package::manifest::Manifest,
 }
 
@@ -71,9 +63,8 @@ impl InstalledApp {
             .collect()
     }
 
-    /// The application `entry` installs, read through its manifest. `None`
-    /// when the manifest is missing (the payload was deleted behind the
-    /// registry's back) or unreadable.
+    /// The application `entry` installs, read through its manifest. `None` when the manifest is
+    /// missing (the payload was deleted behind the registry's back) or unreadable.
     fn from_package(entry: &InstalledPackage) -> Option<Self> {
         // One decode of the signed manifest: the view and the offers are
         // both read from it.
@@ -115,16 +106,14 @@ impl InstalledApp {
         })
     }
 
-    /// The name to show in `locale`: [`collab_types::history::localized_name`], else
-    /// `display_name`.
+    /// The name to show in `locale`: [`collab_types::history::localized_name`], else `display_name`.
     pub fn name_for(&self, locale: &str) -> &str {
         collab_types::history::localized_name(&self.localized_names, locale)
             .unwrap_or(self.display_name.as_str())
     }
 
-    /// The name to show to a person whose interface prefers `locales`, in
-    /// that order: the first language the manifest names this app in, else
-    /// `display_name`.
+    /// The name to show to a person whose interface prefers `locales`, in that order: the first
+    /// language the manifest names this app in, else `display_name`.
     #[must_use]
     pub fn name_in(&self, locales: &[String]) -> &str {
         locales

@@ -1,9 +1,7 @@
-//! Installing a Flathub app: the same rule the app host applies, as the
-//! Flatpak commands that carry it out.
-//!
-//! An app is installed into the person's own installation, from Flathub as
-//! the device or the person configured it, and only when that source is the
-//! official repository, enabled and verifying signatures.
+//! Installing a Flathub app: the same rule the app host applies, as the Flatpak commands that
+//! carry it out. An app is installed into the person's own installation, from Flathub as the
+//! device or the person configured it, and only when that source is the official repository,
+//! enabled and verifying signatures.
 
 /// The repository addresses Flathub is served from.
 const OFFICIAL_URLS: [&str; 2] = ["https://dl.flathub.org/repo", "https://flathub.org/repo"];
@@ -51,8 +49,7 @@ pub fn valid_app_id(id: &str) -> bool {
 ///
 /// # Errors
 ///
-/// [`InstallRefusal`] when the id is invalid or no trustworthy Flathub
-/// source is configured.
+/// [`InstallRefusal`] when the id is invalid or no trustworthy Flathub source is configured.
 pub fn install_commands(app_id: &str, remotes: &str) -> Result<Vec<Vec<String>>, InstallRefusal> {
     if !valid_app_id(app_id) {
         return Err(InstallRefusal::InvalidId);
@@ -83,9 +80,8 @@ pub fn install_commands(app_id: &str, remotes: &str) -> Result<Vec<Vec<String>>,
 pub enum Installation {
     /// The person's own (`--user`).
     User,
-    /// The device's (`--system`), which only an administrator changes:
-    /// Flatpak's system helper asks polkit, whose rule lets a local, active
-    /// administrator through.
+    /// The device's (`--system`), which only an administrator changes: Flatpak's system helper asks
+    /// polkit, whose rule lets a local, active administrator through.
     System,
 }
 
@@ -98,12 +94,10 @@ impl Installation {
     }
 }
 
-/// The `flatpak` argument lists that uninstall `app_id` from `installation`,
-/// in order: the app, then the runtimes no app there uses any more (nothing
-/// else removes those, so each removed app would leave its runtime behind
-/// for good). The app's data (`~/.var/app/<id>`) is left for the caller,
-/// which moves it to the Trash when the person asks; Flatpak's own
-/// `--delete-data` would delete it.
+/// The `flatpak` argument lists that uninstall `app_id` from `installation`, in order: the app, then
+/// the runtimes no app there uses any more. The app's data (`~/.var/app/<id>`) is left for the
+/// caller, which moves it to the Trash when the person asks; Flatpak's own `--delete-data` would
+/// delete it.
 ///
 /// # Errors
 ///

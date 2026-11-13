@@ -1,20 +1,13 @@
-//! The one catalogue of apps a person can get, shared by the Store and
-//! desktop search.
+//! The one catalogue of apps a person can get, shared by the Store and desktop search.
 //!
-//! Two sources make it up:
-//!
-//! - **Tilo packages** from the configured registries ([`tilo`]): the
-//!   `app list --json` rows, joined with the signed manifest metadata of the
-//!   Tilo fleet ([`app_fleet`]) so an app that is not on this device is still
-//!   known by its tag line, other names, keywords, the documents it creates
-//!   and the actions it offers. A Tilo app has no install step: opening one
-//!   downloads it if it is absent.
-//! - **Flathub** from Flatpak's cached `AppStream` metadata ([`appstream`]):
-//!   the file Flatpak keeps under each installation, with the icons it
-//!   caches beside it. A Flathub app is installed explicitly.
-//!
-//! On top sits the [`BlockList`]: apps blocked by the person, a workspace
-//! or the device's administrator appear in neither search nor the Store.
+//! Two sources make it up: Tilo packages from the configured registries ([`tilo`]), the `app list
+//! --json` rows joined with the signed manifest metadata of the Tilo fleet ([`app_fleet`]), so an
+//! app that is not on this device is still known by its tag line, other names, keywords, the
+//! documents it creates and the actions it offers (opening one downloads it if absent); and
+//! Flathub from Flatpak's cached `AppStream` metadata ([`appstream`]), the file Flatpak keeps under
+//! each installation with the icons it caches beside it (installed explicitly). On top sits the
+//! [`BlockList`]: apps blocked by the person, a workspace or the device's administrator appear in
+//! neither search nor the Store.
 //!
 //! # Reading it
 //!
@@ -36,23 +29,17 @@
 //!
 //! # Refreshing it
 //!
-//! Nothing here goes to the network. The registries' listing is refreshed
-//! by `app list` (which the shell runs in the background and caches), and
-//! Flathub's `AppStream` by Flatpak itself, which the hourly
-//! `tilo-app-update` run asks for. A reader compares
-//! [`appstream::cache_stamp`] to learn whether Flatpak refreshed since.
+//! Nothing here goes to the network. The registries' listing is refreshed by `app list` (which the
+//! shell runs in the background and caches), and Flathub's `AppStream` by Flatpak itself, which the
+//! hourly `tilo-app-update` run asks for; a reader compares [`appstream::cache_stamp`] to learn
+//! whether Flatpak refreshed since.
 //!
-//! # Stability
+//! The Store and the shell build on [`CatalogueEntry`], [`Catalogue`], [`Installed`],
+//! [`BlockList`] and the loaders in [`appstream`] and [`tilo`]. Fields are only ever added to these
+//! types, never renamed or removed, so both sides move independently.
 //!
-//! The Store and the shell build on [`CatalogueEntry`], [`Catalogue`],
-//! [`Installed`], [`BlockList`] and the loaders in [`appstream`] and
-//! [`tilo`]. Fields are only ever added to these types, never renamed or
-//! removed, so both sides can move independently.
-//!
-//! The other half — what this device has — is [`apps`]: each installed
-//! package read through the signed manifest it was admitted with, for the
-//! session, the runtime and app-host. A catalogue entry is `installed` or
-//! offered by exactly one of the two.
+//! The other half, what this device has, is [`apps`]: each installed package read through the
+//! signed manifest it was admitted with, for the session, the runtime and app-host.
 
 pub mod apps;
 pub mod appstream;
