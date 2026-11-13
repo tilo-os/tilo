@@ -971,6 +971,10 @@ mod authentication_tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
         fn remote_sign_in_goes_through_the_real_greetd_conversation;
 
         phase remote_challenges_use_actual_pam_prompts_and_reject_stale_response_owners;
