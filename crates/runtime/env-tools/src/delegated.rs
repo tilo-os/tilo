@@ -376,108 +376,112 @@ mod tests {
         packed.id()
     }
 
-    #[test]
-    fn the_worker_signs_only_the_tool_it_was_asked_for() {
-        let tree = tree();
-        let work = tempfile::tempdir().unwrap();
-        let relay = SigningIdentity::from_seed(&[7; 32]);
-        let runtime = PackageId::from_bytes([1; 32]);
-        let arch = image::host_arch().unwrap();
-        let built = work.path().join("built.tapp");
-        let unsigned_id = unsigned(tree.path(), runtime, relay.public_key_bytes(), &built);
+    tilo_test_env::scenario! {
+        fn delegated_signing;
 
-        let shelf = work.path().join("shelf");
-        let id = sign_delegated(&built, &runtime, arch, &relay, &shelf).unwrap();
-        assert_ne!(id, unsigned_id, "signing makes a new package");
-        let bytes = std::fs::read(shelf.join(format!("{}.tapp", id.to_hex()))).unwrap();
-        let mut blobs = std::collections::BTreeMap::<BlobHash, Vec<u8>>::new();
-        let read = tilo_app_package::tapp::read(bytes.as_slice(), &mut blobs).unwrap();
-        assert_eq!(read.meta.id, id);
-        assert!(
-            tilo_app_package::verify(&read.meta, &[relay.public_key_bytes()])
-                .manifest()
-                .is_some(),
-            "the image verifies against the relay's key"
-        );
+        phase the_worker_signs_only_the_tool_it_was_asked_for;
+        {
+            let tree = tree();
+            let work = tempfile::tempdir().unwrap();
+            let relay = SigningIdentity::from_seed(&[7; 32]);
+            let runtime = PackageId::from_bytes([1; 32]);
+            let arch = image::host_arch().unwrap();
+            let built = work.path().join("built.tapp");
+            let unsigned_id = unsigned(tree.path(), runtime, relay.public_key_bytes(), &built);
 
-        assert!(matches!(
-            sign_delegated(
-                &built,
-                &PackageId::from_bytes([2; 32]),
-                arch,
-                &relay,
-                &shelf
-            ),
-            Err(DelegatedError::Refused(_))
-        ));
-        let other = SigningIdentity::from_seed(&[8; 32]);
-        assert!(sign_delegated(&built, &runtime, arch, &other, &shelf).is_err());
-        let link = work.path().join("link.tapp");
-        std::os::unix::fs::symlink(&built, &link).unwrap();
-        assert!(matches!(
-            sign_delegated(&link, &runtime, arch, &relay, &shelf),
-            Err(DelegatedError::Io(_))
-        ));
-    }
+            let shelf = work.path().join("shelf");
+            let id = sign_delegated(&built, &runtime, arch, &relay, &shelf).unwrap();
+            assert_ne!(id, unsigned_id, "signing makes a new package");
+            let bytes = std::fs::read(shelf.join(format!("{}.tapp", id.to_hex()))).unwrap();
+            let mut blobs = std::collections::BTreeMap::<BlobHash, Vec<u8>>::new();
+            let read = tilo_app_package::tapp::read(bytes.as_slice(), &mut blobs).unwrap();
+            assert_eq!(read.meta.id, id);
+            assert!(
+                tilo_app_package::verify(&read.meta, &[relay.public_key_bytes()])
+                    .manifest()
+                    .is_some(),
+                "the image verifies against the relay's key"
+            );
 
-    #[test]
-    fn a_signed_catalog_names_exactly_the_signed_tools() {
-        let tree = tree();
-        let work = tempfile::tempdir().unwrap();
-        let publisher = SigningIdentity::from_seed(&[7; 32]);
-        let runtime = PackageId::from_bytes([1; 32]);
-        let arch = image::host_arch().unwrap();
-        let built = work.path().join("built");
-        std::fs::create_dir(&built).unwrap();
-        let unsigned_id = unsigned(
-            tree.path(),
-            runtime,
-            publisher.public_key_bytes(),
-            &built.join("hello.tapp"),
-        );
-        let key = CacheKey::new(runtime, ["hello-1-1.x86_64"]);
-        let mut catalog = Catalog::default();
-        catalog.insert(crate::index::Entry {
-            tool: unsigned_id,
-            key: key.clone(),
-            requested: vec!["hello".into()],
-        });
+            assert!(matches!(
+                sign_delegated(
+                    &built,
+                    &PackageId::from_bytes([2; 32]),
+                    arch,
+                    &relay,
+                    &shelf
+                ),
+                Err(DelegatedError::Refused(_))
+            ));
+            let other = SigningIdentity::from_seed(&[8; 32]);
+            assert!(sign_delegated(&built, &runtime, arch, &other, &shelf).is_err());
+            let link = work.path().join("link.tapp");
+            std::os::unix::fs::symlink(&built, &link).unwrap();
+            assert!(matches!(
+                sign_delegated(&link, &runtime, arch, &relay, &shelf),
+                Err(DelegatedError::Io(_))
+            ));
+        }
 
-        let signed_dir = work.path().join("signed");
-        let (signed, ids) =
-            sign_catalog(&catalog, &built, &runtime, arch, &publisher, &signed_dir).unwrap();
-        let id = ids[&unsigned_id];
-        assert_ne!(id, unsigned_id);
-        assert_eq!(signed.tools[&key.digest().to_hex()].tool, id);
-        let bytes = std::fs::read(signed_dir.join(format!("{}.tapp", id.to_hex()))).unwrap();
-        let mut blobs = std::collections::BTreeMap::<BlobHash, Vec<u8>>::new();
-        let read = tilo_app_package::tapp::read(bytes.as_slice(), &mut blobs).unwrap();
-        assert!(
-            tilo_app_package::verify(&read.meta, &[publisher.public_key_bytes()])
-                .manifest()
-                .is_some(),
-            "the signed tool verifies against the publisher"
-        );
-        let direct =
-            image::seal_tool(tree.path(), &key, &["hello".to_owned()], arch, &publisher).unwrap();
-        assert_eq!(direct.id(), id);
+        phase a_signed_catalog_names_exactly_the_signed_tools;
+        {
+            let tree = tree();
+            let work = tempfile::tempdir().unwrap();
+            let publisher = SigningIdentity::from_seed(&[7; 32]);
+            let runtime = PackageId::from_bytes([1; 32]);
+            let arch = image::host_arch().unwrap();
+            let built = work.path().join("built");
+            std::fs::create_dir(&built).unwrap();
+            let unsigned_id = unsigned(
+                tree.path(),
+                runtime,
+                publisher.public_key_bytes(),
+                &built.join("hello.tapp"),
+            );
+            let key = CacheKey::new(runtime, ["hello-1-1.x86_64"]);
+            let mut catalog = Catalog::default();
+            catalog.insert(crate::index::Entry {
+                tool: unsigned_id,
+                key: key.clone(),
+                requested: vec!["hello".into()],
+            });
 
-        let other = SigningIdentity::from_seed(&[8; 32]);
-        let elsewhere = work.path().join("elsewhere");
-        assert!(sign_catalog(&catalog, &built, &runtime, arch, &other, &elsewhere).is_err());
-        assert!(
-            sign_catalog(
-                &Catalog::default(),
-                &built,
-                &runtime,
-                arch,
-                &publisher,
-                &elsewhere
-            )
-            .is_err()
-        );
-        let empty = work.path().join("empty");
-        std::fs::create_dir(&empty).unwrap();
-        assert!(sign_catalog(&catalog, &empty, &runtime, arch, &publisher, &elsewhere).is_err());
+            let signed_dir = work.path().join("signed");
+            let (signed, ids) =
+                sign_catalog(&catalog, &built, &runtime, arch, &publisher, &signed_dir).unwrap();
+            let id = ids[&unsigned_id];
+            assert_ne!(id, unsigned_id);
+            assert_eq!(signed.tools[&key.digest().to_hex()].tool, id);
+            let bytes = std::fs::read(signed_dir.join(format!("{}.tapp", id.to_hex()))).unwrap();
+            let mut blobs = std::collections::BTreeMap::<BlobHash, Vec<u8>>::new();
+            let read = tilo_app_package::tapp::read(bytes.as_slice(), &mut blobs).unwrap();
+            assert!(
+                tilo_app_package::verify(&read.meta, &[publisher.public_key_bytes()])
+                    .manifest()
+                    .is_some(),
+                "the signed tool verifies against the publisher"
+            );
+            let direct =
+                image::seal_tool(tree.path(), &key, &["hello".to_owned()], arch, &publisher).unwrap();
+            assert_eq!(direct.id(), id);
+
+            let other = SigningIdentity::from_seed(&[8; 32]);
+            let elsewhere = work.path().join("elsewhere");
+            assert!(sign_catalog(&catalog, &built, &runtime, arch, &other, &elsewhere).is_err());
+            assert!(
+                sign_catalog(
+                    &Catalog::default(),
+                    &built,
+                    &runtime,
+                    arch,
+                    &publisher,
+                    &elsewhere
+                )
+                .is_err()
+            );
+            let empty = work.path().join("empty");
+            std::fs::create_dir(&empty).unwrap();
+            assert!(sign_catalog(&catalog, &empty, &runtime, arch, &publisher, &elsewhere).is_err());
+        }
     }
 }

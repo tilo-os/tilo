@@ -101,35 +101,39 @@ mod tests {
     use super::*;
     use tilo_app_package::PackageId;
 
-    #[test]
-    fn ids_are_reverse_dns_slugs_of_the_request() {
-        assert_eq!(tool_id(&["pandoc".into()]), "so.tilo.tool.pandoc");
-        assert_eq!(tool_id(&["gcc".into(), "make".into()]), "so.tilo.tool.gcc");
-        assert_eq!(
-            tool_id(&["/usr/bin/Python3".into()]),
-            "so.tilo.tool.usr-bin-python3"
-        );
-        assert_eq!(tool_id(&[]), "so.tilo.tool.tool");
-    }
+    tilo_test_env::scenario! {
+        fn tool_image_ids;
 
-    #[test]
-    fn one_signer_sealing_one_key_gets_one_id() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
-        std::fs::write(dir.path().join("usr/bin/hello"), "hi").unwrap();
-        let key = CacheKey::new(PackageId::from_bytes([1; 32]), ["hello-1-1.x86_64"]);
-        let identity = SigningIdentity::from_seed(&[7; 32]);
-        let requested = vec!["hello".to_owned()];
-        let a = seal_tool(dir.path(), &key, &requested, Arch::X86_64, &identity).unwrap();
-        let b = seal_tool(dir.path(), &key, &requested, Arch::X86_64, &identity).unwrap();
-        assert_eq!(a.id(), b.id());
-        let image = a.meta.manifest.image.as_ref().unwrap();
-        assert_eq!(image.runtime, Some(key.runtime));
-        assert_eq!(image.packages, key.nevras);
-        assert_eq!(a.meta.manifest.package.kind, Kind::Tool);
+        phase ids_are_reverse_dns_slugs_of_the_request;
+        {
+            assert_eq!(tool_id(&["pandoc".into()]), "so.tilo.tool.pandoc");
+            assert_eq!(tool_id(&["gcc".into(), "make".into()]), "so.tilo.tool.gcc");
+            assert_eq!(
+                tool_id(&["/usr/bin/Python3".into()]),
+                "so.tilo.tool.usr-bin-python3"
+            );
+            assert_eq!(tool_id(&[]), "so.tilo.tool.tool");
+        }
 
-        let other = CacheKey::new(PackageId::from_bytes([2; 32]), ["hello-1-1.x86_64"]);
-        let c = seal_tool(dir.path(), &other, &requested, Arch::X86_64, &identity).unwrap();
-        assert_ne!(a.id(), c.id(), "a tool names its runtime");
+        phase one_signer_sealing_one_key_gets_one_id;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+            std::fs::write(dir.path().join("usr/bin/hello"), "hi").unwrap();
+            let key = CacheKey::new(PackageId::from_bytes([1; 32]), ["hello-1-1.x86_64"]);
+            let identity = SigningIdentity::from_seed(&[7; 32]);
+            let requested = vec!["hello".to_owned()];
+            let a = seal_tool(dir.path(), &key, &requested, Arch::X86_64, &identity).unwrap();
+            let b = seal_tool(dir.path(), &key, &requested, Arch::X86_64, &identity).unwrap();
+            assert_eq!(a.id(), b.id());
+            let image = a.meta.manifest.image.as_ref().unwrap();
+            assert_eq!(image.runtime, Some(key.runtime));
+            assert_eq!(image.packages, key.nevras);
+            assert_eq!(a.meta.manifest.package.kind, Kind::Tool);
+
+            let other = CacheKey::new(PackageId::from_bytes([2; 32]), ["hello-1-1.x86_64"]);
+            let c = seal_tool(dir.path(), &other, &requested, Arch::X86_64, &identity).unwrap();
+            assert_ne!(a.id(), c.id(), "a tool names its runtime");
+        }
     }
 }
