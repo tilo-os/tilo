@@ -2224,8 +2224,6 @@ default = false
 # the same image.
 [[check]]
 name = "source-date-ci-fast"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/source-date.sh /target/source-date/ci-fast os/Containerfile.ci-fast"
 git = true
 outputs = ["/target/source-date/ci-fast"]
@@ -2233,8 +2231,6 @@ default = false
 
 [[check]]
 name = "source-date-ci-sdk"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/source-date.sh /target/source-date/ci-sdk os/Containerfile.ci-sdk sdk/python/pyproject.toml sdk/python/uv.lock sdk/typescript/package.json sdk/typescript/bun.lock"
 git = true
 outputs = ["/target/source-date/ci-sdk"]
@@ -2242,8 +2238,6 @@ default = false
 
 [[check]]
 name = "source-date-release-tools"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/source-date.sh /target/source-date/release-tools os/Containerfile.release-tools"
 git = true
 outputs = ["/target/source-date/release-tools"]
@@ -2251,8 +2245,6 @@ default = false
 
 [[check]]
 name = "source-date-ci-builder"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/source-date.sh /target/source-date/ci-builder $(bash tools/ci/publish/ci-builder.sh inputs)"
 git = true
 outputs = ["/target/source-date/ci-builder"]
@@ -2349,8 +2341,6 @@ arch = ["x86_64", "aarch64"]
 # to the runs and outputs) of the signing and publishing checks below.
 [[check]]
 name = "image-ci-builder"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "python3 -I tools/ci/publish/oci-index.py /target/publish/ci-builder/index /target/publish/ci-builder/x86_64/image.oci.tar"
 needs = ["image-ci-builder-x86_64"]
 outputs = ["/target/publish/ci-builder/index/image.oci.tar", "/target/publish/ci-builder/index/digest"]
@@ -2396,8 +2386,6 @@ id_token = ["registry.tilo.so"]
 
 [[check]]
 name = "canary-ci-builder-cache-cold-{arch}"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/ci-builder-canary.sh cold /target/publish/ci-builder/{arch}/canary"
 image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
 requires = ["arch={arch}"]
@@ -2408,8 +2396,6 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "canary-ci-builder-cache-warm-{arch}"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/ci-builder-canary.sh warm /target/publish/ci-builder/{arch}/canary"
 needs = ["canary-ci-builder-cache-cold-{arch}"]
 image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
@@ -2422,8 +2408,6 @@ arch = ["x86_64", "aarch64"]
 # files, so its verdict holds until the image changes, and every publication waits for it.
 [[check]]
 name = "canary-ci-builder-browser-{arch}"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/ci-builder-canary.sh browser"
 image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
 requires = ["arch={arch}"]
@@ -2440,8 +2424,8 @@ arch = ["x86_64", "aarch64"]
 # (bisected to the commit that broke it), and main's development tags go without it.
 [[check]]
 name = "canary-ci-builder-browser-tests-{arch}"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Its tests' fixtures and fonts, from tilo's package store by the SHA-256 their sources pin.
+egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/publish/ci-builder-canary.sh browser-tests"
 image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
 requires = ["arch={arch}"]
@@ -3062,8 +3046,12 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/publish/cli-release.sh build {arch}-unknown-linux-musl /target/publish/cli/linux-{arch}"
 # The musl C compiler the program's C (ring, SQLite) needs, and for aarch64 the Zig toolchain
 # that cross-compiles it and qemu to run it: see tools/ci/install-cli-toolchain.sh.
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
-setup = { run = "bash tools/ci/install-cli-toolchain.sh {arch}-unknown-linux-musl", egress = { to = ["0.0.0.0/0", "::/0"] } }
+# Pinned: Fedora's packages come from the image's released repository, which never changes, Zig by
+# the SHA-256 the script checks, and the Rust target from rust-toolchain.toml's release, whose
+# manifest names each file's hash. Its hosts are dl.fedoraproject.org, ziglang.org and
+# static.rust-lang.org, but a setup's micro-VM resolves no declared name (its DNS is refused), so
+# it keeps the open network.
+setup = { run = "bash tools/ci/install-cli-toolchain.sh {arch}-unknown-linux-musl", egress = { to = ["0.0.0.0/0", "::/0"], pinned = true } }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/cli/linux-{arch}/*"]
 # A release builds the whole program for musl from cold, beside the rest of the release on the
@@ -3084,9 +3072,8 @@ name = "cli-macos-cross-{arch}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/publish/cli-release.sh build {arch}-apple-darwin /target/publish/cli/macos-{arch}"
 # Zig, which carries Darwin's C library headers, the Rust target, and llvm-otool to read the
-# Mach-O with: see tools/ci/install-cli-toolchain.sh.
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
-setup = { run = "bash tools/ci/install-cli-toolchain.sh {arch}-apple-darwin", egress = { to = ["0.0.0.0/0", "::/0"] } }
+# Mach-O with: see tools/ci/install-cli-toolchain.sh. Pinned as cli-{arch}'s setup is.
+setup = { run = "bash tools/ci/install-cli-toolchain.sh {arch}-apple-darwin", egress = { to = ["0.0.0.0/0", "::/0"], pinned = true } }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/cli/macos-{arch}/*"]
 default = false
@@ -3108,7 +3095,8 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/cli-release.sh rehearse /target/publish/cli/release"
 # openssl makes the rehearsal site's certificate and verifies the signature as the installer does;
 # the image lacks it, so it is installed here.
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 needs = ["cli-release", "signing-tools"]
 requires = ["arch=x86_64"]
@@ -3120,7 +3108,8 @@ name = "sign-cli"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/cli-release.sh sign /target/publish/cli/release"
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 needs = ["cli-release", "cli-rehearsal", "signing-tools"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
@@ -3135,7 +3124,8 @@ name = "publish-cli"
 # Publishes with a stored token, to hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/cli-release.sh publish /target/publish/cli/release"
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 needs = ["cli-release", "sign-cli"]
 requires = ["arch=x86_64"]
@@ -5286,7 +5276,8 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "cargo run --locked -q -p tilo-local -- web --check --bundle /target/publish/web-desktop/bundle"
 needs = ["web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "cli-x86_64"]
 # openssl signs the stack's own releases, as the release key signs production's.
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64" }
 requires = ["arch=x86_64"]
@@ -5348,8 +5339,6 @@ on = ["dispatch"]
 
 [[check]]
 name = "image-web-entry-context"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/web-entry-context.sh /target/publish/web-entry/context /target/publish/web-desktop/bundle /target/docs/site"
 needs = ["web-desktop-bundle", "docs-site"]
 outputs = ["/target/publish/web-entry/context/**"]
@@ -5539,7 +5528,8 @@ name = "e2e"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/e2e"
 needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-cli", "lounge-gate-tools", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-gate/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0" }
 requires = ["arch=x86_64"]
@@ -5564,7 +5554,8 @@ name = "e2e-reloads"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/e2e-reloads reloads"
 needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-cli", "lounge-gate-tools", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-gate/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e-reloads/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", E2E_FLOW_SECONDS = "840" }
 requires = ["arch=x86_64"]
@@ -5623,8 +5614,9 @@ default = false
 # here, so a check's bring-up downloads nothing.
 [[check]]
 name = "tilo-sh-caddy"
-# Downloads checked against the SHA-256 or SHA-512 its sources pin; GitHub sends them on to CDN hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
+# The release archive, checked against the SHA-512 caddy.env pins; GitHub sends it on to its
+# release-assets host.
+egress = { to = ["github.com:443", "release-assets.githubusercontent.com:443", "objects.githubusercontent.com:443"], pinned = true }
 run = "bash tools/ci/publish/tilo-sh-caddy.sh /target/publish/tilo-sh-caddy"
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/tilo-sh-caddy/**"]
@@ -5663,7 +5655,8 @@ name = "tilo-sh-local-vm"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash os/containers/tilo-sh/check-in-vm.sh /target/tilo-sh-local-vm"
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False podman util-linux xfsprogs python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 needs = ["tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context", "cli-x86_64", "image-vm-host", "image-hosted-guest", "tilo-sh-tools"]
 env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-vm-state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "1", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_BROWSER_FREE_ACTIONS = "200", TILO_SH_TILO_ENROLL = "/target/tilo-sh-tools/tilo-enroll", TILO_SH_TILO_APPROVE = "/target/tilo-sh-tools/tilo-approve" }
@@ -5864,7 +5857,8 @@ name = "tilo-sh-vm-host"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash os/containers/tilo-sh/test-vm-host.sh /target/publish/vm-host/image.oci.tar /target/publish/hosted-guest/image /target/tilo-sh-tools/tilo-enroll"
-# The setup installs from Fedora's mirrors (dnf) and the toolchains' release hosts: no fixed host list.
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False podman xfsprogs util-linux && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 needs = ["image-vm-host", "image-hosted-guest", "tilo-sh-tools"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
