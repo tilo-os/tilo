@@ -514,69 +514,74 @@ impl Seat for Studio {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_published_scene_is_new_once_and_asks_are_taken_in_order() {
-        let link = Link::new();
-        assert_eq!(link.generation(), 0, "nothing published yet");
-        link.publish(Scene::default());
-        assert_eq!(link.generation(), 0, "a scene that says nothing is not new");
-        link.publish(Scene {
-            system_audio: true,
-            ..Scene::default()
-        });
-        let first = link.generation();
-        assert_eq!(first, 1, "published once");
-        link.publish(Scene {
-            system_audio: true,
-            ..Scene::default()
-        });
-        assert_eq!(link.generation(), first, "the same scene is not new");
-        link.publish(Scene::default());
-        assert_eq!(link.generation(), first + 1, "another scene is");
-        link.ask(Ask::SaveReplay);
-        link.ask(Ask::StopRecording);
-        assert!(link.has_asks());
-        assert_eq!(link.take_asks(), [Ask::SaveReplay, Ask::StopRecording]);
-        assert!(!link.has_asks());
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
+        fn the_link_carries_scenes_and_asks_between_session_and_studio;
 
-    #[test]
-    fn what_the_session_asks_the_person_to_select_wakes_the_studio_for_it() {
-        let link = Link::new();
-        link.publish(Scene::default());
-        link.publish(Scene {
-            asking: Some(Selection::Area),
-            ..Scene::default()
-        });
-        assert_eq!(link.generation(), 1, "the bar comes up asking for an area");
-        assert_eq!(link.scene().asking, Some(Selection::Area));
-        assert_eq!(Selection::Area.source(), SourceMode::Region);
-        assert_eq!(Selection::Window.source(), SourceMode::Window);
-    }
+        phase a_published_scene_is_new_once_and_asks_are_taken_in_order;
+        {
+            let link = Link::new();
+            assert_eq!(link.generation(), 0, "nothing published yet");
+            link.publish(Scene::default());
+            assert_eq!(link.generation(), 0, "a scene that says nothing is not new");
+            link.publish(Scene {
+                system_audio: true,
+                ..Scene::default()
+            });
+            let first = link.generation();
+            assert_eq!(first, 1, "published once");
+            link.publish(Scene {
+                system_audio: true,
+                ..Scene::default()
+            });
+            assert_eq!(link.generation(), first, "the same scene is not new");
+            link.publish(Scene::default());
+            assert_eq!(link.generation(), first + 1, "another scene is");
+            link.ask(Ask::SaveReplay);
+            link.ask(Ask::StopRecording);
+            assert!(link.has_asks());
+            assert_eq!(link.take_asks(), [Ask::SaveReplay, Ask::StopRecording]);
+            assert!(!link.has_asks());
+        }
 
-    #[test]
-    fn what_an_app_opened_the_bar_for_is_taken_once() {
-        use ui::widget::CaptureMode;
-        let link = Link::new();
-        assert_eq!(link.take_open_on(), None, "nothing opened it yet");
-        link.open_on(CaptureMode::Pip);
-        assert_eq!(link.take_open_on(), Some(CaptureMode::Pip));
-        assert_eq!(link.take_open_on(), None, "the bar opens on it once");
-        link.open_on(CaptureMode::Recording);
-        assert_eq!(link.take_open_on(), Some(CaptureMode::Recording));
-    }
+        phase what_the_session_asks_the_person_to_select_wakes_the_studio_for_it;
+        {
+            let link = Link::new();
+            link.publish(Scene::default());
+            link.publish(Scene {
+                asking: Some(Selection::Area),
+                ..Scene::default()
+            });
+            assert_eq!(link.generation(), 1, "the bar comes up asking for an area");
+            assert_eq!(link.scene().asking, Some(Selection::Area));
+            assert_eq!(Selection::Area.source(), SourceMode::Region);
+            assert_eq!(Selection::Window.source(), SourceMode::Window);
+        }
 
-    #[test]
-    fn what_the_session_hands_is_what_the_studio_reads_back() {
-        let studio = Studio::new();
-        studio.link().publish(Scene {
-            system_audio: true,
-            replay: Some(12),
-            ..Scene::default()
-        });
-        let scene = studio.link().scene();
-        assert!(scene.system_audio);
-        assert_eq!(scene.replay, Some(12));
-        assert!(!studio.presentation().is_drawn(), "closed until opened");
+        phase what_an_app_opened_the_bar_for_is_taken_once;
+        {
+            use ui::widget::CaptureMode;
+            let link = Link::new();
+            assert_eq!(link.take_open_on(), None, "nothing opened it yet");
+            link.open_on(CaptureMode::Pip);
+            assert_eq!(link.take_open_on(), Some(CaptureMode::Pip));
+            assert_eq!(link.take_open_on(), None, "the bar opens on it once");
+            link.open_on(CaptureMode::Recording);
+            assert_eq!(link.take_open_on(), Some(CaptureMode::Recording));
+        }
+
+        phase what_the_session_hands_is_what_the_studio_reads_back;
+        {
+            let studio = Studio::new();
+            studio.link().publish(Scene {
+                system_audio: true,
+                replay: Some(12),
+                ..Scene::default()
+            });
+            let scene = studio.link().scene();
+            assert!(scene.system_audio);
+            assert_eq!(scene.replay, Some(12));
+            assert!(!studio.presentation().is_drawn(), "closed until opened");
+        }
     }
 }

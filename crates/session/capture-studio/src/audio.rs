@@ -175,36 +175,40 @@ fn default_target(source: Source) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_recording_takes_the_sounds_the_person_chose_as_stereo_tracks() {
-        assert_eq!(
-            sources(AudioCaptureMode::SystemAndMicrophone),
-            [Source::System, Source::Microphone],
-            "the machine's sound first, so its track stays the same one"
-        );
-        assert_eq!(sources(AudioCaptureMode::Microphone), [Source::Microphone]);
-        assert_eq!(sources(AudioCaptureMode::System), [Source::System]);
-        assert!(sources(AudioCaptureMode::None).is_empty());
-        assert_eq!(Source::System.track_name(), "Desktop sound");
-        assert_eq!(Source::Microphone.track_name(), "Microphone");
-        assert_eq!(
-            FORMAT,
-            Format {
-                rate: 48_000,
-                channels: 2
-            },
-            "the muxer's tracks are 48 kHz stereo S16LE"
-        );
-        assert_eq!(FORMAT.frame_bytes(), 4);
-    }
+    tilo_test_env::scenario! {
+        fn a_recording_takes_its_sound_from_named_stereo_sources;
 
-    #[test]
-    fn pipewire_sources_come_from_server_assigned_identity() {
-        let desktop = Source::System.properties();
-        let microphone = Source::Microphone.properties();
-        assert!(desktop.contains("stream.capture.sink = true"));
-        assert!(desktop.contains("node.name = tilo-screen-recorder-desktop"));
-        assert!(!microphone.contains("stream.capture.sink"));
-        assert!(microphone.contains("node.name = tilo-screen-recorder-microphone"));
+        phase the_recording_takes_the_sounds_the_person_chose_as_stereo_tracks;
+        {
+            assert_eq!(
+                sources(AudioCaptureMode::SystemAndMicrophone),
+                [Source::System, Source::Microphone],
+                "the machine's sound first, so its track stays the same one"
+            );
+            assert_eq!(sources(AudioCaptureMode::Microphone), [Source::Microphone]);
+            assert_eq!(sources(AudioCaptureMode::System), [Source::System]);
+            assert!(sources(AudioCaptureMode::None).is_empty());
+            assert_eq!(Source::System.track_name(), "Desktop sound");
+            assert_eq!(Source::Microphone.track_name(), "Microphone");
+            assert_eq!(
+                FORMAT,
+                Format {
+                    rate: 48_000,
+                    channels: 2
+                },
+                "the muxer's tracks are 48 kHz stereo S16LE"
+            );
+            assert_eq!(FORMAT.frame_bytes(), 4);
+        }
+
+        phase pipewire_sources_come_from_server_assigned_identity;
+        {
+            let desktop = Source::System.properties();
+            let microphone = Source::Microphone.properties();
+            assert!(desktop.contains("stream.capture.sink = true"));
+            assert!(desktop.contains("node.name = tilo-screen-recorder-desktop"));
+            assert!(!microphone.contains("stream.capture.sink"));
+            assert!(microphone.contains("node.name = tilo-screen-recorder-microphone"));
+        }
     }
 }
