@@ -713,21 +713,39 @@ fn a_workspace_is_restored_by_its_governing_device_and_no_other() {
 
 #[test]
 fn a_workspace_name_must_be_printable_and_short() {
-    let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    for name in ["a\u{7}b", &"x".repeat(81)] {
-        assert!(
-            GovernedWorkspace::create(dir.path(), name, &cert, &key, None, SystemTime::now())
-                .is_err()
-        );
-    }
-    // A workspace nobody named is founded with no name: every reader shows it
-    // in their own language.
-    for name in ["", "   "] {
+    let longest = "x".repeat(80);
+    let too_long = "x".repeat(81);
+    let longest_wide = "\u{e9}".repeat(80);
+    let too_long_wide = "\u{e9}".repeat(81);
+    let padded = format!("  {longest}\n");
+    // Each name, whether a workspace is founded with it, and what it is.
+    let names: [(&str, bool, &str); 13] = [
+        // A workspace nobody named is founded with no name: every reader
+        // shows it in their own language.
+        ("", true, "no name"),
+        ("   ", true, "only spaces, which is no name"),
+        ("x", true, "one character"),
+        (&longest, true, "80 characters, the longest"),
+        (&too_long, false, "81 characters"),
+        (&longest_wide, true, "80 characters of two bytes each"),
+        (&too_long_wide, false, "81 characters of two bytes each"),
+        (&padded, true, "80 characters inside space that is trimmed"),
+        ("\tTeam\n", true, "a tab and a newline around a name"),
+        ("a\u{7}b", false, "a bell inside"),
+        ("a\nb", false, "a newline inside"),
+        ("a\u{7f}b", false, "a delete inside"),
+        ("a\u{85}b", false, "a next-line control inside"),
+    ];
+    for (name, founded, what) in names {
         let dir = tempfile::tempdir().unwrap();
-        assert!(
-            GovernedWorkspace::create(dir.path(), name, &cert, &key, None, SystemTime::now())
-                .is_ok()
+        let created =
+            GovernedWorkspace::create(dir.path(), name, &cert, &key, None, SystemTime::now());
+        assert_eq!(
+            created.is_ok(),
+            founded,
+            "{what} ({name:?}): {:?}",
+            created.err()
         );
     }
 }
