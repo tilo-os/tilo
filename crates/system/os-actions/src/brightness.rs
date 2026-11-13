@@ -1599,6 +1599,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic on a test's fixed values")]
         fn a_brightness_change_is_cached_at_once_and_written_one_at_a_time_in_the_background;
 
         phase ddc_writes_coalesce_to_the_newest_value_one_at_a_time_per_monitor;

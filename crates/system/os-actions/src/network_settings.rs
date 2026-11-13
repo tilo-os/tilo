@@ -1618,6 +1618,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic on a test's fixed values")]
         fn vpn_profiles_are_imported_checked_patched_and_exported;
 
         phase a_wireguard_file_becomes_the_profile_it_describes;

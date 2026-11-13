@@ -278,6 +278,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic on a test's fixed values")]
         fn ddc_ci_requests_replies_and_retries_follow_the_protocol;
 
         phase requests_carry_the_mccs_frame_and_checksum;

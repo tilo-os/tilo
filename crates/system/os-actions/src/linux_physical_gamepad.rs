@@ -520,6 +520,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic on a test's fixed values")]
         fn physical_gamepads_are_told_from_virtual_ones_paired_and_classified;
 
         phase forwarded_virtual_gamepads_are_not_room_hardware;

@@ -669,6 +669,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic on a test's fixed values")]
         fn peripheral_forwarding_is_authorized_once_bounded_and_audited;
 
         phase forwarding_authorization_is_one_shot_bound_and_expiring;
