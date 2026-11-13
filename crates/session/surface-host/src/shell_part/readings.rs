@@ -308,13 +308,14 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
         use tilolang_tilo::runtime::delegate::{Invocation, Invoked};
         let ask = match invocation {
             Invocation::Action {
-                action,
+                name,
                 subject: Some(subject),
                 from,
                 ..
             } => Ask {
                 resource: subject.id_string(),
-                action: action.clone(),
+                // As the resource's app publishes it.
+                action: name.clone(),
                 arguments: invocation.door_arguments().into_iter().collect(),
                 from: from
                     .as_ref()

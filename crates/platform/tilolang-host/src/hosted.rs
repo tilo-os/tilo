@@ -2151,7 +2151,7 @@ fn door_ask(
     match invocation {
         Invocation::Action {
             app,
-            action,
+            name,
             subject: Some(subject),
             from,
             ..
@@ -2167,10 +2167,11 @@ fn door_ask(
                     .to_json(),
                 );
             }
+            // The app's door takes it by the name it publishes it under.
             Some((
                 app.clone(),
                 subject.id_string(),
-                action.clone(),
+                name.clone(),
                 tilo_actions::remote::InvokeArgument::Json(arguments),
             ))
         }

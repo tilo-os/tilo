@@ -32,13 +32,16 @@ fn the_surface_names_a_kind_per_type_and_a_verb_per_action() {
     );
     let increment = &meta.actions[0];
     let counter = &surfaces[0];
-    assert_eq!(counter.verb(&increment.id).unwrap().0, ActionKind::Undoable);
+    assert_eq!(
+        counter.verb(&increment.name).unwrap().0,
+        ActionKind::Undoable
+    );
     // The record parameter is the resource itself, so the verb takes none.
     assert!(
         counter
             .verbs
             .iter()
-            .find(|verb| verb.id == increment.id)
+            .find(|verb| verb.id == increment.name)
             .unwrap()
             .params
             .is_empty()

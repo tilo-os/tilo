@@ -167,7 +167,15 @@ fn saved(hex: &str) -> AutoCommit {
 }
 
 /// The workspace of a fixture, opened with its packages.
+/// The workspace `hex` with `packages` loaded, each believed to have been published under the
+/// ids it says it had before, as the installed catalogue believes an app the image ships.
 fn open(hex: &str, packages: &[(&str, &str)]) -> Replica {
+    for (source, _) in packages {
+        let (app, previously, _) = PackageSource::single(source).header_with_previously();
+        if let Some(app) = app {
+            tilolang_tilo::schema::register_previously(&app, &previously);
+        }
+    }
     Replica::new("ada", saved(hex), packages).0
 }
 
@@ -623,8 +631,6 @@ fn todo_as_tasks() -> (String, &'static str) {
     let (app, previously, _) = PackageSource::single(source).header_with_previously();
     assert_eq!(app.as_deref(), Some("so.tilo.lang.tasks"), "{source}");
     assert_eq!(previously, vec!["so.tilo.lang.todo".to_owned()], "{source}");
-    // As the installed catalogue believes it, which loading the package does not decide.
-    tilolang_tilo::schema::register_previously("so.tilo.lang.tasks", &previously);
     (source.to_owned(), ids)
 }
 
