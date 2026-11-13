@@ -15,7 +15,6 @@ struct PathRule {
     parent_fd: i32,
 }
 
-/// A fully prepared kernel ruleset. No allocation or path lookup occurs at exec.
 #[derive(Debug)]
 pub struct PreparedReadExclusion {
     ruleset: OwnedFd,
