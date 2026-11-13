@@ -27,6 +27,14 @@
 # its module is split (tools/web/wasm-split/split.sh) into a start module and
 # one module per app, fetched when the app first opens. `--no-split` (dev and
 # quick only) leaves it whole, for a loop that is not about loading apps.
+# `--bundle app` builds an app's own bundle: the runtime with that one app
+# linked and registered, from the crate `tilo-app build --platform web`
+# generates for it (`--manifest-path`, built with the target directory named by
+# $CARGO_TARGET_DIR), carrying the app's `apps.json` (`--apps-json`, which also
+# names the app `build.json` records). It is not split and has no application
+# data. `tilo-app` builds every web bundle through this script, so an app's
+# bundle and the site's are one build, and a workspace that defines no
+# `wasm-dev`/`wasm-release` profile gets Cargo's own `dev`/`release`.
 # `--update` (dev and quick only; also with `--module-only` and `--wasm-only`) brings an OUTPUT_DIR this script built
 # before up to date, step by step: the module is bound and split again only
 # when the linked module changed, the page's modules and entry pages are
@@ -65,7 +73,7 @@ set -euo pipefail
 
 crate=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$crate/../../.." && pwd)
-usage='usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--names] [--bundle runtime|desktop] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR] [--module-only] [--wasm-steps auto|builder|local]'
+usage='usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--names] [--bundle runtime|desktop|app] [--manifest-path FILE --apps-json FILE] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR] [--module-only] [--wasm-steps auto|builder|local]'
 out=${1:?$usage}
 shift
 profile=release
@@ -77,6 +85,9 @@ wasm_only=0
 module_only=0
 wasm_from=
 names=0
+manifest=
+apps_json=
+app_id=
 steps=${TILO_BUNDLE_WASM_STEPS:-auto}
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -84,6 +95,8 @@ while [[ $# -gt 0 ]]; do
     --wasm-opt) optimize=1; shift ;;
     --no-wasm-opt) optimize=0; shift ;;
     --bundle) bundle=${2:?--bundle needs a value}; shift 2 ;;
+    --manifest-path) manifest=${2:?--manifest-path needs a file}; shift 2 ;;
+    --apps-json) apps_json=${2:?--apps-json needs a file}; shift 2 ;;
     --no-split) split=0; shift ;;
     --names) names=1; shift ;;
     --update) update=1; shift ;;
@@ -98,11 +111,21 @@ case "$steps" in
   auto|builder|local) ;;
   *) echo "unsupported --wasm-steps: $steps" >&2; exit 2 ;;
 esac
+# The workspace whose profiles the build compiles with: this repository's, or
+# the generated app crate's (`--bundle app`), which carries its app workspace's.
+profiles_manifest=$repo/Cargo.toml
+[[ -z $manifest ]] || profiles_manifest=$manifest
+defines_profile() { grep -q "^\[profile\.$1\]" "$profiles_manifest" 2>/dev/null; }
+# `wasm-dev` and `wasm-release` are this repository's (light iteration, small
+# shipping): a workspace without them, as an app's own may be, gets Cargo's
+# plain profiles for the same two things.
 case "$profile" in
-  release) cargo_profile=wasm-release artifact=wasm-release optimize=${optimize:-1} ;;
-  assert) cargo_profile=wasm-assert artifact=wasm-assert optimize=${optimize:-1} ;;
-  dev) cargo_profile=dev artifact=debug optimize=${optimize:-0} ;;
-  quick) cargo_profile=wasm-dev artifact=wasm-dev optimize=${optimize:-0} ;;
+  release) if defines_profile wasm-release; then cargo_profile=wasm-release; else cargo_profile=release; fi; optimize=${optimize:-1} ;;
+  assert) defines_profile wasm-assert || {
+    echo "--profile assert needs a workspace that declares [profile.wasm-assert], as this repository's does" >&2; exit 2; }
+    cargo_profile=wasm-assert optimize=${optimize:-1} ;;
+  dev) cargo_profile=dev optimize=${optimize:-0} ;;
+  quick) if defines_profile wasm-dev; then cargo_profile=wasm-dev; else cargo_profile=dev; fi; optimize=${optimize:-0} ;;
   *) echo "unsupported profile: $profile" >&2; exit 2 ;;
 esac
 # A release or qualification bundle is always built whole from source and
@@ -123,19 +146,45 @@ esac
 case "$bundle" in
   runtime) package=tilo-browser-runtime ;;
   desktop) package=tilo-web-desktop ;;
+  app) ;;
   *) echo "unsupported bundle: $bundle" >&2; exit 2 ;;
 esac
+# An app bundle is the one crate `--manifest-path` names, with its `apps.json`;
+# the bundles of this repository's own crates take neither.
+if [[ $bundle == app ]]; then
+  [[ -n $manifest && -n $apps_json ]] || {
+    echo '--bundle app builds the crate --manifest-path names, with the --apps-json to carry' >&2; exit 2;
+  }
+  eval "$(python3 - "$manifest" "$apps_json" <<'PY'
+import json, shlex, sys, tomllib
+manifest, apps = sys.argv[1:]
+package = tomllib.load(open(manifest, 'rb'))['package']['name']
+app = json.load(open(apps))['applications']
+assert len(app) == 1, f"{apps} lists {len(app)} applications; an app bundle carries one"
+print('package=' + shlex.quote(package))
+print('app_id=' + shlex.quote(app[0]['id']))
+PY
+)"
+else
+  [[ -z $manifest && -z $apps_json ]] || {
+    echo '--manifest-path and --apps-json are for --bundle app' >&2; exit 2;
+  }
+fi
 # The splitter reads the linked module's symbol table, which `wasm-release`
 # and `wasm-assert` strip; `wasm-split` and `wasm-assert-split` are those
 # profiles with the table kept.
 bindgen_flags=()
 if [[ $bundle == desktop ]]; then
   case $profile in
-    release) cargo_profile=wasm-split artifact=wasm-split ;;
-    assert) cargo_profile=wasm-assert-split artifact=wasm-assert-split ;;
+    release) cargo_profile=wasm-split ;;
+    assert) cargo_profile=wasm-assert-split ;;
   esac
   bindgen_flags=(--keep-lld-exports --no-demangle)
 fi
+# Cargo writes a profile's output under the profile's own name, but dev's
+# under `debug`.
+artifact=$cargo_profile
+[[ $artifact != dev ]] || artifact=debug
 [[ "$out" == /* ]] || { echo 'OUTPUT_DIR must be absolute' >&2; exit 2; }
 # Stale modules beside new ones would make the bundle's provenance ambiguous.
 # What says an output is this script's: build.json, or wasm.json for --wasm-only.
@@ -178,32 +227,40 @@ runs_on_builder() {
   help=$("$cargo" exec --help 2>/dev/null) && [[ $help == *--fetch* ]]
 }
 if [[ $steps == auto ]]; then
-  if [[ -z $wasm_from && $module_only == 0 ]] && runs_on_builder; then steps=builder; else steps=local; fi
+  # An app bundle's crate is this tree's own, not the builder's.
+  if [[ -z $wasm_from && -z $manifest && $module_only == 0 ]] && runs_on_builder; then steps=builder; else steps=local; fi
 elif [[ $steps == builder ]]; then
   runs_on_builder || {
     echo "--wasm-steps builder needs a cargo that runs a program on its builder (\`rcargo exec\`), and CARGO ($cargo) has no exec" >&2
     exit 2
   }
-  [[ -z $wasm_from && $module_only == 0 ]] || {
-    echo '--wasm-steps builder is for the module and the bundle; not with --module-only or --wasm-from' >&2
+  [[ -z $wasm_from && -z $manifest && $module_only == 0 ]] || {
+    echo '--wasm-steps builder is for the module and the bundle; not with --module-only, --wasm-from or a --manifest-path' >&2
     exit 2
   }
 fi
 if [[ -z $wasm_from && $steps == local ]]; then
   pinned=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' "$crate/Cargo.toml")
   [[ "$("$bindgen" --version)" == "wasm-bindgen $pinned" ]] || {
-    echo "wasm-bindgen CLI must be $pinned to match the crate" >&2; exit 2;
+    echo "wasm-bindgen CLI must be $pinned to match the crate" >&2
+    echo "  help: cargo install --locked wasm-bindgen-cli --version $pinned, and rustup target add wasm32-unknown-unknown" >&2
+    exit 2
   }
 fi
 if [[ $wasm_only == 0 ]]; then
-  # A development bundle may be built from a tree without its git metadata (a
-  # build container's synced copy); it records an unknown revision. A release
-  # bundle names the commit it was built from.
-  if [[ $profile != release && $profile != assert ]] && ! git rev-parse HEAD >/dev/null 2>&1; then
-    git() { [[ $1 == rev-parse ]] && echo unknown; return 0; }
+  # A bundle may be built from a tree without its git metadata (a build
+  # container's synced copy, a checkout a measurement was handed): it records
+  # the revision `$TILO_SOURCE_REVISION` names when a build farm names one,
+  # else an unknown one, and has no source status to compare at the end.
+  have_git=0
+  git rev-parse HEAD >/dev/null 2>&1 && have_git=1
+  if [[ $have_git == 1 ]]; then
+    revision=$(git rev-parse HEAD)
+    source_status=$(git status --porcelain)
+  else
+    revision=${TILO_SOURCE_REVISION:-unknown}
+    source_status=
   fi
-  revision=$(git rev-parse HEAD)
-  source_status=$(git status --porcelain)
 fi
 
 # What Cargo compiles: pkg/ (the runtime's module, split for the desktop, and
@@ -212,9 +269,20 @@ build_wasm() {
 if [[ $bundle == desktop ]]; then
   python3 tools/web/generate_web_desktop.py --check
 fi
-"$cargo" build --locked -p "$package" --lib --target wasm32-unknown-unknown --profile "$cargo_profile"
+# An app bundle compiles the crate `tilo-app` generated for it: a workspace of
+# its own, whose lock file cargo writes, so it is named rather than `-p`, and
+# built without `--locked` and without `--offline`.
+local -a compile metadata
+if [[ -n $manifest ]]; then
+  compile=(build --manifest-path "$manifest" --lib --target wasm32-unknown-unknown --profile "$cargo_profile")
+  metadata=(metadata --format-version 1 --no-deps --manifest-path "$manifest")
+else
+  compile=(build --locked -p "$package" --lib --target wasm32-unknown-unknown --profile "$cargo_profile")
+  metadata=(metadata --format-version 1 --no-deps --offline)
+fi
+"$cargo" "${compile[@]}"
 # Read Cargo's artifact location; never redirect it.
-target_dir=$("$cargo" metadata --format-version 1 --no-deps --offline |
+target_dir=$("$cargo" "${metadata[@]}" |
   python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 mkdir -p "$out/pkg"
 linked="$target_dir/wasm32-unknown-unknown/$artifact/${package//-/_}.wasm"
@@ -248,7 +316,9 @@ else
   rm -rf "$out/pkg"
   mv "$next" "$out/pkg"
 fi
-if [[ $bundle == desktop ]]; then
+if [[ -n $apps_json ]]; then
+  cp "$apps_json" "$out/apps.json"
+elif [[ $bundle == desktop ]]; then
   cp "$repo/crates/browser/tilo-web-desktop/apps.json" "$out/apps.json"
 fi
 if [[ $bundle == desktop ]] && ! kept data/typst; then
@@ -288,10 +358,9 @@ else
 fi
 compute_opt=--no-wasm-opt
 [[ $optimize == 1 ]] && compute_opt=--wasm-opt
-compute_profile=$profile
-[[ $profile == quick ]] && compute_profile=dev
 if [[ $module_only == 0 ]] && ! kept pkg/compute; then
-  bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --profile "$compute_profile" "$compute_opt" --module-only
+  # The same profile the page module is built in.
+  bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --profile "$profile" "$compute_opt" --module-only
 fi
 rustc_version=$(rustc --version)
 bindgen_version=$("$bindgen" --version)
@@ -418,20 +487,27 @@ cp "$crate"/web/locales/*.ftl "$out/locales/"
 mkdir -p "$out/app"
 cp "$crate/web/app/index.html" "$out/app/index.html"
 kept fonts.json || python3 - "$repo" "$out" <<'PY'
-import importlib.util, json, pathlib, re, shutil, sys
+import importlib.util, json, os, pathlib, re, shutil, sys
 repo, out = map(pathlib.Path, sys.argv[1:])
 tool = repo / 'tools/font-catalog.py'
 spec = importlib.util.spec_from_file_location('font_catalog', tool)
 catalog_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(catalog_module)
 source = catalog_module.prepared_root(repo / 'crates/sdk/ui-core/assets/fonts', 'product')
+def install(src, dst):
+    # A hard link where the file system allows one: the bundle shares the
+    # cached product fonts, 40 MB it would otherwise copy for itself.
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
 text = (source / 'manifest.toml').read_text()
 assets = []
 for block in text.split('[[font]]')[1:]:
     block = block.split('[[license]]')[0]
     if re.search(r'^scope = "product"$', block, re.M):
         name = re.search(r'^file = "(.*?)"$', block, re.M)[1]
-        shutil.copy2(source / name, out / 'fonts' / name)
+        install(source / name, out / 'fonts' / name)
         assets.append(dict(
             name=name,
             bytes=int(re.search(r'^bytes = (\d+)$', block, re.M)[1]),
@@ -439,9 +515,9 @@ for block in text.split('[[font]]')[1:]:
             startup=bool(re.search(r'^browser_startup = true$', block, re.M)),
         ))
 assert any(asset['startup'] for asset in assets), 'no browser startup fonts in the manifest'
-shutil.copytree(source / 'LICENSES', out / 'fonts/LICENSES', dirs_exist_ok=True)
-shutil.copy2(source / 'manifest.toml', out / 'fonts/manifest.toml')
-shutil.copy2(source / 'PROVENANCE.md', out / 'fonts/PROVENANCE.md')
+shutil.copytree(source / 'LICENSES', out / 'fonts/LICENSES', dirs_exist_ok=True, copy_function=install)
+install(source / 'manifest.toml', out / 'fonts/manifest.toml')
+install(source / 'PROVENANCE.md', out / 'fonts/PROVENANCE.md')
 catalog = re.search(r'^catalog_id = "(.*?)"$', text, re.M)[1]
 (out / 'fonts.json').write_text(json.dumps(dict(schema=1, catalog=catalog, assets=assets), separators=(',', ':')) + '\n')
 PY
@@ -475,16 +551,21 @@ if bare:
 PY
 
 # Record the actual tools, profile and output hashes; never infer a prebuilt profile.
-[[ "$(git rev-parse HEAD)" == "$revision" && "$(git status --porcelain)" == "$source_status" ]] || {
-  echo 'Source changed during build; discard output' >&2; exit 1;
-}
+if [[ $have_git == 1 ]] &&
+   { [[ "$(git rev-parse HEAD)" != "$revision" ]] || [[ "$(git status --porcelain)" != "$source_status" ]]; }; then
+  echo 'Source changed during build; discard output' >&2; exit 1
+fi
 python3 - "$out" "$revision" "$source_status" "$profile" "$rustc_version" "$bindgen_version" "$optimize" \
-  "$cargo_profile" "$bundle" "$wasm_opt_version" "$wasm_opt_flags" <<'PY'
+  "$cargo_profile" "$bundle" "$wasm_opt_version" "$wasm_opt_flags" "$app_id" <<'PY'
 import hashlib, json, pathlib, sys
 out = pathlib.Path(sys.argv[1])
 metadata = dict(revision=sys.argv[2], dirty=bool(sys.argv[3]), profile=sys.argv[4], builtFromSource=True, rustc=sys.argv[5],
                 wasmBindgen=sys.argv[6], wasmOpt=sys.argv[7] == '1', target='wasm32-unknown-unknown',
                 cargoProfile=sys.argv[8], bundle=sys.argv[9])
+# An app's own bundle names the app it carries, as its page host and the
+# registry read it.
+if sys.argv[12]:
+    metadata['app'] = sys.argv[12]
 if metadata['wasmOpt']:
     metadata.update(wasmOptVersion=sys.argv[10], wasmOptFlags=sys.argv[11])
 # Never this file itself: an --update run finds the previous one in place.

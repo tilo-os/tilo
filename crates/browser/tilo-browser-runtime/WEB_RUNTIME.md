@@ -18,7 +18,11 @@ python3 -m http.server -d /abs/out   # then open it in a browser with WebGPU
 `--bundle runtime` (the default) builds this crate; `--bundle desktop` builds
 `crates/browser/tilo-web-desktop`, the same runtime with every web-capable
 app registered from its manifest, under the same module name, plus
-`apps.json`. The output holds `pkg/` (wasm-bindgen `--target web`), the page
+`apps.json`. `--bundle app` builds an app's own bundle instead: the crate
+`tilo-app build --platform web` generates for it (`--manifest-path`, built
+with the target directory in `$CARGO_TARGET_DIR`) and its one-application
+`apps.json` (`--apps-json`, which also names the app `build.json` records).
+The output holds `pkg/` (wasm-bindgen `--target web`), the page
 host modules and `index.html`, `fonts/` and `fonts.json`, `data/` and
 `data.json` (application data fetched on request) and `build.json`
 (revision, tools, profile and output hashes). `--profile release` compiles
@@ -60,7 +64,10 @@ so the runtime and the app are one module. A small generated crate under
 the app, registers the app's `definition()` at start, and builds into the app
 workspace's target directory as its own Cargo workspace (with that
 workspace's `[patch]`, profiles and lock file), so an app anywhere builds
-against the SDK checkout it names. The bundle lands in
+against the SDK checkout it names. The generated crate is what `build.sh`
+compiles (`--bundle app`): the module, the pages, the fonts and the compute
+worker are the same build the site bundle is, so an app's bundle and the
+site's never differ in how they were made. The bundle lands in
 `<target>/tilo-app/web/<package>/bundle` in `build.sh`'s layout and opens at
 `app/#/me/<id>`; `--output` copies it. `--release` with `--assertions` asks
 for the same release optimisation with `debug_assertions` and overflow
