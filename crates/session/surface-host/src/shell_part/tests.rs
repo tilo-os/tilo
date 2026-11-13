@@ -180,10 +180,14 @@ fn no_app_hands_the_session_a_string() {
 
 /// The centre up, with its search field, and nothing changing: the part draws no frame.
 /// The field reports itself dirty every frame, as a leaf does; that is no reason to draw.
+///
+/// The centre's presses call the desk's own actions (`session.dismiss_notice(...)`): Clear all
+/// and a notice's Dismiss each reach the session as that action, at that press rather than at
+/// the next input.
 #[test]
-fn with_the_centre_up_and_nothing_changing_the_part_draws_nothing() {
+fn the_centre_draws_nothing_at_rest_and_a_press_in_it_hands_the_desk_its_notice_action() {
     let _settled = ui::motion::testing::settled();
-    let (mut part, _link) = part_with(DeskReading {
+    let (mut part, link) = part_with(DeskReading {
         here: "centre".to_owned(),
         notices: vec![NoticeReading {
             key: "1".to_owned(),
@@ -212,30 +216,8 @@ fn with_the_centre_up_and_nothing_changing_the_part_draws_nothing() {
         (0, 0),
         "idle, the centre runs and draws nothing"
     );
-}
-
-/// The centre's presses call the desk's own actions (`session.dismiss_notice(...)`): Clear all
-/// and a notice's Dismiss each reach the session as that action, at that press rather than at
-/// the next input.
-#[test]
-fn a_press_in_the_centre_hands_the_desk_its_notice_action() {
-    let _settled = ui::motion::testing::settled();
-    let (mut part, link) = part_with(DeskReading {
-        here: "centre".to_owned(),
-        notices: vec![NoticeReading {
-            key: "1".to_owned(),
-            title: "Backup finished".to_owned(),
-            body: "12 GB safe".to_owned(),
-            origin_app: "Settings".to_owned(),
-            kind: "info".to_owned(),
-            seen: true,
-        }],
-        ..reading()
-    });
-    for _ in 0..8 {
-        part.prepare_frame();
-    }
-    // Each press is answered, as the session's turn answers it, before the next.
+    // The idle frames ran and drew nothing, so the centre the presses land on is the one that
+    // settled. Each press is answered, as the session's turn answers it, before the next.
     let mut served = Vec::new();
     for name in ["Dismiss", "Clear all"] {
         click(&mut part, name);
