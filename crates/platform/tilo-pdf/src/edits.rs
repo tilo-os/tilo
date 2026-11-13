@@ -1,40 +1,36 @@
 //! Edits materialised into a new PDF on export.
 //!
-//! An [`Edits`] value is the engine-facing projection of a document's edit
-//! records: it names output pages by their source, carries annotations as
-//! standard PDF annotation kinds with geometry in each source page's **user
-//! space**, and form values by fully qualified field name. Exporting the
-//! same `Edits` against the same source bytes is deterministic.
+//! The engine-facing projection of a document's edit records: output pages by
+//! their source, annotations as standard PDF kinds with geometry in each
+//! source page's user space, and form values by fully qualified field name.
+//! Exporting the same [`Edits`] over the same source bytes is deterministic.
 //!
-//! Annotations that were already in the source bytes and that the records
-//! took over ([`Edits::adopted`]) are replaced rather than duplicated: an
-//! unchanged one keeps its original object, a changed one is removed and
-//! written again from its record, a deleted one is removed.
+//! An annotation in the source bytes that a record took over
+//! ([`Edits::adopted`]) is replaced, never duplicated: unchanged keeps its
+//! original object, changed is written again from its record, deleted is
+//! removed.
 
 use serde::{Deserialize, Serialize};
 
 use crate::geom::{Point, Rect, Rotation};
 use crate::model::{AnnotationKind, ReplyType, Rgba};
 
-/// Where an output page comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PageSource {
-    /// Page `index` (0-based) of the document being exported.
+    /// 0-based page of the document being exported.
     Original(usize),
     /// Page `page` of the `import`-th document passed alongside the export.
     Imported { import: usize, page: usize },
 }
 
-/// One output page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageEdit {
     pub source: PageSource,
     /// Rotation added to the source page's own `/Rotate`.
     pub rotation: Rotation,
-    /// Whether this output page is the occurrence of an original page that
-    /// keeps the page's adopted annotations ([`Edits::adopted`]). A page
-    /// used more than once carries them on its primary occurrence only;
-    /// the others are copies of the page content.
+    /// The occurrence that keeps the page's adopted annotations
+    /// ([`Edits::adopted`]); a page used more than once keeps them on its primary
+    /// only, the others being copies of the page content.
     #[serde(default = "primary_default")]
     pub primary: bool,
 }
@@ -44,7 +40,6 @@ fn primary_default() -> bool {
 }
 
 impl PageEdit {
-    /// A primary occurrence of `source`, rotated by `rotation`.
     #[must_use]
     pub fn new(source: PageSource, rotation: Rotation) -> Self {
         Self {
@@ -55,7 +50,6 @@ impl PageEdit {
     }
 }
 
-/// The annotation types an export can write.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum NewAnnotationKind {
     /// Text markup; `quads` are the marked line rectangles in user space.
@@ -71,8 +65,8 @@ pub enum NewAnnotationKind {
     Squiggly {
         quads: Vec<Rect>,
     },
-    /// A sticky note anchored at a user-space point; its text is the
-    /// annotation's `contents`.
+    /// A sticky note at a user-space anchor; its text is the annotation's
+    /// `contents`.
     Note {
         at: Point,
     },
@@ -81,16 +75,14 @@ pub enum NewAnnotationKind {
         strokes: Vec<Vec<Point>>,
         width: f32,
     },
-    /// Text drawn directly on the page inside `rect`, wrapped to its width;
-    /// the text is `contents`, drawn in the annotation's `color` with a font
-    /// embedded for exactly the glyphs it uses.
+    /// Text drawn on the page inside `rect`, wrapped to its width: `contents`,
+    /// in the annotation's `color`, with a font embedded for the glyphs it uses.
     FreeText {
         rect: Rect,
         font_size: f32,
     },
-    /// A stamp whose appearance is the given strokes and text lines, drawn
-    /// in `color` — how a signature (drawn ink or a typed name plus its
-    /// date) is written so that every reader shows it.
+    /// Strokes and text lines drawn in `color`: how a signature (drawn ink or a
+    /// typed name with its date) is written so that every reader shows it.
     Stamp {
         rect: Rect,
         strokes: Vec<Vec<Point>>,
@@ -99,8 +91,8 @@ pub enum NewAnnotationKind {
     },
 }
 
-/// One line of text in a [`NewAnnotationKind::Stamp`] appearance, shaped
-/// and set in the pinned font that covers it, embedded as a subset.
+/// One line of text in a [`NewAnnotationKind::Stamp`] appearance, set in the
+/// pinned font that covers it, embedded as a subset.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StampText {
     /// Start of the baseline, in user space.
@@ -109,11 +101,10 @@ pub struct StampText {
     pub text: String,
 }
 
-/// An annotation to add to an output page.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NewAnnotation {
-    /// Output page index (into [`Edits::pages`], or the original page
-    /// index when `pages` is empty).
+    /// Output page index into [`Edits::pages`], or the original page index when
+    /// `pages` is empty.
     pub page: usize,
     pub kind: NewAnnotationKind,
     pub color: Rgba,
@@ -121,14 +112,14 @@ pub struct NewAnnotation {
     pub author: String,
     /// `/Contents`.
     pub contents: String,
-    /// `/NM` — a stable unique name (the record id), so a re-export names
-    /// the same annotation the same way.
+    /// `/NM`: a stable unique name (the record id), so a re-export names the same
+    /// annotation the same way.
     pub name: String,
-    /// `/M` as a PDF date string (`D:YYYYMMDDHHmmSSZ`); empty to omit. Taken
-    /// from the record rather than the clock so export stays deterministic.
+    /// `/M` as a PDF date string (`D:YYYYMMDDHHmmSSZ`); empty to omit. From the
+    /// record, never the clock, so export stays deterministic.
     pub modified: String,
-    /// `/IRT`: the [`Self::name`] of another annotation in the same
-    /// [`Edits`] (on the same output page) that this one answers.
+    /// `/IRT`: the [`Self::name`] of another annotation in the same [`Edits`], on
+    /// the same output page, that this one answers.
     #[serde(default)]
     pub in_reply_to: Option<String>,
     /// `/RT`, written with [`Self::in_reply_to`].
@@ -136,46 +127,41 @@ pub struct NewAnnotation {
     pub reply_type: ReplyType,
 }
 
-/// An annotation in the source bytes, by its address there.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnnotationRef {
-    /// 0-based page of the exported document's own bytes.
+    /// 0-based page of the source document.
     pub page: usize,
-    /// Index in that page's `/Annots` ([`crate::AnnotationInfo::index`]).
+    /// Index in that page's `/Annots`.
     pub index: usize,
-    /// `/NM`, when the annotation has one: the address that survives other
-    /// annotations being added or removed.
+    /// `/NM` when set: the address that survives other annotations being added or
+    /// removed.
     pub name: String,
     /// The subtype found there, checked before anything is removed.
     pub kind: AnnotationKind,
 }
 
-/// An annotation of the source bytes that edit records took over.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdoptedAnnotation {
     pub target: AnnotationRef,
-    /// The record still says exactly what the original says: keep the
-    /// original object on the page's primary occurrence. Otherwise it is
-    /// removed there (a changed record is written again as a
-    /// [`NewAnnotation`], a deleted one is gone). Copies of a page never
-    /// carry adopted annotations.
+    /// The record says exactly what the original says: keep the original object on
+    /// the primary occurrence. Otherwise it is removed there (a changed record is
+    /// written again as a [`NewAnnotation`], a deleted one is gone). Copies of a
+    /// page never have adopted annotations.
     pub unchanged: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FieldValue {
     Text(String),
-    /// Check box / radio state. For a radio group, the widget whose export
-    /// value is `export` is turned on.
+    /// Check box or radio state; for a radio group, the widget whose export value
+    /// is `export` is turned on.
     Checked {
         on: bool,
         export: Option<String>,
     },
-    /// The selected option of a combo or list box.
     Choice(String),
 }
 
-/// A form field assignment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormValue {
     /// Fully qualified field name.
@@ -183,8 +169,7 @@ pub struct FormValue {
     pub value: FieldValue,
 }
 
-/// Everything an export writes. The default value exports the document
-/// unchanged.
+/// Everything an export writes; the default exports the document unchanged.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Edits {
     /// The output pages in order. Empty keeps the original pages as they are.
@@ -197,7 +182,6 @@ pub struct Edits {
 }
 
 impl Edits {
-    /// Whether the export would reproduce the source unchanged.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.pages.is_empty()

@@ -1,25 +1,20 @@
 //! The sandboxed helper process (`tilo-pdf-helper`).
 //!
-//! Started by [`crate::Engine`] with one end of a socket pair as its stdin.
-//! Before it reads a single byte of any document it:
+//! [`crate::Engine`] starts it with one end of a socket pair as its stdin.
+//! Before reading a byte of any document it dies with its parent, closes every
+//! inherited descriptor except the socket and stderr, loads pdfium, caps core
+//! dumps and descriptors, and confines itself through `tilo-sandbox`: read-only
+//! access to the library, the system font directories and the pinned font
+//! catalog appearance text is set in; no sockets, no exec. Linux uses Landlock
+//! plus the seccomp parser policy (which also enforces write-xor-execute
+//! memory), macOS a Seatbelt profile.
 //!
-//! 1. arranges to die with its parent and closes every inherited descriptor
-//!    except the socket and stderr;
-//! 2. loads pdfium;
-//! 3. caps core dumps and descriptors;
-//! 4. confines itself through `tilo-sandbox` — read-only access to the
-//!    library, the system font directories and the pinned font catalog
-//!    appearance text is set in, nothing else; no sockets it can bind or
-//!    connect, no exec. On Linux that is Landlock plus the seccomp parser
-//!    policy (which also enforces write-xor-execute memory); on macOS a
-//!    Seatbelt profile.
-//!
-//! Then it announces `Ready` and serves requests until the socket closes.
-//! If either confinement cannot be fully enforced it reports
-//! `FailureKind::Sandbox` and exits without reading a document; see
+//! It then announces `Ready` and serves requests until the socket closes. If
+//! confinement cannot be fully enforced it reports `FailureKind::Sandbox` and
+//! exits without reading a document; see
 //! [When the sandbox cannot be enforced](crate#when-the-sandbox-cannot-be-enforced).
-//! A crash or hang here costs only this process; the client reports an
-//! error and starts a fresh helper.
+//! A crash or hang costs only this process; the client reports an error and
+//! starts a fresh helper.
 
 use std::fs::File;
 use std::io;
@@ -32,7 +27,6 @@ use tilo_sandbox::confine;
 use crate::pdfium::{Engine, Library, font_directories};
 use crate::proto::{Channel, FailureKind, PROTOCOL_VERSION, Request, Response};
 
-/// Entry point of the helper binary. Returns the process exit code.
 #[must_use]
 pub fn run() -> i32 {
     // SAFETY: descriptor 0 is the socket the client handed us as stdin; we
@@ -85,8 +79,6 @@ fn background_priority() {
     }
 }
 
-/// Read-only access to the library, the system font directories and the
-/// font catalog; nothing else.
 fn policy(lib_path: &Path, catalog: Option<&Path>) -> confine::Policy {
     let mut read_only: Vec<PathBuf> = vec![lib_path.to_path_buf()];
     read_only.extend(font_directories().into_iter().filter(|d| d.is_dir()));
@@ -99,7 +91,6 @@ fn policy(lib_path: &Path, catalog: Option<&Path>) -> confine::Policy {
     }
 }
 
-/// Pixel buffers the client attached, mapped writable once.
 type Buffers = std::collections::HashMap<u64, memmap2::MmapMut>;
 
 /// Upper bound on attached pixel memory; the client releases buffers it
