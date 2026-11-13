@@ -1113,6 +1113,153 @@ fn every_scenario_stages_the_sample_shelf_through_the_librarys_edits() {
     );
 }
 
+/// Each bounded number of the library at its bound and past it: the bound
+/// is kept, and what lies past it (a step, an infinity, no number) is
+/// refused and leaves the value as it was.
+#[test]
+fn a_number_is_kept_at_its_bound_and_refused_past_it() {
+    let literata = FontEntry::new(
+        "u1",
+        FontKind::Named("Literata".into()),
+        "Literata",
+        1.1,
+        true,
+    );
+    let settings = Ebook::paths().settings;
+    let font = Ebook::paths().fonts.item(&Id::from_raw("u1"));
+    let scale: fn(&Ebook) -> f32 = |library| library.settings.font_scale;
+    let spacing: fn(&Ebook) -> f32 = |library| library.settings.line_spacing;
+    let size: fn(&Ebook) -> f32 = |library| library.fonts.values().last().unwrap().size_mult;
+    let set_scale: &dyn Fn(f32) -> Edit<Ebook> = &|value| settings.font_scale.set(value);
+    let set_spacing: &dyn Fn(f32) -> Edit<Ebook> = &|value| settings.line_spacing.set(value);
+    let set_size: &dyn Fn(f32) -> Edit<Ebook> = &|value| font.size_mult.set(value);
+    for (what, read, set, least, most) in [
+        (
+            "the text size",
+            scale,
+            set_scale,
+            Settings::READING_SCALE_MIN,
+            Settings::READING_SCALE_MAX,
+        ),
+        (
+            "the line spacing",
+            spacing,
+            set_spacing,
+            Settings::SPACING_MIN,
+            Settings::SPACING_MAX,
+        ),
+        (
+            "a font's size",
+            size,
+            set_size,
+            FontEntry::MULT_MIN,
+            FontEntry::MULT_MAX,
+        ),
+    ] {
+        for (value, kept) in [
+            (least, true),
+            (most, true),
+            (least - 0.01, false),
+            (most + 0.01, false),
+            (f32::INFINITY, false),
+            (f32::NEG_INFINITY, false),
+            (f32::NAN, false),
+        ] {
+            let mut library = Replica::<Ebook>::new();
+            let last = state(&library).fonts.len();
+            let add = Ebook::paths()
+                .fonts
+                .insert_as(&Id::from_raw("u1"), last, &literata);
+            edit(&mut library, &add).unwrap();
+            let before = read(&state(&library));
+            let done = edit(&mut library, &set(value));
+            let after = read(&state(&library));
+            if kept {
+                assert_eq!(done, Ok(()), "{what} of {value} is kept");
+                assert_eq!(after, value, "{what} of {value} is kept");
+            } else {
+                assert!(done.is_err(), "{what} of {value} is refused");
+                assert_eq!(after, before, "{what} of {value} changed nothing");
+            }
+        }
+    }
+}
+
+/// A shelf row's labels and an annotated passage are kept at their longest
+/// and refused a byte longer, by the verb that writes them and by an edit
+/// of the field.
+#[test]
+fn a_text_is_kept_at_its_longest_and_refused_a_byte_longer() {
+    use crate::model::MAX_EXCERPT_BYTES;
+    /// The longest title, author or subject a shelf row keeps, in bytes.
+    const LABEL: usize = 4 * 1024;
+    for (what, len, kept) in [
+        ("at its longest", LABEL, true),
+        ("a byte longer", LABEL + 1, false),
+    ] {
+        for label in ["title", "author", "subject"] {
+            let mut entry = row(BOOK, "Novel");
+            let text = "x".repeat(len);
+            match label {
+                "title" => entry.title = text,
+                "author" => entry.author = text,
+                _ => entry.subject = text,
+            }
+            let mut library = Replica::<Ebook>::new();
+            let done = apply(&mut library, shelve(&entry));
+            assert_eq!(done.is_ok(), kept, "a {label} {what}: {done:?}");
+            assert_eq!(
+                state(&library).entries.len(),
+                usize::from(kept),
+                "a {label} {what}"
+            );
+        }
+    }
+    for (what, len, kept) in [
+        ("at its longest", MAX_EXCERPT_BYTES, true),
+        ("a byte longer", MAX_EXCERPT_BYTES + 1, false),
+    ] {
+        let mut library = Replica::<Ebook>::new();
+        apply(&mut library, shelve(&row(BOOK, "Novel"))).unwrap();
+        let done = apply(
+            &mut library,
+            Ebook::HIGHLIGHT.with(books::Highlight {
+                book: BOOK.into(),
+                chapter: 0,
+                color: HighlightColor::Yellow,
+                replacing: Vec::new(),
+                pieces: vec![HiPiece {
+                    block: 1,
+                    start: 0,
+                    end: 9,
+                    excerpt: "x".repeat(len),
+                }],
+            }),
+        );
+        assert_eq!(
+            done.is_ok(),
+            kept,
+            "a passage {what}, highlighted: {done:?}"
+        );
+        assert_eq!(
+            marks(&library).len(),
+            usize::from(kept),
+            "a passage {what}, highlighted"
+        );
+
+        let (mut library, _) = annotated();
+        let piece = find(&library, |mark| mark.kind == AnnoKind::Highlight);
+        let change = note_paths(piece.id).excerpt.replace("x".repeat(len));
+        let done = edit(&mut library, &change);
+        assert_eq!(done.is_ok(), kept, "a passage {what}, edited: {done:?}");
+        assert_eq!(
+            find(&library, |mark| mark.id == piece.id).excerpt.len() == len,
+            kept,
+            "a passage {what}, edited"
+        );
+    }
+}
+
 /// The library's verbs bound to where the reader is follow the page and
 /// the selection.
 #[test]
