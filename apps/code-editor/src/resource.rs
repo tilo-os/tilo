@@ -353,7 +353,14 @@ mod tests {
 
     #[test]
     fn path_effects_refuse_a_relative_path() {
-        for path in ["src/main.rs", "./src/main.rs", "../main.rs", "~/main.rs"] {
+        for path in [
+            "src/main.rs",
+            "./src/main.rs",
+            "../main.rs",
+            "~/main.rs",
+            "",
+            "file:///src/main.rs",
+        ] {
             for id in ["reveal", "open-file", "open-folder", "save"] {
                 let mut arguments = serde_json::Map::new();
                 arguments.insert("path".into(), path.into());
@@ -367,9 +374,48 @@ mod tests {
                         ui::tilo_resource::EffectDecodeError::Argument { name, source }
                             if name == "path" && source.to_string().contains("absolute")
                     ),
-                    "{id} {path}: {error}"
+                    "{id} {path:?}: {error}"
                 );
             }
+        }
+    }
+
+    /// The other half of the refusals above: the same arguments decode once
+    /// the path is absolute, and the effect carries that path.
+    #[test]
+    fn path_effects_take_an_absolute_path() {
+        let path = "/src/main.rs";
+        let absolute = || Some(ui::tilo_resource::AbsolutePath::new(path).unwrap());
+        let effects = [
+            (
+                "reveal",
+                CodeEditorEffect::Reveal {
+                    file: None,
+                    path: absolute(),
+                    line: 0,
+                    column: 0,
+                    results: false,
+                },
+            ),
+            ("open-file", CodeEditorEffect::OpenFile { path: absolute() }),
+            (
+                "open-folder",
+                CodeEditorEffect::OpenFolder { path: absolute() },
+            ),
+            (
+                "save",
+                CodeEditorEffect::Save {
+                    file: None,
+                    path: absolute(),
+                },
+            ),
+        ];
+        let arguments = serde_json::json!({"path": path, "line": 0, "column": 0, "results": false});
+        let arguments = arguments.as_object().unwrap();
+        for (id, expected) in effects {
+            let decoded = CodeEditorEffect::decode(id, arguments)
+                .unwrap_or_else(|error| panic!("{id} {path}: {error}"));
+            assert_eq!(decoded, expected, "{id}");
         }
     }
 
