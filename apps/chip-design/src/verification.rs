@@ -1,4 +1,4 @@
-//! Bounded, reported hardware evidence. No artifact is executed or authenticated.
+//! Bounded, reported hardware evidence.
 
 use std::collections::BTreeMap;
 
@@ -559,8 +559,8 @@ impl VerificationReceipt {
         Ok(())
     }
 
-    // Detached receipts carry reported metadata and artifact identities. This
-    // importer never reads statistics or authenticates their area/cell totals.
+    // Detached receipts carry reported metadata and artifact identities. This importer
+    // never reads statistics or authenticates their area/cell totals.
     fn validate_mapping_values(&self) -> Result<(), String> {
         let measured = self.checks.get("library_mapping") == Some(&CheckStatus::Passed);
         if measured != (self.mapped_cell_count.is_some() && self.reported_library_area.is_some())
@@ -646,8 +646,8 @@ impl VerificationRecord {
         if json.len() > MAX_REPORT_BYTES {
             return Err("receipt exceeds the 1 MiB import limit".into());
         }
-        // Try the original strict hardware envelope first. A CPU producer has
-        // a different typed schema, and is normalized only after validation.
+        // A CPU producer has a different typed schema, and is normalized only after
+        // validation.
         let mut receipt: VerificationReceipt = match serde_json::from_str(json) {
             Ok(receipt) => receipt,
             Err(original_error) => {

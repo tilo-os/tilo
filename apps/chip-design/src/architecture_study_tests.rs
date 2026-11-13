@@ -291,7 +291,6 @@ fn invalid_memory_geometry_ports_and_inventory_refuse_atomically() {
         );
         assert!(app.parsed().verifications.is_empty());
     }
-    // A ROM may have asynchronous reads and no writes.
     let mut rom = original;
     rom["architecture_study"]["variants"][0]["synthesis"]["memories"][0]["clocked_read_ports"] =
         json!(0);

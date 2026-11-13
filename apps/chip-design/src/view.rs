@@ -22,37 +22,28 @@ fn tr(key: &str) -> String {
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "chip_design.effect")]
 pub enum ChipEffect {
-    /// Import analytical report from the host's consented file chooser.
     #[effect(attended, job, cancellable)]
     ImportFile,
-    /// Open the structural operator graph.
     #[effect(view, kind = "read")]
     OperatorGraph,
-    /// Add an operator to the graph, placed after the ones already there.
     AddOperator {
         #[param("The operator's name, as the add menu lists it (e.g. Input, Multiply)")]
         kind: String,
     },
-    /// Inspect a structural operator; omit node to clear local selection.
     #[effect(view, kind = "read")]
     InspectOperator { node: Option<String> },
-    /// Zoom the operator graph: out, in, or fit the whole design to the
-    /// canvas. The canvas keeps the level it shows.
     #[effect(view, kind = "read")]
     ZoomGraph {
         #[param("One of: in, out, fit")]
         step: String,
     },
-    /// Choose an output before invoking the typed connect action.
     #[effect(view, kind = "read")]
     SelectOutput { node: String, port: String },
-    /// Inspect a reported evidence stage, artifact, or subflow reference.
     #[effect(view, kind = "read")]
     InspectEvidence { report: String, item: String },
     /// Open an exactly matched imported subflow; refuses unloaded references.
     #[effect(view, kind = "read")]
     OpenEvidenceSubflow { report: String, id: String },
-    /// Inspect one report, or return to all reports.
     #[effect(view, kind = "read")]
     Inspect {
         #[param("Report content identity; omit to show all reports")]
@@ -62,9 +53,8 @@ pub enum ChipEffect {
 
 pub struct ChipDesignShell;
 
-/// What a search hit or an agent's `open` names, as the selection the view
-/// shows: a report or receipt by its identity, an evidence item by its
-/// anchor, or the operator graph.
+/// What a search hit or an agent's `open` names, as the selection the view shows: a report
+/// or receipt by its identity, an evidence item by its anchor, or the operator graph.
 fn opened_place(anchor: &str) -> String {
     let place = anchor
         .rsplit_once("/derived/")
@@ -79,8 +69,8 @@ fn opened_place(anchor: &str) -> String {
         .to_owned()
 }
 
-/// What a capture stages before the view is built, and the state that says
-/// whether what is on screen is a synthetic example.
+/// What a capture stages before the view is built, and the state that says whether what is
+/// on screen is a synthetic example.
 fn capture_notice(
     cx: &ViewCx<ChipProject>,
     selected: &ui::LocalState<Option<String>>,
@@ -105,8 +95,8 @@ fn capture_notice(
     synthetic
 }
 
-/// The line saying a file could not be opened, or that what is shown is a
-/// synthetic example, above whatever the window shows.
+/// The line saying a file could not be opened, or that what is shown is a synthetic
+/// example, above whatever the window shows.
 fn notice_label(cx: &ViewCx<ChipProject>, synthetic: &ui::LocalState<bool>) -> Element {
     let invalid_file = crate::launch::invalid(&cx.launch());
     cx.switch(synthetic, move |_, synthetic| {
@@ -121,8 +111,7 @@ fn notice_label(cx: &ViewCx<ChipProject>, synthetic: &ui::LocalState<bool>) -> E
     })
 }
 
-/// The app's own commands: the operator graph, every report, and importing
-/// one. They stand in the window bar, which already names the app.
+/// The app's own commands: the operator graph, every report, and importing one.
 fn header_actions(cx: &ViewCx<ChipProject>) -> Vec<Element> {
     vec![
         Box::new(cx.effect_button(tr("chip-graph-title"), &ChipEffect::OperatorGraph)),
@@ -131,9 +120,8 @@ fn header_actions(cx: &ViewCx<ChipProject>) -> Vec<Element> {
     ]
 }
 
-/// The window's local view state: which place it shows, which operator is
-/// chosen, how the canvas is zoomed and scrolled, and whether the operator's
-/// own facts are open.
+/// The window's local view state: which place it shows, which operator is chosen, how the
+/// canvas is zoomed and scrolled, and whether the operator's own facts are open.
 struct PageState {
     selected: ui::LocalState<Option<String>>,
     graph_selection: ui::LocalState<crate::operator_graph_view::Selection>,
@@ -143,8 +131,8 @@ struct PageState {
     synthetic: ui::LocalState<bool>,
 }
 
-/// The window: the operator graph on its canvas, or the reports and receipts
-/// the project holds.
+/// The window: the operator graph on its canvas, or the reports and receipts the project
+/// holds.
 fn page(cx: &ViewCx<ChipProject>, view: &PageState) -> Element {
     let selected = view.selected.clone();
     let zoom = view.zoom.clone();
@@ -168,8 +156,6 @@ fn page(cx: &ViewCx<ChipProject>, view: &PageState) -> Element {
             let evidence = cx.value(ProjectState::of);
             cx.switch(&evidence, move |cx, state| {
                 let notice = notice_label(cx, &synthetic);
-                // The window bar already names the app; the header holds only
-                // its commands, which the bar shows as its actions.
                 let shell = NavShell::new()
                     .content_kind(ui::widget::ContentKind::Canvas)
                     .content_header("", header_actions(cx));
@@ -197,8 +183,8 @@ fn page(cx: &ViewCx<ChipProject>, view: &PageState) -> Element {
     })
 }
 
-/// The graph: its operators beside it, its own canvas filling the rest, and
-/// the chosen operator's facts in the inspector the shell docks or sheets.
+/// The graph: its operators beside it, its own canvas filling the rest, and the chosen
+/// operator's facts in the inspector the shell docks or sheets.
 fn operator_page(
     cx: &ViewCx<ChipProject>,
     state: &crate::operator_graph::OperatorState,
@@ -228,8 +214,6 @@ fn operator_page(
         .inspector(pane)
         .inspector_header(tr("chip-graph-operator"), Vec::new())
         .with_inspector_state(details);
-    // Choosing an operator shows its facts; closing the pane keeps them a
-    // press away.
     Box::new(if details.with(|open| *open) {
         shell.with_inspector_revealed()
     } else {
@@ -244,7 +228,6 @@ impl ResourceApp for ChipDesignShell {
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Chip Design";
     const TITLE_KEY: &'static str = "chip-design-app-title";
-    // Content collection currently stages non-media transfers with a .bin name.
     // Both routes validate the complete bounded report before any action is sent.
     const OPENS: &'static [&'static str] = &["application/json", "application/octet-stream"];
     const ARGUMENTS: usize = 1;
@@ -260,12 +243,8 @@ impl ResourceApp for ChipDesignShell {
     fn view(cx: &mut ViewCx<ChipProject>) -> Element {
         let selected = cx.local(None::<String>);
         let graph_selection = cx.local(crate::operator_graph_view::Selection::default());
-        // The graph opens showing all of itself, and keeps where a person
-        // moved it: the local view state of one window.
         let graph_zoom = cx.local(ui::widget::ViewportZoom::Fit);
         let operator_details = cx.local(false);
-        // A capture of the graph with one operator chosen: the list, the
-        // canvas and the operator's own facts all in one frame.
         let staged_selection = graph_selection.clone();
         let staged_details = operator_details.clone();
         cx.on_stage(move |scenario| {
@@ -432,8 +411,6 @@ fn evidence_body(
         return Box::new(EmptyState::new(tr("chip-report-missing")));
     }
     if reports.is_empty() && verifications.is_empty() {
-        // A first visit says what the app is for and offers its one way in
-        // that needs nothing from outside: the operator graph.
         return Box::new(
             cx.actions().bind_effect_invocation(
                 EmptyState::new(tr("chip-empty-title"))
@@ -962,8 +939,8 @@ mod agent_disclosure_tests {
     use ui::framework::testing::TestApp;
     use ui::tilo_actions::ResourceSpec;
 
-    /// The document read of the first resource of `kind` any scenario
-    /// publishes, invoked as `tilo_read` on it does.
+    /// The document read of the first resource of `kind` any scenario publishes, invoked as
+    /// `tilo_read` on it does.
     fn read_first(kind: &str) -> ui::serde_json::Value {
         for scenario in <super::ChipDesignShell as ResourceApp>::scenarios() {
             let mut app = TestApp::<super::ChipDesignShell>::drive(scenario)
@@ -1009,9 +986,9 @@ mod agent_disclosure_tests {
     }
 }
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source beside
-/// it, so a device set to German reads a German window.
+/// German is one of the languages the app ships, and it reads in German: the copy comes
+/// from `locales/de-DE.ftl`, never from the English source beside it, so a device set to
+/// German reads a German window.
 #[cfg(test)]
 mod german_catalogue_tests {
     use super::CATALOG;

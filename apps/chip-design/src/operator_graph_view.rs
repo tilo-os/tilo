@@ -1,12 +1,5 @@
-//! Generic structural graph, rendered by the shared retained canvas inside
-//! the toolkit's zoom/pan viewport.
-//!
-//! The graph is a place to move around in, so it fills the window and every
-//! way of seeing more of it is here: the viewport's own zoom and pan (Ctrl+
-//! wheel, a pinch, Ctrl+`+`/`-`, arrows, drag), the toolbar's Zoom out, level
-//! and Zoom in, and Fit — the whole design on opening. The operator list is
-//! the other way in: every operator by name, so one is reachable without
-//! hunting the canvas for it.
+//! Generic structural graph, rendered by the shared retained canvas inside the toolkit's
+//! zoom/pan viewport.
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -24,9 +17,6 @@ use ui::widget::{
     TextInput, ViewportZoom,
 };
 
-/// A node's own box in the graph's coordinates: its width, and the height it
-/// is given before the canvas measures the real one. Not a breakpoint: a node
-/// is this size in every window.
 const NODE_BOX: (f32, f32) = (248.0, 320.0);
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -79,8 +69,8 @@ fn action_button(
     }
 }
 
-/// A fresh operator of `kind`, placed after the `count` already in the
-/// graph on a four-wide grid.
+/// A fresh operator of `kind`, placed after the `count` already in the graph on a four-wide
+/// grid.
 fn new_node(kind: OperatorKind, count: usize) -> OperatorNode {
     let n = u16::try_from(count).unwrap_or(64);
     OperatorNode {
@@ -112,8 +102,8 @@ fn kind_named(label: &str) -> Option<OperatorKind> {
         .find(|kind| tr(kind.key()) == label)
 }
 
-/// One "Add operator" menu, not a button per operator kind: the kinds are a
-/// choice, and a row of a dozen buttons buried the graph under them.
+/// One "Add operator" menu, not a button per operator kind: the kinds are a choice, and a
+/// row of a dozen buttons buried the graph under them.
 fn add_menu(cx: &ViewCx<ChipProject>) -> Element {
     let options = OperatorKind::ALL
         .into_iter()
@@ -126,8 +116,8 @@ fn add_menu(cx: &ViewCx<ChipProject>) -> Element {
     Box::new(cx.actions().bind_effect(menu, ChipEffect::ADD_OPERATOR))
 }
 
-/// The graph, as the window's content: the ways to change what is drawn,
-/// then the canvas, filling the room the window has for it.
+/// The graph, as the window's content: the ways to change what is drawn, then the canvas,
+/// filling the room the window has for it.
 pub fn body(
     cx: &ViewCx<ChipProject>,
     state: &OperatorState,
@@ -213,8 +203,6 @@ pub fn body(
             ui::widget::SmallContentAlign::Start,
         );
     canvas.set_content_size(width, height);
-    // The canvas takes the room the window has after the choices above it,
-    // so a wider window is a wider graph rather than a wider margin.
     page = page.push(Box::new(
         Row::new()
             .with_fill_remaining_height()
@@ -234,10 +222,10 @@ fn extent(state: &OperatorState) -> (f64, f64) {
     (f64::from(right), f64::from(bottom))
 }
 
-/// Zoom out, the level the canvas shows, zoom in, and fit the whole graph to
-/// the room it has. The level is a word while the whole graph is visible and
-/// a percentage once it is not, and it follows a wheel or a pinch, because it
-/// reads the same state the canvas answers.
+/// Zoom out, the level the canvas shows, zoom in, and fit the whole graph to the room it
+/// has. The level is a word while the whole graph is visible and a percentage once it is
+/// not, and it follows a wheel or a pinch, because it reads the same state the canvas
+/// answers.
 fn zoom_controls(cx: &ViewCx<ChipProject>, zoom: &ui::LocalState<ViewportZoom>) -> Element {
     let step = |id: &str, icon: Icon, label: &str, name: &str| {
         cx.actions().bind_effect_invocation(
@@ -280,9 +268,8 @@ fn zoom_controls(cx: &ViewCx<ChipProject>, zoom: &ui::LocalState<ViewportZoom>) 
     )
 }
 
-/// Every operator, by name, as the list beside the canvas: one is reachable
-/// from here without hunting for it on the canvas, and choosing one shows it
-/// in the inspector.
+/// Every operator, by name, as the list beside the canvas: one is reachable from here
+/// without hunting for it on the canvas, and choosing one shows it in the inspector.
 pub fn operators(
     cx: &ViewCx<ChipProject>,
     state: &OperatorState,
@@ -313,8 +300,8 @@ pub fn operators(
     Box::new(Scrollable::new_vertical().with_child(Box::new(list)))
 }
 
-/// One operator's own facts and edits, beside the canvas when the window has
-/// the room and over it when it does not.
+/// One operator's own facts and edits, beside the canvas when the window has the room and
+/// over it when it does not.
 pub fn details(
     cx: &ViewCx<ChipProject>,
     state: &OperatorState,
@@ -360,8 +347,6 @@ fn node_view(
             .with_role(TextRole::Caption),
         ));
     for port in &visual.inputs {
-        // Each port says whether it feeds the operator or comes out of it:
-        // what a port is for, before anyone knows the graph.
         let label = crate::view::CATALOG.t_args(
             "chip-graph-port-input",
             &[("port", tr(&format!("chip-port-{}", port.id)).into())],
@@ -413,8 +398,6 @@ fn node_view(
                 port: port.id.clone(),
             },
         )));
-        // An output carrying the operator's own tensor is named by the shape
-        // line above; only one that differs (a projection's) says its own.
         if port.data_type != format!("f32{displayed_shape}") {
             content = content.push(Box::new(
                 Text::new(&port.data_type).with_role(TextRole::Caption),
@@ -594,8 +577,6 @@ pub fn present(
             let level = match step.as_str() {
                 "fit" => ViewportZoom::Fit,
                 "in" | "out" => {
-                    // Step from the factor on screen, which a wheel or a
-                    // pinch may have moved since the buttons were drawn.
                     let factor = match level {
                         ViewportZoom::Factor(factor) => factor,
                         ViewportZoom::Fit => 1.0,
@@ -636,8 +617,6 @@ pub fn present(
             {
                 return Err(tr("chip-graph-node-missing"));
             }
-            // Choosing an operator is asking to see it: the pane holding its
-            // facts comes with the choice, and closing the pane keeps it.
             details.set(node.is_some());
             selection.set(Selection { node, output: None });
         }

@@ -16,8 +16,8 @@ impl Parsed for TestApp<ChipDesignShell> {
     }
 }
 
-/// Invoke the operator graph's `action` with `args` as an agent does: the
-/// project's verb, or the field edit of a matrix node's output width.
+/// Invoke the operator graph's `action` with `args` as an agent does: the project's verb,
+/// or the field edit of a matrix node's output width.
 pub(crate) fn graph(
     app: &mut TestApp<ChipDesignShell>,
     action: &str,
@@ -94,8 +94,8 @@ fn forged_storage_and_moving_revision_are_refused_on_the_production_door() {
     ] {
         let mut report: serde_json::Value = serde_json::from_str(REPORT).unwrap();
         report.as_object_mut().unwrap().insert(field.into(), value);
-        // Exercise the typed apply door too: a caller cannot bypass validation
-        // by encoding an action instead of using the named declaration.
+        // Exercise the typed apply door too: a caller cannot bypass validation by encoding
+        // an action instead of using the named declaration.
         let invoke = ChipProject::IMPORT_REPORT.with(report.to_string());
         assert!(app.invoke(invoke).is_err());
         assert!(app.parsed().reports.is_empty());
@@ -1030,8 +1030,6 @@ fn cpu_operator_receipts_reject_malformed_or_contradictory_public_claims() {
             .clone();
         raw["checks"].as_object_mut().unwrap().remove(&first);
         cases.push(raw.to_string());
-        // Preserve duplicate JSON keys in the actual input, not a Value map that
-        // has already discarded the malformed producer identity.
         cases.push(json.replacen(
             "\"primary_revision\":",
             "\"primary_revision\":\"main\",\"primary_revision\":",
@@ -1134,8 +1132,7 @@ fn generic_gated_delta_dimensions_and_candidate_artifacts_are_consistent() {
     }
 }
 
-/// What an agent does in the project, one call each, reads as the app's
-/// sentences.
+/// What an agent does in the project, one call each, reads as the app's sentences.
 #[test]
 fn an_agent_designs_operators_one_call_each_and_history_reads_it() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};
@@ -1192,8 +1189,8 @@ fn an_agent_designs_operators_one_call_each_and_history_reads_it() {
     );
 }
 
-/// The project's commands stand in the window's header row, which is its
-/// bar: its Operator graph opens the graph.
+/// The project's commands sit in the window's header row, which is its bar: its Operator
+/// graph opens the graph.
 #[test]
 fn the_window_bars_operator_graph_opens_the_graph() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
@@ -1215,8 +1212,8 @@ fn the_window_bars_operator_graph_opens_the_graph() {
     );
 }
 
-/// The window bar's sidebar button flips the sidebar on every click, in a
-/// window wide enough to dock it and in a narrow one.
+/// The window bar's sidebar button flips the sidebar on every click, in a window wide
+/// enough to dock it and in a narrow one.
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
     ui::framework::testing::check_window_sidebar_button(|| {
@@ -1225,8 +1222,8 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
     .unwrap_or_else(|error| panic!("{error}"));
 }
 
-/// A past version reads through the `read` door and draws in the project's
-/// own view with the report it held then.
+/// A past version reads through the `read` door and draws in the project's own view with
+/// the report it held then.
 #[test]
 fn a_past_version_reads_and_shows_its_report() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();

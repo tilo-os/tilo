@@ -1,12 +1,5 @@
-//! The chip project: imported engineering evidence and the structural
-//! operator design, one model with its verbs.
-//!
-//! Reports and verification receipts are kept as the exact text they were
-//! imported as, under the content identity of those bytes; only importing
-//! and removing them changes them. Moving an operator and its matrix output
-//! width are field edits of its node; adding, reshaping and removing nodes
-//! and connecting their ports are verbs, checked against the graph as it
-//! stands. What a view shows is the parsed [`ProjectState`].
+//! The chip project: imported engineering evidence and the structural operator design, one
+//! model with its verbs.
 
 use std::collections::BTreeMap;
 
@@ -23,8 +16,8 @@ use crate::operator_graph::{
 };
 use crate::verification::VerificationRecord;
 
-/// The project as the views read it: every report and receipt parsed, and
-/// the operator graph its stored connections resolve to.
+/// The project as the views read it: every report and receipt parsed, and the operator
+/// graph its stored connections resolve to.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProjectState {
     pub reports: BTreeMap<String, StorageReport>,
@@ -33,8 +26,7 @@ pub struct ProjectState {
 }
 
 impl ProjectState {
-    /// What `project` holds, parsed. Text that no longer parses is left
-    /// out: only the import verbs store it, after parsing it.
+    /// What `project` holds, parsed.
     pub fn of(project: &Project) -> Self {
         Self {
             reports: project
@@ -58,12 +50,11 @@ impl ProjectState {
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 #[model(check = Project::valid)]
 pub struct Project {
-    /// Analytical storage reports, the exact imported JSON by its content
-    /// identity.
+    /// Analytical storage reports, the exact imported JSON by its content identity.
     #[model(readonly)]
     pub reports: BTreeMap<String, Atom>,
-    /// Hardware verification receipts, as stored on import, by the content
-    /// identity of the imported bytes.
+    /// Hardware verification receipts, as stored on import, by the content identity of the
+    /// imported bytes.
     #[model(readonly)]
     pub verifications: BTreeMap<String, Atom>,
     /// Operators of the structural design.
@@ -83,9 +74,8 @@ pub struct Project {
 impl Project {
     /// Import analytical report.
     ///
-    /// Import reported storage evidence; does not authenticate the model or
-    /// validate chip performance. The same report imported twice is kept
-    /// once.
+    /// Import reported storage evidence; does not authenticate the model or validate chip
+    /// performance.
     #[action]
     pub fn import_report(
         &mut self,
@@ -117,9 +107,8 @@ impl Project {
 
     /// Import hardware verification receipt.
     ///
-    /// Import reported engineering evidence; does not authenticate artifacts
-    /// or establish model quality, silicon measurements, or
-    /// manufacturability.
+    /// Import reported engineering evidence; does not authenticate artifacts or establish
+    /// model quality, silicon measurements, or manufacturability.
     #[action]
     pub fn import_verification(
         &mut self,
@@ -150,8 +139,7 @@ impl Project {
 
     /// Add operator.
     ///
-    /// Edit a structural operator design; does not execute or qualify a
-    /// netlist. Adding the same node twice keeps it once.
+    /// Edit a structural operator design; does not execute or qualify a netlist.
     #[action]
     pub fn add_node(
         &mut self,
@@ -305,8 +293,8 @@ impl Project {
         OperatorState::of(self.nodes.iter(), self.connections.iter())
     }
 
-    /// The operator graph, each report and each receipt with the evidence
-    /// it holds, as places to inspect.
+    /// The operator graph, each report and each receipt with the evidence it holds, as
+    /// places to inspect.
     fn places(&self) -> Vec<Derived<Self>> {
         let state = ProjectState::of(self);
         std::iter::once(
@@ -379,9 +367,8 @@ impl Project {
             .collect()
     }
 
-    /// What an agent reads: the project's summary, or one report, receipt,
-    /// evidence item or the operator graph, by the id it is published
-    /// under.
+    /// What an agent reads: the project's summary, or one report, receipt, evidence item or
+    /// the operator graph, by the id it is published under.
     fn read_content(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let state = ProjectState::of(self);
         let Some(item) = item else {
@@ -439,11 +426,8 @@ impl Project {
 }
 
 impl Project {
-    /// Whether `id` is a place [`read_content`](Self::read_content)
-    /// answers: the operator graph, a report, a receipt or an evidence item.
-    /// Its read is what discloses it, so removing a report or a receipt is
-    /// offered to whoever may read it, an agent too, where the place's
-    /// Inspect view is this window's own.
+    /// Whether `id` is a place [`read_content`](Self::read_content) answers: the operator
+    /// graph, a report, a receipt or an evidence item.
     fn document_child(_: &Self, id: &str) -> bool {
         id.strip_prefix(<Self as tilo_resource::Resource>::KIND)
             .and_then(|rest| rest.strip_prefix("/derived/"))
@@ -456,11 +440,9 @@ impl Project {
     }
 }
 
-/// The derived place the operator graph is published as.
 const GRAPH_PLACE: &str = "operator-graph";
 
-/// Import `json`: a storage report or a verification receipt, whichever it
-/// is.
+/// Import `json`: a storage report or a verification receipt, whichever it is.
 pub fn import(json: String) -> Result<Invoke<Project>, String> {
     let evidence: serde_json::Value = if json.len() <= crate::model::MAX_REPORT_BYTES {
         serde_json::from_str(&json).map_err(|error| error.to_string())?
@@ -494,8 +476,8 @@ pub(crate) fn verification_resource_id(id: &str) -> String {
     )
 }
 
-/// One reported evidence item as a place to inspect: a stage, a macro
-/// placement, a subflow reference or an artifact.
+/// One reported evidence item as a place to inspect: a stage, a macro placement, a subflow
+/// reference or an artifact.
 fn flow_place(report: &str, kind: &str, id: &str, title: &str) -> Derived<Project> {
     let anchor = crate::evidence_flow_view::anchor(report, kind, id);
     let place = Derived::new(title)

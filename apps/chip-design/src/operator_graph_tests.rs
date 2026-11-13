@@ -231,10 +231,7 @@ fn generic_shots_seed_only_capture_and_render_bound_controls() {
     );
 }
 
-/// Click where the canvas draws the control `id`. A canvas's controls are
-/// laid out in its own content space, so the place a person presses is that
-/// rect through the viewport's transform — the same mapping production uses
-/// for a pointer.
+/// Click where the canvas draws the control `id`.
 fn click_drawn(app: &mut TestApp<ChipDesignShell>, id: &str) -> Result<(), String> {
     let rect = app
         .harness()
@@ -250,14 +247,14 @@ fn click_drawn(app: &mut TestApp<ChipDesignShell>, id: &str) -> Result<(), Strin
     Ok(())
 }
 
-/// One frame after a zoom was asked for: the canvas answers a request from
-/// outside it when it next draws.
+/// One frame after a zoom was asked for: the canvas answers a request from outside it when
+/// it next draws.
 fn frame(app: &mut TestApp<ChipDesignShell>) {
     app.harness().relayout_at((1600, 1400)).unwrap();
 }
 
-/// The canvas in the window, as the app drew it: its rect, the zoom it is
-/// showing, and whether the graph reaches past it.
+/// The canvas in the window, as the app drew it: its rect, the zoom it is showing, and
+/// whether the graph reaches past it.
 fn canvas(app: &mut TestApp<ChipDesignShell>) -> (ui::kurbo::Rect, f64, bool) {
     let viewport = ui::widget::DocumentViewport::first_in(app.harness().root_widget())
         .expect("the operator graph is drawn on a canvas");
@@ -301,8 +298,6 @@ fn the_canvas_fills_the_window_and_fits_the_whole_graph() {
         !overflows,
         "the graph opens showing all of itself, at {zoom} in {rect:?}"
     );
-    // Zooming in draws larger; Fit is the factor the canvas computes for
-    // itself, and shows the whole design.
     app.effect(&crate::view::ChipEffect::ZoomGraph { step: "in".into() })
         .unwrap();
     app.settle();
@@ -328,7 +323,6 @@ fn the_canvas_fills_the_window_and_fits_the_whole_graph() {
     );
     let (_, _, still_overflows) = canvas(&mut app);
     assert!(!still_overflows, "fitted, the whole design is on screen");
-    // Panning is kept: the canvas opens where it was left, not at its corner.
     app.effect(&crate::view::ChipEffect::ZoomGraph { step: "in".into() })
         .unwrap();
     app.settle();
@@ -471,8 +465,8 @@ fn residual_add_public_ports_refuse_shape_mismatch_and_undo_connections() {
     assert_eq!(decoded.kind, OperatorKind::Add);
 }
 
-/// A first visit is told what the app is for and gets one way in that needs
-/// nothing from outside: the empty project opens the operator graph.
+/// A first visit is told what the app is for and gets one way in that needs nothing from
+/// outside: the empty project opens the operator graph.
 #[test]
 fn the_empty_project_explains_itself_and_opens_the_graph() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
@@ -500,9 +494,8 @@ fn the_empty_project_explains_itself_and_opens_the_graph() {
     );
 }
 
-/// The graph offers its operator kinds as one menu, not a button per kind,
-/// and choosing one adds that operator; once there are operators, a line
-/// says how to connect them.
+/// The graph offers its operator kinds as one menu, not a button per kind, and choosing one
+/// adds that operator; once there are operators, a line says how to connect them.
 #[test]
 fn one_add_menu_adds_the_chosen_operator() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
