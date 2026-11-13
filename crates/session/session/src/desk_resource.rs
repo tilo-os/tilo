@@ -38,6 +38,9 @@ pub(crate) struct DeskKey {
     not_responding: u64,
     /// The desk styles' revision: a package installed or taken away moves it (shell.md §6).
     styles: u64,
+    /// The app lists' generation: an app installed or taken away moves the launcher's list of
+    /// them. The lists' own worker reads them, so this is its latest reading's identity.
+    apps: usize,
 }
 
 /// The kind of the desk's resource: the origin kind a shell's type holds.
@@ -151,6 +154,20 @@ pub(crate) enum DeskEffect {
     CloseSurface {
         #[param("The surface")]
         surface: String,
+    },
+    /// Tell the person something, as an app's `notify` does.
+    /// It rises as a banner over the desk and waits in the centre until they dismiss it: the one
+    /// way a script, an agent or the REPL posts the same notice an app's `notify` does, so what
+    /// they say reaches the person the same way.
+    Notify {
+        #[param("What happened, in a short sentence")]
+        title: String,
+        #[param("What it says, under the title")]
+        body: Option<String>,
+        #[param("Who it is from: an app's name, or the agent's; empty for the session's own")]
+        from: Option<String>,
+        #[param("Its kind: `info`, `success`, `warning` or `error`")]
+        kind: Option<String>,
     },
     /// Clear the notification centre, which Undo puts back.
     ClearNotices,
@@ -735,6 +752,12 @@ impl Desk {
                 self.surfaces.overlays.here(),
             ),
             styles: self.styles.borrow().revision,
+            // The app lists' generation: the worker reads them again when the store moves and
+            // hands out a new one, so an install or a removal moves this — and, the generation
+            // being a rising count, never a freed reading's reused address.
+            apps: crate::app_icons::app_lists_snapshot().map_or(0, |(generation, _)| {
+                usize::try_from(generation).unwrap_or(usize::MAX)
+            }),
             agents: self.seats.revision(),
             revealed: self.surfaces.overlays.revealed(std::time::Instant::now()),
             // Which apps stopped answering is the compositor's, published through the handle beside
@@ -852,6 +875,23 @@ impl Desk {
             notices: notices(&self.notices),
             notice_actions: notice_actions(&self.notices),
             badges: self.signals.badges(),
+            apps: crate::app_icons::app_lists_snapshot()
+                .map(|(_, lists)| {
+                    lists
+                        .applications
+                        .iter()
+                        .map(|app| shell_part::AppReading {
+                            key: app.id.clone(),
+                            name: app.title.clone(),
+                            icon: ui::icons::app_glyph(&app.id, app.category.as_deref())
+                                .name()
+                                .to_owned(),
+                            category: app.category.clone().unwrap_or_default(),
+                            description: app.description.clone().unwrap_or_default(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             people,
             tray: self.tray_items(),
             styles: self.styles.borrow().list.clone(),
@@ -1366,6 +1406,31 @@ impl Service for Desk {
         }
         if let DeskEffect::CloseSurface { surface } = &effect {
             self.surfaces.close(surface);
+            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        if let DeskEffect::Notify {
+            title,
+            body,
+            from,
+            kind,
+        } = &effect
+        {
+            let severity = match kind.as_deref() {
+                Some("warning") => {
+                    tilo_desktop_surface::notifications::NotificationSeverity::Warning
+                }
+                Some("error") => tilo_desktop_surface::notifications::NotificationSeverity::Error,
+                _ => tilo_desktop_surface::notifications::NotificationSeverity::Info,
+            };
+            let mut notification = tilo_desktop_surface::notifications::Notification::new(
+                title.clone(),
+                body.clone().unwrap_or_default(),
+            )
+            .with_severity(severity);
+            if let Some(from) = from.as_deref().filter(|from| !from.is_empty()) {
+                notification = notification.with_app_name(from);
+            }
+            self.notices.post(notification);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if matches!(effect, DeskEffect::ClearNotices) {

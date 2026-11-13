@@ -242,6 +242,11 @@ pub const KINDS: &[OriginKind] = &[
                 "The running applications' tray items, in the order they registered.",
             ),
             field(
+                "apps",
+                "Collection<session.application>",
+                "The applications installed on this device, each the launcher lists and opens.",
+            ),
+            field(
                 "styles",
                 "Collection<session.desk_style>",
                 "The desk styles every installed package offers, as the session finds them: \
@@ -652,6 +657,31 @@ pub const KINDS: &[OriginKind] = &[
                 "menu",
                 "Bool",
                 "Whether choosing it opens its menu rather than its window.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.application",
+        doc: "An application installed on this device, as the person's launcher lists it: its \
+              package id, its name in the person's language, the glyph it shows, and how it opens.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "The app, by its package id."),
+            field("name", "Text", "Its name in the person's language."),
+            field(
+                "icon",
+                "Text",
+                "The glyph it shows, by the platform icon's kebab-case name.",
+            ),
+            field(
+                "category",
+                "Text",
+                "Its category (`work`, `media`, `play`, `system`), empty when it named none.",
+            ),
+            field(
+                "description",
+                "Text",
+                "What it is for, in a few words; empty when it offers none.",
             ),
         ],
     },
