@@ -140,11 +140,17 @@ pub enum Request {
     Status,
     /// Open (or replace) this device's client tunnel. The answer carries the
     /// TUN descriptor.
-    OpenClient { link: ClientLink },
+    OpenClient {
+        link: ClientLink,
+    },
     CloseClient,
-    OpenExit { link: ExitLink },
+    OpenExit {
+        link: ExitLink,
+    },
     CloseExit,
-    HoldProfileBlock { block: ProfileBlock },
+    HoldProfileBlock {
+        block: ProfileBlock,
+    },
     ReleaseProfileBlock,
 }
 

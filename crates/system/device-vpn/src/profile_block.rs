@@ -368,10 +368,10 @@ impl Follow {
             .retain(|profile, _| switches.contains_key(profile));
     }
 
-/// The profiles whose servers to look up now, each once, in order: a switch turned on
-/// that starts connecting, one set to connect and connected without servers, and one
-/// that must block and has none yet. Looking up before a drop lets the block go up with
-/// its servers, instead of traffic leaving outside the tunnel while a lookup runs.
+    /// The profiles whose servers to look up now, each once, in order: a switch turned on
+    /// that starts connecting, one set to connect and connected without servers, and one
+    /// that must block and has none yet. Looking up before a drop lets the block go up with
+    /// its servers, instead of traffic leaving outside the tunnel while a lookup runs.
     fn to_look_up(
         &self,
         switches: &BTreeMap<String, Switch>,
@@ -600,9 +600,9 @@ mod tests {
         );
     }
 
-/// A profile whose kill switch is turned on while it is connected has its servers looked
-/// up then, so the block goes up at once with them rather than waiting on a lookup while
-/// traffic leaves outside the tunnel. Once known, they are not looked up again.
+    /// A profile whose kill switch is turned on while it is connected has its servers looked
+    /// up then, so the block goes up at once with them rather than waiting on a lookup while
+    /// traffic leaves outside the tunnel. Once known, they are not looked up again.
     #[test]
     fn a_profile_switched_on_while_connected_has_its_servers_looked_up_before_it_drops() {
         let mut follow = Follow::new(ProfileIntent::default());
