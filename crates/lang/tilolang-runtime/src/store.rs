@@ -1267,12 +1267,6 @@ impl Settled {
             Self::Done | Self::Unknown => "",
         }
     }
-
-    /// Whether the effect can still be taken back: it was queued and never handed over.
-    #[must_use]
-    pub fn withdrawable(state: &OutboxState) -> bool {
-        matches!(state, OutboxState::Queued | OutboxState::Waiting { .. })
-    }
 }
 
 /// How the outside effect a resource's actions queued last stands, as `delivery(r)` reads it:

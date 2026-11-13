@@ -125,6 +125,8 @@ struct TxnState {
     /// One action's transaction writes one kind or the other, never both.
     saved: usize,
     derived: usize,
+    /// Whether a write of it gives a text a structure rather than words ([`burst`]).
+    reshapes: bool,
 }
 
 /// What the record moved on from, when known: the heads of each chunk before, the versions its
@@ -150,25 +152,26 @@ pub const DEFAULT_EDIT_PAUSE: std::time::Duration = std::time::Duration::from_mi
 /// The action a committed change is published as: what the runtime named it, except a bound
 /// control's edit, which the runtime names `$edit` with the arguments `[field, value]`. Every
 /// receiver, and the identity service that signs the change, decides it against the package's
-/// surface, which publishes such an edit as `edit-flag` (a checkbox) or `edit-text` (anything
-/// else) with the arguments `{field, value}`, as the door plans an edit of a field. The
-/// keystrokes of one typing burst are one gesture of that action, so history lists them as one
-/// entry and undo takes them back as one step.
+/// surface, which publishes such an edit as `edit-flag` (a checkbox, with the arguments
+/// `{field, value}`) or `edit-text` (anything else, with `{field}`: what was typed is the edit
+/// the change records, never the text it leaves). The keystrokes of one typing burst are one
+/// gesture of that action, so history lists them as one entry and undo takes them back as one
+/// step.
 fn published_name(note: &ChangeNote) -> (String, Json) {
     if note.action != RUNTIME_EDIT {
         return (note.action.clone(), note.args.clone());
     }
     let field = note.args.get(0).cloned().unwrap_or(Json::Null);
-    let value = note.args.get(1).cloned().unwrap_or(Json::Null);
-    let action = if value.is_boolean() {
-        crate::action::EDIT_FLAG_ACTION
-    } else {
-        crate::action::EDIT_TEXT_ACTION
-    };
-    (
-        action.to_owned(),
-        serde_json::json!({"field": field, "value": value}),
-    )
+    match note.args.get(1) {
+        Some(Json::Bool(value)) => (
+            crate::action::EDIT_FLAG_ACTION.to_owned(),
+            serde_json::json!({"field": field, "value": value}),
+        ),
+        _ => (
+            crate::action::EDIT_TEXT_ACTION.to_owned(),
+            serde_json::json!({"field": field}),
+        ),
+    }
 }
 
 /// Add `splices` to the steps of the collection `key` in `out`: none at all says that it did
@@ -254,6 +257,8 @@ struct Planned {
     touched: Vec<FieldKey>,
     items: Vec<(FieldKey, String)>,
     placed: Vec<(DocId, String, bool)>,
+    /// Whether it gives a text a structure rather than words ([`burst`]).
+    reshapes: bool,
 }
 
 /// What a write did ([`Inner::write`]): the steps each collection's listing took, per document,

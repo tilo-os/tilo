@@ -114,11 +114,21 @@ pub fn reconcile_body_under(
 /// [`reconcile_body_under`] through an editing view whose ids the caller
 /// mints (an action's deterministic ids, so a replay writes the same blocks).
 pub fn reconcile_body(d: &mut DocMut<'_>, blocks: &[BlockView]) -> ReconcileStats {
+    let live = crate::model::materialize_region(d.doc, d.c, Region::Body);
+    reconcile_body_from(d, &live, &blocks.iter().collect::<Vec<_>>())
+}
+
+/// [`reconcile_body`] of a body that reads as `live`, already read.
+pub fn reconcile_body_from(
+    d: &mut DocMut<'_>,
+    live: &[BlockView],
+    wanted: &[&BlockView],
+) -> ReconcileStats {
     let mut w = Writer {
         d,
         stats: ReconcileStats::default(),
     };
-    w.blocks(&Place::Region(Region::Body), blocks);
+    w.blocks_from(&Place::Region(Region::Body), live, wanted);
     w.stats
 }
 
@@ -459,17 +469,20 @@ impl Writer<'_, '_> {
     /// says nothing about ids, so nothing here pairs them: see [`anchors`].
     fn blocks(&mut self, place: &Place, wanted: &[BlockView]) {
         let live = place.blocks(self.d);
-        let want: Vec<&BlockView> = wanted.iter().collect();
-        let anchors = anchors(&live, &want);
+        self.blocks_from(place, &live, &wanted.iter().collect::<Vec<_>>());
+    }
+
+    fn blocks_from(&mut self, place: &Place, live: &[BlockView], want: &[&BlockView]) {
+        let anchors = anchors(live, want);
         let (mut live_at, mut want_at) = (0usize, 0usize);
         for &(live_index, want_index) in &anchors {
             let gap = (live_at..live_index).collect::<Vec<_>>();
             let added = (want_at..want_index).collect::<Vec<_>>();
             self.gap(
                 place,
-                (&live, &want),
+                (live, want),
                 (&gap, &added),
-                (previous(&live, live_at), Some(live_index)),
+                (previous(live, live_at), Some(live_index)),
             );
             let Some(have) = live.get(live_index) else {
                 continue;
@@ -484,7 +497,7 @@ impl Writer<'_, '_> {
         let added = (want_at..want.len()).collect::<Vec<_>>();
         self.gap(
             place,
-            (&live, &want),
+            (live, want),
             (&gap, &added),
             (live.last().map(|view| view.id.as_str()), None),
         );

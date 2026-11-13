@@ -1046,8 +1046,9 @@ impl LongPost {
 
     /// `who` (Ada or Bo) replaces `word` with `with` in the paragraph `at`, in the post's window
     /// on their own replica, as its editor writes: the body as they read it, with that one
-    /// paragraph typed into.
-    fn type_into(&mut self, bo: bool, at: usize, word: &str, with: &str) {
+    /// paragraph typed into. Answers the bytes the keystroke recorded: its change, and its
+    /// action as it ran (what the change keeps, inline or as content).
+    fn type_into(&mut self, bo: bool, at: usize, word: &str, with: &str) -> usize {
         let mut lines = self.reads(if bo { &self.bo } else { &self.ada });
         assert_eq!(lines.len(), self.paragraphs, "every paragraph is there");
         let line = lines.get_mut(at).unwrap();
@@ -1062,6 +1063,14 @@ impl LongPost {
         editors.edit(&body_field, &value).unwrap();
         drop(editors);
         replica.commit();
+        let head = *replica.doc.get_heads().first().unwrap();
+        let change = replica
+            .doc
+            .get_change_by_hash(&head)
+            .unwrap()
+            .raw_bytes()
+            .len();
+        change.saturating_add(replica.log.last().unwrap().action.payload.len())
     }
 }
 
@@ -1147,12 +1156,16 @@ fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
 
 #[test]
 fn two_people_typing_into_different_paragraphs_of_a_long_note_at_once_both_keep_their_words() {
-    // A note past a hundred thousand characters: what its editor writes on each keystroke is
-    // the whole body, which its change records with the body kept as content.
+    // A note past a hundred thousand characters, whose editor hands over the whole body on each
+    // keystroke: what the keystroke records is the paragraph it typed into, never the note.
     let mut post = LongPost::new(1_571);
     // Each types into their own copy before either hears of the other.
-    post.type_into(true, 0, "quick", "swift");
-    post.type_into(false, 1_200, "lazy", "sleepy");
+    for recorded in [
+        post.type_into(true, 0, "quick", "swift"),
+        post.type_into(false, 1_200, "lazy", "sleepy"),
+    ] {
+        assert!(recorded < 4_096, "a keystroke recorded {recorded} bytes");
+    }
     let (ada_wrote, bo_wrote) = (post.reads(&post.ada), post.reads(&post.bo));
     assert!(ada_wrote[1_200].contains("sleepy") && bo_wrote[0].contains("swift"));
     let LongPost {

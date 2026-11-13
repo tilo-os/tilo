@@ -483,11 +483,6 @@ impl ResourceKind {
         crate::evolution::stored_version(doc) < self.version || self.holds(doc)
     }
 
-    /// The heads of a saved document; `None` when `bytes` are no document.
-    pub fn saved_heads(bytes: &[u8]) -> Option<Vec<automerge::ChangeHash>> {
-        Doc::load(bytes).ok().map(|mut doc| doc.get_heads())
-    }
-
     /// What the open resource is called, from a state [`Self::read`]
     /// returned.
     pub fn name(&self, state: &dyn Any) -> String {

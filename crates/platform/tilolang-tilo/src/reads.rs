@@ -176,41 +176,6 @@ pub fn read_field(
     field_of_slot(doc, slot, field)
 }
 
-/// Whether `field` of the located resource holds anything: a value other than what a record
-/// that never wrote it reads. What a migration asks of the fields an earlier version wrote,
-/// one field at a time.
-#[must_use]
-pub fn holds_something(doc: &Doc, located: &Located, field: &FieldSchema) -> bool {
-    read_field(doc, located, field).is_ok_and(|value| value != default_value(field))
-}
-
-/// Whether the collection `field` of the record whose map is `root` holds an item: an item of a
-/// record written before items were flat, nested in the field's map, or one of the record's own
-/// items placed in it. Read from the placements, never from the items' values.
-#[must_use]
-pub fn collection_holds(doc: &Doc, root: &ObjId, field: &FieldSchema) -> bool {
-    if map_at(doc, root, &field.id).is_some_and(|coll| doc.length(&coll) > 0) {
-        return true;
-    }
-    crate::containers::maps(doc, root, tilolang_runtime::place::ITEMS_KEY)
-        .iter()
-        .any(|items| {
-            doc.keys(items).any(|id| {
-                let Some(obj) = map_at(doc, items, &id) else {
-                    return false;
-                };
-                tilolang_runtime::place::held_at(doc, &obj).is_some_and(|held| {
-                    match held.placement {
-                        tilolang_runtime::place::Placement::At { place, .. } => {
-                            place.parent.is_none() && place.field.as_str() == field.id
-                        }
-                        tilolang_runtime::place::Placement::Removed => false,
-                    }
-                })
-            })
-        })
-}
-
 /// The value of `field` from what its key holds (`None` when nothing): [`read_field`] once
 /// the field's key is read, or a walk of the resource's map has read it with the others.
 ///

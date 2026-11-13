@@ -2531,7 +2531,8 @@ pub fn edit_action(
                     _ => return Err(format!("the field `{field}` takes a rich text")),
                 },
             };
-            crate::store::rich_edit(&rich).map_err(|error| error.to_string())?
+            let blocks = rich.blocks.iter().map(tilo_document::ClipBlock::from_view);
+            crate::store::rich_edit(blocks.collect(), None, 0).map_err(|error| error.to_string())?
         }
         _ => return Err(format!("the field `{field}` cannot be set to that value")),
     };
