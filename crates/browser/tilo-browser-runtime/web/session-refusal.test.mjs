@@ -135,6 +135,8 @@ test('only a host not answering at all is unreachable, never its refusal', () =>
   assert.ok(hostUnreachable(new Error('fetch failed')));
   assert.ok(hostUnreachable(new TypeError('NetworkError when attempting to fetch resource.')));
   assert.ok(hostUnreachable(Object.assign(new Error('join: HTTP 503'), {name: 'HostAdmissionError', code: 'unavailable'})));
+  // A session that never got through to its host (`hostUnreached` in peer.mjs).
+  assert.ok(hostUnreachable(Object.assign(new Error('connection refused or lost before https://h answered'), {code: 'unanswered'})));
   assert.ok(!hostUnreachable(Object.assign(new Error('needs an invitation'), {name: 'HostAdmissionError', code: 'invitation-only'})));
   assert.ok(!hostUnreachable(Object.assign(new Error('refused'), {name: 'AdmissionError', code: 'refused'})));
   assert.ok(!hostUnreachable(null));

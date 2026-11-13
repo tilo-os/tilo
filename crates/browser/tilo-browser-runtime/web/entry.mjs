@@ -278,6 +278,12 @@ export async function present({route, peer, surface, mountDesktop, directory = n
   return {mount: mounted, navigation};
 }
 
+/** What the page says while the host replays the workspace to it: how many
+ * of its records are here (`records`). */
+export function receivingNote(records) {
+  return `Receiving the workspace… ${records} ${records === 1 ? 'record' : 'records'} so far`;
+}
+
 /**
  * The desktop link that says what is in front of the person: the app's
  * window, and the view of its resource a link opened (`{scope, app,
@@ -344,8 +350,11 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     deps: {...deps, workspaceAt: origin => workspaceAt(workspaces, origin)},
     onProgress: event => {
       onStep('join');
-      say(event.phase === 'pairing' ? 'Asking to pair this device…'
-        : event.phase === 'asking' ? 'Asking to join…' : event.phase === 'joining' ? 'Joining…' : 'Connecting…');
+      // A host replaying a big workspace to this device is working: the
+      // page says how far it got, in place of a note that it takes long.
+      say(event.phase === 'receiving' ? receivingNote(event.records)
+        : event.phase === 'pairing' ? 'Asking to pair this device…'
+          : event.phase === 'asking' ? 'Asking to join…' : event.phase === 'joining' ? 'Joining…' : 'Connecting…');
     },
   });
   // Nothing to mount: an embed shows its site's fallback until the visitor

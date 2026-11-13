@@ -537,10 +537,25 @@ async function connect({
   let reached = host !== named;
   let checking = null;
   let stale = null;
+  // A session whose first try to connect failed before it ever got through
+  // is a host this page cannot reach: a refused or dropped connection says
+  // so at once, and the page says so then (`hostUnreached`)
+  // instead of waiting out a timeout. The session goes on trying; once it
+  // gets through, it is a session like any other. A host the site named is
+  // first asked who it is (`siteChecked`), which tells a host set up again
+  // from a host down.
+  let connectedOnce = false;
+  let unreached = false;
+  let siteChecked = false;
+  const checked = () => {
+    siteChecked = true;
+    if (!disposed) publish();
+  };
   const checkSiteHost = () => {
-    if (reached || checking || stale || disposed) return;
+    if (reached || checking || stale || siteChecked || disposed) return;
     checking = runtime.hostInfo(post).then(text => {
-      if (reached || disposed || !staleSiteHost(host, JSON.parse(text))) return;
+      if (reached || disposed) return;
+      if (!staleSiteHost(host, JSON.parse(text))) { checked(); return; }
       const report = staleSiteHostReport(origin);
       console.error(report);
       // The site's door logs what a page did not catch (`reportErrors` in entry-page.mjs).
@@ -548,8 +563,9 @@ async function connect({
       stale = new AdmissionError('stale-entry', STALE_SITE_HOST);
       publish();
     }, () => {
-      // Not reached either: the session's own failure says so, and the next one asks again.
+      // Its web address does not answer either: the host is down.
       checking = null;
+      checked();
     });
   };
   let siteHostCheck;
@@ -571,6 +587,11 @@ async function connect({
       } else if (['reconnecting', 'offline', 'failed'].includes(transport)) {
         checkSiteHost();
       }
+    }
+    if (snapshot.health?.transport?.phase === 'connected') connectedOnce = true;
+    if (!connectedOnce && !stale) {
+      if ((reached || siteChecked) && snapshot.health?.transport?.phase === 'offline') unreached = true;
+      if (unreached) snapshot = {...snapshot, ...hostUnreached(origin, snapshot)};
     }
     // Once in, a session started again (a recovery) is a member's and enters no more.
     if (snapshot.entry?.outcome === 'admitted') entering = undefined;
@@ -1242,8 +1263,12 @@ async function connect({
      * is still getting the page there (the session moving on to admitting,
      * another of the workspace's records arriving) is waited for, up to
      * `capMs` in all: a busy host replaying a workspace to a slow device
-     * takes longer than a silent one is given, and is no unreachable host. */
-    whenReady({signal, timeoutMs = 30_000, capMs = 120_000, shown = false} = {}) {
+     * takes longer than a silent one is given, and is no unreachable host;
+     * `onProgress(records)` hears each step, with how many of the
+     * workspace's records are here, for the page to show it is moving.
+     * One that refuses the page, or a session that never reached the host
+     * (`hostUnreached`), is said as soon as the session says so. */
+    whenReady({signal, timeoutMs = 30_000, capMs = 120_000, shown = false, onProgress = null} = {}) {
       return new Promise((resolve, reject) => {
         let timer;
         let done = false;
@@ -1266,11 +1291,24 @@ async function connect({
           if (disposed) finish(new Error('Shared resource connection closed'));
           else if (current.phase === 'ready') finish(undefined, current);
           else if (shown && current.phase === 'admitting' && hasRecord(DESKTOP_APP, DESKTOP_RECORD)) finish(undefined, current);
-          else if (current.phase === 'failed') finish(new Error(current.error ?? 'the host refused this device'));
+          // A host never reached (`hostUnreached`) keeps its code: nothing it refused.
+          else if (current.phase === 'failed') {
+            finish(Object.assign(new Error(current.error ?? 'the host refused this device'),
+              current.errorCode === 'unanswered' ? {code: 'unanswered'} : {}));
+          }
+          // The host answered the page's subscription with a no: the session
+          // asks no more, so nothing comes of waiting on.
+          else if (current.phase === 'admitting' && current.errorCode === 'permission-required') {
+            finish(Object.assign(new Error(`the host did not let this tab in: ${current.error ?? 'refused'}`), {
+              code: 'not-let-in', phase: current.phase, sessionError: current.error ?? null,
+              sessionErrorCode: current.errorCode, connected: true}));
+          }
           if (done) return;
           // Each step the host takes gives it `timeoutMs` more, within `capMs`.
-          const now = `${current.phase}:${JSON.parse(peer?.workspaceRecords?.() ?? '[]').length}`;
+          const records = JSON.parse(peer?.workspaceRecords?.() ?? '[]').length;
+          const now = `${current.phase}:${records}`;
           if (now === progress) return;
+          if (progress !== null && records > 0) onProgress?.(records);
           progress = now;
           clearTimeout(timer);
           timer = setTimeout(timedOut, Math.max(0, Math.min(timeoutMs, began + capMs - Date.now())));
@@ -1491,6 +1529,15 @@ async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop
   } finally {
     await opened?.release?.();
   }
+}
+
+/** What a session that never got through to the host at `origin` says in
+ * place of its own phase: `failed`, `unanswered` (the code a door not
+ * reached ends an entry with), and words that name the host and read as a
+ * connection that failed (`failure-screen.mjs`, `unanswered`). */
+function hostUnreached(origin, snapshot) {
+  const why = snapshot?.error ? `: ${snapshot.error}` : '';
+  return {phase: 'failed', errorCode: 'unanswered', error: `connection refused or lost before ${new URL(origin).origin} answered${why}`};
 }
 
 /** The codes a door refuses with (`DoorRefusalCode`), and its entry when not reached. */
