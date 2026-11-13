@@ -411,6 +411,39 @@ mod tests {
         }
         assert!(later.is_idle(), "a later store has no work in flight");
 
+        // Whichever store of this process decoded first, the pixels are the
+        // decoder's for the bundled bytes: an icon, kept at its size, and a
+        // preview, scaled to a thumbnail, each decoded here by a loader that
+        // shares nothing with the fixture.
+        let (reference, mut loader) = ui::ImageStore::host_driven();
+        let mut compared = Vec::new();
+        for (name, bytes) in ARTWORK {
+            if !matches!(*name, "Notes.png" | "Notes-preview-1.png") {
+                continue;
+            }
+            let url = format!("{ARTWORK_HOST}{name}");
+            reference.get(&url);
+            loader.take_requests();
+            assert!(loader.complete(&url, Some(bytes)), "{name} decodes");
+            let decoded = reference
+                .get(&url)
+                .unwrap_or_else(|| panic!("{name} is decoded by its own loader"));
+            let copied = later
+                .get(&url)
+                .unwrap_or_else(|| panic!("{name} is ready in a later store"));
+            assert_eq!(
+                (copied.width, copied.height),
+                (decoded.width, decoded.height),
+                "{name} has the size the decoder gives it"
+            );
+            assert!(
+                copied.data.data() == decoded.data.data(),
+                "{name} has the pixels the decoder gives its bundled bytes"
+            );
+            compared.push(*name);
+        }
+        assert_eq!(compared, ["Notes.png", "Notes-preview-1.png"]);
+
         // An image the fixture does not bundle is never loaded, and asking
         // one store for it leaves the other as it was.
         let absent = format!("{ARTWORK_HOST}Absent.png");
