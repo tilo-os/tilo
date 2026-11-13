@@ -146,7 +146,10 @@ impl<T: Send + Sync + 'static> Watched<T> {
         let shared = Arc::new(Shared {
             read: Box::new(read),
             value: RwLock::new((0, Arc::new(first))),
-            tickets: AtomicU64::new(u64::from(read_first)),
+            // The first value is generation 0, read or standing in for a read still to come, and
+            // every read after it a later one: a read that replaces a stand-in is a new
+            // generation, so a cache keyed on it (`Self::snapshot`) sees the value change.
+            tickets: AtomicU64::new(1),
             listeners: Mutex::new(Vec::new()),
             wake: Mutex::new(changed.clone()),
         });
