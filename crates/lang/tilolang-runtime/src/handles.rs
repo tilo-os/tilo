@@ -478,6 +478,50 @@ mod tests {
         assert!(inner_serials.contains(&0), "a frame of serial zero");
     }
 
+    /// A number the running frame did not issue is refused, to read and to write: one past the
+    /// values it holds, its serial with no index, another serial with an index it holds, a
+    /// number that is no handle; and every number while no frame runs.
+    #[test]
+    fn a_number_the_frame_did_not_issue_is_refused() {
+        let mut f = Frames::default();
+        assert!(f.alloc(Value::Int(7)).is_err(), "no frame holds the value");
+        assert!(f.get(1).is_err(), "a read while no frame runs");
+        assert!(f.get_mut(1).is_err(), "a write while no frame runs");
+
+        f.push(module(), FrameKind::Pure);
+        let held = f.alloc(Value::Int(7)).unwrap();
+        *f.get_mut(held).unwrap() = Value::Int(8);
+        assert_eq!(f.get(held).unwrap(), &Value::Int(8));
+        let range = i32::try_from(INDEX_RANGE).unwrap();
+        for (forged, what) in [
+            (held.checked_add(1), "one past the values the frame holds"),
+            (held.checked_sub(1), "the frame's serial with no index"),
+            (held.checked_add(range), "the next serial"),
+            (held.checked_sub(range), "serial zero"),
+            (Some(0), "zero"),
+            (Some(-1), "a negative number"),
+            (Some(i32::MAX), "the largest number"),
+            (Some(i32::MIN), "the smallest number"),
+        ] {
+            let forged = forged.unwrap();
+            assert_ne!(forged, held, "{what}");
+            assert!(f.get(forged).is_err(), "{what} read a value");
+            assert!(f.get_mut(forged).is_err(), "{what} wrote a value");
+        }
+        assert_eq!(f.get(held).unwrap(), &Value::Int(8), "what it holds stays");
+
+        f.push(module(), FrameKind::Pure);
+        assert!(
+            f.get_mut(held).is_err(),
+            "an outer frame's handle must not write"
+        );
+        f.pop();
+        assert!(f.get_mut(held).is_ok());
+        f.pop();
+        assert!(f.get(held).is_err(), "a read after the frame ended");
+        assert!(f.get_mut(held).is_err(), "a write after the frame ended");
+    }
+
     #[test]
     fn retained_values_outlive_frames() {
         let mut f = Frames::default();
