@@ -191,7 +191,6 @@ doc = false
 "code-editor" = { path = "../../../apps/code-editor", default-features = false, features = ["samples"] }
 "codespan-reporting-0_13_1" = { package = "codespan-reporting", version = "^0.13.1", default-features = false, features = [] }
 "codex-0_3_0" = { package = "codex", version = "^0.3.0", default-features = false, features = ["default", "numeral-systems", "styling"] }
-"collab-fixtures" = { path = "../../../crates/collab/collab-fixtures", default-features = false, features = [] }
 "collab-types" = { path = "../../../crates/collab/collab-types", default-features = false, features = [] }
 "collaboration" = { path = "../../../crates/collab/collaboration", default-features = false, features = ["broker-transport", "default", "local-daemons", "native", "test-support"] }
 "color-0_3_3" = { package = "color", version = "^0.3.3", default-features = false, features = ["bytemuck", "std"] }
@@ -1142,7 +1141,6 @@ doc = false
 "tilo-browser-runtime" = { path = "../../../crates/browser/tilo-browser-runtime", default-features = false, features = ["default"] }
 "tilo-browser-sessions" = { path = "../../../crates/platform/tilo-browser-sessions", default-features = false, features = [] }
 "tilo-callstream" = { path = "../../../crates/collab/tilo-callstream", default-features = false, features = ["recording", "surface-decoder", "unit-chain"] }
-"tilo-canvas" = { path = "../../../crates/sdk/canvas", default-features = false, features = [] }
 "tilo-caps" = { path = "../../../crates/sdk/tilo-caps", default-features = false, features = [] }
 "tilo-capture" = { path = "../../../crates/platform/tilo-capture", default-features = false, features = ["avfoundation", "camera", "default", "scanner", "test-support"] }
 "tilo-capture-studio" = { path = "../../../crates/session/capture-studio", default-features = false, features = [] }
@@ -1326,7 +1324,6 @@ doc = false
 "tilo-theme-bauhaus" = { path = "../../../crates/sdk/themes/bauhaus", default-features = false, features = [] }
 "tilo-theme-sdk" = { path = "../../../crates/sdk/theme-sdk", default-features = false, features = [] }
 "tilo-thumbnail" = { path = "../../../crates/media/thumbnail", default-features = false, features = ["default", "video"] }
-"tilo-topbar" = { path = "../../../crates/session/topbar", default-features = false, features = [] }
 "tilo-tray-host" = { path = "../../../crates/session/tray-host", default-features = false, features = [] }
 "tilo-tts" = { path = "../../../crates/system/tts", default-features = false, features = [] }
 "tilo-typst-fonts" = { path = "../../../crates/platform/tilo-typst-fonts", default-features = false, features = [] }
@@ -2819,7 +2816,6 @@ doc = false
 "code-editor" = { path = "../../../apps/code-editor", default-features = false, features = ["samples"] }
 "codespan-reporting-0_13_1" = { package = "codespan-reporting", version = "^0.13.1", default-features = false, features = [] }
 "codex-0_3_0" = { package = "codex", version = "^0.3.0", default-features = false, features = ["default", "numeral-systems", "styling"] }
-"collab-fixtures" = { path = "../../../crates/collab/collab-fixtures", default-features = false, features = [] }
 "collab-types" = { path = "../../../crates/collab/collab-types", default-features = false, features = [] }
 "collaboration" = { path = "../../../crates/collab/collaboration", default-features = false, features = ["broker-transport", "default", "local-daemons", "native", "test-support"] }
 "color-0_3_3" = { package = "color", version = "^0.3.3", default-features = false, features = ["bytemuck", "std"] }
@@ -3761,7 +3757,6 @@ doc = false
 "tilo-browser-runtime" = { path = "../../../crates/browser/tilo-browser-runtime", default-features = false, features = ["default"] }
 "tilo-browser-sessions" = { path = "../../../crates/platform/tilo-browser-sessions", default-features = false, features = [] }
 "tilo-callstream" = { path = "../../../crates/collab/tilo-callstream", default-features = false, features = ["recording", "surface-decoder", "unit-chain"] }
-"tilo-canvas" = { path = "../../../crates/sdk/canvas", default-features = false, features = [] }
 "tilo-caps" = { path = "../../../crates/sdk/tilo-caps", default-features = false, features = [] }
 "tilo-capture" = { path = "../../../crates/platform/tilo-capture", default-features = false, features = ["avfoundation", "camera", "default", "scanner", "test-support"] }
 "tilo-capture-studio" = { path = "../../../crates/session/capture-studio", default-features = false, features = [] }
@@ -3945,7 +3940,6 @@ doc = false
 "tilo-theme-bauhaus" = { path = "../../../crates/sdk/themes/bauhaus", default-features = false, features = [] }
 "tilo-theme-sdk" = { path = "../../../crates/sdk/theme-sdk", default-features = false, features = [] }
 "tilo-thumbnail" = { path = "../../../crates/media/thumbnail", default-features = false, features = ["default", "video"] }
-"tilo-topbar" = { path = "../../../crates/session/topbar", default-features = false, features = [] }
 "tilo-tray-host" = { path = "../../../crates/session/tray-host", default-features = false, features = [] }
 "tilo-tts" = { path = "../../../crates/system/tts", default-features = false, features = [] }
 "tilo-typst-fonts" = { path = "../../../crates/platform/tilo-typst-fonts", default-features = false, features = [] }

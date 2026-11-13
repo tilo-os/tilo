@@ -2626,15 +2626,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "collab-fixtures"
-version = "0.1.0"
-dependencies = [
- "collab-types",
- "ed25519-dalek 3.0.0",
- "workspace-hack",
-]
-
-[[package]]
 name = "collab-probe"
 version = "0.1.0"
 dependencies = [
@@ -18078,15 +18069,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-canvas"
-version = "0.1.0"
-dependencies = [
- "tilo-ui",
- "tilo-ui-paint",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-caps"
 version = "0.1.0"
 dependencies = [
@@ -22102,7 +22084,6 @@ dependencies = [
  "tilo-resource",
  "tilo-service",
  "tilo-session-core",
- "tilo-topbar",
  "tilo-ui",
  "tilo-ui-host",
  "tilo-vello",
@@ -22224,26 +22205,6 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "runtime-dylib",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-topbar"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "image",
- "libc",
- "tempfile",
- "tilo-app",
- "tilo-compositor",
- "tilo-desktop",
- "tilo-desktop-model",
- "tilo-desktop-surface",
- "tilo-session",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
  "workspace-hack",
 ]
 
@@ -27482,7 +27443,6 @@ dependencies = [
  "code-editor",
  "codespan-reporting",
  "codex",
- "collab-fixtures",
  "collab-types",
  "collaboration",
  "color",
@@ -28541,7 +28501,6 @@ dependencies = [
  "tilo-browser-runtime",
  "tilo-browser-sessions",
  "tilo-callstream",
- "tilo-canvas",
  "tilo-caps",
  "tilo-capture",
  "tilo-capture-studio",
@@ -28727,7 +28686,6 @@ dependencies = [
  "tilo-theme-bauhaus",
  "tilo-theme-sdk",
  "tilo-thumbnail",
- "tilo-topbar",
  "tilo-tray-host",
  "tilo-tts",
  "tilo-typst-fonts",

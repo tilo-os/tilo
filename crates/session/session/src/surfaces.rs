@@ -1213,7 +1213,7 @@ mod tests {
 
     #[test]
     fn a_bar_tells_the_app_where_its_window_goes() {
-        let bar = Surface::new("topbar", "/usr/bin/tilo-topbar")
+        let bar = Surface::new("topbar", "/usr/bin/tilo-quick-settings")
             .layer(Layer::Top)
             .namespace("tilo-bar")
             .anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT)

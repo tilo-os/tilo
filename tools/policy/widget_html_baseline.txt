@@ -85,7 +85,6 @@ widget-without-html 1 crates/browser/tilo-browser-runtime/src/layers.rs
 widget-without-html 1 crates/browser/tilo-browser-runtime/src/over_page.rs
 widget-without-html 1 crates/browser/tilo-browser-runtime/src/shell.rs
 widget-without-html 1 crates/platform/zone-globe/src/lib.rs
-widget-without-html 1 crates/sdk/canvas/src/canvas.rs
 widget-without-html 1 crates/sdk/provider-settings-ui/src/app.rs
 widget-without-html 1 crates/sdk/tilo-app/src/framework/each.rs
 widget-without-html 1 crates/sdk/tilo-app/src/framework/endpoint.rs
@@ -261,5 +260,4 @@ widget-without-html 1 crates/session/onboarding-host/src/view.rs
 widget-without-html 1 crates/session/onboarding/src/ceremony.rs
 widget-without-html 1 crates/session/session/src/people.rs
 widget-without-html 1 crates/session/sheets/src/power.rs
-widget-without-html 1 crates/session/topbar/src/surface.rs
 widget-without-html 1 crates/session/window-menu/src/surface.rs

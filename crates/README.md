@@ -35,7 +35,6 @@ service.
 - `dev/tilo-app-template-smoke`: compiles generated app code to validate the SDK templates.
 - `dev/copy-lint`: the source scan that keeps English copy literals out of UI builders,
   run from the shell's and desktop's tests with their own allow-lists.
-- `collab/collab-fixtures`: shared collaboration test fixtures.
 - `../examples/packaging/hello` and `../examples/packaging/notes-cli`: executable
   packaging/SDK examples used by walkthroughs and integration scripts.
 - `packaging/launcher/tests/fixtures/hello`: independent launcher test fixture.
