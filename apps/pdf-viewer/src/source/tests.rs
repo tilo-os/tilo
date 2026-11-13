@@ -1,5 +1,3 @@
-//! Source-layer tests: the worker queue bounds, coalesces and isolates sessions, and private saves stay private.
-
 use super::*;
 
 #[test]
@@ -7,7 +5,6 @@ fn evicted_page_results_notify_only_their_session_once() {
     let shared = queue();
     let first = test_handle(Arc::clone(&shared), 1);
     let second = test_handle(Arc::clone(&shared), 2);
-    // Share one allocation, but account each queued image's full size.
     let image = ui::raster::rgba8(vec![0; 4 * 1024 * 1024], 1024, 1024);
     for page in 0..12 {
         push_event(
@@ -101,7 +98,6 @@ fn inputs_and_results_are_bounded_before_allocation() {
     let error = read_file_bounded(file.path(), 4).expect_err("source exceeds cap");
     assert!(error.to_string().contains("opens files up to"));
 
-    // (width, height, valid)
     for (w, h, valid) in [
         (612.0, 792.0, true),
         (f64::NAN, 792.0, false),
@@ -123,7 +119,6 @@ fn inputs_and_results_are_bounded_before_allocation() {
         Err(RasterSubmitError::Exhausted)
     );
 
-    // Result payloads are byte bounded.
     let request = RenderRequest {
         document_id: 1,
         page: 0,
@@ -158,8 +153,6 @@ fn a_tile_batch_replaces_stale_tiles_and_keeps_its_priority_order() {
     let handle = test_handle(Arc::clone(&queue), 1);
     let other = test_handle(Arc::clone(&queue), 2);
     let batch = |document_id, tiles| TileBatch { document_id, tiles };
-    // The first viewport, then a scroll: the new batch names what is on
-    // screen now, nearest the centre first.
     handle
         .request_tiles(batch(
             7,
@@ -175,7 +168,6 @@ fn a_tile_batch_replaces_stale_tiles_and_keeps_its_priority_order() {
     other
         .request_tiles(batch(9, vec![tile(9, 8, 0, 0)]))
         .expect("another window");
-    // A whole-page placeholder is served before any tile.
     handle
         .request_render(RenderRequest {
             document_id: 7,
@@ -188,8 +180,6 @@ fn a_tile_batch_replaces_stale_tiles_and_keeps_its_priority_order() {
         .map(|queued| queued.command)
         .collect();
     assert!(matches!(order[0], RasterCommand::Render(_)));
-    // Stale tiles (0,0) and (2,0) were dropped, the duplicate collapsed,
-    // and the two windows are served in turn.
     assert_eq!(
         order[1..].to_vec(),
         vec![
@@ -199,7 +189,6 @@ fn a_tile_batch_replaces_stale_tiles_and_keeps_its_priority_order() {
         ]
     );
     drop(state);
-    // An empty batch cancels whatever is still queued.
     handle
         .request_tiles(batch(7, vec![tile(7, 12, 3, 3)]))
         .expect("third batch");
@@ -211,8 +200,6 @@ fn a_tile_batch_replaces_stale_tiles_and_keeps_its_priority_order() {
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn owner_queue_coalesces_requests_and_keeps_only_the_latest_open_and_plan() {
-    // Build the endpoint without starting its worker so the test can
-    // inspect exactly what a busy owner will receive.
     let handle = test_handle(queue(), 1);
     let first = open_request(1, "first.pdf");
     let latest = open_request(2, "latest.pdf");
@@ -252,7 +239,6 @@ fn owner_queue_coalesces_requests_and_keeps_only_the_latest_open_and_plan() {
     assert!(state.texts.is_empty(), "new open clears stale text");
     drop(state);
 
-    // Nearby page requests coalesce without an open in between.
     let handle = test_handle(queue(), 1);
     let request = RenderRequest {
         document_id: 2,
@@ -278,7 +264,6 @@ fn owner_queue_coalesces_requests_and_keeps_only_the_latest_open_and_plan() {
     assert_eq!(state.texts.len(), 1);
     drop(state);
 
-    // Link reads share the page queue, coalesce, and are cleared by a plan edit.
     let handle = test_handle(queue(), 1);
     let request = LinksRequest {
         document_id: 2,
@@ -296,7 +281,6 @@ fn owner_queue_coalesces_requests_and_keeps_only_the_latest_open_and_plan() {
         RasterCommand::Links(queued) if *queued == request
     ));
     drop(state);
-    // Results for one page coalesce; text and links for it do not.
     let links = |n: usize| RasterEvent::LinksRead {
         request,
         links: Arc::new(
@@ -326,7 +310,6 @@ fn owner_queue_coalesces_requests_and_keeps_only_the_latest_open_and_plan() {
     assert!(state.texts.is_empty(), "a plan edit drops stale link reads");
     drop(state);
 
-    // Only the latest collaborative page plan is kept.
     let handle = test_handle(queue(), 1);
     let plan = |id: &str| ReconcileRequest {
         document_id: 7,
@@ -352,7 +335,6 @@ fn owner_queue_coalesces_requests_and_keeps_only_the_latest_open_and_plan() {
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn sessions_are_isolated_and_settlements_bounded_per_session() {
-    // An unavailable worker surfaces its startup error.
     let failed = Arc::new(WorkerQueue {
         state: Mutex::new(QueueState {
             closing_sessions: HashSet::from([1]),
@@ -368,7 +350,6 @@ fn sessions_are_isolated_and_settlements_bounded_per_session() {
         ))
     );
 
-    // Closing one session does not block another.
     let shared = queue();
     let first = test_handle(Arc::clone(&shared), 1);
     let second = test_handle(Arc::clone(&shared), 2);
@@ -388,7 +369,6 @@ fn sessions_are_isolated_and_settlements_bounded_per_session() {
     assert!(state.texts.iter().any(|queued| queued.session_id == 2));
     drop(state);
 
-    // A dropped session purges its undrained open settlements.
     let shared = queue();
     {
         let first = test_handle(Arc::clone(&shared), 1);
@@ -398,7 +378,6 @@ fn sessions_are_isolated_and_settlements_bounded_per_session() {
                 .expect("queue transient open");
         }
         assert!(!first.drain_events().is_empty());
-        // Queue one more settlement and intentionally do not drain it.
         first
             .enqueue(open(9, "undrained.pdf"))
             .expect("queue undrained open");
@@ -415,7 +394,6 @@ fn sessions_are_isolated_and_settlements_bounded_per_session() {
     );
     drop(state);
 
-    // Open settlements are bounded per session without losing the current completion.
     let shared = queue();
     let handle = test_handle(Arc::clone(&shared), 1);
     for id in 1..=63 {
@@ -451,7 +429,6 @@ fn sessions_are_isolated_and_settlements_bounded_per_session() {
         Some(RasterEvent::OpenFailed { request, .. }) if request == &current
     ));
 
-    // A full hidden session cannot block another session's settlement.
     let shared = queue();
     shared.state.lock().expect("queue lock").open_events.extend(
         (0..MAX_PENDING_OPEN_SETTLEMENTS).map(|id| QueuedEvent {

@@ -1,20 +1,8 @@
-//! Page rendering: paints a [`crate::model::Page`]'s engine pixels onto its
-//! paper, then overlays annotations and signatures.
-//!
-//! Coordinate convention: page geometry is in PDF points; `scale` is
-//! pixels-per-point (1.0 == 100% zoom). A point `(px, py)` on the page
-//! maps to screen `origin + (px, py) * scale`, then the caller's `base`
-//! affine is applied (it is identity for the full-window root and the
-//! offscreen shot harness, but threading it keeps the renderer correct if
-//! the host ever offsets the widget).
-//!
-//! Everything here is document content. The page *paper* and *ink* do not
-//! follow the OS theme — they are the document's own, exactly as a real
-//! rasterised PDF renders dark glyphs on white paper regardless of the
-//! desktop palette — and markup keeps the colour it is saved with. Text the
-//! reader sets (free text, signatures) is at the document's own sizes
-//! ([`TextStyle::content`]), scaled by the zoom alone. What the reader adds over the content (find matches, the
-//! selection, selection handles) takes its colours from the theme.
+//! Page rendering: a page's engine pixels on its paper, with annotations and
+//! signatures over them. Page geometry is in PDF points and `scale` is pixels per point,
+//! so a point maps to `origin + point * scale` and then through `base`. The paper, the
+//! ink and the markup keep the document's own colours; only what the reader adds over the
+//! content takes the theme's.
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
@@ -28,30 +16,19 @@ use crate::model::{
     AnnoKind, Annotation, HighlightColor, MarkupStyle, Page, Signature, SignatureInk,
 };
 
-/// The document's ink: signatures and note folds.
 pub fn ink() -> Color {
     Color::from_rgb8(28, 33, 47)
 }
-/// A signature's signer line.
 pub fn ink_soft() -> Color {
     Color::from_rgb8(71, 85, 105)
 }
-/// A signature's rule and date.
 pub fn ink_faint() -> Color {
     Color::from_rgb8(148, 163, 184)
 }
-/// The page's own stock.
-///
-/// A PDF page is *document content*, not chrome: the ink above is the
-/// document's ink, fixed at near-black regardless of theme, so the stock it
-/// sits on has to be paper for the same reason — a themed page would leave
-/// black type on a dark ground the moment the desktop went dark.
 pub fn paper() -> Color {
     Color::from_rgb8(255, 255, 255)
 }
 
-/// A markup swatch's colour: the one the markup is saved with, so the page
-/// on screen and the exported file agree.
 pub fn swatch_color(s: HighlightColor) -> Color {
     let (red, green, blue) = s.rgb();
     Color::from_rgb8(red, green, blue)
@@ -61,11 +38,8 @@ pub fn alpha(c: Color, a: u8) -> Color {
     with_alpha(c, a)
 }
 
-/// How much of a highlighter's colour a highlight lays over the text, as the
-/// saved annotation's opacity.
 const HIGHLIGHT_ALPHA: u8 = 92;
 
-/// The drawn screen rect for the page card at the given page size (points).
 pub fn page_card_rect(origin: Point, scale: f64, page_w: f64, page_h: f64) -> Rect {
     Rect::new(
         origin.x,
@@ -75,8 +49,6 @@ pub fn page_card_rect(origin: Point, scale: f64, page_w: f64, page_h: f64) -> Re
     )
 }
 
-/// Where one page lands on screen: its top-left `origin`, the zoom `scale`
-/// (pixels per point) and its size in points.
 #[derive(Clone, Copy, Debug)]
 pub struct PageFrame {
     pub origin: Point,
@@ -91,16 +63,12 @@ impl PageFrame {
     }
 }
 
-/// The engine's pixels for one page: the whole-page bitmap and, for a
-/// zoomed page, its sharp tiles. Both absent until they arrive.
 #[derive(Clone, Copy)]
 pub struct PageRaster<'a> {
     pub image: Option<&'a PenikoImage>,
     pub tiles: Option<&'a PageTiles>,
 }
 
-/// The document's markup — every annotation and signature, each drawn on
-/// the page it is anchored to — and the id of the selected annotation.
 #[derive(Clone, Copy)]
 pub struct Markup<'a> {
     pub annotations: &'a [Annotation],
@@ -108,8 +76,6 @@ pub struct Markup<'a> {
     pub selected: Option<&'a str>,
 }
 
-/// The paper a page is printed on. Returns the shape its content is clipped
-/// to and its edge stroked along.
 fn draw_page_paper(scene: &mut Scene, theme: &Theme, base: Affine, card: Rect) -> RoundedRect {
     let card_rr = RoundedRect::from_rect(card, f64::from(theme.tokens.radii.detail) / 2.0);
     scene.fill(Fill::NonZero, base, paper(), None, &card_rr);
@@ -117,10 +83,6 @@ fn draw_page_paper(scene: &mut Scene, theme: &Theme, base: Affine, card: Rect) -
 }
 
 pub use tilo_page_raster::tiles::PageTiles;
-/// Paint the raster backend's page bitmap (engine output) fitted into the
-/// card and centred — a page whose rotation or size differs from the card's
-/// keeps its aspect, matching the reader's page maps
-/// ([`crate::model::PageMap`]) so overlays line up.
 fn draw_page_raster_image(scene: &mut Scene, base: Affine, card: Rect, img: &PenikoImage) {
     if img.width > 0 && img.height > 0 {
         let (iw, ih) = (f64::from(img.width), f64::from(img.height));
@@ -134,9 +96,6 @@ fn draw_page_raster_image(scene: &mut Scene, base: Affine, card: Rect, img: &Pen
     }
 }
 
-/// The edge that seats the paper on the canvas. The paper is document
-/// content (always white); the edge is measured from the theme against it,
-/// so it reads on every ground, high contrast included.
 fn page_card_edge(theme: &Theme) -> Color {
     theme.tokens.colors.ink_on(
         paper(),
@@ -155,8 +114,6 @@ fn draw_page_border(scene: &mut Scene, theme: &Theme, base: Affine, card_rr: &Ro
     );
 }
 
-/// The annotations + signatures anchored to `page`, drawn on top of its
-/// content.
 fn draw_page_markup(ctx: &mut PaintCtx<'_>, page: &Page, frame: PageFrame, markup: Markup<'_>) {
     let (origin, scale) = (frame.origin, frame.scale);
     for a in markup.annotations.iter().filter(|a| a.page == page.number) {
@@ -173,8 +130,6 @@ fn draw_page_markup(ctx: &mut PaintCtx<'_>, page: &Page, frame: PageFrame, marku
     }
 }
 
-/// Draw one page: paper, the engine's pixels, then the annotations +
-/// signatures that live on it.
 pub fn draw_page(
     ctx: &mut PaintCtx<'_>,
     page: &Page,
@@ -186,14 +141,9 @@ pub fn draw_page(
     let card = frame.card_rect();
     let card_rr = draw_page_paper(ctx.scene, ctx.theme, base, card);
 
-    // Clip content to the paper.
     ctx.scene
         .push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &card_rr);
 
-    // The page bitmap (engine output) scaled to fill the card width — for a
-    // zoomed page, a lower-resolution placeholder under its sharp tiles —
-    // then the markup overlay on top. A page whose pixels have not arrived
-    // yet shows its bare paper.
     if let Some(img) = raster.image {
         draw_page_raster_image(ctx.scene, base, card, img);
     }
@@ -210,8 +160,6 @@ fn pt(origin: Point, scale: f64, x: f64, y: f64) -> Point {
     Point::new(origin.x + x * scale, origin.y + y * scale)
 }
 
-/// The selection frame round a chosen annotation: an outline and four
-/// corner handles in your colour.
 fn draw_selected_frame(scene: &mut Scene, theme: &Theme, base: Affine, r: Rect) {
     let you = theme.tokens.colors.intent.you;
     scene.stroke(&Stroke::new(1.5), base, you, None, &r);
@@ -242,8 +190,6 @@ fn draw_annotation(
                         fill_highlight(scene, base, col, r);
                     }
                     MarkupStyle::Underline | MarkupStyle::StrikeOut => {
-                        // A line at the baseline (underline) or through the
-                        // middle (strike-out) of each band.
                         let y = if *style == MarkupStyle::Underline {
                             r.y0 + r.height() * 0.9
                         } else {
@@ -253,7 +199,6 @@ fn draw_annotation(
                         scene.stroke(&Stroke::new((1.4 * scale).max(1.0)), base, col, None, &line);
                     }
                     MarkupStyle::Squiggly => {
-                        // A wave along the baseline.
                         let y = r.y0 + r.height() * 0.9;
                         let step = (2.0 * scale).max(1.5);
                         let mut wave = BezPath::new();
@@ -312,16 +257,12 @@ fn draw_annotation(
     }
 }
 
-/// The pen a freehand stroke is drawn with at `scale`.
 fn ink_stroke(scale: f64) -> Stroke {
     Stroke::new((2.4 * scale).max(1.5))
         .with_caps(vello::kurbo::Cap::Round)
         .with_join(vello::kurbo::Join::Round)
 }
 
-/// Free text drawn in its box: wrapped to the box width from its top-left,
-/// clipped to the box, with the same inner padding the exported appearance
-/// uses.
 pub fn draw_free_text(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -331,7 +272,6 @@ pub fn draw_free_text(
     size: f32,
     color: Color,
 ) {
-    /// In points at 100 %, as in the exported appearance.
     const PADDING: f64 = 2.0; // PDF points inside the annotation, not UI spacing
     if text.is_empty() || !(size.is_finite() && size > 0.5) {
         return;
@@ -354,8 +294,6 @@ pub fn draw_free_text(
     scene.pop_layer();
 }
 
-/// A sticky-note marker at `p`, in the note's colour: a square with a folded
-/// corner and three ruled lines. Returns its rect.
 fn draw_note_marker(scene: &mut Scene, base: Affine, p: Point, col: Color, scale: f64) -> Rect {
     let s = (22.0 * scale).max(16.0);
     let r = Rect::new(p.x, p.y, p.x + s, p.y + s);
@@ -389,9 +327,6 @@ fn draw_note_marker(scene: &mut Scene, base: Affine, p: Point, col: Color, scale
     r
 }
 
-/// A placed signature: the signer's ink above a rule, their name and the
-/// date beneath it — all in the document's ink at the document's own sizes,
-/// scaled by the zoom like the rest of the page.
 fn draw_signature(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -447,10 +382,6 @@ fn draw_signature(
     );
 }
 
-/// Draw a signature's **real ink** inside `area` (no field chrome): the signer's
-/// typed name in a script style, or the freehand strokes they actually drew
-/// (normalised `[0,1]²`, scaled into `area`). Shared by the placed-signature
-/// draw and the composer's preview, so both show exactly what will be stamped.
 pub fn draw_signature_ink(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -471,8 +402,6 @@ pub fn draw_signature_ink(
             } else {
                 signer.trim()
             };
-            // A signature script: an italic serif face, sized to the field and
-            // shrunk to fit its width.
             let script = |size: f32| {
                 TextStyle::content(size)
                     .with_weight(TextWeight::Medium)
@@ -527,18 +456,10 @@ pub fn draw_signature_ink(
     }
 }
 
-// ----------------------------------------------------------------------
-// Overlays the reader draws over the content
-// ----------------------------------------------------------------------
-
-/// A highlight being dragged out, as the committed highlight will look.
 pub fn draw_highlight_preview(scene: &mut Scene, base: Affine, col: Color, r: Rect) {
     fill_highlight(scene, base, col, r);
 }
 
-/// One highlighted band, laid on the way a highlighter marks paper: its
-/// colour multiplies into what is under it, so the paper takes the colour
-/// and the ink over it stays as dark as it was printed.
 fn fill_highlight(scene: &mut Scene, base: Affine, col: Color, r: Rect) {
     scene.push_layer(
         Fill::NonZero,
@@ -551,7 +472,6 @@ fn fill_highlight(scene: &mut Scene, base: Affine, col: Color, r: Rect) {
     scene.pop_layer();
 }
 
-/// A freehand stroke being drawn, through screen `points`.
 pub fn draw_ink_preview(scene: &mut Scene, base: Affine, col: Color, points: &[Point], scale: f64) {
     let Some(first) = points.first() else {
         return;
@@ -564,7 +484,6 @@ pub fn draw_ink_preview(scene: &mut Scene, base: Affine, col: Color, points: &[P
     scene.stroke(&ink_stroke(scale), base, col, None, &path);
 }
 
-/// The live text selection: your selection tint over each line band.
 pub fn draw_selection_bands(scene: &mut Scene, base: Affine, theme: &Theme, bands: &[Rect]) {
     for band in bands {
         scene.fill(
@@ -577,8 +496,6 @@ pub fn draw_selection_bands(scene: &mut Scene, base: Affine, theme: &Theme, band
     }
 }
 
-/// The image-region marquee (Shift + Select): your selection tint with a
-/// dashed edge in your colour.
 pub fn draw_region_marquee(scene: &mut Scene, base: Affine, theme: &Theme, r: Rect) {
     let intent = &theme.tokens.colors.intent;
     scene.fill(Fill::NonZero, base, intent.selection_tint, None, &r);
@@ -592,21 +509,15 @@ pub fn draw_region_marquee(scene: &mut Scene, base: Affine, theme: &Theme, r: Re
     );
 }
 
-/// The box a form field or free text is edited in: the paper, so the
-/// document's own appearance underneath does not show through the typing.
 pub fn draw_edit_box(scene: &mut Scene, base: Affine, r: Rect) {
     scene.fill(Fill::NonZero, base, paper(), None, &r);
 }
 
-/// The value a form field holds in the document's record.
 pub enum FieldValue {
     Check(bool),
     Text(String),
 }
 
-/// A form field on the page: a quiet outline in your selection tint so the
-/// field is discoverable, and the value the record holds drawn over the
-/// PDF's own appearance (the export writes the same value into the file).
 pub fn draw_form_field(ctx: &mut PaintCtx<'_>, r: Rect, zoom: f64, value: Option<&FieldValue>) {
     let (scene, base, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     scene.stroke(
@@ -619,7 +530,6 @@ pub fn draw_form_field(ctx: &mut PaintCtx<'_>, r: Rect, zoom: f64, value: Option
     let Some(value) = value else {
         return;
     };
-    // Cover the document's own appearance with the recorded value.
     scene.fill(Fill::NonZero, base, paper(), None, &r.inflate(-1.0, -1.0));
     match value {
         FieldValue::Check(checked) => {
@@ -639,8 +549,6 @@ pub fn draw_form_field(ctx: &mut PaintCtx<'_>, r: Rect, zoom: f64, value: Option
             }
         }
         FieldValue::Text(text) => {
-            // Set like a PDF's auto-sized field text: a share of the field's
-            // height.
             let style = TextStyle::content((r.height() * 0.6) as f32);
             let (_, h) = tr.measure_style(text, None, &style);
             tr.draw_style(
@@ -655,12 +563,6 @@ pub fn draw_form_field(ctx: &mut PaintCtx<'_>, r: Rect, zoom: f64, value: Option
     }
 }
 
-// ----------------------------------------------------------------------
-// Thumbnails — the page's content in miniature
-// ----------------------------------------------------------------------
-
-/// A miniature of the same page content and saved markup as the canvas.
-/// The rail supplies the frame, page number and current-page indication.
 pub struct Thumbnail<'a> {
     pub page: &'a Page,
     pub page_w: f64,
@@ -676,8 +578,8 @@ impl Thumbnail<'_> {
             rect.center().x - self.page_w * scale / 2.0,
             rect.center().y - self.page_h * scale / 2.0,
         );
-        // Lay out at the document's own point size, then scale the complete
-        // page scene. Tiny font sizes must not change wrapping or glyph positions.
+        // Lay out at the document's own point size, then scale the scene, so a tiny font
+        // size cannot change wrapping or glyph positions.
         let transform =
             ctx.transform * Affine::translate((origin.x, origin.y)) * Affine::scale(scale);
         let text_scale = ctx.text.text_scale();
@@ -709,11 +611,8 @@ impl Thumbnail<'_> {
     }
 }
 
-/// Crop a rectangular region (in page-point space) out of a rendered page
-/// bitmap, returning `(width_px, height_px, rgba)` ready for the clipboard.
-/// The page bitmap covers the whole page (`page_w × page_h` points) at
-/// `img.width × img.height` pixels, so the region maps by a simple scale.
-/// Returns `None` for an empty region or a malformed bitmap.
+/// Crop a page-point region out of a rendered page bitmap as `(width, height, rgba)`
+/// for the clipboard; `None` for an empty region or a malformed bitmap.
 pub fn crop_page_region(
     img: &PenikoImage,
     page_w: f64,
@@ -743,8 +642,6 @@ pub fn crop_page_region(
     for row in y0..y1 {
         let start = (row * iw + x0) * 4;
         let Some(slice) = src.get(start..start + cw * 4) else {
-            // Unreachable given the length check above; bail rather than
-            // paint a partial/garbage crop from a malformed bitmap.
             return None;
         };
         out.extend_from_slice(slice);
@@ -756,8 +653,7 @@ pub fn crop_page_region(
 mod tests {
     use super::*;
 
-    /// The page card's outline is chrome: it must clear the non-text floor
-    /// on the paper under every shipped theme, including high contrast.
+    /// The card's outline is chrome: it clears the non-text floor under every theme.
     #[test]
     fn page_card_edge_is_chrome_and_reads_on_the_paper() {
         use ui::a11y::contrast_ratio;

@@ -1,26 +1,13 @@
-//! Markup that was already in the PDF, taken over as edit records.
+//! Markup that was already in the PDF, taken over as edit records: the file's
+//! highlights, notes with their replies, free text, ink and form values become ordinary
+//! records, drawn from there on and never from the page image. Each remembers where it
+//! came from and a fingerprint of its thread, so an export keeps an unchanged one, and
+//! no export shows a piece of markup twice.
 //!
-//! The first time a document's record meets its source bytes, the reader
-//! turns the file's own highlights, underlines, strike-outs, notes (with
-//! their reply threads), free text and ink into ordinary annotation and
-//! comment records, and its form values into form-value records. From then on
-//! they are edited, versioned and shared like any other markup, and the
-//! reader draws them from the records (the page image leaves them out).
-//!
-//! Each taken-over annotation remembers where it came from — page, index and
-//! `/NM` in the source bytes — and a fingerprint of what its thread said then
-//! ([`thread_print`]). On export an unchanged thread keeps its original PDF
-//! objects byte for byte; a changed one replaces them; a deleted one removes
-//! them. So an export never shows a piece of markup twice.
-//!
-//! Imported records get ids derived from the source hash and their address
-//! in it, so two peers that import the same bytes concurrently produce the
-//! same records, which merge instead of duplicating.
-//!
-//! A saved export is written to a new file and renamed into place, so it
-//! arrives as a new file with a record of its own; opening it takes over the
-//! markup it now carries — once, because an annotation whose `/NM` is
-//! already a record of the opening record is recognised as its own export.
+//! Imported records get ids from the source hash and their address in it, so two peers
+//! importing the same bytes produce the same records, which merge. A saved export is a
+//! new file with a record of its own: opening it takes the markup over once, since an
+//! annotation whose `/NM` is already a record is recognised as its own export.
 
 use std::collections::{HashMap, HashSet};
 use ui::tilo_resource;
@@ -32,27 +19,21 @@ use crate::model::{
     PtRect, Reply, Thread,
 };
 
-/// The most annotations one import takes over; a file beyond it keeps the
-/// rest as page content.
 pub const MAX_IMPORTED_ANNOTATIONS: usize = 5_000;
 
-/// One source page's existing markup, as the engine reads it.
 #[derive(Clone, Debug)]
 pub struct ExistingPage {
-    /// 0-based page of the source bytes.
     pub page: usize,
     pub geometry: PageGeometry,
     pub annotations: Vec<AnnotationInfo>,
 }
 
-/// Everything already in a document that records can take over.
 #[derive(Clone, Debug, Default)]
 pub struct Existing {
     pub pages: Vec<ExistingPage>,
     pub form_fields: Vec<FormField>,
 }
 
-/// Where a taken-over annotation came from.
 #[derive(
     Clone,
     Debug,
@@ -64,25 +45,16 @@ pub struct Existing {
     ui::tilo_resource::JsonSchema,
 )]
 pub struct AdoptedEntry {
-    /// The record it became: an annotation id, or a reply id for a reply.
     pub id: String,
-    /// 0-based page of the source bytes.
     pub page: usize,
-    /// Index in that page's annotations.
     pub index: usize,
-    /// `/NM`, possibly empty.
     pub name: String,
-    /// The PDF subtype ([`kind_key`]).
     pub kind: String,
-    /// For an annotation: the fingerprint of its thread when imported. Empty
-    /// for a reply, which follows its parent.
     pub print: String,
-    /// For a reply: the annotation it belongs to.
     pub parent: Option<String>,
 }
 
 impl AdoptedEntry {
-    /// The engine's address for the original.
     pub fn target(&self) -> Option<tilo_pdf::AnnotationRef> {
         Some(tilo_pdf::AnnotationRef {
             page: self.page,
@@ -93,17 +65,14 @@ impl AdoptedEntry {
     }
 }
 
-/// What an import adds to the record.
 #[derive(Clone, Debug, Default)]
 pub struct ImportPlan {
-    /// Annotations in user space, on the source pages they came from.
     pub annotations: Vec<Annotation>,
     pub comments: Vec<Thread>,
     pub form_values: Vec<(String, FormEntry)>,
     pub adopted: Vec<AdoptedEntry>,
 }
 
-/// A stable key for an annotation subtype.
 pub fn kind_key(kind: &AnnotationKind) -> &'static str {
     match kind {
         AnnotationKind::Text => "text",
@@ -132,8 +101,6 @@ fn parse_kind(key: &str) -> Option<AnnotationKind> {
     })
 }
 
-/// The record id an imported annotation gets: stable for the same bytes
-/// and address, whoever imports them.
 pub fn imported_id(source_hash: &str, page: usize, index: usize) -> String {
     let short = source_hash.get(..16).unwrap_or(source_hash);
     format!("pdf-{short}-{page}-{index}")
@@ -154,7 +121,6 @@ fn to_user_point(geometry: &PageGeometry, p: tilo_pdf::Point) -> (f64, f64) {
     (f64::from(u.x), f64::from(u.y))
 }
 
-/// Unix milliseconds for a PDF date (`D:YYYYMMDDHHmmSS…`), when it parses.
 pub fn parse_pdf_date(date: &str) -> Option<i64> {
     let digits: String = date
         .strip_prefix("D:")
@@ -183,8 +149,6 @@ fn color_of(info: &AnnotationInfo, fallback: HighlightColor) -> HighlightColor {
         .map_or(fallback, |c| HighlightColor::from_rgb(c.r, c.g, c.b))
 }
 
-/// Turn one page's existing annotation into a record annotation (user
-/// space), or `None` for kinds and states that stay page content.
 fn annotation_of(
     source_hash: &str,
     page: &ExistingPage,
@@ -223,7 +187,6 @@ fn annotation_of(
         }
         AnnotationKind::Text => {
             let r = to_user_rect(g, &info.rect);
-            // The note's anchor is its top-left corner in user space.
             AnnoKind::Note {
                 x: r.x,
                 y: r.y + r.h,
@@ -262,10 +225,6 @@ fn annotation_of(
     })
 }
 
-/// Plan the import of `existing` (read from the bytes hashed `source_hash`)
-/// into a record that already holds `known_ids` (annotation and reply ids).
-/// Annotations whose `/NM` is a known record id are this record's own
-/// earlier export and are not imported again.
 #[allow(
     clippy::too_many_lines,
     reason = "one pass over each page: annotations first, then their replies"
@@ -282,7 +241,6 @@ pub fn plan_import<S: std::hash::BuildHasher>(
         let by_index: HashMap<usize, &AnnotationInfo> =
             page.annotations.iter().map(|a| (a.index, a)).collect();
         let own_export = |a: &AnnotationInfo| !a.name.is_empty() && known_ids.contains(&a.name);
-        // Parents first, so replies find their thread.
         let mut threads: HashMap<usize, usize> = HashMap::new(); // annot index -> comment index
         let mut annotation_ids: HashMap<usize, String> = HashMap::new();
         let is_reply = |a: &AnnotationInfo| {
@@ -344,8 +302,6 @@ pub fn plan_import<S: std::hash::BuildHasher>(
             });
             plan.annotations.push(annotation);
         }
-        // Replies, in page order, onto their parent's thread (a reply to a
-        // reply joins the same thread).
         for info in &page.annotations {
             if !is_reply(info) || info.is_hidden() || own_export(info) {
                 continue;
@@ -404,7 +360,6 @@ pub fn plan_import<S: std::hash::BuildHasher>(
             });
         }
     }
-    // Fingerprint every adopted thread as the record now says it.
     let comments_by_anno: HashMap<&str, &Comment> = plan
         .comments
         .iter()
@@ -429,7 +384,6 @@ pub fn plan_import<S: std::hash::BuildHasher>(
     plan
 }
 
-/// The values a document's own form holds, as records.
 pub fn form_values_of(fields: &[FormField]) -> Vec<(String, FormEntry)> {
     let mut out = Vec::new();
     for field in fields {
@@ -461,13 +415,9 @@ pub fn form_values_of(fields: &[FormField]) -> Vec<(String, FormEntry)> {
 
 fn push_num(out: &mut String, v: f64) {
     use std::fmt::Write as _;
-    // Two decimals: what records keep, and immune to float noise.
     let _ = write!(out, "{:.2},", (v * 100.0).round() / 100.0);
 }
 
-/// A fingerprint of everything an exported thread says: the annotation
-/// (user space) and its comment with replies. Equal prints mean the export
-/// would write what the original already says.
 pub fn thread_print(a: &Annotation, thread: Option<&Comment>) -> String {
     let mut s = String::new();
     s.push_str(a.kind.type_key());

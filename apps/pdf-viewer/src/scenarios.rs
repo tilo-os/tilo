@@ -20,7 +20,6 @@ use crate::model::{
     SignatureInk,
 };
 
-/// Every named scenario `--shots --scenario NAME` captures.
 pub const SCENARIOS: &[&str] = &[
     "empty",
     "edit-comment",
@@ -36,46 +35,30 @@ pub const SCENARIOS: &[&str] = &[
     "error",
 ];
 
-/// The scenarios that show the reader before any document is open.
 const WITHOUT_DOCUMENT: &[&str] = &["empty", "loading", "error"];
 
-/// The document the scenarios show.
 pub(crate) const SAMPLE_PDF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sample.pdf"));
-/// The name it is pinned under.
 pub(crate) const SAMPLE_NAME: &str = "Field Notes on Estuarine Birds.pdf";
 
-/// The form the `form` scenario shows filled: a text field `name`, a
-/// checkbox `agree` and a choice `colour`.
 pub(crate) const FORM_PDF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/form.pdf"));
-/// The name it is pinned under.
 const FORM_NAME: &str = "Application.pdf";
-/// The scenario showing a filled form.
 const FORM: &str = "form";
 
-/// The word of page 1 the selection scenario selects.
 pub(crate) const SELECTED_WORD: &str = "harrier";
 
-/// The sticky note the review lands on, and the comment pinned to it.
 pub(crate) const NOTE: &str = "sample-note";
 pub(crate) const NOTE_COMMENT: &str = "sample-note-comment";
 pub(crate) const NOTE_COMMENT_BODY: &str = "pdf-viewer-sample-comment";
 const HIGHLIGHT: &str = "sample-highlight";
 
-/// Fixed date stamped on the demonstration signature, so captures stay the
-/// same frame; signatures placed at runtime read the system clock.
 pub(crate) const SIGNED_ON: &str = "2026-06-30";
 
-/// The signer the demonstration review is signed by.
 pub(crate) const SIGNER: &str = "Alice Example";
 
-/// Whether `scenario` shows the sample document.
 pub(crate) fn shows_sample(scenario: Option<&str>) -> bool {
     scenario.is_none_or(|name| !WITHOUT_DOCUMENT.contains(&name))
 }
 
-/// What the capture of `fixture`'s scenario reads that its actions do not
-/// stage: the document's bytes, in the content store the record's source
-/// is read from.
 pub(crate) fn fixture(fixture: &mut Fixture<PdfMarkup>) {
     let document = if fixture.scenario() == Some(FORM) {
         FORM_PDF
@@ -89,9 +72,6 @@ pub(crate) fn fixture(fixture: &mut Fixture<PdfMarkup>) {
     }
 }
 
-/// The actions that stage `scenario`: the sample document pinned as the
-/// record's source and the review on it, on every scenario that shows a
-/// document; nothing on the others.
 pub(crate) fn scenario(scenario: Option<&str>) -> Vec<Invoke<PdfMarkup>> {
     if !shows_sample(scenario) {
         return Vec::new();
@@ -107,8 +87,6 @@ pub(crate) fn scenario(scenario: Option<&str>) -> Vec<Invoke<PdfMarkup>> {
     actions
 }
 
-/// The form pinned as the record's source and filled in, each field by
-/// the edit an agent fills it with.
 fn filled_form() -> Vec<Invoke<PdfMarkup>> {
     use crate::actions::set_form_value_action;
     use crate::model::FormEntry;
@@ -126,8 +104,6 @@ fn filled_form() -> Vec<Invoke<PdfMarkup>> {
     ]
 }
 
-/// A plausible hand-drawn signature as normalised `[0,1]²` strokes, so a
-/// capture shows a real drawn signature rather than a canned style.
 pub(crate) fn sample_drawn_signature() -> Vec<Vec<(f64, f64)>> {
     use std::f64::consts::PI;
     let n = 64;
@@ -139,15 +115,10 @@ pub(crate) fn sample_drawn_signature() -> Vec<Vec<(f64, f64)>> {
             (x, y)
         })
         .collect();
-    // A short underline flick beneath the flourish.
     let underline = vec![(0.14, 0.86), (0.5, 0.9), (0.82, 0.8)];
     vec![flourish, underline]
 }
 
-/// The review on page 1 of the sample document: a highlight over the
-/// sentence that opens its second paragraph, a sticky note with a thread
-/// beside the third, a comment on the highlight, a resolved page comment and
-/// a drawn signature in the blank lower half of the page.
 #[allow(
     clippy::too_many_lines,
     reason = "one demonstration review, item by item"
@@ -189,9 +160,6 @@ pub fn sample_review() -> Vec<Edit<PdfMarkup>> {
             .insert_as(&Id::from_raw(id), usize::MAX, &thread)
     };
     vec![
-        // The lines of 11 pt Helvetica sit on baselines 16 pt apart; the
-        // second paragraph's first two are at 155.65 and 171.65 pt from the
-        // page top.
         markup(
             HIGHLIGHT,
             AnnoKind::highlight(PtRect::new(31.0, 146.5, 550.0, 12.5)),
@@ -266,8 +234,6 @@ pub(crate) fn record_state() -> ui::State {
     state
 }
 
-/// A record holding the review, as its actions write it: what a test of the
-/// reader starts from.
 #[cfg(test)]
 pub(crate) fn sample_state() -> ui::State {
     let mut state = record_state();
@@ -278,10 +244,6 @@ pub(crate) fn sample_state() -> ui::State {
     state
 }
 
-/// A reader showing three blank US-Letter pages as the review's view state
-/// stages it, before its first frame: read with [`sample_state`]. For the
-/// tests of pages, geometry and markup, which need no text; the tests of
-/// text open the sample document through the PDF worker.
 #[cfg(test)]
 pub(crate) fn sample_reader() -> crate::PdfApp {
     let mut app = crate::PdfApp::blank_document(3);

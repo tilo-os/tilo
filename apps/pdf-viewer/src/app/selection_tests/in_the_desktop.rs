@@ -1,8 +1,3 @@
-//! Selecting and copying a PDF's text with the reader in a window of the
-//! desktop surface, beside another window, as the browser desktop hosts every
-//! app: a press-drag reaches the reader through the strip and its window, and
-//! Ctrl+C copies what it selected.
-
 use std::rc::Rc;
 
 use serial_test::serial;
@@ -16,8 +11,6 @@ use vello::kurbo::Point;
 
 use super::{PdfApp, glyph_at, past, text_pdf};
 
-/// Builds each window's reader on the PDF, as the browser desktop builds a
-/// window's component.
 struct Readers {
     owners: ui::record::RecordOwners,
     state: std::path::PathBuf,
@@ -69,10 +62,8 @@ impl TileSource for Readers {
     }
 }
 
-/// A visit to one reader, taken by the first that matches.
 type Visit<'a, T> = Option<Box<dyn FnOnce(&mut PdfApp) -> T + 'a>>;
 
-/// Visit the reader of window `nth` (from the left) of the desktop.
 fn reader<T>(h: &mut FrameHarness, nth: usize, visit: impl FnOnce(&mut PdfApp) -> T) -> Option<T> {
     fn walk<T>(widget: &mut dyn Widget, nth: &mut usize, visit: &mut Visit<'_, T>) -> Option<T> {
         if let Some(any) = widget.as_any_mut()
@@ -98,7 +89,6 @@ fn reader<T>(h: &mut FrameHarness, nth: usize, visit: impl FnOnce(&mut PdfApp) -
     walk(&mut *h.root_mut::<DesktopSurface>(), &mut nth, &mut visit)
 }
 
-/// Run the desktop's frames until `done` holds of the right-hand reader.
 fn settle(h: &mut FrameHarness, mut done: impl FnMut(&PdfApp) -> bool) {
     tilo_test_env::wait_until("the reader to settle", || {
         let _ = h.poll_frame();
@@ -151,7 +141,6 @@ fn a_drag_in_a_desktop_window_selects_the_text_and_ctrl_c_copies_it() {
             ..ui::headless::FrameOptions::default()
         },
     );
-    // As the browser desktop runs its frame.
     h.set_caller_palette_enabled(false);
     h.attach_owner_wake_queue(queue).expect("owner wakes");
     h.set_coalesce_input_frames(true);
@@ -163,7 +152,6 @@ fn a_drag_in_a_desktop_window_selects_the_text_and_ctrl_c_copies_it() {
         return;
     }
 
-    // The pointer rests on the page, which reads its text ahead.
     let rest = reader(&mut h, 1, |pdf| {
         let origin = pdf.page_origins()[0];
         Point::new(origin.x + 40.0, origin.y + 40.0)
@@ -179,7 +167,6 @@ fn a_drag_in_a_desktop_window_selects_the_text_and_ctrl_c_copies_it() {
         )
     })
     .expect("the reader");
-    // One frame between each event, as the page's animation frames run.
     h.send_host_event(&ui::synthetic_input::cursor_moved(from.x, from.y));
     h.send_host_event(&ui::synthetic_input::mouse_press());
     let _ = h.poll_frame();
@@ -216,7 +203,6 @@ fn a_drag_in_a_desktop_window_selects_the_text_and_ctrl_c_copies_it() {
     });
     let copied = ui::clipboard_paste().unwrap_or_default();
     if copied == "before" {
-        // No clipboard in this session: the copy said it copied the selection.
         eprintln!("no clipboard in this session; the copy reported itself");
     } else {
         assert_eq!(copied, selected, "Ctrl+C copies the selection");

@@ -1,11 +1,6 @@
-//! Opening a PDF the workspace keeps as content in this record: how an agent,
-//! which has no files and no picker, gives a markup record its document.
-//!
-//! The record names its document the way a launch on a file does: by
-//! pinning the bytes as its source ([`PdfMarkup::pin_source`]). The bytes
-//! stay in the content store; the reference that opens them and the name
-//! enter the record, so every replica reads the same document through its
-//! own window's store.
+//! Opening a PDF the workspace keeps as content, so an agent with no files and no
+//! picker can give a record its document. The record pins the bytes as its source and
+//! keeps the reference that opens them.
 
 use ui::framework::EffectCx;
 use ui::tilo_resource::{Bytes, Invoke};
@@ -13,32 +8,21 @@ use ui::tilo_resource::{Bytes, Invoke};
 use super::PdfApp;
 use crate::markup::PdfMarkup;
 
-/// Why a record with no PDF reads nothing, and how an agent gives it one.
 pub(super) const NO_PDF: &str =
     "this record holds no PDF to read yet: open one the workspace keeps with import-pdf-content";
 
-/// The name a PDF opened from content without one is shown under.
 const UNNAMED: &str = "Document.pdf";
 
 impl PdfApp {
-    /// Pin the PDF `address` names in the content store as the document the
-    /// record marks up, under `name`, and answer with its name and page
-    /// count. The PDF the record already holds answers again unchanged;
-    /// another is refused rather than ignored, since a record never
-    /// re-targets its markup.
-    ///
-    /// The page plan is made with the pin: a window with no PDF worker (an
-    /// agent's) never opens the document to make it, and markup is placed
-    /// on its page ids.
+    /// Pin the PDF `address` names as the document this record marks up, and answer
+    /// its name and page count. A record never re-targets its markup, so another PDF is
+    /// refused; the page plan is made with the pin.
     pub(crate) fn import_pdf_content(
         &self,
         address: &str,
         name: Option<&str>,
         cx: &EffectCx<PdfMarkup>,
     ) -> Result<serde_json::Value, String> {
-        // What the caller named: the content's reference, as it is (a
-        // reference's key is case-sensitive), or the bare reference a plan
-        // that carried the content gives.
         let reference = ui::tilo_actions::named_reference(address).ok_or_else(|| {
             format!("`{address}` names no content: give the PDF's `tilo.content:<reference>`")
         })?;
@@ -46,8 +30,6 @@ impl PdfApp {
             .content
             .read(reference)
             .ok_or_else(|| format!("content `{reference}` is not in this workspace's store"))?;
-        // The bytes themselves name the document: the reference that opens
-        // them may differ between devices.
         let digest = tilo_content::hash_bytes(&bytes);
         let held = cx.live().get().pinned_source();
         if let Some(held) = &held
@@ -62,15 +44,11 @@ impl PdfApp {
                 "this record already marks up {name}: open the PDF in a record of its own"
             ));
         }
-        // A Word file sent under a PDF's name: say what opens it, rather than
-        // that this reader does not.
         if tilo_content::document_format(&bytes).is_none_or(|format| format.extension != "pdf")
             && let Some(what) = tilo_content::opened_by(&bytes)
         {
             return Err(format!("content `{reference}` is not a PDF: {what}"));
         }
-        // The portable engine is memory-safe and runs in process, as an
-        // agent's confined window needs.
         let document = tilo_pdf::Engine::portable()
             .open_bytes(&bytes)
             .map_err(|error| {
@@ -82,8 +60,6 @@ impl PdfApp {
         } else {
             let name = name.map_or("", str::trim);
             let name = if name.is_empty() { UNNAMED } else { name };
-            // The bytes are already where the workspace keeps content under
-            // this reference: the record pins exactly that, sealed as it is.
             cx.submit(Invoke::group([
                 crate::actions::pin_source_action(&Bytes::kept_as(&bytes, reference), name),
                 PdfMarkup::START_PAGE_PLAN.with(pages),
@@ -118,8 +94,6 @@ mod tests {
         }
     }
 
-    /// An agent's record with no file opens a PDF from the workspace's content:
-    /// the record pins it with its page plan, and read-text reads it.
     #[serial(pdfium)]
     #[test]
     fn a_pdf_from_content_is_pinned_with_its_pages_and_reads() {
@@ -157,8 +131,7 @@ mod tests {
         assert_eq!(read["file"], "report.pdf");
     }
 
-    /// Opening the PDF the record holds again answers it unchanged; another
-    /// PDF is refused, naming the one held.
+    /// The PDF the record holds answers again unchanged; another is refused.
     #[serial(pdfium)]
     #[test]
     fn a_record_holding_a_pdf_refuses_another_and_answers_its_own_again() {
@@ -189,8 +162,8 @@ mod tests {
         );
     }
 
-    /// Content the store lacks, bytes that are no PDF, and an address that
-    /// names no content are refused, and nothing is pinned.
+    /// Missing content, bytes that are no PDF and an address that names nothing are
+    /// refused, and nothing is pinned.
     #[serial(pdfium)]
     #[test]
     fn missing_content_or_bytes_that_are_no_pdf_pin_nothing() {
@@ -203,11 +176,8 @@ mod tests {
         assert!(app.state().pinned_source().is_none());
     }
 
-    /// The workspace keeps its content sealed: import-content takes the
-    /// reference that opens the PDF, reads the document through it and pins
-    /// that same reference, so the record carries what opens it. A reference
-    /// this workspace does not hold is refused for what it is, never for how
-    /// it is spelled.
+    /// The workspace's content is sealed: the reference that opens the PDF is read and
+    /// pinned as it stands, and one this workspace does not hold is refused.
     #[serial(pdfium)]
     #[test]
     fn a_sealed_reference_is_imported_as_the_document_it_opens() {
@@ -243,8 +213,6 @@ mod tests {
             "pinned by the reference that opens it"
         );
 
-        // A workspace holding none of it answers so, rather than that the
-        // reference is no content.
         let mut elsewhere = TestApp::<PdfViewerShell>::new().expect("the reader opens");
         let refused = elsewhere
             .effect(&import(&reference, None))
@@ -256,7 +224,6 @@ mod tests {
         );
     }
 
-    /// A Word file whose package holds only its main part, stored.
     fn word_file() -> Vec<u8> {
         let (name, body) = (b"word/document.xml", b"<w:document/>");
         let mut file = b"PK\x03\x04\x14\0\0\0\0\0\0\0\0\0\0\0\0\0".to_vec();
@@ -278,8 +245,7 @@ mod tests {
         file
     }
 
-    /// A Word file sent under a PDF's name is refused with what it is and
-    /// the action that opens it, and nothing is pinned.
+    /// A Word file under a PDF's name is refused with what it is and what opens it.
     #[serial(pdfium)]
     #[test]
     fn a_word_file_is_refused_naming_what_opens_it() {
@@ -300,11 +266,6 @@ mod tests {
         assert!(app.state().pinned_source().is_none());
     }
 
-    /// A PDF the workspace keeps sealed pins the reference that opens it: the
-    /// store holds ciphertext, the record's markup is made against those bytes,
-    /// and a second member whose device holds only the ciphertext reads the same
-    /// document. A record pinned by a plain hash, as earlier versions pinned it,
-    /// still reads.
     #[test]
     fn a_sealed_pdf_is_pinned_by_the_reference_that_opens_it() {
         use super::{PdfApp, PdfMarkup};
@@ -319,7 +280,6 @@ mod tests {
             "the store holds no plaintext"
         );
 
-        // The record pinned in the workspace: the reference, as it was kept.
         let mut replica = Replica::<PdfMarkup>::new();
         replica
             .apply(
@@ -339,8 +299,6 @@ mod tests {
             .expect("the pinned PDF reads on the device it was kept on");
         assert_eq!(read["file"], "report.pdf");
 
-        // A member's device holds the ciphertext alone, under its address, and
-        // opens the document by the reference the record names.
         let address = tilo_content::content_address(&reference).expect("a reference");
         let carried = writer.read(&address).expect("the ciphertext");
         assert_ne!(carried, bytes, "the ciphertext is not the PDF");
@@ -353,8 +311,6 @@ mod tests {
             .expect("the member opens it");
         assert_eq!(read["file"], "report.pdf");
 
-        // A source pinned by its plain hash still reads where the bytes were
-        // kept so.
         let plain = tilo_content::ContentStore::memory_in_workspace();
         let hash = plain.put(&bytes).expect("kept in the clear");
         let mut earlier = PdfApp::empty_with_content(plain);

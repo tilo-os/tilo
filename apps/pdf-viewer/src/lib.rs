@@ -1,10 +1,8 @@
-//! PDF — Tilo native app (CRDT-native, built on the `ui` toolkit).
+//! The PDF reader, built on the `ui` toolkit.
 //!
-//! A collaborative PDF reader: scrollable multi-page view with zoom and a
-//! thumbnail rail, a contents/comments/signatures sidebar, incremental
-//! search, and an annotation layer (highlight, freehand ink, sticky notes)
-//! plus a signing flow — all durable markup lives in the shared Automerge
-//! document so undo/redo and live collaboration come for free.
+//! A collaborative reader: pages with zoom and a thumbnail rail, a contents,
+//! comments and signatures sidebar, search, and an annotation and signing layer whose
+//! markup lives in the shared document, so undo and collaboration come for free.
 //!
 //! ## Rendering backend
 //!
@@ -17,13 +15,6 @@
 //! scenarios (`scenarios`, behind the `samples` feature) open a real sample
 //! PDF the same way.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -64,7 +55,6 @@ pub use model::{
 pub mod scenarios;
 pub mod source;
 
-/// The app as every host mounts it: the reader over its markup resource.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(PdfViewerShell)
 }
@@ -72,7 +62,6 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 pub use markup::PdfMarkup;
 pub use resource::PdfViewerShell;
 
-// The reader's copy: its status notes and the history of its markup.
 ui::embedded_catalog!(pub(crate) fn, ["de-DE", "en-US"]);
 
 /// German is one of the languages the app ships, and it reads in German: the

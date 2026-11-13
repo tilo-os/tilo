@@ -9,8 +9,6 @@ use super::PdfApp;
 use tilo_content::ContentState;
 
 impl PdfApp {
-    /// What the empty state says while the record's document is not on this
-    /// device: its title, its message, and whether that is a failure.
     pub(super) fn source_wait_text(&self) -> Option<(String, String, bool)> {
         let (state, _) = self.source_wait?;
         let name = self
@@ -33,9 +31,6 @@ impl PdfApp {
         ))
     }
 
-    /// Why the last open failed, in the person's words: the reason the engine
-    /// gave picks the message, so the line the empty state paints and the
-    /// words assistive technology reads out are the same one.
     pub(super) fn open_failure_text(&self) -> Option<String> {
         let error = self.load_error.as_deref()?.to_ascii_lowercase();
         let key = if error.contains("password") || error.contains("encrypt") {
@@ -52,9 +47,6 @@ impl PdfApp {
         Some(crate::t(key))
     }
 
-    /// The empty state's tree, branch for branch the state it paints: a wait
-    /// says what it waits for, a failure says why, and only the plain state
-    /// offers a document to open.
     pub(super) fn empty_state_nodes(&self) -> Vec<AccessNode> {
         let button = |name: &str, target: &str, bounds: Rect| {
             AccessNode::new(Role::Button)
@@ -70,7 +62,6 @@ impl PdfApp {
         };
         let mut children = Vec::new();
         if self.opening() {
-            // Nothing to head yet: the wait itself is the state.
             children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(crate::t("pdf-empty-opening"))
@@ -99,7 +90,6 @@ impl PdfApp {
             );
         } else {
             children.push(heading(&crate::t("pdf-empty-heading")));
-            // Where the button is drawn, once it is; the canvas until then.
             let drawn = self.empty_open_button_rect();
             let bounds = if drawn.area() > 0.0 {
                 drawn

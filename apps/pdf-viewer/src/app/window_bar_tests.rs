@@ -1,8 +1,3 @@
-//! The reader's controls live in the window's bar: the pages toggle, the
-//! document's name, the tools, the marker colour, the review panel, zoom,
-//! Open and Save, History, and find in the pages. Each slot runs the
-//! reader's published action.
-
 use serial_test::serial;
 use ui::framework::testing::TestApp;
 use ui::window_toolbar::{SearchOpening, ToolbarAction, ToolbarEvent, WindowToolbar};
@@ -14,7 +9,6 @@ use crate::markup::PdfMarkup;
 use crate::model::{AnnoKind, Annotation, HighlightColor, MarkupStyle, PtRect, Tool};
 use crate::{PdfApp, PdfViewerShell};
 
-/// The reader on a two-page text PDF, launched as a person opens it.
 fn reader() -> (tempfile::TempDir, TestApp<PdfViewerShell>) {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = text_pdf(directory.path(), 2);
@@ -24,14 +18,11 @@ fn reader() -> (tempfile::TempDir, TestApp<PdfViewerShell>) {
     (directory, app)
 }
 
-/// Press `event` in the window's bar, as the desktop hands it to the app,
-/// and let the reader run it.
 fn press(app: &mut TestApp<PdfViewerShell>, event: ToolbarEvent) {
     app.harness().press_window_slot(event);
     app.settle();
 }
 
-/// Press the bar's action named `name`, a menu's item too.
 fn press_named(app: &mut TestApp<PdfViewerShell>, name: &str) {
     app.harness().press_window_action(name).unwrap();
     app.settle();
@@ -53,7 +44,6 @@ fn slot<'a>(toolbar: &'a WindowToolbar, name: &str) -> &'a ToolbarAction {
         .unwrap_or_else(|| panic!("the bar has {name}: {toolbar:?}"))
 }
 
-/// The review panel's toggle, named for what a press does.
 fn review(toolbar: &WindowToolbar) -> &ToolbarAction {
     toolbar
         .actions
@@ -62,7 +52,6 @@ fn review(toolbar: &WindowToolbar) -> &ToolbarAction {
         .unwrap_or_else(|| panic!("the bar has the review panel: {toolbar:?}"))
 }
 
-/// The names of menu `menu`'s items that `pick` picks.
 fn items(toolbar: &WindowToolbar, menu: &str, pick: fn(&ToolbarAction) -> bool) -> Vec<String> {
     slot(toolbar, menu)
         .items
@@ -72,7 +61,6 @@ fn items(toolbar: &WindowToolbar, menu: &str, pick: fn(&ToolbarAction) -> bool) 
         .collect()
 }
 
-/// The item of menu `menu` that is on.
 fn chosen(toolbar: &WindowToolbar, menu: &str) -> Vec<String> {
     items(toolbar, menu, |item| item.on)
 }
@@ -163,7 +151,6 @@ fn the_bar_holds_the_readers_controls() {
 fn the_bar_runs_the_same_actions_as_the_published_ones() {
     let (_directory, mut app) = reader();
 
-    // The pages: the bar's sidebar toggle, and Toggle page thumbnails.
     press(&mut app, ToolbarEvent::ToggleSidebar);
     assert!(!reader_state(&mut app, |pdf| pdf.show_rail));
     assert_eq!(bar(&mut app).sidebar, Some(false));
@@ -171,7 +158,6 @@ fn the_bar_runs_the_same_actions_as_the_published_ones() {
         .expect("the pages toggle");
     assert!(reader_state(&mut app, |pdf| pdf.show_rail));
 
-    // The review panel: the bar's action, and Toggle sidebar.
     let shown = reader_state(&mut app, |pdf| pdf.show_sidebar);
     let id = review(&bar(&mut app)).id.clone();
     press(&mut app, ToolbarEvent::Action { id });
@@ -181,7 +167,6 @@ fn the_bar_runs_the_same_actions_as_the_published_ones() {
         .expect("the review panel toggles");
     assert_eq!(reader_state(&mut app, |pdf| pdf.show_sidebar), shown);
 
-    // The tools: an item of the bar's Tools menu, and Use tool.
     press_named(&mut app, &Tool::Ink.label());
     assert_eq!(reader_state(&mut app, |pdf| pdf.tool), Tool::Ink);
     let toolbar = bar(&mut app);
@@ -197,7 +182,6 @@ fn the_bar_runs_the_same_actions_as_the_published_ones() {
         .expect("the note tool arms");
     assert_eq!(reader_state(&mut app, |pdf| pdf.tool), Tool::Note);
 
-    // Zoom: the bar's Zoom in and Zoom out, and the published ones.
     let zoom = reader_state(&mut app, |pdf| pdf.zoom());
     press_named(&mut app, "Zoom in");
     let pressed = reader_state(&mut app, |pdf| pdf.zoom());
@@ -211,7 +195,6 @@ fn the_bar_runs_the_same_actions_as_the_published_ones() {
     press_named(&mut app, "Zoom out");
     assert!((reader_state(&mut app, |pdf| pdf.zoom()) - pressed).abs() < 1e-9);
 
-    // Fit: the bar's items, checked as the fit is, and the published ones.
     press_named(&mut app, "Fit page");
     assert!(reader_state(&mut app, |pdf| pdf.fit == super::FitMode::Page));
     assert_eq!(chosen(&bar(&mut app), "Zoom"), ["Fit page"]);
@@ -223,7 +206,6 @@ fn the_bar_runs_the_same_actions_as_the_published_ones() {
     app.effect(&PdfEffect::FitPage).expect("fit page");
     assert!((reader_state(&mut app, |pdf| pdf.zoom()) - page_zoom).abs() < 1e-9);
 
-    // The marker colour: an item of the bar's menu, and Marker colour.
     press_named(&mut app, "Blue");
     assert_eq!(
         reader_state(&mut app, |pdf| pdf.swatch),
@@ -239,7 +221,6 @@ fn the_bar_runs_the_same_actions_as_the_published_ones() {
         HighlightColor::Pink
     );
 
-    // Save: offered while a PDF is open.
     assert!(slot(&bar(&mut app), "Save annotated PDF").enabled);
 }
 
@@ -290,8 +271,6 @@ fn the_marker_colour_recolours_the_selected_mark_through_the_record() {
     );
 }
 
-/// Invoke `effect` on the document by its address, as a headless drive's
-/// `invoke` step does: no coordinates, no shortcut.
 fn drive_invoke(app: &mut TestApp<PdfViewerShell>, effect: &PdfEffect) {
     use ui::tilo_resource::{Effect as _, Resource as _};
     let address = effect.address_on(PdfMarkup::KIND);
@@ -386,7 +365,6 @@ fn ctrl_f_and_find_open_the_window_search() {
 #[serial(pdfium)]
 fn find_through_the_window_bar_finds_steps_and_shows_the_current_match() {
     let (_directory, mut app) = reader();
-    // Every line of both pages says "quick brown".
     let lines = 2 * 40;
     let deadline = tilo_test_env::hang_deadline();
     let found = loop {
@@ -442,9 +420,6 @@ fn find_through_the_window_bar_finds_steps_and_shows_the_current_match() {
     );
 }
 
-/// An action that goes to a search result (an agent's) hands its find to
-/// the window's search: the reader asks for it, and the field shows the
-/// query with the match it went to current.
 #[test]
 #[serial(pdfium)]
 fn going_to_a_search_result_shows_its_query_in_the_window_search() {
@@ -467,7 +442,6 @@ fn going_to_a_search_result_shows_its_query_in_the_window_search() {
     });
     let _ = ui::window_toolbar::take_search_request();
 
-    // The search result row's action, as an agent runs it.
     let went = reader_state(&mut app, |pdf| {
         pdf.show(&PdfEffect::GoToMatch {
             query: "quick brown".into(),
@@ -497,9 +471,6 @@ fn going_to_a_search_result_shows_its_query_in_the_window_search() {
     assert_eq!(stepped, Some((43, lines)), "the bar steps on from there");
 }
 
-/// A match's highlight is the span of exactly its glyphs: it ends at the
-/// advance of the match's last glyph, short of the glyph after it ("quic"
-/// in "quick" stops before the "k").
 #[test]
 #[serial(pdfium)]
 fn a_match_highlight_ends_at_its_last_glyph_advance() {
@@ -530,8 +501,6 @@ fn a_match_highlight_ends_at_its_last_glyph_advance() {
     );
 }
 
-/// A host whose first Save fails where it keeps the file and whose next
-/// one saves there; every other chooser is refused.
 struct SaveFailsOnce {
     asked: std::sync::Arc<std::sync::Mutex<usize>>,
 }
@@ -593,13 +562,10 @@ fn wait_for_note(app: &mut TestApp<PdfViewerShell>, says: &str) {
     });
 }
 
-/// The name the reader suggests for its saved copy.
 fn suggested_name(app: &mut TestApp<PdfViewerShell>) -> String {
     reader_state(app, |pdf| pdf.suggested_save_name())
 }
 
-/// A save that failed carries Try again: pressed by pointer or through its
-/// semantic action, wide or compact, it asks where to save again and saves.
 #[test]
 #[serial(pdfium)]
 fn a_failed_saves_try_again_saves_again() {
@@ -650,8 +616,6 @@ fn a_failed_saves_try_again_saves_again() {
     }
 }
 
-/// A host whose Open chooser answers with each of `files` in turn; every
-/// other chooser is refused.
 struct ChoosesInTurn {
     files: std::sync::Mutex<std::collections::VecDeque<std::path::PathBuf>>,
 }
@@ -692,9 +656,6 @@ impl ui::host::FilePicker for ChoosesInTurn {
     }
 }
 
-/// Pages that could not be imported carry Try again: pressed by pointer or
-/// through its semantic action, wide or compact, it asks which pages to
-/// import again and imports them.
 #[test]
 #[serial(pdfium)]
 fn a_failed_imports_try_again_imports_again() {
