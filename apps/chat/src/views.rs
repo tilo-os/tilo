@@ -1836,7 +1836,7 @@ mod tests {
             });
         assert_eq!(
             source.props.get("resource"),
-            Some(&Value::Text(shared.id.clone())),
+            Some(&Value::Text(shared.id)),
             "the drag carries the resource the attachment holds"
         );
         assert_eq!(
@@ -2586,7 +2586,7 @@ mod tests {
             "the disclosure says what it holds"
         );
         assert!(
-            texts(&details[0])
+            texts(details[0])
                 .iter()
                 .any(|line| line.contains("Provider-exposed summary")),
             "the record is inside the disclosure"

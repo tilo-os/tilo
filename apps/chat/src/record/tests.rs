@@ -404,8 +404,8 @@ fn a_resource_a_session_places_is_attachable_by_its_published_address() {
     // spells, and the catalogue names its kind. It attaches as any shared record does, and it
     // reads back from the record unchanged — the address the drag carried, never a second form
     // invented for it.
-    let mut ada = Talk::new();
     const ROOT: &str = "tl:so.tilo.lang.tasks:root-fjqi4yze";
+    let mut ada = Talk::new();
     let attached = tilo_reference::Attached::resource(
         tilo_reference::ResourceAt {
             app: "so.tilo.lang.tasks".into(),
