@@ -77,6 +77,10 @@ fn revoked(device: &Device) -> tilo_user_identity::RevocationEntry {
 /// it stands, in the workspace it was saved in, under a certificate that is
 /// valid and not revoked at that instant.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one row per reason: the table stays in one place"
+)]
 fn a_shortcut_proves_its_saver_only_by_their_own_valid_device_in_its_workspace() {
     let ada = device(1, 2);
     let bob = device(3, 4);
@@ -102,6 +106,24 @@ fn a_shortcut_proves_its_saver_only_by_their_own_valid_device_in_its_workspace()
     expiring.cert.expires_at_ns = Some(NOW_NS);
     tilo_user_identity::sign_device_cert(&mut expiring.cert, &expiring.root).unwrap();
     let brief = expiring.saves(WORKSPACE, shortcut("water"));
+
+    // Ada's proof with the last byte of its signature missing.
+    let mut cut = ada.saves(WORKSPACE, shortcut("water"));
+    cut.saved_proof.as_mut().unwrap().signature.truncate(126);
+    // Ada's proof with no certificate to read.
+    let mut unreadable = ada.saves(WORKSPACE, shortcut("water"));
+    unreadable.saved_proof.as_mut().unwrap().device_cert = serde_json::Value::Null;
+    // Bob's key signing the shortcut as Ada would have saved it, under her
+    // certificate.
+    let mut stolen = shortcut("water");
+    stolen.saved_by = Some(ada.person());
+    let signature =
+        collab_types::signer::sign_now(&bob.key, stolen.saved_signing_digest(WORKSPACE).to_vec())
+            .unwrap();
+    stolen.saved_proof = Some(tilo_automation::SavedProof {
+        device_cert: serde_json::to_value(&ada.cert).unwrap(),
+        signature: hex::encode(signature),
+    });
 
     for (case, workspace, subject, revocations, now_ns, expected) in [
         (
@@ -172,6 +194,46 @@ fn a_shortcut_proves_its_saver_only_by_their_own_valid_device_in_its_workspace()
             "at the instant of expiry",
             WORKSPACE,
             &brief,
+            &none,
+            NOW_NS,
+            None,
+        ),
+        (
+            "before its certificate was issued",
+            WORKSPACE,
+            &saved,
+            &none,
+            0,
+            None,
+        ),
+        (
+            "at the instant its certificate was issued",
+            WORKSPACE,
+            &saved,
+            &none,
+            1,
+            Some(ada.person()),
+        ),
+        (
+            "a signature cut short",
+            WORKSPACE,
+            &cut,
+            &none,
+            NOW_NS,
+            None,
+        ),
+        (
+            "a certificate that does not read",
+            WORKSPACE,
+            &unreadable,
+            &none,
+            NOW_NS,
+            None,
+        ),
+        (
+            "another's key under the saver's certificate",
+            WORKSPACE,
+            &stolen,
             &none,
             NOW_NS,
             None,

@@ -429,6 +429,9 @@ mod tests {
         let mut scalar = AutoCommit::new();
         scalar.put(ROOT, "channels", "wrong kind").unwrap();
         scalar.commit();
+        let mut list = AutoCommit::new();
+        list.put_object(ROOT, "channels", ObjType::List).unwrap();
+        list.commit();
         let mut single = AutoCommit::new();
         let object = single.put_object(ROOT, "channels", ObjType::Map).unwrap();
         single.commit();
@@ -452,6 +455,11 @@ mod tests {
             (
                 "a value that is not a map",
                 &scalar,
+                Err(ReadError::Visitor(MediaPolicyError::Conflict)),
+            ),
+            (
+                "a list where the map belongs",
+                &list,
                 Err(ReadError::Visitor(MediaPolicyError::Conflict)),
             ),
             (

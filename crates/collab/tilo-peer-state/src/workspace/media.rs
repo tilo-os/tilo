@@ -1117,6 +1117,25 @@ mod workspace_media_tests {
         let restart = edited(|v| v.calls.get_mut(&[7; 32]).unwrap().epoch = 3);
         let second = edited(|v| v.authorization_revision = 2);
         let moved = edited(|v| v.workspace = [2; 16]);
+        let rebased = edited(|v| {
+            v.authorization_basis = [4; 32];
+            v.authorization_revision = 2;
+        });
+        let ended_late = edited(|v| {
+            v.calls.get_mut(&[7; 32]).unwrap().phase = CallPhaseV1::Ended;
+            v.calls.get_mut(&[7; 32]).unwrap().epoch = 3;
+        });
+        // A second call beside the first, on a channel of its own.
+        let joined = |epoch: u64| {
+            edited(|v| {
+                let mut call = v.calls[&[7; 32]].clone();
+                call.binding.channel_id = "other".into();
+                call.binding.channel_object = "2@01".into();
+                call.epoch = epoch;
+                v.calls.insert([8; 32], call);
+            })
+        };
+        let (joined_at_one, joined_later) = (joined(1), joined(2));
         for (case, before, after, mode, stands) in [
             (
                 "first policy past one, authored",
@@ -1233,6 +1252,69 @@ mod workspace_media_tests {
                 Admission,
                 false,
             ),
+            (
+                "revision one step on with a new basis, authored",
+                Some(&old),
+                Some(&rebased),
+                Authoring,
+                true,
+            ),
+            (
+                "revision raised with nothing changed, authored",
+                Some(&old),
+                Some(&second),
+                Authoring,
+                false,
+            ),
+            (
+                "revision raised with nothing changed, admitted",
+                Some(&old),
+                Some(&second),
+                Admission,
+                true,
+            ),
+            (
+                "basis changed, same revision, restored",
+                Some(&old),
+                Some(&basis),
+                Restore,
+                false,
+            ),
+            (
+                "call ended two epochs on, authored",
+                Some(&old),
+                Some(&ended_late),
+                Authoring,
+                false,
+            ),
+            (
+                "call ended two epochs on, admitted",
+                Some(&old),
+                Some(&ended_late),
+                Admission,
+                true,
+            ),
+            (
+                "a second call from epoch one, authored",
+                Some(&old),
+                Some(&joined_at_one),
+                Authoring,
+                true,
+            ),
+            (
+                "a second call from a later epoch, authored",
+                Some(&old),
+                Some(&joined_later),
+                Authoring,
+                false,
+            ),
+            (
+                "a second call from a later epoch, admitted",
+                Some(&old),
+                Some(&joined_later),
+                Admission,
+                true,
+            ),
         ] {
             let judged = validate_policy_transition(before, after, mode);
             assert_eq!(judged.is_ok(), stands, "{case}: {judged:?}");
@@ -1249,6 +1331,13 @@ mod workspace_media_tests {
         assert!(
             validate_policy_transition(Some(&old), Some(&policy()), TransitionMode::Admission)
                 .is_err()
+        );
+        let mut rebased = old.clone();
+        rebased.authorization_basis = [4; 32];
+        assert_eq!(
+            validate_policy_transition(Some(&old), Some(&rebased), TransitionMode::Authoring),
+            Err(MediaPolicyError::Exhausted),
+            "an authored change at the last revision has no next one"
         );
     }
 

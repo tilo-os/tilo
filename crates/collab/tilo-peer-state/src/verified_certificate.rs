@@ -107,11 +107,32 @@ mod tests {
             matches!(verified.current_typed(0), Err(DeviceCertError::NotYetValid)),
             "before its issue time"
         );
+        assert!(verified.current_typed(1).is_ok(), "at its issue time");
         assert_eq!(
             crate::state::CERTIFICATE_VERIFICATIONS.with(std::cell::Cell::get),
             0
         );
         assert!(VerifiedCertificate::new(certificate(), 10).is_err());
+        assert!(
+            VerifiedCertificate::new(certificate(), 0).is_err(),
+            "a certificate is not taken before its issue time"
+        );
+        assert!(
+            VerifiedCertificate::new(certificate(), 1).is_ok(),
+            "a certificate is taken at its issue time"
+        );
+        // Read as history, only the signature is verified: whether the
+        // certificate is current stays a check at each use.
+        let historical = VerifiedCertificate::historical_typed(certificate()).unwrap();
+        assert_eq!(
+            historical.current_typed(10).unwrap_err(),
+            DeviceCertError::Expired
+        );
+        assert_eq!(
+            historical.current_typed(0).unwrap_err(),
+            DeviceCertError::NotYetValid
+        );
+        assert_eq!(historical.current_typed(9).unwrap(), verified.as_ref());
     }
 
     #[test]
@@ -126,8 +147,20 @@ mod tests {
         bad_expiry.expires_at_ns = None;
         let mut bad_key = valid;
         bad_key.device_public_key[0] ^= 1;
-        for forged in [bad_signature, bad_label, bad_expiry, bad_key] {
-            assert!(VerifiedCertificate::new(forged, 9).is_err());
+        for (case, forged) in [
+            ("a changed signature", bad_signature),
+            ("a changed label", bad_label),
+            ("an expiry taken away", bad_expiry),
+            ("another device key", bad_key),
+        ] {
+            assert!(
+                VerifiedCertificate::new(forged.clone(), 9).is_err(),
+                "{case}"
+            );
+            assert!(
+                VerifiedCertificate::historical_typed(forged).is_err(),
+                "{case}, read as history"
+            );
         }
     }
 }
