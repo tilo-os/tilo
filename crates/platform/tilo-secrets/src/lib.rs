@@ -27,23 +27,16 @@
 //! | Web | AES-GCM under a non-extractable `CryptoKey`; key and ciphertext in `IndexedDB` | [`Protection::BrowserWrapped`] |
 //! | Linux, macOS with `TILO_SECRETS_DIR` | sealed owner-only files in that directory | [`Protection::LocalFile`] |
 //!
-//! [`SECRETS_DIR_ENV`] is for machines that have no keychain to unlock: a
-//! headless node or server. Every process given it keeps its secrets in that
-//! directory instead of the system store; see the `files` module.
+//! [`SECRETS_DIR_ENV`] serves machines with no keychain to unlock: every process
+//! given it keeps its secrets in that directory instead of the system store.
+//! `BrowserWrapped` does not protect against script running in the page's origin
+//! or an attacker holding the browser profile.
 //!
-//! `BrowserWrapped` encrypts stored records with non-extractable browser keys.
-//! It does not protect against script running in the page's origin or an
-//! attacker controlling the browser/profile that holds those keys.
-//!
-//! The API is async because the browser's is. Its futures are `Send` on the
-//! desktop and not in the browser, where everything runs on the page's
-//! thread; spawn them on `tilo_rt::app()`, which accepts both. Desktop code
-//! may use the
-//! `*_blocking` methods; the web answers them once the host loaded the
-//! page's secrets (`web::mirror`), and otherwise with [`Feature::Blocking`]
-//! unsupported. On Linux the Secret Service item carries the attributes
-//! `application = <app id>` and `purpose = <key>`, so an item stored earlier
-//! by `secret-tool store application <app> purpose <key>` is found.
+//! The API is async because the browser's is, and its futures are `Send` on the
+//! desktop only: spawn them on `tilo_rt::app()`, which accepts both. Desktop code
+//! may use the `*_blocking` methods; the web answers them once the host has loaded
+//! the page's secrets (`web::mirror`), and otherwise with [`Feature::Blocking`]
+//! unsupported.
 
 use std::collections::HashMap;
 use std::fmt;
