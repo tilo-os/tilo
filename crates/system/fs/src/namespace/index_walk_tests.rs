@@ -75,6 +75,52 @@ fn rebuilding_the_index_reads_each_node_document_once() {
     assert_eq!(reopened.hash_for(applied), Some(h(2)));
 }
 
+/// The walk at the sizes where a cost that is not per node would show: no node, one node, and a
+/// directory with its first file.
+#[test]
+fn a_rebuild_reads_and_indexes_exactly_the_nodes_of_the_smallest_trees() {
+    let lone_file = {
+        let mut source = Namespace::new("a").unwrap();
+        source
+            .create_file(ROOT_INO, "f", Some(&h(1)), 1, 1)
+            .unwrap();
+        source.save()
+    };
+    let rows = [
+        ("no node", Namespace::new("a").unwrap().save(), vec![]),
+        ("one file", lone_file, vec!["/f"]),
+        (
+            "a directory and its first file",
+            saved_tree(1),
+            vec!["/dir", "/dir/f0"],
+        ),
+    ];
+    for (row, saved, paths) in rows {
+        let mut reopened = Namespace::from_bytes("a", &saved).unwrap();
+        let nodes = reopened.doc.keys(&reopened.nodes).count();
+        assert_eq!(nodes, paths.len(), "{row}: nodes in the document");
+        let before = reopened.node_lookup_count();
+        reopened.rebuild_record_index();
+        let reads = reopened.node_lookup_count() - before;
+        assert_eq!(reads, nodes as u64, "{row}: node documents read");
+        let indexed: std::collections::BTreeSet<&str> = reopened
+            .record_index
+            .values()
+            .map(|record| record.path.as_str())
+            .collect();
+        assert_eq!(
+            indexed.into_iter().collect::<Vec<_>>(),
+            paths,
+            "{row}: catalogue paths"
+        );
+        assert_eq!(
+            reopened.indexed_record_count(),
+            nodes,
+            "{row}: catalogue rows"
+        );
+    }
+}
+
 #[test]
 fn a_node_under_the_reserved_root_id_keeps_the_root_record_its_own() {
     let saved = saved_tree(8);
