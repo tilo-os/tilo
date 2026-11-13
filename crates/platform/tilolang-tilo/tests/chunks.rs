@@ -471,8 +471,11 @@ pub(crate) fn fill(host: &Host, docs: &mut Docs, meta: &Meta, root: &str, n: usi
         .collect()
 }
 
+/// One board of five thousand cards, filled once as the door fills it: where its cards live and
+/// how they are read, and then what a change to a card in the last chunk writes. The first part
+/// reads the board and writes nothing, so the change meets the board as the fill left it.
 #[test]
-fn five_thousand_cards_live_in_three_chunks_in_order() {
+fn five_thousand_cards_live_in_three_chunks_in_order_and_a_change_writes_only_its_chunk() {
     let (host, mut docs, meta, root, _) = board();
     let inserted = fill(&host, &mut docs, &meta, &root, 5000);
     docs.sync(&host);
@@ -513,13 +516,8 @@ fn five_thousand_cards_live_in_three_chunks_in_order() {
         .id
         .clone();
     assert_eq!(row(2 * size, tilolang_tilo::index::TYPE), Some(card_ty));
-}
 
-#[test]
-fn a_change_to_a_card_in_the_last_chunk_writes_only_that_chunk() {
-    let (host, mut docs, meta, root, _) = board();
-    let inserted = fill(&host, &mut docs, &meta, &root, 5000);
-    docs.sync(&host);
+    // A change to a card in the last chunk writes only that chunk.
     let before = counts(&host);
 
     let card = format!("{root}/{}", inserted[4899]);
