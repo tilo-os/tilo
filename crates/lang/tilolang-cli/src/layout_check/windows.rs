@@ -123,7 +123,7 @@ fn the_catch_up_names_each_item_it_changed(window: &tilo_ui_host::UiNode) {
     nodes(content, "row", &mut rows);
     let steps: Vec<&tilo_ui_host::UiNode> = rows
         .into_iter()
-        .filter(|row| row.key.contains("~step"))
+        .filter(|row| row.key.ends_with("~step"))
         .collect();
     assert!(
         !steps.is_empty(),
@@ -2232,7 +2232,7 @@ fn a_task_two_people_changed_names_them_both_in_its_catch_up() {
     nodes(content, "row", &mut rows);
     let steps: Vec<&tilo_ui_host::UiNode> = rows
         .into_iter()
-        .filter(|row| row.key.contains("~step"))
+        .filter(|row| row.key.ends_with("~step"))
         .collect();
     assert_eq!(
         steps.len(),

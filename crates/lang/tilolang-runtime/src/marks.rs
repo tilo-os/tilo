@@ -884,6 +884,13 @@ impl Core {
         let mut line = UiNode::empty("row", key);
         line.props.insert("gap".to_owned(), Value::text("tight"));
         line.props.insert("align".to_owned(), Value::text("center"));
+        // What changed it, beside the time: it wraps rather than squeezing its faces or its names,
+        // so the time keeps its place at the line's end in a narrow window with large text.
+        let mut told = UiNode::empty("row", &format!("{key}~told"));
+        told.props.insert("gap".to_owned(), Value::text("tight"));
+        told.props.insert("align".to_owned(), Value::text("center"));
+        told.props.insert("wrap".to_owned(), Value::Bool(true));
+        told.props.insert("fill".to_owned(), Value::Float(1.0));
         // Everyone who changed it since the person looked, oldest first, each once: a record two
         // people changed shows both their faces and names them both, as the window's chip does.
         let mut changers: Vec<&str> = Vec::new();
@@ -898,7 +905,7 @@ impl Core {
                 "who".to_owned(),
                 Value::Principal(Principal::new((*who).to_owned())),
             );
-            line.children.push(face);
+            told.children.push(face);
         }
         // The line leads with the names, as history writes a sentence: name, then what they did
         // ("Scout marked it done"). A face alone does not say who.
@@ -910,7 +917,7 @@ impl Core {
         who.props
             .insert("value".to_owned(), Value::Text(self.names(&names)));
         who.props.insert("role".to_owned(), Value::text("label"));
-        line.children.push(who);
+        told.children.push(who);
         let Some(newest) = versions.last() else {
             return line;
         };
@@ -920,11 +927,10 @@ impl Core {
             Value::Text(self.version_line(newest, of, &viewer.0)),
         );
         said.props.insert("truncate".to_owned(), Value::Bool(true));
-        line.children.push(said);
+        told.children.push(said);
+        line.children.push(told);
         // The time stands at the line's end, out of the sentence's way: what they did reads
         // first, and when it happened lines up down the panel's edge.
-        line.children
-            .push(UiNode::empty("spacer", &format!("{key}~gap")));
         let mut at = UiNode::empty("ui.Time", &format!("{key}~at"));
         at.props.insert("at".to_owned(), Value::text(&newest.at));
         at.props.insert("role".to_owned(), Value::text("caption"));

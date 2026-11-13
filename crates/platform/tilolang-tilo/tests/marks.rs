@@ -614,7 +614,7 @@ fn a_day_away_opens_a_catch_up_of_a_row_per_item() {
 }
 
 /// Each row's line reads as a sentence, then when it happened at the line's end, out of its
-/// way, led by the changer's face.
+/// way, led by the changers' faces.
 #[test]
 fn a_day_aways_catch_up_puts_the_time_at_the_lines_end() {
     let (_away, _tasks, window) = a_day_away_at_today();
@@ -623,8 +623,8 @@ fn a_day_aways_catch_up_puts_the_time_at_the_lines_end() {
     find_all(&content, "row", &mut steps);
     steps.retain(|step| {
         step.children
-            .first()
-            .is_some_and(|child| child.kind == "ui.Avatar")
+            .last()
+            .is_some_and(|child| child.kind == "ui.Time")
     });
     assert_eq!(
         steps.len(),
@@ -633,29 +633,39 @@ fn a_day_aways_catch_up_puts_the_time_at_the_lines_end() {
     );
     for step in &steps {
         let kids = &step.children;
-        let said = kids
-            .iter()
-            .position(|child| child.kind == "ui.Text")
-            .unwrap_or_else(|| panic!("a step says what was done: {step:?}"));
         let at = kids
             .iter()
             .position(|child| child.kind == "ui.Time")
             .unwrap_or_else(|| panic!("a step says when: {step:?}"));
-        assert!(said < at, "what was done reads before when: {step:?}");
         assert_eq!(
             at,
             kids.len() - 1,
             "the time stands at the line's end: {step:?}"
         );
+        // What they did is the line's own group, which takes the room the time leaves: it wraps
+        // rather than squeezing the faces it opens with.
+        let told = kids
+            .first()
+            .filter(|child| child.kind == "row")
+            .unwrap_or_else(|| panic!("the sentence is its own group: {step:?}"));
         assert_eq!(
-            kids.get(at - 1).map(|child| child.kind.as_str()),
-            Some("spacer"),
-            "the sentence is kept clear of the time: {step:?}"
+            told.props.get("wrap"),
+            Some(&Value::Bool(true)),
+            "the sentence wraps rather than squeezing what it holds: {told:?}"
         );
         assert_eq!(
-            kids.first().map(|child| child.kind.as_str()),
+            told.children.first().map(|child| child.kind.as_str()),
             Some("ui.Avatar"),
-            "the changer's face leads the line: {step:?}"
+            "the changers' faces lead the line: {step:?}"
+        );
+        let said = told
+            .children
+            .iter()
+            .position(|child| child.kind == "ui.Text")
+            .unwrap_or_else(|| panic!("a step says what was done: {step:?}"));
+        assert!(
+            said > 0 && said < told.children.len() - 1,
+            "the names it opens with stand before what they did: {step:?}"
         );
     }
 }
