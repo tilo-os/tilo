@@ -444,12 +444,17 @@ mod tests {
     #[test]
     fn handles_stay_scoped_to_their_frame_when_serials_wrap() {
         let mut f = Frames::default();
-        // Two frames a round: the serials go round twice, each frame once outer and once inner.
-        for round in 0..SERIAL_RANGE.saturating_add(1) {
+        let mut outer_serials = std::collections::HashSet::new();
+        let mut inner_serials = std::collections::HashSet::new();
+        // Three frames a round, and the range is no multiple of three: in as many rounds as
+        // there are serials, every serial is an outer frame's once and an inner frame's once.
+        for round in 0..SERIAL_RANGE {
             f.push(module(), FrameKind::Pure);
+            outer_serials.insert(f.top().unwrap().serial);
             let outer = f.alloc(Value::Int(7)).unwrap();
             assert_eq!(f.get(outer).unwrap(), &Value::Int(7), "round {round}");
             f.push(module(), FrameKind::Pure);
+            inner_serials.insert(f.top().unwrap().serial);
             assert!(
                 f.get(outer).is_err(),
                 "round {round}: an outer frame's handle must not resolve"
@@ -463,7 +468,14 @@ mod tests {
             );
             assert_eq!(f.get(outer).unwrap(), &Value::Int(7), "round {round}");
             f.pop();
+            // A frame between the rounds: the next round starts on another serial.
+            f.push(module(), FrameKind::Pure);
+            f.pop();
         }
+        let every = usize::try_from(SERIAL_RANGE).unwrap();
+        assert_eq!(outer_serials.len(), every, "an outer frame of every serial");
+        assert_eq!(inner_serials.len(), every, "an inner frame of every serial");
+        assert!(inner_serials.contains(&0), "a frame of serial zero");
     }
 
     #[test]
