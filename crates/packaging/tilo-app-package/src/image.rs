@@ -354,50 +354,54 @@ mod tests {
         )
     }
 
-    #[test]
-    fn a_tree_never_writes_through_a_link() {
-        let files = collection(&[TREE_FILE, "usr/bin/bash", "usr/lib64/libc.so.6"]);
-        let mut spec = TreeSpec::default();
-        spec.executable.insert("usr/bin/bash".into());
-        spec.symlinks.insert("usr/bin/sh".into(), "bash".into());
-        spec.empty_dirs.insert("usr/share/empty".into());
-        spec.check(&files).unwrap();
+    tilo_test_env::scenario! {
+        fn a_tree_spec_checks_its_links_and_round_trips;
 
-        let mut above = spec.clone();
-        above.symlinks.insert("usr/lib64".into(), "/etc".into());
-        assert!(above.check(&files).is_err(), "a link above a payload file");
+        phase a_tree_never_writes_through_a_link;
+        {
+            let files = collection(&[TREE_FILE, "usr/bin/bash", "usr/lib64/libc.so.6"]);
+            let mut spec = TreeSpec::default();
+            spec.executable.insert("usr/bin/bash".into());
+            spec.symlinks.insert("usr/bin/sh".into(), "bash".into());
+            spec.empty_dirs.insert("usr/share/empty".into());
+            spec.check(&files).unwrap();
 
-        let mut shadow = spec.clone();
-        shadow.symlinks.insert("usr/bin/bash".into(), "sh".into());
-        assert!(shadow.check(&files).is_err(), "a link in a file's place");
+            let mut above = spec.clone();
+            above.symlinks.insert("usr/lib64".into(), "/etc".into());
+            assert!(above.check(&files).is_err(), "a link above a payload file");
 
-        let mut escape = spec.clone();
-        escape.symlinks.insert("../outside".into(), "x".into());
-        assert!(escape.check(&files).is_err(), "an unsafe link path");
+            let mut shadow = spec.clone();
+            shadow.symlinks.insert("usr/bin/bash".into(), "sh".into());
+            assert!(shadow.check(&files).is_err(), "a link in a file's place");
 
-        let mut ghost = spec.clone();
-        ghost.executable.insert("usr/bin/zsh".into());
-        assert!(
-            ghost.check(&files).is_err(),
-            "an executable that is not shipped"
-        );
+            let mut escape = spec.clone();
+            escape.symlinks.insert("../outside".into(), "x".into());
+            assert!(escape.check(&files).is_err(), "an unsafe link path");
 
-        assert!(
-            spec.check(&collection(&["usr/bin/bash"])).is_err(),
-            "the tree file must ship"
-        );
-    }
+            let mut ghost = spec.clone();
+            ghost.executable.insert("usr/bin/zsh".into());
+            assert!(
+                ghost.check(&files).is_err(),
+                "an executable that is not shipped"
+            );
 
-    #[test]
-    fn the_tree_file_round_trips() {
-        let mut spec = TreeSpec::default();
-        spec.executable.insert("usr/bin/bash".into());
-        spec.symlinks
-            .insert("usr/lib64/libz.so.1".into(), "libz.so.1.3.1".into());
-        spec.empty_dirs.insert("etc/dnf/vars".into());
-        let bytes = spec.to_bytes().unwrap();
-        assert_eq!(TreeSpec::from_bytes(&bytes).unwrap(), spec);
-        assert!(TreeSpec::from_bytes(b"surprise = 1").is_err());
+            assert!(
+                spec.check(&collection(&["usr/bin/bash"])).is_err(),
+                "the tree file must ship"
+            );
+        }
+
+        phase the_tree_file_round_trips;
+        {
+            let mut spec = TreeSpec::default();
+            spec.executable.insert("usr/bin/bash".into());
+            spec.symlinks
+                .insert("usr/lib64/libz.so.1".into(), "libz.so.1.3.1".into());
+            spec.empty_dirs.insert("etc/dnf/vars".into());
+            let bytes = spec.to_bytes().unwrap();
+            assert_eq!(TreeSpec::from_bytes(&bytes).unwrap(), spec);
+            assert!(TreeSpec::from_bytes(b"surprise = 1").is_err());
+        }
     }
 
     #[test]

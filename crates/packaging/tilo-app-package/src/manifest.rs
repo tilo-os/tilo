@@ -1245,9 +1245,12 @@ impl Manifest {
 mod accessibility_tests {
     use super::*;
 
-    #[test]
-    fn atspi_acceptance_survives_the_signed_manifest_round_trip() {
-        let source = r#"
+    tilo_test_env::scenario! {
+        fn optional_declarations_survive_the_signed_manifest_round_trip;
+
+        phase atspi_acceptance_survives_the_signed_manifest_round_trip;
+        {
+            let source = r#"
 [package]
 id = "so.tilo.example"
 version = "0.1.0"
@@ -1275,16 +1278,16 @@ required = ["Open"]
 action = "Open"
 after_action = ["Close"]
 "#;
-        let manifest = Manifest::from_toml_str(source).unwrap();
-        let encoded = manifest.to_toml_string().unwrap();
-        let recovered = Manifest::from_toml_str(&encoded).unwrap();
-        assert_eq!(recovered.accessibility, manifest.accessibility);
-        assert!(encoded.contains("[accessibility.atspi_acceptance]"));
-    }
+            let manifest = Manifest::from_toml_str(source).unwrap();
+            let encoded = manifest.to_toml_string().unwrap();
+            let recovered = Manifest::from_toml_str(&encoded).unwrap();
+            assert_eq!(recovered.accessibility, manifest.accessibility);
+            assert!(encoded.contains("[accessibility.atspi_acceptance]"));
+        }
 
-    #[test]
-    fn declared_action_access_survives_the_signed_manifest_round_trip() {
-        let bare = r#"
+        phase declared_action_access_survives_the_signed_manifest_round_trip;
+        {
+            let bare = r#"
 [package]
 id = "so.tilo.example"
 version = "0.1.0"
@@ -1302,26 +1305,26 @@ landlock = "strict"
 [sandbox.net]
 mode = "off"
 "#;
-        let undeclared = Manifest::from_toml_str(bare).unwrap();
-        assert_eq!(undeclared.actions, ActionAccess::default());
-        assert!(!undeclared.to_toml_string().unwrap().contains("[actions]"));
+            let undeclared = Manifest::from_toml_str(bare).unwrap();
+            assert_eq!(undeclared.actions, ActionAccess::default());
+            assert!(!undeclared.to_toml_string().unwrap().contains("[actions]"));
 
-        let declared =
-            Manifest::from_toml_str(&format!("{bare}\n[actions]\nquery = true\n")).unwrap();
-        assert_eq!(
-            declared.actions,
-            ActionAccess {
-                query: true,
-                invoke: false
-            }
-        );
-        let recovered = Manifest::from_toml_str(&declared.to_toml_string().unwrap()).unwrap();
-        assert_eq!(recovered.actions, declared.actions);
-    }
+            let declared =
+                Manifest::from_toml_str(&format!("{bare}\n[actions]\nquery = true\n")).unwrap();
+            assert_eq!(
+                declared.actions,
+                ActionAccess {
+                    query: true,
+                    invoke: false
+                }
+            );
+            let recovered = Manifest::from_toml_str(&declared.to_toml_string().unwrap()).unwrap();
+            assert_eq!(recovered.actions, declared.actions);
+        }
 
-    #[test]
-    fn declared_resource_kinds_survive_the_signed_manifest_round_trip() {
-        let bare = r#"
+        phase declared_resource_kinds_survive_the_signed_manifest_round_trip;
+        {
+            let bare = r#"
 [package]
 id = "so.tilo.example"
 version = "0.1.0"
@@ -1339,25 +1342,25 @@ landlock = "strict"
 [sandbox.net]
 mode = "off"
 "#;
-        // A manifest from before the field declares no kinds and encodes,
-        // so signs, exactly as it did.
-        let undeclared = Manifest::from_toml_str(bare).unwrap();
-        assert!(undeclared.resources.kinds.is_empty());
-        let encoded = undeclared.to_toml_string().unwrap();
-        assert!(!encoded.contains("[resources]"));
+            // A manifest from before the field declares no kinds and encodes,
+            // so signs, exactly as it did.
+            let undeclared = Manifest::from_toml_str(bare).unwrap();
+            assert!(undeclared.resources.kinds.is_empty());
+            let encoded = undeclared.to_toml_string().unwrap();
+            assert!(!encoded.contains("[resources]"));
 
-        let declared = Manifest::from_toml_str(&format!(
-            "{bare}\n[resources]\nkinds = [\"example.note\", \"example.todo\"]\n"
-        ))
-        .unwrap();
-        assert_eq!(declared.resources.kinds, ["example.note", "example.todo"]);
-        let recovered = Manifest::from_toml_str(&declared.to_toml_string().unwrap()).unwrap();
-        assert_eq!(recovered.resources, declared.resources);
-    }
+            let declared = Manifest::from_toml_str(&format!(
+                "{bare}\n[resources]\nkinds = [\"example.note\", \"example.todo\"]\n"
+            ))
+            .unwrap();
+            assert_eq!(declared.resources.kinds, ["example.note", "example.todo"]);
+            let recovered = Manifest::from_toml_str(&declared.to_toml_string().unwrap()).unwrap();
+            assert_eq!(recovered.resources, declared.resources);
+        }
 
-    #[test]
-    fn offered_actions_survive_the_signed_manifest_round_trip() {
-        let bare = r#"
+        phase offered_actions_survive_the_signed_manifest_round_trip;
+        {
+            let bare = r#"
 [package]
 id = "so.tilo.example"
 version = "0.1.0"
@@ -1375,47 +1378,48 @@ landlock = "strict"
 [sandbox.net]
 mode = "off"
 "#;
-        // A manifest from before the table offers nothing and encodes, so
-        // signs, exactly as it did.
-        let undeclared = Manifest::from_toml_str(bare).unwrap();
-        assert!(undeclared.offers.is_empty());
-        assert!(!undeclared.to_toml_string().unwrap().contains("offers"));
+            // A manifest from before the table offers nothing and encodes, so
+            // signs, exactly as it did.
+            let undeclared = Manifest::from_toml_str(bare).unwrap();
+            assert!(undeclared.offers.is_empty());
+            assert!(!undeclared.to_toml_string().unwrap().contains("offers"));
 
-        let declared = Manifest::from_toml_str(&format!(
-            "{bare}\n[[offers]]\nresource = \"example.list\"\naction = \"show-done\"\n\
+            let declared = Manifest::from_toml_str(&format!(
+                "{bare}\n[[offers]]\nresource = \"example.list\"\naction = \"show-done\"\n\
              label = \"Show done\"\nkind = \"read\"\noperation = \"view\"\n\
              [[offers]]\nresource = \"example.list\"\nresource-kind = \"example.todo\"\n\
              action = \"clear-done\"\nlabel = \"Clear done\"\nconfirm = true\n"
-        ))
-        .unwrap();
-        assert_eq!(
-            declared.offers,
-            [
-                OfferedAction {
-                    resource: "example.list".into(),
-                    resource_kind: None,
-                    action: "show-done".into(),
-                    label: "Show done".into(),
-                    description: None,
-                    kind: OfferKind::Read,
-                    operation: OfferOperation::View,
-                    confirm: false,
-                },
-                OfferedAction {
-                    resource: "example.list".into(),
-                    resource_kind: Some("example.todo".into()),
-                    action: "clear-done".into(),
-                    label: "Clear done".into(),
-                    description: None,
-                    kind: OfferKind::Undoable,
-                    operation: OfferOperation::Effect,
-                    confirm: true,
-                },
-            ]
-        );
-        assert_eq!(declared.offers[0].resource_kind(), "example.list");
-        let recovered = Manifest::from_toml_str(&declared.to_toml_string().unwrap()).unwrap();
-        assert_eq!(recovered.offers, declared.offers);
+            ))
+            .unwrap();
+            assert_eq!(
+                declared.offers,
+                [
+                    OfferedAction {
+                        resource: "example.list".into(),
+                        resource_kind: None,
+                        action: "show-done".into(),
+                        label: "Show done".into(),
+                        description: None,
+                        kind: OfferKind::Read,
+                        operation: OfferOperation::View,
+                        confirm: false,
+                    },
+                    OfferedAction {
+                        resource: "example.list".into(),
+                        resource_kind: Some("example.todo".into()),
+                        action: "clear-done".into(),
+                        label: "Clear done".into(),
+                        description: None,
+                        kind: OfferKind::Undoable,
+                        operation: OfferOperation::Effect,
+                        confirm: true,
+                    },
+                ]
+            );
+            assert_eq!(declared.offers[0].resource_kind(), "example.list");
+            let recovered = Manifest::from_toml_str(&declared.to_toml_string().unwrap()).unwrap();
+            assert_eq!(recovered.offers, declared.offers);
+        }
     }
 }
 

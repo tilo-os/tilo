@@ -290,9 +290,10 @@ pub enum CollectionDecodeError {
 mod tests {
     use super::*;
 
-    #[test]
-    fn blob_maps_hash_store_and_encode_deterministically() {
-        // phase: hashing_a_reader_matches_hashing_the_bytes
+    tilo_test_env::scenario! {
+        fn blob_maps_hash_store_and_encode_deterministically;
+
+        phase hashing_a_reader_matches_hashing_the_bytes;
         {
             let bytes = b"hello payload".to_vec();
             let (hash, len) = BlobHash::of_reader(&mut bytes.as_slice()).unwrap();
@@ -301,7 +302,8 @@ mod tests {
             assert_eq!(BlobHash::from_hex(&hash.to_hex()), Some(hash));
             assert_eq!(BlobHash::from_hex("zz"), None);
         }
-        // phase: a_map_is_both_a_source_and_a_sink
+
+        phase a_map_is_both_a_source_and_a_sink;
         {
             let mut map = BTreeMap::new();
             let hash = BlobHash::of(b"abc");
@@ -313,7 +315,8 @@ mod tests {
             assert_eq!(out, b"abc");
             assert!(map.open_blob(&BlobHash([0; 32])).unwrap().is_none());
         }
-        // phase: collection_encoding_is_deterministic
+
+        phase collection_encoding_is_deterministic;
         {
             let c = Collection::from_entries([
                 ("b.txt".into(), BlobHash([2u8; 32])),

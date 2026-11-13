@@ -647,185 +647,193 @@ type = "gui"
         })
     }
 
-    #[test]
-    fn split_writes_whole_and_chunked_objects_that_reassemble() {
-        let big = noise(10_000, 1);
-        // Two equal slices in one blob: the chunk is stored once.
-        let mut repeated = vec![7u8; 3 * 1024];
-        repeated.extend_from_slice(&noise(100, 2));
-        let small = b"#!/bin/true\n".to_vec();
-        let (bytes, meta) = full_tapp(&[
-            ("bin/app", small.clone()),
-            ("lib/big.so", big.clone()),
-            ("share/repeated", repeated.clone()),
-        ]);
-        let dir = tempfile::tempdir().unwrap();
-        let split = split_with_chunk_bytes(bytes.as_slice(), dir.path(), 1024).unwrap();
-        assert_eq!(split.meta, meta);
-        assert_eq!(split.whole_blobs, 1);
-        assert_eq!(split.chunked_blobs, 2);
-        // 10 distinct chunks of `big`, then one zero-like run plus a tail.
-        assert_eq!(split.chunks, 10 + 2);
-        let objects = objects(dir.path());
-        assert!(objects.contains_key(&blob_object_name(&BlobHash::of(&small))));
-        for blob in [&big, &repeated] {
-            let hash = BlobHash::of(blob);
-            assert!(!objects.contains_key(&blob_object_name(&hash)));
-            let list = ChunkList::decode(&objects[&chunk_list_name(&hash)], &hash).unwrap();
-            assert_eq!(list.len, blob.len() as u64);
-            assert_eq!(list.chunk_bytes, 1024);
-            let mut out = Vec::new();
-            reader_for(list, &objects).read_to_end(&mut out).unwrap();
-            assert_eq!(&out, blob);
-        }
-        let dir_source = ObjectDir::new(dir.path());
-        for blob in [&big, &repeated, &small] {
-            let hash = BlobHash::of(blob);
-            assert_eq!(
-                dir_source.verified_len(&hash).unwrap(),
-                Some(blob.len() as u64)
-            );
-        }
-        assert_eq!(
-            dir_source.verified_len(&BlobHash::of(b"absent")).unwrap(),
-            None
-        );
-        let unpacked = tempfile::tempdir().unwrap();
-        crate::unpack(&split.meta, &dir_source, &unpacked.path().join("tree")).unwrap();
-        assert_eq!(
-            std::fs::read(unpacked.path().join("tree/lib/big.so")).unwrap(),
-            big
-        );
-        let list_text =
-            String::from_utf8(objects[&chunk_list_name(&BlobHash::of(&big))].clone()).unwrap();
-        assert!(list_text.starts_with(&format!(
-            "{{\"format\":2,\"blob\":\"{}\",\"len\":10000,\"chunk_bytes\":1024,\"chunks\":[{{\"hash\":\"",
-            BlobHash::of(&big)
-        )));
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn a_full_package_splits_into_objects_that_reassemble_or_fail_closed;
 
-    #[test]
-    fn the_real_chunk_size_splits_a_blob_just_over_it() {
-        let blob = noise(usize::try_from(CHUNK_BYTES).unwrap() + 3, 9);
-        let (bytes, _meta) = full_tapp(&[("bin/app", b"x".to_vec()), ("lib/big", blob.clone())]);
-        let dir = tempfile::tempdir().unwrap();
-        let split = split(bytes.as_slice(), dir.path()).unwrap();
-        assert_eq!(
-            (split.whole_blobs, split.chunked_blobs, split.chunks),
-            (1, 1, 2)
-        );
-        let hash = BlobHash::of(&blob);
-        let objects = objects(dir.path());
-        let list = ChunkList::decode(&objects[&chunk_list_name(&hash)], &hash).unwrap();
-        assert_eq!(list.chunk_bytes, CHUNK_BYTES);
-        assert_eq!(
-            list.chunks
-                .iter()
-                .map(|chunk| chunk.len)
-                .collect::<Vec<_>>(),
-            [CHUNK_BYTES, 3]
-        );
-        let mut out = Vec::new();
-        reader_for(list, &objects).read_to_end(&mut out).unwrap();
-        assert_eq!(BlobHash::of(&out), hash);
-    }
-
-    #[test]
-    fn reassembly_fails_closed_on_tampered_reordered_or_truncated_chunks() {
-        let blob = noise(4096 + 100, 3);
-        let hash = BlobHash::of(&blob);
-        let (bytes, _meta) = full_tapp(&[("bin/app", b"x".to_vec()), ("lib/big", blob.clone())]);
-        let dir = tempfile::tempdir().unwrap();
-        split_with_chunk_bytes(bytes.as_slice(), dir.path(), 1024).unwrap();
-        let objects = objects(dir.path());
-        let list = ChunkList::decode(&objects[&chunk_list_name(&hash)], &hash).unwrap();
-
-        // phase: a_tampered_chunk_is_refused_before_its_bytes_are_released
+        phase split_writes_whole_and_chunked_objects_that_reassemble;
         {
-            let mut tampered = objects.clone();
-            let name = blob_object_name(&list.chunks[2].hash);
-            tampered.get_mut(&name).unwrap()[5] ^= 1;
-            let mut reader = reader_for(list.clone(), &tampered);
-            let mut out = Vec::new();
-            let error = reader.read_to_end(&mut out).unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-            assert_eq!(out.len(), 2 * 1024, "only verified chunks were released");
-        }
-        // phase: a_reordered_list_never_completes_the_blob
-        {
-            let mut swapped = list.clone();
-            swapped.chunks.swap(0, 1);
-            swapped.check(&hash).unwrap();
-            let mut reader = reader_for(swapped, &objects);
-            let mut out = Vec::new();
-            let error = reader.read_to_end(&mut out).unwrap_err();
-            assert!(error.to_string().contains("do not join"), "{error}");
-            assert!(out.len() < blob.len(), "the final chunk is held back");
-        }
-        // phase: a_list_for_another_blob_or_with_bad_lengths_is_refused
-        {
-            let other = BlobHash::of(b"other");
-            assert!(ChunkList::decode(&objects[&chunk_list_name(&hash)], &other).is_err());
-            let mut short = list.clone();
-            short.chunks.pop();
-            assert!(short.check(&hash).is_err());
-            let mut uneven = list.clone();
-            uneven.chunks[0].len = 1000;
-            uneven.chunks[4].len = 124;
-            assert!(uneven.check(&hash).is_err());
-            let zero = ChunkList::new(list.blob, list.len, 0, list.chunks.clone());
-            assert!(zero.check(&hash).is_err());
-            assert!(ChunkList::decode(b"{\"format\":1}", &hash).is_err());
-            let upper = std::str::from_utf8(&objects[&chunk_list_name(&hash)])
-                .unwrap()
-                .replacen(&hash.to_hex(), &hash.to_hex().to_ascii_uppercase(), 1);
-            assert!(ChunkList::decode(upper.as_bytes(), &hash).is_err());
-        }
-        // phase: a_truncated_or_overlong_chunk_is_refused
-        {
-            let mut truncated = objects.clone();
-            truncated
-                .get_mut(&blob_object_name(&list.chunks[4].hash))
-                .unwrap()
-                .pop();
-            let mut out = Vec::new();
-            assert!(
-                reader_for(list.clone(), &truncated)
-                    .read_to_end(&mut out)
-                    .is_err()
-            );
-            let mut assembly = Reassembly::new(list.clone());
-            assert!(matches!(
-                assembly.update(&[0; 1025]),
-                Err(ChunkError::ChunkTooLong { .. })
-            ));
-        }
-        // phase: verified_chunks_stream_into_a_reassembly_piecewise
-        {
-            let mut assembly = Reassembly::new(list.clone());
-            for (index, chunk) in list.chunks.iter().enumerate() {
-                let bytes = &objects[&blob_object_name(&chunk.hash)];
-                let (head, tail) = bytes.split_at(bytes.len() / 2);
-                assembly.update(head).unwrap();
-                assembly.update(tail).unwrap();
+            let big = noise(10_000, 1);
+            // Two equal slices in one blob: the chunk is stored once.
+            let mut repeated = vec![7u8; 3 * 1024];
+            repeated.extend_from_slice(&noise(100, 2));
+            let small = b"#!/bin/true\n".to_vec();
+            let (bytes, meta) = full_tapp(&[
+                ("bin/app", small.clone()),
+                ("lib/big.so", big.clone()),
+                ("share/repeated", repeated.clone()),
+            ]);
+            let dir = tempfile::tempdir().unwrap();
+            let split = split_with_chunk_bytes(bytes.as_slice(), dir.path(), 1024).unwrap();
+            assert_eq!(split.meta, meta);
+            assert_eq!(split.whole_blobs, 1);
+            assert_eq!(split.chunked_blobs, 2);
+            // 10 distinct chunks of `big`, then one zero-like run plus a tail.
+            assert_eq!(split.chunks, 10 + 2);
+            let objects = objects(dir.path());
+            assert!(objects.contains_key(&blob_object_name(&BlobHash::of(&small))));
+            for blob in [&big, &repeated] {
+                let hash = BlobHash::of(blob);
+                assert!(!objects.contains_key(&blob_object_name(&hash)));
+                let list = ChunkList::decode(&objects[&chunk_list_name(&hash)], &hash).unwrap();
+                assert_eq!(list.len, blob.len() as u64);
+                assert_eq!(list.chunk_bytes, 1024);
+                let mut out = Vec::new();
+                reader_for(list, &objects).read_to_end(&mut out).unwrap();
+                assert_eq!(&out, blob);
+            }
+            let dir_source = ObjectDir::new(dir.path());
+            for blob in [&big, &repeated, &small] {
+                let hash = BlobHash::of(blob);
                 assert_eq!(
-                    assembly.finish_chunk().unwrap(),
-                    index + 1 == list.chunks.len()
+                    dir_source.verified_len(&hash).unwrap(),
+                    Some(blob.len() as u64)
                 );
             }
-            assert!(assembly.is_complete());
+            assert_eq!(
+                dir_source.verified_len(&BlobHash::of(b"absent")).unwrap(),
+                None
+            );
+            let unpacked = tempfile::tempdir().unwrap();
+            crate::unpack(&split.meta, &dir_source, &unpacked.path().join("tree")).unwrap();
+            assert_eq!(
+                std::fs::read(unpacked.path().join("tree/lib/big.so")).unwrap(),
+                big
+            );
+            let list_text =
+                String::from_utf8(objects[&chunk_list_name(&BlobHash::of(&big))].clone()).unwrap();
+            assert!(list_text.starts_with(&format!(
+                "{{\"format\":2,\"blob\":\"{}\",\"len\":10000,\"chunk_bytes\":1024,\"chunks\":[{{\"hash\":\"",
+                BlobHash::of(&big)
+            )));
         }
-    }
 
-    #[test]
-    fn split_refuses_a_thin_package() {
-        let (bytes, meta) = full_tapp(&[("bin/app", b"x".to_vec())]);
-        drop(bytes);
-        let thin = crate::tapp::to_bytes(&meta, None).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        assert!(matches!(
-            split(thin.as_slice(), dir.path()),
-            Err(SplitError::NotFull(_))
-        ));
+        phase the_real_chunk_size_splits_a_blob_just_over_it;
+        {
+            let blob = noise(usize::try_from(CHUNK_BYTES).unwrap() + 3, 9);
+            let (bytes, _meta) = full_tapp(&[("bin/app", b"x".to_vec()), ("lib/big", blob.clone())]);
+            let dir = tempfile::tempdir().unwrap();
+            let split = split(bytes.as_slice(), dir.path()).unwrap();
+            assert_eq!(
+                (split.whole_blobs, split.chunked_blobs, split.chunks),
+                (1, 1, 2)
+            );
+            let hash = BlobHash::of(&blob);
+            let objects = objects(dir.path());
+            let list = ChunkList::decode(&objects[&chunk_list_name(&hash)], &hash).unwrap();
+            assert_eq!(list.chunk_bytes, CHUNK_BYTES);
+            assert_eq!(
+                list.chunks
+                    .iter()
+                    .map(|chunk| chunk.len)
+                    .collect::<Vec<_>>(),
+                [CHUNK_BYTES, 3]
+            );
+            let mut out = Vec::new();
+            reader_for(list, &objects).read_to_end(&mut out).unwrap();
+            assert_eq!(BlobHash::of(&out), hash);
+        }
+
+        phase reassembly_fails_closed_on_tampered_reordered_or_truncated_chunks;
+        {
+            let blob = noise(4096 + 100, 3);
+            let hash = BlobHash::of(&blob);
+            let (bytes, _meta) = full_tapp(&[("bin/app", b"x".to_vec()), ("lib/big", blob.clone())]);
+            let dir = tempfile::tempdir().unwrap();
+            split_with_chunk_bytes(bytes.as_slice(), dir.path(), 1024).unwrap();
+            let objects = objects(dir.path());
+            let list = ChunkList::decode(&objects[&chunk_list_name(&hash)], &hash).unwrap();
+
+            // phase: a_tampered_chunk_is_refused_before_its_bytes_are_released
+            {
+                let mut tampered = objects.clone();
+                let name = blob_object_name(&list.chunks[2].hash);
+                tampered.get_mut(&name).unwrap()[5] ^= 1;
+                let mut reader = reader_for(list.clone(), &tampered);
+                let mut out = Vec::new();
+                let error = reader.read_to_end(&mut out).unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                assert_eq!(out.len(), 2 * 1024, "only verified chunks were released");
+            }
+            // phase: a_reordered_list_never_completes_the_blob
+            {
+                let mut swapped = list.clone();
+                swapped.chunks.swap(0, 1);
+                swapped.check(&hash).unwrap();
+                let mut reader = reader_for(swapped, &objects);
+                let mut out = Vec::new();
+                let error = reader.read_to_end(&mut out).unwrap_err();
+                assert!(error.to_string().contains("do not join"), "{error}");
+                assert!(out.len() < blob.len(), "the final chunk is held back");
+            }
+            // phase: a_list_for_another_blob_or_with_bad_lengths_is_refused
+            {
+                let other = BlobHash::of(b"other");
+                assert!(ChunkList::decode(&objects[&chunk_list_name(&hash)], &other).is_err());
+                let mut short = list.clone();
+                short.chunks.pop();
+                assert!(short.check(&hash).is_err());
+                let mut uneven = list.clone();
+                uneven.chunks[0].len = 1000;
+                uneven.chunks[4].len = 124;
+                assert!(uneven.check(&hash).is_err());
+                let zero = ChunkList::new(list.blob, list.len, 0, list.chunks.clone());
+                assert!(zero.check(&hash).is_err());
+                assert!(ChunkList::decode(b"{\"format\":1}", &hash).is_err());
+                let upper = std::str::from_utf8(&objects[&chunk_list_name(&hash)])
+                    .unwrap()
+                    .replacen(&hash.to_hex(), &hash.to_hex().to_ascii_uppercase(), 1);
+                assert!(ChunkList::decode(upper.as_bytes(), &hash).is_err());
+            }
+            // phase: a_truncated_or_overlong_chunk_is_refused
+            {
+                let mut truncated = objects.clone();
+                truncated
+                    .get_mut(&blob_object_name(&list.chunks[4].hash))
+                    .unwrap()
+                    .pop();
+                let mut out = Vec::new();
+                assert!(
+                    reader_for(list.clone(), &truncated)
+                        .read_to_end(&mut out)
+                        .is_err()
+                );
+                let mut assembly = Reassembly::new(list.clone());
+                assert!(matches!(
+                    assembly.update(&[0; 1025]),
+                    Err(ChunkError::ChunkTooLong { .. })
+                ));
+            }
+            // phase: verified_chunks_stream_into_a_reassembly_piecewise
+            {
+                let mut assembly = Reassembly::new(list.clone());
+                for (index, chunk) in list.chunks.iter().enumerate() {
+                    let bytes = &objects[&blob_object_name(&chunk.hash)];
+                    let (head, tail) = bytes.split_at(bytes.len() / 2);
+                    assembly.update(head).unwrap();
+                    assembly.update(tail).unwrap();
+                    assert_eq!(
+                        assembly.finish_chunk().unwrap(),
+                        index + 1 == list.chunks.len()
+                    );
+                }
+                assert!(assembly.is_complete());
+            }
+        }
+
+        phase split_refuses_a_thin_package;
+        {
+            let (bytes, meta) = full_tapp(&[("bin/app", b"x".to_vec())]);
+            drop(bytes);
+            let thin = crate::tapp::to_bytes(&meta, None).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            assert!(matches!(
+                split(thin.as_slice(), dir.path()),
+                Err(SplitError::NotFull(_))
+            ));
+        }
     }
 }

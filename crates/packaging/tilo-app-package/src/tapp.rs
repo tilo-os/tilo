@@ -422,88 +422,16 @@ type = "gui"
         (dir, packed)
     }
 
-    #[test]
-    fn tapp_archives_carry_verified_blobs_and_fail_closed() {
-        // phase: a_full_archive_carries_each_distinct_blob_once
-        {
-            let (_dir, packed) = packed();
-            let bytes = to_bytes(&packed.meta, Some(&packed)).unwrap();
-            let mut blobs = BTreeMap::new();
-            let tapp = read(bytes.as_slice(), &mut blobs).unwrap();
-            assert_eq!(tapp.meta, packed.meta);
-            assert!(tapp.is_complete());
-            assert_eq!(blobs.len(), 2, "two files share one blob");
-            assert_eq!(tapp.carried.values().sum::<u64>(), 50_005);
-        }
-        // phase: a_thin_archive_is_metadata_only
-        {
-            let (_dir, packed) = packed();
-            let thin = to_bytes(&packed.meta, None).unwrap();
-            let full = to_bytes(&packed.meta, Some(&packed)).unwrap();
-            assert!(
-                thin.len() < 8 * 1024,
-                "thin archive is {} bytes",
-                thin.len()
-            );
-            assert!(full.len() > 50_000);
-            let tapp = read(thin.as_slice(), &mut DiscardBlobs).unwrap();
-            assert_eq!(tapp.meta, packed.meta);
-            assert_eq!(tapp.missing().len(), 2);
-        }
-        // phase: a_sink_can_refuse_on_the_metadata_before_any_blob
-        {
-            struct Refuse {
-                blobs: usize,
-            }
-            impl BlobSink for Refuse {
-                fn metadata(&mut self, _meta: &PackageMeta) -> io::Result<()> {
-                    Err(io::Error::new(io::ErrorKind::PermissionDenied, "untrusted"))
-                }
-                fn accept(&mut self, _: &BlobHash, _: u64, _: &mut dyn Read) -> io::Result<()> {
-                    self.blobs += 1;
-                    Ok(())
-                }
-            }
-            let (_dir, packed) = packed();
-            let bytes = to_bytes(&packed.meta, Some(&packed)).unwrap();
-            let mut sink = Refuse { blobs: 0 };
-            assert!(read(bytes.as_slice(), &mut sink).is_err());
-            assert_eq!(sink.blobs, 0, "no payload reaches a sink that refused");
-        }
-        // phase: a_blob_that_does_not_match_its_name_is_refused
-        {
-            let (_dir, packed) = packed();
-            let mut bytes = to_bytes(&packed.meta, Some(&packed)).unwrap();
-            // The README's five bytes are unique in the archive; flip one.
-            let at = bytes
-                .windows(5)
-                .rposition(|window| window == b"hello")
-                .unwrap();
-            bytes[at] = b'j';
-            let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
-            assert!(matches!(error, TappError::BlobHashMismatch(_)), "{error}");
-        }
-        // phase: a_blob_before_the_metadata_is_out_of_order
-        {
-            let mut tar = tar::Builder::new(Vec::new());
-            append(
-                &mut tar,
-                &format!("{BLOB_PREFIX}{}", BlobHash::of(b"x")),
-                1,
-                &b"x"[..],
-            )
-            .unwrap();
-            let bytes = tar.into_inner().unwrap();
-            let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
-            assert!(matches!(error, TappError::MetadataAfterBlobs(_)), "{error}");
-        }
-    }
+    tilo_test_env::scenario! {
+        /// An archive is read at the format it names, when that is one a device
+        /// reads, and otherwise refused saying what to do.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn tapp_archives_are_read_or_refused_by_their_format;
 
-    /// An archive is read at the format it names, when that is one a device
-    /// reads, and otherwise refused saying what to do.
-    #[test]
-    fn tapp_archives_are_read_or_refused_by_their_format() {
-        // phase: a_newer_format_fails_closed_and_says_to_update
+        phase a_newer_format_fails_closed_and_says_to_update;
         {
             let (_dir, packed) = packed();
             let mut bytes = to_bytes(&packed.meta, None).unwrap();
@@ -517,7 +445,8 @@ type = "gui"
             assert!(matches!(error, TappError::UnsupportedFormat(3)), "{error}");
             assert!(error.to_string().contains("update Tilo"), "{error}");
         }
-        // phase: a_full_archive_of_another_format_says_so
+
+        phase a_full_archive_of_another_format_says_so;
         // A package of another format carrying its blobs, in the right
         // order, was reported as "metadata must precede payload blobs".
         {
@@ -538,7 +467,8 @@ type = "gui"
                 "{error}"
             );
         }
-        // phase: an_app_at_an_earlier_format_is_read
+
+        phase an_app_at_an_earlier_format_is_read;
         // The store published every app at format 1; format 2 changed only
         // the catalogue, so such an app verifies and installs as it is.
         {
@@ -557,9 +487,95 @@ type = "gui"
         }
     }
 
-    #[test]
-    fn empty_input_is_refused_without_a_panic() {
-        assert!(read(&[][..], &mut DiscardBlobs).is_err());
-        assert!(crate::SignedRoot::decode(&[]).is_err());
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn tapp_archives_carry_verified_blobs_and_fail_closed;
+
+        phase a_full_archive_carries_each_distinct_blob_once;
+        {
+            let (_dir, packed) = packed();
+            let bytes = to_bytes(&packed.meta, Some(&packed)).unwrap();
+            let mut blobs = BTreeMap::new();
+            let tapp = read(bytes.as_slice(), &mut blobs).unwrap();
+            assert_eq!(tapp.meta, packed.meta);
+            assert!(tapp.is_complete());
+            assert_eq!(blobs.len(), 2, "two files share one blob");
+            assert_eq!(tapp.carried.values().sum::<u64>(), 50_005);
+        }
+
+        phase a_thin_archive_is_metadata_only;
+        {
+            let (_dir, packed) = packed();
+            let thin = to_bytes(&packed.meta, None).unwrap();
+            let full = to_bytes(&packed.meta, Some(&packed)).unwrap();
+            assert!(
+                thin.len() < 8 * 1024,
+                "thin archive is {} bytes",
+                thin.len()
+            );
+            assert!(full.len() > 50_000);
+            let tapp = read(thin.as_slice(), &mut DiscardBlobs).unwrap();
+            assert_eq!(tapp.meta, packed.meta);
+            assert_eq!(tapp.missing().len(), 2);
+        }
+
+        phase a_sink_can_refuse_on_the_metadata_before_any_blob;
+        {
+            struct Refuse {
+                blobs: usize,
+            }
+            impl BlobSink for Refuse {
+                fn metadata(&mut self, _meta: &PackageMeta) -> io::Result<()> {
+                    Err(io::Error::new(io::ErrorKind::PermissionDenied, "untrusted"))
+                }
+                fn accept(&mut self, _: &BlobHash, _: u64, _: &mut dyn Read) -> io::Result<()> {
+                    self.blobs += 1;
+                    Ok(())
+                }
+            }
+            let (_dir, packed) = packed();
+            let bytes = to_bytes(&packed.meta, Some(&packed)).unwrap();
+            let mut sink = Refuse { blobs: 0 };
+            assert!(read(bytes.as_slice(), &mut sink).is_err());
+            assert_eq!(sink.blobs, 0, "no payload reaches a sink that refused");
+        }
+
+        phase a_blob_that_does_not_match_its_name_is_refused;
+        {
+            let (_dir, packed) = packed();
+            let mut bytes = to_bytes(&packed.meta, Some(&packed)).unwrap();
+            // The README's five bytes are unique in the archive; flip one.
+            let at = bytes
+                .windows(5)
+                .rposition(|window| window == b"hello")
+                .unwrap();
+            bytes[at] = b'j';
+            let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
+            assert!(matches!(error, TappError::BlobHashMismatch(_)), "{error}");
+        }
+
+        phase a_blob_before_the_metadata_is_out_of_order;
+        {
+            let mut tar = tar::Builder::new(Vec::new());
+            append(
+                &mut tar,
+                &format!("{BLOB_PREFIX}{}", BlobHash::of(b"x")),
+                1,
+                &b"x"[..],
+            )
+            .unwrap();
+            let bytes = tar.into_inner().unwrap();
+            let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
+            assert!(matches!(error, TappError::MetadataAfterBlobs(_)), "{error}");
+        }
+
+        phase empty_input_is_refused_without_a_panic;
+        {
+            assert!(read(&[][..], &mut DiscardBlobs).is_err());
+            assert!(crate::SignedRoot::decode(&[]).is_err());
+        }
     }
 }

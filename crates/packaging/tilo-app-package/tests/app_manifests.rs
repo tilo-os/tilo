@@ -71,266 +71,274 @@ fn load(app_dir: &Path) -> Manifest {
         .unwrap_or_else(|e| panic!("{} does not decode: {e}", path.display()))
 }
 
-#[test]
-fn every_shipped_manifest_exists_validates_and_round_trips() {
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "the lint exempts a test function's body, not the closure a phase is"
+    )]
+    fn the_shipped_fleets_manifests_validate_and_declare_consistent_metadata_and_policy;
+
+    phase every_shipped_manifest_exists_validates_and_round_trips;
     {
-        let missing: Vec<String> = app_dirs()
-            .iter()
-            .filter(|d| !manifest_path(d).is_file())
-            .map(|d| d.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "these app crates have no tilo-app.toml and therefore cannot be \
+        {
+            let missing: Vec<String> = app_dirs()
+                .iter()
+                .filter(|d| !manifest_path(d).is_file())
+                .map(|d| d.file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+            assert!(
+                missing.is_empty(),
+                "these app crates have no tilo-app.toml and therefore cannot be \
          packed, installed or launched: {missing:?}"
-        );
-    }
-    {
-        for dir in app_dirs() {
-            let m = load(&dir);
-            validate_manifest(&m)
-                .unwrap_or_else(|e| panic!("{} fails validation: {e}", dir.display()));
-        }
-    }
-    {
-        for dir in app_dirs() {
-            let m = load(&dir);
-            let re = m
-                .to_toml_string()
-                .unwrap_or_else(|e| panic!("{} does not re-encode: {e}", dir.display()));
-            let back = Manifest::from_toml_str(&re)
-                .unwrap_or_else(|e| panic!("{} does not re-decode: {e}", dir.display()));
-            assert_eq!(
-                m,
-                back,
-                "{} changes shape across a pack round-trip",
-                dir.display()
             );
         }
-    }
-    {
-        for dir in app_dirs() {
-            let m = load(&dir);
-            validate_manifest(&m)
-                .unwrap_or_else(|e| panic!("{}: refused by its own installer: {e}", dir.display()));
+        {
+            for dir in app_dirs() {
+                let m = load(&dir);
+                validate_manifest(&m)
+                    .unwrap_or_else(|e| panic!("{} fails validation: {e}", dir.display()));
+            }
         }
-    }
-    {
-        let mut seen: BTreeMap<String, PathBuf> = BTreeMap::new();
-        for dir in app_dirs() {
-            let m = load(&dir);
-            let id = m.package.id.clone();
-            assert!(
-                id.starts_with("so.tilo."),
-                "{}: id {id:?} is not in the fleet's reverse-DNS namespace",
-                dir.display()
-            );
-            assert!(
-                id.len() > "so.tilo.".len(),
-                "{}: id {id:?} has an empty trailing component",
-                dir.display()
-            );
-            if let Some(prev) = seen.insert(id.clone(), dir.clone()) {
-                panic!(
-                    "package id {id:?} is claimed by both {} and {}",
-                    prev.display(),
+        {
+            for dir in app_dirs() {
+                let m = load(&dir);
+                let re = m
+                    .to_toml_string()
+                    .unwrap_or_else(|e| panic!("{} does not re-encode: {e}", dir.display()));
+                let back = Manifest::from_toml_str(&re)
+                    .unwrap_or_else(|e| panic!("{} does not re-decode: {e}", dir.display()));
+                assert_eq!(
+                    m,
+                    back,
+                    "{} changes shape across a pack round-trip",
                     dir.display()
                 );
             }
         }
-    }
-}
-
-#[test]
-fn shipped_apps_declare_presentation_metadata() {
-    {
-        let semantic_apps = ["so.tilo.browser", "so.tilo.ebook", "so.tilo.music"];
-        let semantic_schemas = BTreeMap::from([
-            ("so.tilo.browser", ContinuitySemanticSchema::WebLocationV1),
-            (
-                "so.tilo.ebook",
-                ContinuitySemanticSchema::PublicationPositionV1,
-            ),
-            ("so.tilo.music", ContinuitySemanticSchema::MediaPositionV1),
-            ("so.tilo.chat", ContinuitySemanticSchema::RealtimeSessionV1),
-            (
-                "so.tilo.code-editor",
-                ContinuitySemanticSchema::TextPositionV1,
-            ),
-        ]);
-
-        for dir in app_dirs() {
-            let m = load(&dir);
-            assert!(
-                m.continuity
-                    .required
-                    .contains(&ContinuityFacet::Presentation),
-                "{}: app handoff must retain framework presentation state",
-                dir.display()
-            );
-            assert_eq!(
-                m.continuity.required.contains(&ContinuityFacet::Semantic),
-                semantic_apps.contains(&m.package.id.as_str()),
-                "{}: signed semantic-continuity declaration drifted from the apps that implement it",
-                dir.display()
-            );
-            assert_eq!(
-                m.continuity.semantic_schema,
-                semantic_schemas.get(m.package.id.as_str()).copied(),
-                "{}: portable semantic schema drifted from runtime validation",
-                dir.display()
-            );
-        }
-    }
-    {
-        // Freedesktop main categories, narrowed to the ones Tilo actually groups
-        // by. Adding one is deliberate: the palette groups on this string, so a
-        // typo would silently create a category of one.
-        const CATEGORIES: &[&str] = &[
-            "Accessibility",
-            "Development",
-            "Game",
-            "Graphics",
-            "Multimedia",
-            "Network",
-            "Office",
-            "System",
-            "Utility",
-        ];
-        for dir in app_dirs() {
-            let m = load(&dir);
-            if !matches!(m.package.kind, Kind::App) {
-                continue;
-            }
-            let name = m.package.name.as_deref().unwrap_or_default();
-            assert!(
-                !name.trim().is_empty(),
-                "{}: no [package].name, so the palette would show a name derived \
-             from the id",
-                dir.display()
-            );
-            let cat = m.package.category.as_deref().unwrap_or_default();
-            assert!(
-                CATEGORIES.contains(&cat),
-                "{}: category {cat:?} is not one of {CATEGORIES:?}",
-                dir.display()
-            );
-        }
-    }
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn shipped_manifests_declare_consistent_sandbox_policy() {
-    {
-        for dir in app_dirs() {
-            let m = load(&dir);
-            let ep = m
-                .entrypoint
-                .as_ref()
-                .unwrap_or_else(|| panic!("{}: no [entrypoint]", dir.display()));
-            let bin = ep.bin.to_string_lossy().into_owned();
-            assert!(!bin.is_empty(), "{}: empty entrypoint.bin", dir.display());
-            assert!(
-                !bin.starts_with('/'),
-                "{}: entrypoint.bin {bin:?} is absolute; it must be relative to \
-             the payload root",
-                dir.display()
-            );
-            assert!(
-                bin.starts_with("bin/"),
-                "{}: entrypoint.bin {bin:?} is not under the payload's bin/ dir",
-                dir.display()
-            );
-        }
-    }
-    {
-        for dir in app_dirs() {
-            let m = load(&dir);
-            let has_net_ns = m.sandbox.namespaces.iter().any(|n| n == "net");
-            match m.sandbox.net.mode {
-                NetMode::Off => assert!(
-                    !has_net_ns,
-                    "{}: net.mode=off but `net` is in namespaces — the manifest \
-                 claims isolation it does not apply",
-                    dir.display()
-                ),
-                _ => assert!(
-                    has_net_ns,
-                    "{}: net.mode is not off but `net` is missing from namespaces",
-                    dir.display()
-                ),
+        {
+            for dir in app_dirs() {
+                let m = load(&dir);
+                validate_manifest(&m)
+                    .unwrap_or_else(|e| panic!("{}: refused by its own installer: {e}", dir.display()));
             }
         }
-    }
-    {
-        for dir in app_dirs() {
-            let m = load(&dir);
-            if matches!(m.sandbox.net.mode, NetMode::Allowlist) {
-                let hosts = m.sandbox.net.allowlist_hosts().unwrap_or(&[]);
+        {
+            let mut seen: BTreeMap<String, PathBuf> = BTreeMap::new();
+            for dir in app_dirs() {
+                let m = load(&dir);
+                let id = m.package.id.clone();
                 assert!(
-                    !hosts.is_empty(),
-                    "{}: net.mode=allowlist with an empty host list",
+                    id.starts_with("so.tilo."),
+                    "{}: id {id:?} is not in the fleet's reverse-DNS namespace",
                     dir.display()
                 );
-                for h in hosts {
-                    assert!(
-                        !h.contains('/') && !h.contains(':'),
-                        "{}: allowlist entry {h:?} should be a bare hostname",
+                assert!(
+                    id.len() > "so.tilo.".len(),
+                    "{}: id {id:?} has an empty trailing component",
+                    dir.display()
+                );
+                if let Some(prev) = seen.insert(id.clone(), dir.clone()) {
+                    panic!(
+                        "package id {id:?} is claimed by both {} and {}",
+                        prev.display(),
                         dir.display()
                     );
                 }
             }
         }
     }
+
+    phase shipped_apps_declare_presentation_metadata;
     {
-        let mut checked = 0usize;
-        for dir in app_dirs() {
-            let m = load(&dir);
-            assert!(
-                m.sandbox.fs.read.is_empty() && m.sandbox.fs.write.is_empty(),
-                "{}: declares sandbox.fs paths (read={:?} write={:?}). An app does \
+        {
+            let semantic_apps = ["so.tilo.browser", "so.tilo.ebook", "so.tilo.music"];
+            let semantic_schemas = BTreeMap::from([
+                ("so.tilo.browser", ContinuitySemanticSchema::WebLocationV1),
+                (
+                    "so.tilo.ebook",
+                    ContinuitySemanticSchema::PublicationPositionV1,
+                ),
+                ("so.tilo.music", ContinuitySemanticSchema::MediaPositionV1),
+                ("so.tilo.chat", ContinuitySemanticSchema::RealtimeSessionV1),
+                (
+                    "so.tilo.code-editor",
+                    ContinuitySemanticSchema::TextPositionV1,
+                ),
+            ]);
+
+            for dir in app_dirs() {
+                let m = load(&dir);
+                assert!(
+                    m.continuity
+                        .required
+                        .contains(&ContinuityFacet::Presentation),
+                    "{}: app handoff must retain framework presentation state",
+                    dir.display()
+                );
+                assert_eq!(
+                    m.continuity.required.contains(&ContinuityFacet::Semantic),
+                    semantic_apps.contains(&m.package.id.as_str()),
+                    "{}: signed semantic-continuity declaration drifted from the apps that implement it",
+                    dir.display()
+                );
+                assert_eq!(
+                    m.continuity.semantic_schema,
+                    semantic_schemas.get(m.package.id.as_str()).copied(),
+                    "{}: portable semantic schema drifted from runtime validation",
+                    dir.display()
+                );
+            }
+        }
+        {
+            // Freedesktop main categories, narrowed to the ones Tilo actually groups
+            // by. Adding one is deliberate: the palette groups on this string, so a
+            // typo would silently create a category of one.
+            const CATEGORIES: &[&str] = &[
+                "Accessibility",
+                "Development",
+                "Game",
+                "Graphics",
+                "Multimedia",
+                "Network",
+                "Office",
+                "System",
+                "Utility",
+            ];
+            for dir in app_dirs() {
+                let m = load(&dir);
+                if !matches!(m.package.kind, Kind::App) {
+                    continue;
+                }
+                let name = m.package.name.as_deref().unwrap_or_default();
+                assert!(
+                    !name.trim().is_empty(),
+                    "{}: no [package].name, so the palette would show a name derived \
+             from the id",
+                    dir.display()
+                );
+                let cat = m.package.category.as_deref().unwrap_or_default();
+                assert!(
+                    CATEGORIES.contains(&cat),
+                    "{}: category {cat:?} is not one of {CATEGORIES:?}",
+                    dir.display()
+                );
+            }
+        }
+    }
+
+    phase shipped_manifests_declare_consistent_sandbox_policy;
+    {
+        {
+            for dir in app_dirs() {
+                let m = load(&dir);
+                let ep = m
+                    .entrypoint
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("{}: no [entrypoint]", dir.display()));
+                let bin = ep.bin.to_string_lossy().into_owned();
+                assert!(!bin.is_empty(), "{}: empty entrypoint.bin", dir.display());
+                assert!(
+                    !bin.starts_with('/'),
+                    "{}: entrypoint.bin {bin:?} is absolute; it must be relative to \
+             the payload root",
+                    dir.display()
+                );
+                assert!(
+                    bin.starts_with("bin/"),
+                    "{}: entrypoint.bin {bin:?} is not under the payload's bin/ dir",
+                    dir.display()
+                );
+            }
+        }
+        {
+            for dir in app_dirs() {
+                let m = load(&dir);
+                let has_net_ns = m.sandbox.namespaces.iter().any(|n| n == "net");
+                match m.sandbox.net.mode {
+                    NetMode::Off => assert!(
+                        !has_net_ns,
+                        "{}: net.mode=off but `net` is in namespaces — the manifest \
+                 claims isolation it does not apply",
+                        dir.display()
+                    ),
+                    _ => assert!(
+                        has_net_ns,
+                        "{}: net.mode is not off but `net` is missing from namespaces",
+                        dir.display()
+                    ),
+                }
+            }
+        }
+        {
+            for dir in app_dirs() {
+                let m = load(&dir);
+                if matches!(m.sandbox.net.mode, NetMode::Allowlist) {
+                    let hosts = m.sandbox.net.allowlist_hosts().unwrap_or(&[]);
+                    assert!(
+                        !hosts.is_empty(),
+                        "{}: net.mode=allowlist with an empty host list",
+                        dir.display()
+                    );
+                    for h in hosts {
+                        assert!(
+                            !h.contains('/') && !h.contains(':'),
+                            "{}: allowlist entry {h:?} should be a bare hostname",
+                            dir.display()
+                        );
+                    }
+                }
+            }
+        }
+        {
+            let mut checked = 0usize;
+            for dir in app_dirs() {
+                let m = load(&dir);
+                assert!(
+                    m.sandbox.fs.read.is_empty() && m.sandbox.fs.write.is_empty(),
+                    "{}: declares sandbox.fs paths (read={:?} write={:?}). An app does \
              not choose what it reads or where it writes — reads come from the \
              launcher's system profile, writes go to the one directory the \
              launcher gives it, and anything else is a capability the user \
              grants at runtime.",
-                dir.display(),
-                m.sandbox.fs.read,
-                m.sandbox.fs.write,
-            );
-            checked += 1;
-        }
-        assert!(checked >= 40, "expected the shipped fleet, found {checked}");
-    }
-    {
-        let mut checked = 0usize;
-        for dir in app_dirs() {
-            let m = load(&dir);
-            if m.package.kind != Kind::Service {
-                continue;
+                    dir.display(),
+                    m.sandbox.fs.read,
+                    m.sandbox.fs.write,
+                );
+                checked += 1;
             }
-            let ep = m
-                .entrypoint
-                .as_ref()
-                .unwrap_or_else(|| panic!("{}: service with no [entrypoint]", dir.display()));
-            let draws = matches!(ep.r#type, EntrypointType::Gui | EntrypointType::Both);
-            assert_eq!(
-                ep.gui_bin_path().is_some(),
-                draws,
-                "{}: entrypoint type {:?} and the presence of a GUI binary disagree \
-             about whether this service draws",
-                dir.display(),
-                ep.r#type,
-            );
-            checked += 1;
+            assert!(checked >= 40, "expected the shipped fleet, found {checked}");
         }
-        assert!(
-            checked >= 1,
-            "no service package found to check — this test cannot observe its subject",
-        );
+        {
+            let mut checked = 0usize;
+            for dir in app_dirs() {
+                let m = load(&dir);
+                if m.package.kind != Kind::Service {
+                    continue;
+                }
+                let ep = m
+                    .entrypoint
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("{}: service with no [entrypoint]", dir.display()));
+                let draws = matches!(ep.r#type, EntrypointType::Gui | EntrypointType::Both);
+                assert_eq!(
+                    ep.gui_bin_path().is_some(),
+                    draws,
+                    "{}: entrypoint type {:?} and the presence of a GUI binary disagree \
+             about whether this service draws",
+                    dir.display(),
+                    ep.r#type,
+                );
+                checked += 1;
+            }
+            assert!(
+                checked >= 1,
+                "no service package found to check — this test cannot observe its subject",
+            );
+        }
     }
 }
 

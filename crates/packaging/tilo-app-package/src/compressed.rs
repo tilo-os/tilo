@@ -70,70 +70,78 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_twin_round_trips_within_its_bound() {
-        let raw = sample();
-        let twin = compress(&raw).unwrap();
-        assert!(
-            twin.len() < raw.len() / 4,
-            "{} of {}",
-            twin.len(),
-            raw.len()
-        );
-        let mut out = Vec::new();
-        let len = decompress_bounded(twin.as_slice(), raw.len() as u64, &mut out).unwrap();
-        assert_eq!(len, raw.len() as u64);
-        assert_eq!(out, raw);
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn a_compressed_twin_decompresses_only_within_its_signed_bound;
 
-    #[test]
-    fn a_twin_that_expands_past_the_signed_length_is_refused() {
-        // 64 MiB of zeros compresses to a few kilobytes: a bomb against a
-        // reader that trusted the frame instead of the signed length.
-        let bomb = compress(&vec![0u8; 64 << 20]).unwrap();
-        assert!(bomb.len() < 64 * 1024);
-        let mut out = Vec::new();
-        let error = decompress_bounded(bomb.as_slice(), 1 << 20, &mut out).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(out.len() as u64 <= (1 << 20) + 1, "stopped at the bound");
+        phase a_twin_round_trips_within_its_bound;
+        {
+            let raw = sample();
+            let twin = compress(&raw).unwrap();
+            assert!(
+                twin.len() < raw.len() / 4,
+                "{} of {}",
+                twin.len(),
+                raw.len()
+            );
+            let mut out = Vec::new();
+            let len = decompress_bounded(twin.as_slice(), raw.len() as u64, &mut out).unwrap();
+            assert_eq!(len, raw.len() as u64);
+            assert_eq!(out, raw);
+        }
 
-        let raw = sample();
-        let twin = compress(&raw).unwrap();
-        let mut out = Vec::new();
-        assert!(decompress_bounded(twin.as_slice(), raw.len() as u64 - 1, &mut out).is_err());
-    }
+        phase a_twin_that_expands_past_the_signed_length_is_refused;
+        {
+            // 64 MiB of zeros compresses to a few kilobytes: a bomb against a
+            // reader that trusted the frame instead of the signed length.
+            let bomb = compress(&vec![0u8; 64 << 20]).unwrap();
+            assert!(bomb.len() < 64 * 1024);
+            let mut out = Vec::new();
+            let error = decompress_bounded(bomb.as_slice(), 1 << 20, &mut out).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(out.len() as u64 <= (1 << 20) + 1, "stopped at the bound");
 
-    #[test]
-    fn a_frame_asking_for_a_larger_window_is_refused() {
-        let raw = vec![7u8; 1 << 20];
-        // A stream of unknown length keeps the window it was given, so the
-        // frame header asks the decoder for 128 MiB.
-        let mut wide = zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap();
-        wide.set_parameter(CParameter::WindowLog(WINDOW_LOG_MAX + 4))
-            .unwrap();
-        wide.write_all(&raw).unwrap();
-        let frame = wide.finish().unwrap();
-        // A valid frame: zstd's own default limit (2^27) takes it.
-        let mut plain = Vec::new();
-        zstd::stream::copy_decode(frame.as_slice(), &mut plain).unwrap();
-        assert_eq!(plain, raw);
-        let mut out = Vec::new();
-        assert!(decompress_bounded(frame.as_slice(), raw.len() as u64, &mut out).is_err());
-    }
+            let raw = sample();
+            let twin = compress(&raw).unwrap();
+            let mut out = Vec::new();
+            assert!(decompress_bounded(twin.as_slice(), raw.len() as u64 - 1, &mut out).is_err());
+        }
 
-    #[test]
-    fn bytes_that_are_not_zstd_are_refused() {
-        let mut out = Vec::new();
-        let error = decompress_bounded(&b"not a zstd frame"[..], 1024, &mut out).unwrap_err();
-        assert_ne!(error.kind(), io::ErrorKind::NotFound);
-    }
+        phase a_frame_asking_for_a_larger_window_is_refused;
+        {
+            let raw = vec![7u8; 1 << 20];
+            // A stream of unknown length keeps the window it was given, so the
+            // frame header asks the decoder for 128 MiB.
+            let mut wide = zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap();
+            wide.set_parameter(CParameter::WindowLog(WINDOW_LOG_MAX + 4))
+                .unwrap();
+            wide.write_all(&raw).unwrap();
+            let frame = wide.finish().unwrap();
+            // A valid frame: zstd's own default limit (2^27) takes it.
+            let mut plain = Vec::new();
+            zstd::stream::copy_decode(frame.as_slice(), &mut plain).unwrap();
+            assert_eq!(plain, raw);
+            let mut out = Vec::new();
+            assert!(decompress_bounded(frame.as_slice(), raw.len() as u64, &mut out).is_err());
+        }
 
-    #[test]
-    fn the_bound_admits_any_twin_of_an_incompressible_object() {
-        let noise: Vec<u8> = (0..1u32 << 18)
-            .flat_map(|n| n.wrapping_mul(2_654_435_761).rotate_right(13).to_le_bytes())
-            .collect();
-        let twin = compress(&noise).unwrap();
-        assert!(twin.len() as u64 <= compressed_bound(noise.len() as u64));
+        phase bytes_that_are_not_zstd_are_refused;
+        {
+            let mut out = Vec::new();
+            let error = decompress_bounded(&b"not a zstd frame"[..], 1024, &mut out).unwrap_err();
+            assert_ne!(error.kind(), io::ErrorKind::NotFound);
+        }
+
+        phase the_bound_admits_any_twin_of_an_incompressible_object;
+        {
+            let noise: Vec<u8> = (0..1u32 << 18)
+                .flat_map(|n| n.wrapping_mul(2_654_435_761).rotate_right(13).to_le_bytes())
+                .collect();
+            let twin = compress(&noise).unwrap();
+            assert!(twin.len() as u64 <= compressed_bound(noise.len() as u64));
+        }
     }
 }

@@ -158,121 +158,125 @@ mod tests {
         false
     }
 
-    #[test]
-    fn wire_tags_round_trip_and_avoid_reserved_numbers() {
-        for schema in ContinuitySemanticSchema::ALL {
-            let tag = schema.wire_tag();
-            assert_eq!(ContinuitySemanticSchema::from_wire_tag(tag), Some(schema));
-            assert!(![u16::MAX - 1, u16::MAX].contains(&tag));
-        }
-        for reserved in [0, 1, 2, u16::MAX - 1, u16::MAX] {
-            assert_eq!(ContinuitySemanticSchema::from_wire_tag(reserved), None);
-        }
-    }
+    tilo_test_env::scenario! {
+        fn continuity_schemas_keep_their_wire_tags_and_validate_their_payloads;
 
-    #[test]
-    fn semantic_schemas_validate_shape_and_invariants() {
-        use ContinuitySemanticSchema as S;
-        let realtime = |media: &str| {
-            format!(
-                r#"{{"workspace_id":"ws_acme","channel_id":"c_huddle","media":{media},
-                "controls":{{"microphone_muted":true,"camera_muted":false,"screen_share_paused":false,"share_audio_muted":true}}}}"#
-            )
-        };
-        let call = realtime(
-            r#"{"microphone":true,"camera":true,"screen_share":false,"share_audio":false}"#,
-        );
-        let valid: [(S, &[u8]); 4] = [
-            (S::WebLocationV1, br#"{"url":"https://tilo.so/a?b#c"}"#),
-            (
-                S::PublicationPositionV1,
-                br#"{"book_id":"urn:isbn:978-0","chapter":3,"page":42}"#,
-            ),
-            (
-                S::MediaPositionV1,
-                br#"{"track_id":"t_1","position_ms":61000,"paused":true}"#,
-            ),
-            (S::RealtimeSessionV1, call.as_bytes()),
-        ];
-        for (schema, bytes) in valid {
-            assert!(schema.validate(bytes, rejects_text), "{schema:?} accepts");
-            // Unknown fields never ride along.
-            let mut extra = bytes.to_vec();
-            let close = extra.iter().rposition(|byte| *byte == b'}').unwrap();
-            extra.splice(close..close, br#","password":"secret""#.iter().copied());
-            assert!(
-                !schema.validate(&extra, rejects_text),
-                "{schema:?} refuses an unknown field"
-            );
-            // A payload of one schema is not a payload of another.
-            for other in S::ALL {
-                if other != schema && other != S::TextPositionV1 {
-                    assert!(
-                        !other.validate(bytes, rejects_text),
-                        "{other:?} vs {schema:?}"
-                    );
-                }
+        phase wire_tags_round_trip_and_avoid_reserved_numbers;
+        {
+            for schema in ContinuitySemanticSchema::ALL {
+                let tag = schema.wire_tag();
+                assert_eq!(ContinuitySemanticSchema::from_wire_tag(tag), Some(schema));
+                assert!(![u16::MAX - 1, u16::MAX].contains(&tag));
+            }
+            for reserved in [0, 1, 2, u16::MAX - 1, u16::MAX] {
+                assert_eq!(ContinuitySemanticSchema::from_wire_tag(reserved), None);
             }
         }
 
-        // Identifiers are path-free; locations carry no credentials.
-        let refused: [(S, &[u8]); 6] = [
-            (
-                S::PublicationPositionV1,
-                br#"{"book_id":"../x","chapter":0,"page":0}"#,
-            ),
-            (
-                S::MediaPositionV1,
-                br#"{"track_id":"../x","position_ms":0,"paused":true}"#,
-            ),
-            (S::WebLocationV1, br#"{"url":"file:///home/alice/private"}"#),
-            (
-                S::WebLocationV1,
-                br#"{"url":"https://alice:secret@example.test"}"#,
-            ),
-            (S::WebLocationV1, br#"{"url":"https://a.test\\..\\b"}"#),
-            // Media never resumes playing on the receiving device.
-            (
-                S::MediaPositionV1,
-                br#"{"track_id":"t_1","position_ms":0,"paused":false}"#,
-            ),
-        ];
-        for (schema, bytes) in refused {
+        phase semantic_schemas_validate_shape_and_invariants;
+        {
+            use ContinuitySemanticSchema as S;
+            let realtime = |media: &str| {
+                format!(
+                    r#"{{"workspace_id":"ws_acme","channel_id":"c_huddle","media":{media},
+                "controls":{{"microphone_muted":true,"camera_muted":false,"screen_share_paused":false,"share_audio_muted":true}}}}"#
+                )
+            };
+            let call = realtime(
+                r#"{"microphone":true,"camera":true,"screen_share":false,"share_audio":false}"#,
+            );
+            let valid: [(S, &[u8]); 4] = [
+                (S::WebLocationV1, br#"{"url":"https://tilo.so/a?b#c"}"#),
+                (
+                    S::PublicationPositionV1,
+                    br#"{"book_id":"urn:isbn:978-0","chapter":3,"page":42}"#,
+                ),
+                (
+                    S::MediaPositionV1,
+                    br#"{"track_id":"t_1","position_ms":61000,"paused":true}"#,
+                ),
+                (S::RealtimeSessionV1, call.as_bytes()),
+            ];
+            for (schema, bytes) in valid {
+                assert!(schema.validate(bytes, rejects_text), "{schema:?} accepts");
+                // Unknown fields never ride along.
+                let mut extra = bytes.to_vec();
+                let close = extra.iter().rposition(|byte| *byte == b'}').unwrap();
+                extra.splice(close..close, br#","password":"secret""#.iter().copied());
+                assert!(
+                    !schema.validate(&extra, rejects_text),
+                    "{schema:?} refuses an unknown field"
+                );
+                // A payload of one schema is not a payload of another.
+                for other in S::ALL {
+                    if other != schema && other != S::TextPositionV1 {
+                        assert!(
+                            !other.validate(bytes, rejects_text),
+                            "{other:?} vs {schema:?}"
+                        );
+                    }
+                }
+            }
+
+            // Identifiers are path-free; locations carry no credentials.
+            let refused: [(S, &[u8]); 6] = [
+                (
+                    S::PublicationPositionV1,
+                    br#"{"book_id":"../x","chapter":0,"page":0}"#,
+                ),
+                (
+                    S::MediaPositionV1,
+                    br#"{"track_id":"../x","position_ms":0,"paused":true}"#,
+                ),
+                (S::WebLocationV1, br#"{"url":"file:///home/alice/private"}"#),
+                (
+                    S::WebLocationV1,
+                    br#"{"url":"https://alice:secret@example.test"}"#,
+                ),
+                (S::WebLocationV1, br#"{"url":"https://a.test\\..\\b"}"#),
+                // Media never resumes playing on the receiving device.
+                (
+                    S::MediaPositionV1,
+                    br#"{"track_id":"t_1","position_ms":0,"paused":false}"#,
+                ),
+            ];
+            for (schema, bytes) in refused {
+                assert!(
+                    !schema.validate(bytes, rejects_text),
+                    "{schema:?} refuses {}",
+                    String::from_utf8_lossy(bytes)
+                );
+            }
+            let path_channel = call.replace("c_huddle", "../x");
+            assert!(!S::RealtimeSessionV1.validate(path_channel.as_bytes(), rejects_text));
+
+            // A call never resumes sharing audio, and always with the microphone
+            // facet on.
+            for media in [
+                r#"{"microphone":true,"camera":false,"screen_share":true,"share_audio":true}"#,
+                r#"{"microphone":false,"camera":true,"screen_share":false,"share_audio":false}"#,
+                r#"{"microphone":false,"camera":false,"screen_share":false,"share_audio":false}"#,
+            ] {
+                assert!(!S::RealtimeSessionV1.validate(realtime(media).as_bytes(), rejects_text));
+            }
+        }
+
+        phase text_position_is_decided_by_the_document_runtime;
+        {
+            let mut seen = None;
             assert!(
-                !schema.validate(bytes, rejects_text),
-                "{schema:?} refuses {}",
-                String::from_utf8_lossy(bytes)
+                ContinuitySemanticSchema::TextPositionV1.validate(b"{}", |bytes| {
+                    seen = Some(bytes.to_vec());
+                    true
+                })
+            );
+            assert_eq!(seen.as_deref(), Some(b"{}".as_slice()));
+            assert!(!ContinuitySemanticSchema::TextPositionV1.validate(b"{}", rejects_text));
+            // Other schemas never consult it.
+            assert!(
+                !ContinuitySemanticSchema::WebLocationV1
+                    .validate(b"{}", |_| panic!("not a text position"))
             );
         }
-        let path_channel = call.replace("c_huddle", "../x");
-        assert!(!S::RealtimeSessionV1.validate(path_channel.as_bytes(), rejects_text));
-
-        // A call never resumes sharing audio, and always with the microphone
-        // facet on.
-        for media in [
-            r#"{"microphone":true,"camera":false,"screen_share":true,"share_audio":true}"#,
-            r#"{"microphone":false,"camera":true,"screen_share":false,"share_audio":false}"#,
-            r#"{"microphone":false,"camera":false,"screen_share":false,"share_audio":false}"#,
-        ] {
-            assert!(!S::RealtimeSessionV1.validate(realtime(media).as_bytes(), rejects_text));
-        }
-    }
-
-    #[test]
-    fn text_position_is_decided_by_the_document_runtime() {
-        let mut seen = None;
-        assert!(
-            ContinuitySemanticSchema::TextPositionV1.validate(b"{}", |bytes| {
-                seen = Some(bytes.to_vec());
-                true
-            })
-        );
-        assert_eq!(seen.as_deref(), Some(b"{}".as_slice()));
-        assert!(!ContinuitySemanticSchema::TextPositionV1.validate(b"{}", rejects_text));
-        // Other schemas never consult it.
-        assert!(
-            !ContinuitySemanticSchema::WebLocationV1
-                .validate(b"{}", |_| panic!("not a text position"))
-        );
     }
 }

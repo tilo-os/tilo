@@ -146,103 +146,107 @@ commands = ["books"]
         .unwrap()
     }
 
-    #[test]
-    fn a_desktop_build_names_its_executable_and_linked_release() {
-        let manifest = desktop_manifest(
-            &authored(),
-            registry_types::WINDOWS_PLATFORM,
-            "x86_64",
-            "x86_64-v2",
-            "bin/books.exe",
-        )
-        .unwrap();
-        let target = manifest.target.as_ref().unwrap();
-        assert_eq!(target.platform, "windows");
-        assert_eq!(target.runtime, "tilo-runtime/2026.07");
-        assert_eq!(target.module, "bin/books.exe");
-        assert_eq!(
-            manifest
-                .entrypoint
-                .as_ref()
-                .and_then(Entrypoint::gui_bin_path),
-            Some(&PathBuf::from("bin/books.exe"))
-        );
-        assert_eq!(manifest.package.isa, IsaRequirements::default());
+    tilo_test_env::scenario! {
+        fn a_desktop_manifest_describes_one_build_or_is_refused;
 
-        let mut moved = manifest.clone();
-        if let Some(target) = moved.target.as_mut() {
-            target.module = "bin/other.exe".into();
-        }
-        assert!(matches!(
-            validate_manifest(&moved),
-            Err(ManifestError::TargetEntrypointMismatch(_))
-        ));
-        let mut other_release = manifest;
-        other_release.package.runtime = Some("tilo-runtime/2026.08".into());
-        assert!(matches!(
-            validate_manifest(&other_release),
-            Err(ManifestError::TargetRuntimeMismatch { .. })
-        ));
-    }
-
-    #[test]
-    fn a_desktop_build_refuses_what_it_cannot_describe() {
-        let mut unversioned = authored();
-        unversioned.package.runtime = None;
-        assert!(matches!(
-            desktop_manifest(&unversioned, "macos", "aarch64", "aarch64", "bin/books"),
-            Err(ManifestError::TargetRuntimeMismatch { .. })
-        ));
-        assert!(matches!(
-            desktop_manifest(&authored(), "macos", "wasm32", "aarch64", "bin/books"),
-            Err(ManifestError::BadTarget(_))
-        ));
-        assert!(matches!(
-            desktop_manifest(&authored(), "freebsd", "x86_64", "x86_64", "bin/books"),
-            Err(ManifestError::BadTarget(_))
-        ));
-        assert!(matches!(
-            desktop_manifest(&authored(), "macos", "aarch64", "aarch64", "../books"),
-            Err(ManifestError::BadTargetModule(_))
-        ));
-        for apk in ["books.apk", "bin/books.aab"] {
-            let android = desktop_manifest(
+        phase a_desktop_build_names_its_executable_and_linked_release;
+        {
+            let manifest = desktop_manifest(
                 &authored(),
-                registry_types::ANDROID_PLATFORM,
-                "aarch64",
-                "aarch64",
-                apk,
+                registry_types::WINDOWS_PLATFORM,
+                "x86_64",
+                "x86_64-v2",
+                "bin/books.exe",
             )
             .unwrap();
+            let target = manifest.target.as_ref().unwrap();
+            assert_eq!(target.platform, "windows");
+            assert_eq!(target.runtime, "tilo-runtime/2026.07");
+            assert_eq!(target.module, "bin/books.exe");
             assert_eq!(
-                android
-                    .target
+                manifest
+                    .entrypoint
                     .as_ref()
-                    .map(|target| target.platform.as_str()),
-                Some("android")
+                    .and_then(Entrypoint::gui_bin_path),
+                Some(&PathBuf::from("bin/books.exe"))
             );
-        }
-        for not_a_package in ["bin/books", "books.exe", "books.apk.zip", "../books.apk"] {
+            assert_eq!(manifest.package.isa, IsaRequirements::default());
+
+            let mut moved = manifest.clone();
+            if let Some(target) = moved.target.as_mut() {
+                target.module = "bin/other.exe".into();
+            }
             assert!(matches!(
-                desktop_manifest(
-                    &authored(),
-                    registry_types::ANDROID_PLATFORM,
-                    "x86_64",
-                    "x86_64",
-                    not_a_package
-                ),
-                Err(ManifestError::BadTargetModule(_))
+                validate_manifest(&moved),
+                Err(ManifestError::TargetEntrypointMismatch(_))
+            ));
+            let mut other_release = manifest;
+            other_release.package.runtime = Some("tilo-runtime/2026.08".into());
+            assert!(matches!(
+                validate_manifest(&other_release),
+                Err(ManifestError::TargetRuntimeMismatch { .. })
             ));
         }
-        assert!(matches!(
-            desktop_manifest(&authored(), "android", "armv7", "armv7", "books.apk"),
-            Err(ManifestError::BadTarget(_))
-        ));
-        let mut service = authored();
-        service.package.kind = Kind::Service;
-        assert_eq!(
-            desktop_manifest(&service, "macos", "aarch64", "aarch64", "bin/books"),
-            Err(ManifestError::TargetKindUnsupported)
-        );
+
+        phase a_desktop_build_refuses_what_it_cannot_describe;
+        {
+            let mut unversioned = authored();
+            unversioned.package.runtime = None;
+            assert!(matches!(
+                desktop_manifest(&unversioned, "macos", "aarch64", "aarch64", "bin/books"),
+                Err(ManifestError::TargetRuntimeMismatch { .. })
+            ));
+            assert!(matches!(
+                desktop_manifest(&authored(), "macos", "wasm32", "aarch64", "bin/books"),
+                Err(ManifestError::BadTarget(_))
+            ));
+            assert!(matches!(
+                desktop_manifest(&authored(), "freebsd", "x86_64", "x86_64", "bin/books"),
+                Err(ManifestError::BadTarget(_))
+            ));
+            assert!(matches!(
+                desktop_manifest(&authored(), "macos", "aarch64", "aarch64", "../books"),
+                Err(ManifestError::BadTargetModule(_))
+            ));
+            for apk in ["books.apk", "bin/books.aab"] {
+                let android = desktop_manifest(
+                    &authored(),
+                    registry_types::ANDROID_PLATFORM,
+                    "aarch64",
+                    "aarch64",
+                    apk,
+                )
+                .unwrap();
+                assert_eq!(
+                    android
+                        .target
+                        .as_ref()
+                        .map(|target| target.platform.as_str()),
+                    Some("android")
+                );
+            }
+            for not_a_package in ["bin/books", "books.exe", "books.apk.zip", "../books.apk"] {
+                assert!(matches!(
+                    desktop_manifest(
+                        &authored(),
+                        registry_types::ANDROID_PLATFORM,
+                        "x86_64",
+                        "x86_64",
+                        not_a_package
+                    ),
+                    Err(ManifestError::BadTargetModule(_))
+                ));
+            }
+            assert!(matches!(
+                desktop_manifest(&authored(), "android", "armv7", "armv7", "books.apk"),
+                Err(ManifestError::BadTarget(_))
+            ));
+            let mut service = authored();
+            service.package.kind = Kind::Service;
+            assert_eq!(
+                desktop_manifest(&service, "macos", "aarch64", "aarch64", "bin/books"),
+                Err(ManifestError::TargetKindUnsupported)
+            );
+        }
     }
 }
