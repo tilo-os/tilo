@@ -63,15 +63,15 @@ fn asked_to_send(app: &mut Window, session: &mut Session) -> bool {
     asked_for_box(app, session).is_some()
 }
 
-/// Whom the session asked the window to open its box to within a few passes,
-/// whatever else it tells the window meanwhile: `None` when it asked for no
-/// box at all.
-fn asked_for_box(app: &mut Window, session: &mut Session) -> Option<Vec<Recipient>> {
+/// The box the session asked the window for within a few passes, whatever else it tells the window
+/// meanwhile: whom it opens to, and whether the window points at what it is about first. `None`
+/// when it asked for no box at all.
+fn asked_for_box(app: &mut Window, session: &mut Session) -> Option<(Vec<Recipient>, bool)> {
     for _ in 0..200 {
         session.step(Duration::from_millis(2)).expect("step");
         while let Some(message) = app.next() {
-            if let FloatingSurfaceHostMessage::ShareSelection { to } = message {
-                return Some(to);
+            if let FloatingSurfaceHostMessage::ShareSelection { to, pointing } = message {
+                return Some((to, pointing));
             }
         }
     }
@@ -177,10 +177,15 @@ fn a_report_asks_the_window_in_front_for_its_box_at_the_destination() {
     let (mut session, _launches, mut app, mut app_process) = session_with_a_window();
 
     press_report_key(&mut session);
-    let asked = asked_for_box(&mut app, &mut session).expect("the window in front is asked");
+    let (asked, pointing) =
+        asked_for_box(&mut app, &mut session).expect("the window in front is asked");
     assert_eq!(asked.len(), 1, "a report goes to the one place it goes");
     assert_eq!(asked[0].kind, RecipientKind::Feedback);
     assert_eq!(asked[0].id, FEEDBACK_CHANNEL);
+    assert!(
+        pointing,
+        "the window lights what is under the pointer, and the box is about what the person clicks"
+    );
     assert!(
         window(session.compositor(), "so.tilo.chat").is_none(),
         "Chat opens no window: the box stands in the window the person works in"
@@ -190,22 +195,35 @@ fn a_report_asks_the_window_in_front_for_its_box_at_the_destination() {
     let _ = app_process.wait();
 }
 
-/// A computer told nowhere to send reports asks no window for a box: a report with nowhere to go is
-/// not written at all.
+/// The report chord over a computer told nowhere still points at what is wrong: the box says it is
+/// not set up to send reports, and the person sends to an agent or a person instead.
 #[test]
-fn a_computer_told_nowhere_asks_no_window_for_a_report() {
+fn a_computer_told_nowhere_points_and_says_so_in_the_box() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     let _settled = ui::motion::testing::settled();
     let (mut session, _launches, mut app, mut app_process) = session_with_a_window();
 
     press_report_key(&mut session);
-    assert!(
-        asked_for_box(&mut app, &mut session).is_none(),
-        "no box is opened for a report that has nowhere to go"
+    let (asked, pointing) =
+        asked_for_box(&mut app, &mut session).expect("the window in front is asked");
+    assert_eq!(asked.len(), 1, "one row says where a report would go");
+    assert_eq!(
+        asked[0].kind,
+        RecipientKind::Feedback,
+        "the row that reports a problem"
     );
     assert!(
+        asked[0].id.is_empty(),
+        "this computer is told nowhere, so there is nowhere to send it"
+    );
+    assert!(
+        asked[0].detail.is_some(),
+        "and the row says so where the person reads it"
+    );
+    assert!(pointing, "the window still lights what the report is about");
+    assert!(
         window(session.compositor(), "so.tilo.chat").is_none(),
-        "and nothing is opened in its place"
+        "Chat opens no window: the box stands in the window the person works in"
     );
 
     let _ = app_process.kill();

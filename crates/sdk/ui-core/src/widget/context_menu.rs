@@ -1705,6 +1705,18 @@ impl Widget for ContextMenu {
     ) {
         self.set_text_scale(theme.text_scale);
         self.cache_theme(theme);
+        // A box the window was asked for with no menu around it — the shell's
+        // send key, a report — is taken here, by the first menu the frame
+        // draws: every host that carries a box draws its menu's overlay, and
+        // the box belongs to the window, not to a menu the person opened.
+        if !self.open
+            && let Some(box_) = crate::shared_selection::take_open_send_box()
+        {
+            if self.viewport.is_none() {
+                self.viewport = presence.viewport.get();
+            }
+            self.open_send_to_alone(box_.about, box_.bounds, box_.draft.as_deref(), &box_.to);
+        }
         // A menu without a viewport of its own flips and shifts inside the
         // window it is presented in, and so does everything it opens beside
         // it.

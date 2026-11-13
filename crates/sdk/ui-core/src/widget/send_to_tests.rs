@@ -419,10 +419,11 @@ fn a_subject_alone_is_something_to_send() {
 }
 
 /// A box the session opened to the one place a report goes: its chip stands
-/// there on its own, nobody is searched for, the chip is not taken off, and
-/// what the person writes goes to it — attached to what the window picked.
+/// there on its own, the person may still address it to someone instead, and
+/// what they write goes to the place reports go — attached to what the window
+/// picked.
 #[test]
-fn a_box_opened_to_a_destination_keeps_it_and_searches_for_nobody() {
+fn a_box_opened_to_a_report_sends_there_alone() {
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     let _ = crate::shared_selection::take_send_to();
     let _ = crate::shared_selection::take_recipient_searches();
@@ -434,25 +435,26 @@ fn a_box_opened_to_a_destination_keeps_it_and_searches_for_nobody() {
     send_to.open(None, std::slice::from_ref(&destination));
     send_to.place(Rect::new(40.0, 120.0, 212.0, 320.0), Some(viewport));
 
-    assert!(send_to.addressed());
+    assert!(send_to.reporting());
     assert_eq!(send_to.recipients(), std::slice::from_ref(&destination));
     assert_eq!(
         send_to.focus(),
         SendToFocus::Message,
         "the words are all that is left to write"
     );
-    assert!(
-        crate::shared_selection::take_recipient_searches().is_empty(),
-        "a box that knows where it sends asks the search nothing"
-    );
+    // The person may send it to someone instead: the search is there and a
+    // recipient found takes the place of the place reports go.
     assert!(send_to.perform_semantic_action(
         "send-to:recipients",
         &crate::a11y::Action::SetValue("ada".to_owned())
     ));
-    assert!(
-        crate::shared_selection::take_recipient_searches().is_empty(),
-        "and finds nobody when something is typed there"
-    );
+    let ada = Recipient::found(RecipientKind::Person, "ad".repeat(32), "Ada");
+    send_to.choose_for_test(ada.clone());
+    assert_eq!(send_to.recipients(), std::slice::from_ref(&ada));
+    assert!(!send_to.reporting(), "a message to a person, not a report");
+    // And the report stands alone again when it is chosen.
+    send_to.choose_for_test(destination.clone());
+    assert_eq!(send_to.recipients(), std::slice::from_ref(&destination));
     send_to.focus_first();
     assert_eq!(send_to.focus(), SendToFocus::Message, "still the message");
 
@@ -464,6 +466,43 @@ fn a_box_opened_to_a_destination_keeps_it_and_searches_for_nobody() {
     assert_eq!(requests[0].text, "The invoice button does nothing");
     assert_eq!(requests[0].about.len(), 1, "with what the window picked");
     assert!(send_to.take_sent());
+}
+
+/// A report on a computer told nowhere says so beside its chip and sends
+/// nothing; a person or an agent chosen instead sends as a message.
+#[test]
+fn a_report_with_nowhere_to_go_says_so_and_sends_nothing() {
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let _ = crate::shared_selection::take_send_to();
+    crate::shared_selection::set_send_host_available(true);
+    let nowhere = Recipient::found(RecipientKind::Feedback, "", "Report a problem")
+        .with_detail("This computer is not set up to send reports about Tilo.");
+    let mut send_to = SendToBox::new();
+    send_to.set_viewport(Some(viewport));
+    send_to.set_about(Some(SharedSelection::of_text("Send message")));
+    send_to.open(None, std::slice::from_ref(&nowhere));
+    send_to.place(Rect::new(40.0, 120.0, 212.0, 320.0), Some(viewport));
+
+    assert!(send_to.reporting(), "the box reads as a report");
+    assert!(
+        send_to.layout.note.height() > 0.0,
+        "the reason stands under the chips, where the person reads it"
+    );
+    type_text(&mut send_to, "The send button does nothing");
+    assert!(
+        !send_to.can_send(),
+        "a report with nowhere to go is not sent"
+    );
+    send_to.send();
+    assert!(crate::shared_selection::take_send_to().is_empty());
+
+    // The person sends it to a person instead: that is a message, and it goes.
+    let ada = Recipient::found(RecipientKind::Person, "ad".repeat(32), "Ada");
+    send_to.choose_for_test(ada);
+    assert!(!send_to.reporting());
+    assert!(send_to.can_send());
+    send_to.send();
+    assert_eq!(crate::shared_selection::take_send_to().len(), 1);
 }
 
 /// The message wraps at the box's width and the box makes room for it: a

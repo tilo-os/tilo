@@ -44,6 +44,10 @@ mod follow_ups;
 mod handoff;
 mod held_answers;
 mod host_commands;
+#[cfg(feature = "native")]
+mod report_point;
+#[cfg(all(feature = "native", test))]
+mod report_point_tests;
 
 mod model_lifecycle;
 mod participants;
@@ -488,6 +492,10 @@ pub struct App {
     bindings: crate::bound_dispatch::BoundNodeMap,
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
     close_admission: crate::close_admission::Admission,
+    /// A window asked for the thing a report is about, until the person points
+    /// at it or leaves ([`report_point::Pointing`]).
+    #[cfg(feature = "native")]
+    report_pointing: Option<report_point::Pointing>,
     needs_sync: bool,
     pub theme: Theme,
     pub debug_mode: bool,
@@ -1914,6 +1922,10 @@ impl App {
 
     #[cfg(feature = "native")]
     fn resolve_cursor(&self, point: Point) -> Option<CursorIcon> {
+        if self.report_pointing.is_some() {
+            // The window is waiting for the person to point at a thing.
+            return Some(CursorIcon::Crosshair);
+        }
         self.tree().cursor_pick_at(point).icon()
     }
 }

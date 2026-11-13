@@ -19,7 +19,7 @@ use ui::shortcut_table::{FixedAction, ShortcutAction};
 use crate::i18n::{t, t_args};
 use crate::keys::Invocation;
 use crate::{
-    Magnify, SessionAction, SessionCommand, Shared, identity, people, workspace_settings,
+    BoxAsk, Magnify, SessionAction, SessionCommand, Shared, identity, people, workspace_settings,
     workspaces,
 };
 
@@ -549,23 +549,12 @@ impl Shared {
         }
     }
 
-    /// A report about Tilo itself: the window the person works in opens its box to the one place
-    /// this computer sends reports ([`crate::feedback`]), with what it picked on it, and the person
-    /// writes what went wrong. A computer told nowhere to send reports says so where the person
-    /// asked, rather than closing on nothing.
+    /// A report about Tilo itself: the window the person works in lights what is under the
+    /// pointer, and the box opens about what they point at, addressed to the one place this
+    /// computer sends reports ([`crate::feedback`]). A computer told nowhere to send reports says
+    /// so in that box, which still sends to an agent or a person.
     fn report_problem(&self) {
-        use crate::platform::notice::Notice;
-
-        if self.feedback.is_some() {
-            self.report_from.set(true);
-            return;
-        }
-        self.telling().show(&Notice::new(
-            String::new(),
-            1,
-            t("session-feedback-nowhere"),
-            t("session-feedback-nowhere-body"),
-        ));
+        self.box_ask.set(Some(BoxAsk::Report));
     }
 
     /// The device another of the person's devices found asks here to act as them. Each ask is put
@@ -883,14 +872,15 @@ impl Shared {
             | ShortcutAction::DictationFinish
             | ShortcutAction::DictationCancel => self.dictation.shortcut(action),
             ShortcutAction::ShortcutHelp => self.shortcut_guide.toggle(),
-            // Asking the person's agents and saying something both send from the window the person
-            // works in: its app opens the one box, with no menu to carry it, and the person names
-            // whom it goes to. The desk names that window on its next pass, and a desk with none in
-            // front leaves the chord to Chat, which a send with nothing to be about has always
-            // opened.
-            ShortcutAction::AskAgent | ShortcutAction::SaySomething => {
-                self.send_from.set(true);
-            }
+            // Asking the person's agents, saying something here and reporting a problem all send
+            // from the window the person works in: its app opens the one box, with no menu to carry
+            // it. Asking an agent addresses the new one; saying something addresses the people
+            // here; a report points at what is wrong first and goes to the one place reports go.
+            // The desk names that window on its next pass, and a desk with none in front leaves the
+            // chord to Chat, which a send with nothing to be about has always opened.
+            ShortcutAction::AskAgent => self.box_ask.set(Some(BoxAsk::Agent)),
+            ShortcutAction::SaySomething => self.box_ask.set(Some(BoxAsk::People)),
+            ShortcutAction::ReportProblem => self.box_ask.set(Some(BoxAsk::Report)),
             // The desk answers these on its own windows, strips and places before handing anything
             // on: one arriving here is one it had nothing to act on.
             ShortcutAction::WorkspaceOverview
@@ -922,7 +912,6 @@ impl Shared {
             | ShortcutAction::ResizeWider
             | ShortcutAction::OpenFiles
             | ShortcutAction::OpenTerminal
-            | ShortcutAction::ReportProblem
             | ShortcutAction::FocusGroup1
             | ShortcutAction::FocusGroup2
             | ShortcutAction::FocusGroup3

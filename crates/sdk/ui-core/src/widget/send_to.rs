@@ -64,6 +64,8 @@ struct Layout {
     removes: Vec<Option<Rect>>,
     search: Rect,
     rows: Vec<Rect>,
+    /// Why a report on the chips cannot be sent, when it cannot.
+    note: Rect,
     subjects: Vec<Rect>,
     plus: Rect,
     message: Rect,
@@ -77,12 +79,9 @@ pub struct SendToBox {
     about: Option<SharedSelection>,
     /// The subjects, chips in the order they show.
     subjects: Vec<SharedSelection>,
-    /// Whom it goes to: the agent being made by default, or, when the session
-    /// opened the box to a fixed destination, that alone.
+    /// Whom it goes to: the agent being made by default, the people the
+    /// session named, or a report's one destination.
     to: Vec<Recipient>,
-    /// Whether the session named whom it goes to: the box then searches for
-    /// nobody and its chips stay, so a report cannot be addressed elsewhere.
-    addressed: bool,
     /// What is typed into the recipient field, and the search it asked for.
     search: String,
     search_selection: Selection,
@@ -130,7 +129,6 @@ impl SendToBox {
             about: None,
             subjects: Vec::new(),
             to: vec![Recipient::new_agent(String::new())],
-            addressed: false,
             search: String::new(),
             search_selection: Selection::default(),
             search_composition: QueryComposition::default(),
@@ -196,11 +194,37 @@ impl SendToBox {
         &self.to
     }
 
-    /// Whether the session named whom it goes to, so nobody is searched for
-    /// and the chips stay.
+    /// Whether a report is what this box holds: the one place reports go is
+    /// on its chips, so it reads and writes as a report and not as a message.
     #[must_use]
-    pub fn addressed(&self) -> bool {
-        self.addressed
+    pub fn reporting(&self) -> bool {
+        self.to
+            .iter()
+            .any(|recipient| recipient.kind == RecipientKind::Feedback)
+    }
+
+    /// Why the report on its chips cannot be sent, as the person reads it: the
+    /// place reports go is one this computer is not told.
+    fn report_refusal(&self) -> Option<&str> {
+        self.to
+            .iter()
+            .find(|recipient| recipient.kind == RecipientKind::Feedback && recipient.id.is_empty())
+            .and_then(|recipient| recipient.detail.as_deref())
+            .filter(|detail| !detail.trim().is_empty())
+    }
+
+    /// Whether the report on its chips can be sent: the place reports go is
+    /// one this computer is told, and never stands beside another recipient.
+    fn report_sendable(&self) -> bool {
+        let mut reports = self
+            .to
+            .iter()
+            .filter(|recipient| recipient.kind == RecipientKind::Feedback);
+        match (reports.next(), reports.next()) {
+            (Some(only), None) => !only.id.is_empty() && self.to.len() == 1,
+            (None, _) => true,
+            (Some(_), Some(_)) => false,
+        }
     }
 
     /// What the message says.
@@ -240,8 +264,9 @@ impl SendToBox {
 
     /// Show the box about what the menu acts on, with `draft` in its message
     /// field (a sentence typed into the menu that no row answered), and to
-    /// `to` when the session names whom it goes to — the one place a report
-    /// goes — else to the agent a message makes, which the person may change.
+    /// `to` when the session names whom it goes to — the people here, the one
+    /// place a report goes — else to the agent a message makes, which the
+    /// person may change.
     pub fn open(&mut self, draft: Option<&str>, to: &[Recipient]) {
         self.open = true;
         // It arrives on its own: a box whose host stops drawing it once open
@@ -256,11 +281,10 @@ impl SendToBox {
             self.subjects.push(about);
         }
         self.to.clear();
-        self.addressed = !to.is_empty();
-        if self.addressed {
-            self.to.extend_from_slice(to);
-        } else {
+        if to.is_empty() {
             self.to.push(Recipient::new_agent(String::new()));
+        } else {
+            self.to.extend_from_slice(to);
         }
         self.search.clear();
         self.search_selection = Selection::default();
@@ -268,7 +292,7 @@ impl SendToBox {
         self.hovered = None;
         self.answered = false;
         self.ask_search();
-        self.focus = if draft.is_some() || self.addressed {
+        self.focus = if draft.is_some() || self.reporting() {
             SendToFocus::Message
         } else {
             SendToFocus::Recipients
@@ -372,6 +396,11 @@ impl SendToBox {
             + row // the recipients and the search, on one line
             + if self.recipients_wrap() { row } else { 0.0 } // or the search under them
             + if results > 0.0 { gap + results } else { 0.0 }
+            + if self.report_refusal().is_some() {
+                gap + self.header_height()
+            } else {
+                0.0
+            }
             + gap
             + if self.says_what() { row + gap } else { 0.0 } // the subjects
             + self.message_height() // the message, as tall as it wraps
@@ -389,9 +418,6 @@ impl SendToBox {
     /// one line does not hold both at the widths they ask for, and a chip with
     /// its name cut reads worse than a field of its own.
     fn recipients_wrap(&self) -> bool {
-        if self.addressed {
-            return false;
-        }
         let room = self.width() - self.padding() * 2.0;
         let gap = self.gap() / 2.0;
         let (_, asks) = self.recipient_asks();
@@ -494,8 +520,7 @@ impl SendToBox {
             .to
             .iter()
             .map(|recipient| {
-                !(self.addressed
-                    || recipient.kind == RecipientKind::NewAgent && recipient.name.is_empty())
+                !(recipient.kind == RecipientKind::NewAgent && recipient.name.is_empty())
             })
             .collect();
         let asks = self
@@ -593,13 +618,7 @@ impl SendToBox {
         // mark it leads with and the × that takes it off; the search keeps the
         // rest of the line, enough for what it says when nothing is typed.
         let (removable, asks) = self.recipient_asks();
-        // A box opened to whom it sends to has no field to search in: its
-        // chips take the line.
-        let search_room = if self.addressed {
-            0.0
-        } else {
-            self.search_ask().min(room)
-        };
+        let search_room = self.search_ask().min(room);
         // The chips and the field that finds one share a line while it holds
         // both at the widths they ask for; when it does not, the chips keep
         // theirs and the field takes the line under them, the width of the
@@ -618,9 +637,7 @@ impl SendToBox {
             })
             .collect();
         let start = (x + gap).max(rect.x0 + pad);
-        let search = if self.addressed {
-            Rect::new(start, y, start, y + row)
-        } else if wrapped {
+        let search = if wrapped {
             Rect::new(rect.x0 + pad, y + row, rect.x1 - pad, y + 2.0 * row)
         } else {
             Rect::new(
@@ -636,6 +653,16 @@ impl SendToBox {
             rows.push(Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + row));
             y += row;
         }
+        // A report this computer is told nowhere says so beside its chip,
+        // rather than leaving Send dead for a reason the person cannot read.
+        let note = if self.report_refusal().is_some() {
+            y += gap;
+            let line = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + self.header_height());
+            y += self.header_height();
+            line
+        } else {
+            Rect::ZERO
+        };
         y += gap;
         // The subjects share their line with the button that adds one, so both
         // stay inside the box whatever they hold. The button carries its own
@@ -677,6 +704,7 @@ impl SendToBox {
             removes,
             search,
             rows,
+            note,
             subjects,
             plus,
             message,
@@ -692,18 +720,18 @@ impl SendToBox {
         self.rows.clear();
         self.hovered = None;
         self.dirty = true;
-        // A box opened to the one place it sends to has nobody to look for.
-        if self.addressed || self.search.trim().is_empty() {
+        // An empty field asks nothing: what every app holds would answer it.
+        if self.search.trim().is_empty() {
             self.layout = self.build_layout();
             return;
         }
         self.request = crate::shared_selection::search_recipients(&self.search);
     }
 
-    /// What the box is called: a report, when it was opened to the one place
-    /// reports go, and a message it sends anywhere else.
+    /// What the box is called: a report, when the one place reports go is on
+    /// it, and a message it sends anywhere else.
     fn name(&self) -> String {
-        crate::i18n::I18nManager::lookup_plain(if self.addressed {
+        crate::i18n::I18nManager::lookup_plain(if self.reporting() {
             "send-to-report-name"
         } else {
             "send-to-name"
@@ -769,18 +797,21 @@ impl SendToBox {
                         return true;
                     }
                     Key::Named(NamedKey::Backspace)
-                        if self.focus == SendToFocus::Recipients
-                            && self.search.is_empty()
-                            && !self.addressed =>
+                        if self.focus == SendToFocus::Recipients && self.search.is_empty() =>
                     {
                         if self.to.len() > 1 {
                             self.to.pop();
-                            self.changed();
-                            self.layout = self.build_layout();
+                        } else if self.reporting() {
+                            // A report taken off leaves the agent a message
+                            // makes, so the box still has somewhere to send.
+                            self.to.clear();
+                            self.to.push(Recipient::new_agent(String::new()));
                         } else {
                             // The last chip is the agent a message makes; it
                             // stays, so a box always has somewhere to send.
                         }
+                        self.changed();
+                        self.layout = self.build_layout();
                         *ctx.handled = true;
                         return true;
                     }
@@ -838,11 +869,7 @@ impl SendToBox {
         if let Some(index) = self.layout.chips.iter().position(|chip| chip.contains(at)) {
             // The × takes a chip off; a recipient the person picked goes on a
             // press anywhere on it, and the agent a message makes stays until
-            // it is taken off by its own ×. A box the session addressed keeps
-            // the one place it sends to.
-            if self.addressed {
-                return true;
-            }
+            // it is taken off by its own ×.
             let remove = self
                 .layout
                 .removes
@@ -851,7 +878,12 @@ impl SendToBox {
                 .flatten()
                 .is_some_and(|remove| remove.contains(at));
             if remove || index > 0 {
-                self.to.remove(index);
+                let gone = self.to.remove(index);
+                if self.to.is_empty() && gone.kind == RecipientKind::Feedback {
+                    // A report taken off leaves the agent a message makes, so
+                    // the box still has somewhere to send.
+                    self.to.push(Recipient::new_agent(String::new()));
+                }
                 self.changed();
                 self.layout = self.build_layout();
             }
@@ -914,7 +946,7 @@ impl SendToBox {
     pub fn focus_first(&mut self) {
         if self.open {
             self.focused = true;
-            self.focus = if self.addressed {
+            self.focus = if self.reporting() {
                 SendToFocus::Message
             } else {
                 SendToFocus::Recipients
@@ -958,6 +990,12 @@ impl SendToBox {
         self.take_recipient(recipient);
     }
 
+    /// The recipient a person chose, as a press on its row chooses it.
+    #[cfg(test)]
+    pub(crate) fn choose_for_test(&mut self, recipient: Recipient) {
+        self.take_recipient(recipient);
+    }
+
     fn take_row(&mut self, index: usize) {
         let Some(recipient) = self.rows.get(index).cloned() else {
             return;
@@ -967,7 +1005,8 @@ impl SendToBox {
 
     /// A recipient the person chose: it joins the chips, in the place of the
     /// new agent when the person is making one, and the keyboard goes on to
-    /// the message.
+    /// the message. A report is the one place reports go and stands alone: it
+    /// takes the place of everyone else, and anyone else takes its place.
     fn take_recipient(&mut self, recipient: Recipient) {
         self.focus = SendToFocus::Message;
         self.search.clear();
@@ -975,6 +1014,19 @@ impl SendToBox {
         self.rows.clear();
         self.hovered = None;
         self.answered = false;
+        if recipient.kind == RecipientKind::Feedback {
+            if self.reporting() {
+                return;
+            }
+            self.to
+                .retain(|taken| taken.kind == RecipientKind::Feedback);
+            self.to.push(recipient);
+            self.changed();
+            self.layout = self.build_layout();
+            return;
+        }
+        self.to
+            .retain(|taken| taken.kind != RecipientKind::Feedback);
         if !self.to.iter().any(|taken| {
             taken.kind == recipient.kind && taken.id == recipient.id && taken.name == recipient.name
         }) {
@@ -999,10 +1051,14 @@ impl SendToBox {
 
     /// Whether the box has something to send: whom it goes to, and either the
     /// words or what they are about. A subject on its own is the message — a
-    /// task sent to someone says what it is without a sentence beside it.
+    /// task sent to someone says what it is without a sentence beside it. A
+    /// report needs a place this computer is told, so a computer told nowhere
+    /// offers the report but sends none of it.
     #[must_use]
     pub fn can_send(&self) -> bool {
-        !self.to.is_empty() && (!self.text.trim().is_empty() || !self.subjects.is_empty())
+        !self.to.is_empty()
+            && self.report_sendable()
+            && (!self.text.trim().is_empty() || !self.subjects.is_empty())
     }
 
     /// Send what the box holds: one request the session acts on as the
@@ -1088,6 +1144,13 @@ impl SendToBox {
             self.paint_body(scene, transform, text_renderer, theme);
         });
         self.dirty = false;
+    }
+
+    /// Stand it at once, at rest: a box the window was asked for has no control
+    /// under the pointer to be summoned from, so it is there from the frame it
+    /// opens in rather than growing out of nothing.
+    pub fn stand_at_rest(&mut self) {
+        self.appear.snap(true);
     }
 
     /// Its panel and what stands on it, drawn in the pose [`Self::paint`]
@@ -1194,10 +1257,9 @@ impl SendToBox {
                 );
             }
         }
-        // The search field: what is typed, or what typing searches. A box
-        // opened to the one place it sends to has none.
+        // The search field: what is typed, or what typing searches.
         let placeholder = crate::i18n::I18nManager::lookup_plain("send-to-search-placeholder");
-        if !self.addressed {
+        {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -1305,6 +1367,27 @@ impl SendToBox {
                 &style,
             );
         }
+        // Why the report on the chips cannot be sent, where the person reads it.
+        if let Some(reason) = self.report_refusal() {
+            let caption = theme.text(TextRole::Caption);
+            let shown = text_renderer.elide_to_width_style(
+                reason,
+                self.layout.note.width() as f32,
+                &caption,
+            );
+            text_renderer.draw_style(
+                scene,
+                &shown,
+                dim,
+                transform.pre_translate(Vec2::new(
+                    self.layout.note.x0,
+                    self.layout.note.y0 + self.layout.note.height() / 2.0
+                        - f64::from(caption.size) / 2.0,
+                )),
+                None,
+                &caption,
+            );
+        }
 
         // The subjects: what the message is about, each led by the glyph of the
         // app that holds it, and the button that adds what the person has
@@ -1400,7 +1483,7 @@ impl SendToBox {
             None,
             &RoundedRect::from_rect(self.layout.message, radius * 0.75),
         );
-        let message_placeholder = crate::i18n::I18nManager::lookup_plain(if self.addressed {
+        let message_placeholder = crate::i18n::I18nManager::lookup_plain(if self.reporting() {
             "send-to-report-placeholder"
         } else {
             "send-to-message-placeholder"
@@ -1466,10 +1549,8 @@ impl SendToBox {
         let mut position = 0usize;
         // The parts the keyboard reaches, in order: the field, what it found,
         // the subject button while it stands, the message and Send.
-        let total = usize::from(!self.addressed)
-            + self.rows.len().min(MAX_ROWS)
-            + usize::from(self.layout.plus.width() > 0.0)
-            + 2;
+        let total =
+            1 + self.rows.len().min(MAX_ROWS) + usize::from(self.layout.plus.width() > 0.0) + 2;
         let mut action = |node: AccessNode| {
             position = position.saturating_add(1);
             node.with_position(position, total)
@@ -1485,22 +1566,20 @@ impl SendToBox {
                     .with_bounds(self.layout.chips.get(index).copied().unwrap_or(Rect::ZERO)),
             );
         }
-        if !self.addressed {
-            children.push(action(
-                AccessNode::new(Role::TextInput)
-                    .with_name(crate::i18n::I18nManager::lookup_plain(
-                        "send-to-recipients-name",
-                    ))
-                    .with_optional_value(Some(self.search.clone()))
-                    .with_action_target("send-to:recipients".to_owned())
-                    .with_bounds(self.layout.search)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.focused && self.focus == SendToFocus::Recipients,
-                        ..Default::default()
-                    }),
-            ));
-        }
+        children.push(action(
+            AccessNode::new(Role::TextInput)
+                .with_name(crate::i18n::I18nManager::lookup_plain(
+                    "send-to-recipients-name",
+                ))
+                .with_optional_value(Some(self.search.clone()))
+                .with_action_target("send-to:recipients".to_owned())
+                .with_bounds(self.layout.search)
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: self.focused && self.focus == SendToFocus::Recipients,
+                    ..Default::default()
+                }),
+        ));
         for (index, recipient) in self.rows.iter().take(MAX_ROWS).enumerate() {
             children.push(action(
                 AccessNode::new(Role::MenuItem)

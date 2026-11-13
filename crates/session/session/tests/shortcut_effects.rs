@@ -350,10 +350,6 @@ fn the_session_answers_every_shortcut_of_its_side() {
                 | ShortcutAction::DictationToggle
                 | ShortcutAction::DictationFinish
                 | ShortcutAction::DictationCancel
-                // A report goes to the one place this computer is told,
-                // and this run is told nowhere (`session/send_key.rs` asks
-                // the window in front where it is).
-                | ShortcutAction::ReportProblem
         ) {
             continue;
         }
@@ -390,7 +386,13 @@ fn the_session_answers_every_shortcut_of_its_side() {
                         .any(|label| label == "Retained notifications")
                 });
             }
-            ShortcutAction::AskAgent | ShortcutAction::SaySomething => {
+            // Asking an agent, saying something to the people here and reporting a problem all
+            // send from the window in front; a desk with none leaves the gesture to Chat, which a
+            // send with nothing to be about has always opened (`session/send_key.rs` asks a window
+            // in front for its box).
+            ShortcutAction::AskAgent
+            | ShortcutAction::SaySomething
+            | ShortcutAction::ReportProblem => {
                 until(&mut session, "a conversation", |session| {
                     apps(session).iter().any(|app| app == "so.tilo.chat")
                 });

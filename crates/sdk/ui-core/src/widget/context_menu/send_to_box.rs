@@ -38,6 +38,7 @@ impl ContextMenu {
         // keystroke belongs: in the message when it carries the sentence the
         // menu took, else in the field that names whom it goes to.
         self.send_to.open(draft, to);
+        self.send_to.stand_at_rest();
         self.send_to.place(anchor, self.viewport);
         self.dirty = true;
     }

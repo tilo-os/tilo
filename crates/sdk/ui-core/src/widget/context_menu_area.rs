@@ -348,7 +348,7 @@ enum Opening {
 macro_rules! over_content {
     ($area:ident $(, $mut:tt)?) => {{
         let mut over: Vec<&$($mut)? (dyn Widget + '_)> = Vec::new();
-        if $area.menu.is_open() {
+        if $area.menu.is_showing() {
             over.push(&$($mut)? $area.menu);
         }
         if let Some((picker, _)) = &$($mut)? $area.picker {
@@ -837,6 +837,7 @@ impl super::Decorator for ContextMenuArea {
 
     fn needs_animation_frame(&self) -> bool {
         self.content.needs_animation_frame()
+            || self.menu.needs_animation_frame()
             || self.picker_wanted.is_some()
             || self
                 .picker
@@ -867,25 +868,13 @@ impl super::Decorator for ContextMenuArea {
             // have changed: the menu stands where what opened it is now.
             self.place_menu();
         }
-        // A box the window or the shell asked for with no menu around it:
-        // it stands where its anchor does, until it sends.
-        if let Some(box_) = crate::shared_selection::take_open_send_box()
-            && !self.menu.is_open()
-        {
-            if self.viewport.is_none() {
-                self.viewport = presence.viewport.get();
-            }
-            self.menu.set_viewport(self.viewport);
-            self.menu
-                .open_send_to_alone(box_.about, box_.bounds, box_.draft.as_deref(), &box_.to);
-        }
         self.content
             .draw_overlay(scene, transform, text_renderer, theme, presence);
-        // The menu paints in the overlay pass, over everything.
-        if self.menu.is_drawn() || self.menu.send_to_alone_drawn() {
-            self.menu
-                .draw_overlay(scene, transform, text_renderer, theme, presence);
-        }
+        // The menu paints in the overlay pass, over everything: a box the
+        // window was asked for with no menu around it is taken there, so the
+        // menu is drawn even while closed.
+        self.menu
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
         if let Some((anchor, pick)) = self.picker_wanted.take() {
             let mut picker = super::EmojiPicker::framed();
             let viewport = self.viewport.unwrap_or_else(|| self.content.get_rect());

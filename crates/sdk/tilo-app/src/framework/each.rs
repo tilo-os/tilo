@@ -636,6 +636,12 @@ impl<R: Resource> Each<R> {
             }
             return *ctx.handled;
         }
+        // A box the window was asked for stands on this list's menu with no menu
+        // around it: the pointer and the keys are the box's until it sends.
+        if self.menu.menu.send_to_alone_open() {
+            self.menu.menu.handle_event(event, ctx);
+            return *ctx.handled;
+        }
         let target = match event {
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1021,6 +1027,7 @@ impl<R: Resource> Widget for Each<R> {
 
     fn wants_pointer_capture(&self) -> bool {
         self.menu.menu.is_open()
+            || self.menu.menu.send_to_alone_open()
             || self
                 .mounted()
                 .any(|(_, view)| view.widget.wants_pointer_capture())
@@ -1048,11 +1055,24 @@ impl<R: Resource> Widget for Each<R> {
             row.widget
                 .draw_overlay(scene, transform, text, theme, presence);
         });
-        // Drawn while it is open and while it leaves (`motion::Appear`);
-        // a closed menu draws nothing.
+        // Drawn while it is open and while it leaves (`motion::Appear`); a
+        // closed menu draws nothing but a box its window was asked for.
         self.menu
             .menu
             .draw_overlay(scene, transform, text, theme, presence);
+    }
+
+    /// What the menu paints — a menu arriving or leaving, a box beside it — is
+    /// the list's frame too, though the menu is no child while it is closed.
+    fn needs_redraw(&self) -> bool {
+        self.menu.menu.needs_redraw() || self.mounted().any(|(_, view)| view.widget.needs_redraw())
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.menu.menu.needs_animation_frame()
+            || self
+                .mounted()
+                .any(|(_, view)| view.widget.needs_animation_frame())
     }
 
     fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
@@ -1119,10 +1139,12 @@ impl<R: Resource> Widget for Each<R> {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
+        // Its menu is part of the list's frame while it shows, and a box its
+        // window was asked for shows with no menu around it.
         let open = self
             .menu
             .menu
-            .is_open()
+            .is_showing()
             .then_some(&self.menu.menu as &dyn Widget);
         self.mounted()
             .map(|(_, view)| view.widget.as_ref())

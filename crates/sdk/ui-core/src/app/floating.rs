@@ -1240,12 +1240,21 @@ impl App {
                         );
                     }
                 }
-                FloatingSurfaceHostMessage::ShareSelection { to } => {
+                FloatingSurfaceHostMessage::ShareSelection { to, pointing } => {
                     // The shell asks this window to send from its keyboard,
                     // with no menu to carry a box: it opens alone, about what
-                    // the window has picked, and either to the place the shell
-                    // named — a report goes to the one it was opened with — or
-                    // with the person naming whom it goes to.
+                    // the window has picked, and either to whom the shell
+                    // named — the people here, the one place a report goes —
+                    // or with the person naming whom it goes to. Pointing
+                    // first: the window lights what is under the pointer and
+                    // the box opens about what they click.
+                    if *pointing {
+                        self.report_pointing =
+                            Some(crate::app::report_point::Pointing::new(to.clone()));
+                        self.layout.layout_dirty = true;
+                        continue;
+                    }
+                    self.report_pointing = None;
                     let about =
                         crate::shared_selection::subtree_selection(self.root_widget.as_ref());
                     let bounds = about

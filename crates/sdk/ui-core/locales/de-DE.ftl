@@ -835,6 +835,8 @@ menu-ask-typed = Senden: { $text }
 send-to-name = Senden an
 # The same box opened to the one place reports go.
 send-to-report-name = Problem melden
+# The line over a window asked to point at what a report is about.
+send-to-point-hint = Klicke, was nicht funktioniert · Escape bricht ab
 send-to-new-agent = Neuer Agent
 send-to-recipients-name = Jemanden hinzufügen
 send-to-search-placeholder = Jemanden hinzufügen…

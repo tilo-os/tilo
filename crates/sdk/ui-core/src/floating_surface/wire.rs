@@ -513,10 +513,19 @@ pub enum FloatingSurfaceHostMessage {
     PaintStop,
     /// The person pressed the desktop's "ask an agent" chord over this app's focused window: answer
     /// with [`FloatingSurfaceClientMessage::SendTo`] for what the box shows, or nothing when it shows
-    /// none.
+    /// none. Sent only to an app that announced
+    /// [`FloatingSurfaceClientMessage::SelectionCapable`].
+    ///
+    /// `to` is whom the box opens to when the session names it — the people here, the one place a
+    /// report goes — and empty when the person names whom it goes to.
+    ///
+    /// `pointing` asks the window for the thing the box is about first: it lights up what lies under
+    /// the pointer in this window, and the box opens about what the person clicks.
     ShareSelection {
         #[serde(default)]
         to: Vec<Recipient>,
+        #[serde(default)]
+        pointing: bool,
     },
     /// What the one search finds for [`FloatingSurfaceClientMessage::SearchRecipients`] `request`:
     /// agents, people and conversations to send to, the people and conversations this window is already

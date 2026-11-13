@@ -40,6 +40,7 @@ use ui::workspace_sync::WorkspaceSync;
 
 use crate::Launches;
 use crate::apps::Apps;
+use crate::assembly::BoxAsk;
 use crate::capture_studio::CaptureStudio;
 use crate::desktop_services::DesktopServices;
 use crate::host_shell::HostShellAsks;
@@ -392,30 +393,28 @@ impl AppTabs {
         }
     }
 
-    /// Ask the window in front to open its box, as the shell's send key does
+    /// Ask the window in front to open its box, as the shell's send keys do
     /// ([`FloatingSurfaceHostMessage::ShareSelection`]): the app draws the box alone, with no menu
-    /// around it. "Report a problem" asks for the same box with the one place this computer sends
-    /// reports on it, so nothing but the words is left to fill in and the person writes them over
-    /// the window the report is about. A window whose app cannot take a box — it never said it
-    /// opens one, or it is gone — leaves the gesture to Chat, which a send has always opened; a
-    /// report with nowhere to go asks nothing.
+    /// around it, addressed to the people here or to the agent it makes by being sent to. Saying
+    /// something to the people here addresses them; a report asks the window for the thing it is
+    /// about first, and the box opens about what the person points at, to the one place this
+    /// computer sends reports — or saying it is told nowhere, and still sending to an agent or a
+    /// person. A window whose app cannot take a box — it never said it opens one, or it is gone —
+    /// leaves the gesture to Chat, which a send has always opened.
     fn deliver_box(&self, shared: &crate::Shared, desktop: &DesktopHost, compositor: &Compositor) {
-        let reporting = shared.take_report_from();
-        if !shared.take_send_from() && !reporting {
+        let Some(ask) = shared.take_box_ask() else {
             return;
-        }
-        let to = if reporting {
-            let Some(to) = shared.feedback_recipient() else {
-                return;
-            };
-            vec![to]
-        } else {
-            Vec::new()
         };
+        let to = match ask {
+            BoxAsk::Agent => Vec::new(),
+            BoxAsk::People => shared.people_recipients(),
+            BoxAsk::Report => vec![shared.feedback_row()],
+        };
+        let pointing = ask == BoxAsk::Report;
         let asked = self.link_in_front(desktop, compositor).is_some_and(|link| {
             tell(
                 &link.writer,
-                &FloatingSurfaceHostMessage::ShareSelection { to },
+                &FloatingSurfaceHostMessage::ShareSelection { to, pointing },
                 &link.app,
             )
         });
