@@ -47,7 +47,7 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
                         height: pin_height(s),
                     ) {
                         if framed {
-                            canvas_place(a, p, lists and p.key == front_place(a))
+                            canvas_place(a, p, lists and p.key == front_place(a), fill)
                         } else {
                             space_content(a, p)
                         }
