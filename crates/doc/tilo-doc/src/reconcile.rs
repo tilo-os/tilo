@@ -664,31 +664,68 @@ mod tests {
     }
 
     #[test]
-    fn an_unchanged_save_writes_nothing() {
-        let (mut doc, snapshot) = document(&["one", "two"]);
-        let before = ids(&doc);
-        let stats = reconcile_document(&mut doc.doc, &snapshot)
-            .expect("reconcile")
-            .expect("a document to reconcile into");
-        doc.doc.commit();
-        assert!(stats.is_empty(), "an unchanged save wrote {stats:?}");
-        assert_eq!(before, ids(&doc));
-        assert!(reads_as(&doc.doc, &automerge::ROOT, &snapshot));
-    }
-
-    #[test]
-    fn a_changed_paragraph_keeps_its_block_id() {
-        let (mut doc, snapshot) = document(&["one", "two"]);
-        let before = ids(&doc);
-        let (_other, wanted) = document(&["one", "two and a half"]);
-        let stats = reconcile_document(&mut doc.doc, &wanted)
-            .expect("reconcile")
-            .expect("a document to reconcile into");
-        doc.doc.commit();
-        assert_eq!(before, ids(&doc), "an edit must not re-mint block ids");
-        assert!(stats.blocks_changed > 0, "the edit was not written");
-        assert!(reads_as(&doc.doc, &automerge::ROOT, &wanted));
-        assert!(!reads_as(&doc.doc, &automerge::ROOT, &snapshot));
+    fn a_save_writes_only_what_differs_and_every_paragraph_keeps_its_id() {
+        // An unchanged save writes nothing.
+        {
+            let (mut doc, snapshot) = document(&["one", "two"]);
+            let before = ids(&doc);
+            let stats = reconcile_document(&mut doc.doc, &snapshot)
+                .expect("reconcile")
+                .expect("a document to reconcile into");
+            doc.doc.commit();
+            assert!(stats.is_empty(), "an unchanged save wrote {stats:?}");
+            assert_eq!(before, ids(&doc), "an unchanged save re-minted block ids");
+            assert!(
+                reads_as(&doc.doc, &automerge::ROOT, &snapshot),
+                "an unchanged save reads as it did"
+            );
+        }
+        // A changed paragraph keeps its block id.
+        {
+            let (mut doc, snapshot) = document(&["one", "two"]);
+            let before = ids(&doc);
+            let (_other, wanted) = document(&["one", "two and a half"]);
+            let stats = reconcile_document(&mut doc.doc, &wanted)
+                .expect("reconcile")
+                .expect("a document to reconcile into");
+            doc.doc.commit();
+            assert_eq!(before, ids(&doc), "an edit must not re-mint block ids");
+            assert!(stats.blocks_changed > 0, "the edit was not written");
+            assert!(
+                reads_as(&doc.doc, &automerge::ROOT, &wanted),
+                "a changed paragraph reads as what was saved"
+            );
+            assert!(
+                !reads_as(&doc.doc, &automerge::ROOT, &snapshot),
+                "a changed paragraph no longer reads as it did"
+            );
+        }
+        // Typing into a paragraph that reads as a later one splices it in
+        // place: a note with empty lines between its paragraphs, the first
+        // empty one typed into.
+        {
+            let (mut doc, _) = document(&["", "one", "", "two", ""]);
+            let before = ids(&doc);
+            let (_other, wanted) = document(&["a", "one", "", "two", ""]);
+            let stats = reconcile_document(&mut doc.doc, &wanted)
+                .expect("reconcile")
+                .expect("a document to reconcile into");
+            doc.doc.commit();
+            assert_eq!(before, ids(&doc), "every paragraph keeps its id");
+            assert_eq!(
+                (
+                    stats.blocks_changed,
+                    stats.blocks_inserted,
+                    stats.blocks_removed
+                ),
+                (1, 0, 0),
+                "one paragraph spliced, none written anew: {stats:?}"
+            );
+            assert!(
+                reads_as(&doc.doc, &automerge::ROOT, &wanted),
+                "typing into an empty paragraph reads as what was saved"
+            );
+        }
     }
 
     #[test]
@@ -719,28 +756,5 @@ mod tests {
         assert_eq!(text(&mine, &peer_block).as_str(), "second paragraph");
         let first = ids(&mine).first().expect("a first paragraph").clone();
         assert_eq!(text(&mine, &first).as_str(), "first, edited");
-    }
-
-    #[test]
-    fn typing_into_a_paragraph_that_reads_as_a_later_one_splices_it_in_place() {
-        // A note with empty lines between its paragraphs; the first empty one is typed into.
-        let (mut doc, _) = document(&["", "one", "", "two", ""]);
-        let before = ids(&doc);
-        let (_other, wanted) = document(&["a", "one", "", "two", ""]);
-        let stats = reconcile_document(&mut doc.doc, &wanted)
-            .expect("reconcile")
-            .expect("a document to reconcile into");
-        doc.doc.commit();
-        assert_eq!(before, ids(&doc), "every paragraph keeps its id");
-        assert_eq!(
-            (
-                stats.blocks_changed,
-                stats.blocks_inserted,
-                stats.blocks_removed
-            ),
-            (1, 0, 0),
-            "one paragraph spliced, none written anew: {stats:?}"
-        );
-        assert!(reads_as(&doc.doc, &automerge::ROOT, &wanted));
     }
 }

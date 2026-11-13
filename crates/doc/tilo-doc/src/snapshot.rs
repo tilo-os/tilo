@@ -291,7 +291,7 @@ mod version_tests {
     use crate::Document;
 
     #[test]
-    fn version_chain_and_time_travel() {
+    fn versions_time_travel_and_one_replay_agree() {
         let mut d = Document::new();
         let a = d.insert_block(None, "paragraph");
         d.splice_text(&a, 0, 0, "first");
@@ -323,35 +323,12 @@ mod version_tests {
             saw_one,
             "an intermediate version should have a single block"
         );
-    }
 
-    #[test]
-    fn time_travel_shows_text_growth() {
-        let mut d = Document::new();
-        let p = d.insert_block(None, "paragraph");
-        d.splice_text(&p, 0, 0, "hello");
-        let mid = d.versions().len() - 1; // after "hello"
-        d.splice_text(&p, 5, 0, " world");
-
-        let at_mid = d.materialize_at(mid).unwrap();
-        assert_eq!(at_mid.blocks[0].text, "hello");
-        let last = d.versions().len() - 1;
-        let now = d.materialize_at(last).unwrap();
-        assert_eq!(now.blocks[0].text, "hello world");
-    }
-
-    #[test]
-    fn one_replay_matches_materializing_each_version() {
-        let mut d = Document::new();
-        let a = d.insert_block(None, "paragraph");
-        d.splice_text(&a, 0, 0, "first");
-        d.splice_text(&a, 5, 0, " edit");
-        let b = d.insert_block(Some(&a), "paragraph");
-        d.splice_text(&b, 0, 0, "second");
+        // One replay of the change log gives what materializing each version gives.
         let count = d.versions().len();
         let every: Vec<usize> = (0..count).collect();
         let series = super::series(&mut d.doc, &every);
-        assert_eq!(series.len(), count);
+        assert_eq!(series.len(), count, "one snapshot per version asked for");
         for (version, snapshot) in every.iter().zip(&series) {
             assert_eq!(
                 snapshot.as_ref(),
@@ -361,10 +338,28 @@ mod version_tests {
         }
         let window = [1, count - 1, count + 3];
         let series = super::series(&mut d.doc, &window);
-        assert_eq!(series[0].as_ref(), Some(&d.materialize_at(1).unwrap()));
+        assert_eq!(
+            series[0].as_ref(),
+            Some(&d.materialize_at(1).unwrap()),
+            "a window's first version"
+        );
         assert_eq!(
             series[2].as_ref(),
-            Some(&d.materialize_at(count - 1).unwrap())
+            Some(&d.materialize_at(count - 1).unwrap()),
+            "a version past the log reads as the last one"
         );
+
+        // Time travel shows a text growing.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "hello");
+        let mid = d.versions().len() - 1; // after "hello"
+        d.splice_text(&p, 5, 0, " world");
+
+        let at_mid = d.materialize_at(mid).unwrap();
+        assert_eq!(at_mid.blocks[0].text, "hello", "the text as it was");
+        let last = d.versions().len() - 1;
+        let now = d.materialize_at(last).unwrap();
+        assert_eq!(now.blocks[0].text, "hello world", "the text as it is");
     }
 }
