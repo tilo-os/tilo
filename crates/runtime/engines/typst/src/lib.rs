@@ -1,21 +1,9 @@
-//! Typst, as an engine library beside the shared runtime
-//! (`libtilo_typst_engine.so`).
+//! Typst, as its own library in the runtime bundle (`libtilo_typst_engine.so`).
 //!
-//! Typst Editor is the one app that typesets, and Typst with its bundled
-//! fonts is far heavier than that app's tapp may be. Inside
-//! `libruntime_dylib.so` every app process mapped and relocated it.
-//! Here it is a library of its own in the runtime bundle that only Typst
-//! Editor names `DT_NEEDED`; the runtime keeps everything the two share.
-//!
-//! Like `runtime-dylib`, this crate carries no logic beyond re-exporting the
-//! crates it provides, which records them as provided by this library for the
-//! app's `-C prefer-dynamic` link. Outside the thin build (`thin`) it is
-//! empty: see the manifest.
+//! Like `runtime-dylib` it re-exports what it provides, which records it
+//! as provided by this library for the apps' `-C prefer-dynamic` link.
+//! Outside the thin build it is empty.
 
-// Load the runtime explicitly, as thin apps do: rustc ignores an `--extern`
-// nothing names, and without it in the crate graph this library would link
-// its own copy of every crate the runtime already provides, which the app's
-// link then refuses (each crate may show up once).
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 // syntect and the grammars Typst's raw blocks use come from the highlight

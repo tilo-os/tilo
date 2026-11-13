@@ -1,31 +1,10 @@
-//! Settings itself and the libraries only Settings uses, as an engine
-//! library beside the shared runtime (`libtilo_settings_engine.so`).
+//! Settings itself and the libraries only Settings uses, as its own library in the
+//! runtime bundle (`libtilo_settings_engine.so`).
 //!
-//! Settings' library (`settings`: the window, its effects and every pane) is
-//! here; the app's binary is one call into it, `tilo_app_engine_main`
-//! (`ui::engine_main!`), so the app's package carries next to nothing
-//! and Settings' code ships in the runtime bundle beside the runtime it is
-//! built against. Settings edits the settings sections as resource models
-//! (`settings-sections`, whose derived models are about 1.5 MB of code),
-//! administers the model providers (`provider-settings-ui`), mounts
-//! NTFS drives through the root service (`tilo-ntfs-mount`'s protocol),
-//! offers the bundled wallpapers (`tilo-wallpapers`, whose catalogue is TOML),
-//! edits the accessibility settings (`tilo-accessibility-settings`) and
-//! draws the keyboard with its layout's legends over the PC models' outlines
-//! (`tilo-pc-keyboard-geometry`, 130 KB of JSON), and chooses the time zone
-//! on a globe (`tilo-zone-globe`, with the world's coastlines). No
-//! other app does, so none of them belongs in the runtime every app maps;
-//! here they are a library of their own in the runtime bundle that only
-//! Settings names `DT_NEEDED`, beside the accounts engine.
-//!
-//! Like `runtime-dylib`, this crate re-exports the crates it provides, which
-//! records them as provided by this library for a `-C prefer-dynamic` link.
-//! Outside the thin build (`thin`) it is empty: see the manifest.
+//! Like `runtime-dylib` it re-exports what it provides, which records it
+//! as provided by this library for the apps' `-C prefer-dynamic` link.
+//! Outside the thin build it is empty.
 
-// Load the runtime explicitly, as thin apps do: rustc ignores an `--extern`
-// nothing names, and without it in the crate graph this library would link
-// its own copy of every crate the runtime already provides, which the app's
-// link then refuses (each crate may show up once).
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 #[cfg(feature = "thin")]
@@ -48,7 +27,6 @@ pub use tilo_wallpapers;
 #[cfg(feature = "thin")]
 pub use zone_globe;
 
-// Run Settings: the whole of the app's binary (apps/settings/src/main.rs).
 #[cfg(feature = "thin")]
 ui::engine_main!(
     settings::SettingsShell,

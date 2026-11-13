@@ -1,23 +1,10 @@
-//! The workspace filesystem's FUSE presentation, as an engine library beside
-//! the shared runtime (`libtilo_fuse_engine.so`).
+//! The workspace filesystem's FUSE presentation, as its own library in the runtime
+//! bundle (`libtilo_fuse_engine.so`).
 //!
-//! `runtime-fs-fuse` serves a directory or a selected file through FUSE over
-//! a channel the launcher already admitted, on `fuser`'s session loop. Only
-//! Imager's retained-source projection worker does that. Inside
-//! `libruntime_dylib.so` (as runtime-fs's old `selected-fuse` feature) every
-//! app process mapped and relocated it; linked into Imager's tapp it would
-//! carry fuser's request parser in a tapp that is near its size budget. Here
-//! it is a library of its own in the runtime bundle that only Imager names
-//! `DT_NEEDED`.
-//!
-//! Like `runtime-dylib`, this crate re-exports the crates it provides, which
-//! records them as provided by this library for the app's `-C prefer-dynamic`
-//! link. Outside the thin build (`thin`) it is empty: see the manifest.
+//! Like `runtime-dylib` it re-exports what it provides, which records it
+//! as provided by this library for the apps' `-C prefer-dynamic` link.
+//! Outside the thin build it is empty.
 
-// Load the runtime explicitly, as thin apps do: rustc ignores an `--extern`
-// nothing names, and without it in the crate graph this library would link
-// its own copy of every crate the runtime already provides, which the app's
-// link then refuses (each crate may show up once).
 #[cfg(all(feature = "thin", target_os = "linux"))]
 extern crate runtime_dylib;
 
