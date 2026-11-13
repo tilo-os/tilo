@@ -17,13 +17,6 @@ use crate::hypervisor::Output;
 const QCOW2: &[u8] = b"QFI\xfb\0\0\0\x03";
 const SETUP: &[u8] = b"QFI\xfb dev as the person set it up";
 
-/// The host's hypervisor tools as tilo-vm sees them: each command is
-/// recorded; `virsh domstate`, `virsh list` and `utmctl status` answer from
-/// `state` (default off); `qemu-img create` writes the disk it names; a
-/// UTM clone gets an id of its own (unless `same_uuid`), which `osascript`
-/// reports; a command containing `fail` fails. `virsh start` and `virsh
-/// shutdown` turn a VM on and off; `log` is shared with [`World`], so the two
-/// say in one list what happened in which order.
 #[derive(Default)]
 struct Hv {
     ran: Vec<String>,
@@ -116,11 +109,6 @@ impl Hv {
     }
 }
 
-/// The commands a run issued that name `path`: a VM's disk, or the domain
-/// definition beside it. A frozen base is named after the VM it came from
-/// with a random suffix (`bases/dev-1f3c9a….qcow2`), so its ending can spell
-/// another disk's name: only the whole path tells the VM a run made from the
-/// bases it read.
 fn naming<'a>(ran: &'a [String], path: &str) -> Vec<&'a str> {
     ran.iter()
         .filter(|line| line.contains(path))
@@ -144,8 +132,6 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// One VM `dev` that `vm create` made with `hypervisor` and the person
-    /// set up: its disk is a child of the published image.
     fn new(hypervisor: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let app = App {
@@ -215,7 +201,6 @@ impl Fixture {
         self.app.vm_rm(hv, &name, force).unwrap()
     }
 
-    /// The one base made from `from` whose users include `user`.
     fn base_of(&self, user: &str) -> (String, Base) {
         let registry = self.registry();
         let image = registry.vms[user].image.clone().unwrap();
@@ -230,10 +215,6 @@ impl Fixture {
     }
 }
 
-/// A stopped VM's disk is frozen into a read-only base; the source gets a
-/// fresh child at its old path and each branch another, with its own UUID
-/// (domain and SMBIOS system UUID alike), MAC, SSH port and copy of the
-/// root key. `vm list` shows the relationships; a rerun changes nothing.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -330,8 +311,6 @@ fn a_stopped_vm_branches_into_children_of_one_frozen_base() {
                 "{name}'s domain lacks {needle}:\n{xml}"
             );
         }
-        // Stable across boots: a later redefinition (swap kernel --direct)
-        // keeps the recorded UUID without asking libvirt.
         let mut later = Hv::default();
         let vm = Vm { name, entry };
         hypervisor::Libvirt
@@ -373,10 +352,6 @@ fn a_stopped_vm_branches_into_children_of_one_frozen_base() {
     assert_eq!(fx.registry(), registry);
 }
 
-/// What cannot be branched is refused before anything changes: a running,
-/// paused or unknown-state source (with the --stop fix), names that clash,
-/// a VM tilo-vm did not make, adapters without a branch path, and a disk
-/// in the way.
 #[test]
 fn a_running_source_and_bad_requests_are_refused_without_a_change() {
     let fx = Fixture::new("libvirt");
@@ -479,8 +454,6 @@ fn a_running_source_and_bad_requests_are_refused_without_a_change() {
     }
 }
 
-/// Removing the source keeps its branches bootable; the base lives until
-/// the last VM using it goes, and then goes with it.
 #[test]
 fn removing_the_source_keeps_branches_and_the_base_until_the_last_user() {
     let mut fx = Fixture::new("libvirt");
@@ -500,7 +473,6 @@ fn removing_the_source_keeps_branches_and_the_base_until_the_last_user() {
     assert!(outcome.text.contains("a, b still use"), "{}", outcome.text);
     assert_eq!(std::fs::read(&base.disk).unwrap(), SETUP);
     for name in ["a", "b"] {
-        // What a boot of the branch reads: its own disk over the base.
         let entry = &fx.registry().vms[name];
         assert!(
             Path::new(entry.disk.as_deref().unwrap()).is_file(),
@@ -533,8 +505,6 @@ fn removing_the_source_keeps_branches_and_the_base_until_the_last_user() {
     );
 }
 
-/// A branch of a branch freezes the branch's disk into a base over the
-/// first one; each base goes once nothing above it is left.
 #[test]
 fn a_branch_of_a_branch_chains_its_base_onto_the_first() {
     let mut fx = Fixture::new("libvirt");
@@ -573,10 +543,6 @@ fn a_branch_of_a_branch_chains_its_base_onto_the_first() {
     assert!(fx.registry().bases.is_empty(), "{}", outcome.text);
 }
 
-/// A failure midway keeps the branches made before it, registered and
-/// working, removes what the failed one left, and the same command then
-/// makes only the rest. A failure on the first branch puts the source's
-/// disk back as it was.
 #[test]
 fn a_failure_midway_keeps_what_was_made_and_a_rerun_makes_the_rest() {
     let fx = Fixture::new("libvirt");
@@ -632,7 +598,6 @@ fn a_failure_midway_keeps_what_was_made_and_a_rerun_makes_the_rest() {
     assert_eq!(fx.base_of("a").0, first, "a keeps its base");
     assert_eq!(fx.base_of("b").1.image.as_deref(), Some(base.disk.as_str()));
 
-    // The first branch fails: nothing changes.
     let fx = Fixture::new("libvirt");
     let before = fx.registry();
     let mut hv = Hv {
@@ -655,9 +620,6 @@ fn a_failure_midway_keeps_what_was_made_and_a_rerun_makes_the_rest() {
     assert_eq!(bases, 0);
 }
 
-/// UTM: each branch is a clone of the stopped source (UTM clones the
-/// bundle copy-on-write), which tilo-vm gives a new MAC and whose new UUID
-/// it checks and records. A clone with the source's UUID is undone.
 #[test]
 fn utm_branches_are_clones_with_a_new_mac_and_a_checked_uuid() {
     let fx = Fixture::new("utm");
@@ -725,8 +687,6 @@ fn utm_branches_are_clones_with_a_new_mac_and_a_checked_uuid() {
     assert!(!sshkey::key_path(&fx.app.registry_path, "u2").exists());
 }
 
-/// WHPX: the base and children as on libvirt, and QEMU gets each VM's UUID
-/// (`-uuid`, its SMBIOS system UUID) and MAC.
 #[test]
 fn whpx_branches_pass_their_uuid_and_mac_to_qemu() {
     let fx = Fixture::new("whpx");
@@ -759,10 +719,6 @@ fn whpx_branches_pass_their_uuid_and_mac_to_qemu() {
     );
 }
 
-/// The guests as `vm branch` reads them, and the host's free memory: each read is logged into the
-/// list [`Hv`] logs its commands into. A VM answers what `answers` holds for it, front first, the
-/// last answer again and again; one with no answers is up at once and taken in ([`taken_in`]).
-/// Time passes only in `pause`.
 #[derive(Default)]
 struct World {
     log: Rc<RefCell<Vec<String>>>,
@@ -803,8 +759,6 @@ impl Guests for World {
     }
 }
 
-/// `vm` up with its own device key and its session `me` holding the person's workspace "Desk":
-/// hosted here when `vm` is the source `dev`, taken in by it otherwise.
 fn taken_in(vm: &str) -> Guest {
     Guest {
         key: Some(format!("key of {vm}")),
@@ -822,8 +776,6 @@ fn taken_in(vm: &str) -> Guest {
     }
 }
 
-/// `vm` as it comes up: not answering, then with its source's key before it re-keyed, then
-/// holding the workspace its host has not taken it in to yet.
 fn coming_up(vm: &str) -> VecDeque<Option<Guest>> {
     let mut before = taken_in(vm);
     before.recorded = false;
@@ -850,7 +802,6 @@ impl World {
     }
 }
 
-/// What the log says happened to the VMs: boots, shutdowns and reads, in order.
 fn steps(log: &Rc<RefCell<Vec<String>>>) -> Vec<String> {
     log.borrow()
         .iter()
@@ -872,10 +823,6 @@ fn shared_hv(log: &Rc<RefCell<Vec<String>>>) -> Hv {
     }
 }
 
-/// Without --no-admit, the branches are booted beside the source once: the source first, then the
-/// branches, which are read until each re-keyed and its workspace's host (the source) took it in,
-/// then the branches and the source are stopped again, the source because it was off before. A
-/// branch taken in is no longer `awaits_host`.
 #[test]
 fn branches_boot_once_beside_their_source_to_be_taken_in_then_everything_stops() {
     let fx = Fixture::new("libvirt");
@@ -921,16 +868,12 @@ fn branches_boot_once_beside_their_source_to_be_taken_in_then_everything_stops()
     }
 }
 
-/// Branches boot as many at a time as fit beside the source in the host's free memory, keeping
-/// some for the host; a source that cannot boot at all is refused before anything is made, saying
-/// to free memory or to branch with --no-admit.
 #[test]
 fn branches_boot_in_batches_that_fit_the_hosts_memory() {
     let fx = Fixture::new("libvirt");
     let log = Rc::default();
     let mut hv = shared_hv(&log);
     let mut world = World::shared(&log);
-    // dev and each branch take 8 GiB: room for dev and two branches.
     world.memory = Some(branch_admit::HOST_RESERVE_MB + 3 * 8192);
     fx.branch_in(&mut hv, &mut world, "dev a b c").unwrap();
     assert_eq!(
@@ -981,10 +924,6 @@ fn branches_boot_in_batches_that_fit_the_hosts_memory() {
     );
 }
 
-/// A branch its source's workspace does not take in within --admit-timeout fails naming the branch
-/// and the workspace; the branches stay made, stopped and `awaits_host`, the source is off again,
-/// and the same command, once it can be taken in, only boots them to be taken in. A branch that
-/// kept its source's device key is named with the fix.
 #[test]
 fn a_branch_not_taken_in_in_time_names_the_workspace_and_a_rerun_takes_it_in() {
     let fx = Fixture::new("libvirt");
@@ -1072,9 +1011,6 @@ fn a_branch_not_taken_in_in_time_names_the_workspace_and_a_rerun_takes_it_in() {
     );
 }
 
-/// --no-admit makes the branches without booting anything, and leaves them `awaits_host`; a source
-/// that already runs when its branches are taken in keeps running after, and its sessions are not
-/// woken.
 #[test]
 fn no_admit_boots_nothing_and_a_running_source_stays_running() {
     let fx = Fixture::new("libvirt");
@@ -1092,7 +1028,6 @@ fn no_admit_boots_nothing_and_a_running_source_stays_running() {
     );
     assert!(fx.registry().vms["a"].awaits_host.is_some());
 
-    // dev runs again (the person started it); a, made before, is taken in beside it.
     let log = Rc::default();
     let mut hv = shared_hv(&log);
     hv.state.insert("dev".into(), "running".into());
@@ -1103,8 +1038,6 @@ fn no_admit_boots_nothing_and_a_running_source_stays_running() {
     assert!(fx.registry().vms["a"].awaits_host.is_none());
 }
 
-/// A branch that does not boot ends the admission: what was booted is stopped again, the branches
-/// stay made and `awaits_host`, and a rerun takes them in.
 #[test]
 fn a_branch_that_does_not_boot_leaves_everything_made_and_off() {
     let fx = Fixture::new("libvirt");
@@ -1143,8 +1076,6 @@ fn a_branch_that_does_not_boot_leaves_everything_made_and_off() {
     assert!(registry.vms["a"].awaits_host.is_none() && registry.vms["b"].awaits_host.is_none());
 }
 
-/// A session's `workspace_hosts` answer, as `vm branch` reads it: each workspace named as the
-/// desk names it, with who hosts it and whether its host took this device in yet.
 #[test]
 fn a_sessions_workspace_hosts_say_who_hosts_them_and_whether_they_wait() {
     let answer = json!({"answer": {"workspaces": [
@@ -1175,10 +1106,6 @@ fn a_sessions_workspace_hosts_say_who_hosts_them_and_whether_they_wait() {
     );
 }
 
-/// The machine record is read by one shell line, as SSH hands it to the guest's login shell (the
-/// words joined by spaces): the script runs whole, in the record's directory. Split into words, it
-/// ran `sh -c cd` and the rest elsewhere, so no branch ever read as re-keyed (`vm branch` timed
-/// out on real VMs, e2e-branch r9eaa24ce06).
 #[test]
 fn the_machine_record_is_read_by_one_shell_line_that_runs_the_whole_script() {
     let line = branch_admit::machine_line();
@@ -1187,7 +1114,6 @@ fn the_machine_record_is_read_by_one_shell_line_that_runs_the_whole_script() {
     let private = dir.path().join("var/lib/tilo/device-private");
     std::fs::create_dir_all(&private).unwrap();
     std::fs::write(private.join("keypair.bin"), b"key").unwrap();
-    // The script as the guest runs it, with its paths moved under the test's directory.
     let joined = line.join(" ").replace(
         "/var/lib/tilo/device-private",
         &private.display().to_string(),

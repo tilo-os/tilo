@@ -1,13 +1,7 @@
-//! The one place a QEMU command line is built (`tilo-vm qemu`).
-//!
-//! Every headless boot of a Tilo disk goes through here: os/dev/vm.sh and the
-//! release gates on top of it, the qemu adapter of `vm create`, the composefs
-//! harness and the boot-timing checks. The machine, firmware, TPM, display,
-//! input, network and console choices therefore live in one table, with the
-//! reasons beside them, instead of drifting apart in each launcher.
-//!
-//! A VM's runtime files sit in one directory (see [`RunDir`]); os/dev/vm.sh
-//! drives the monitor, console and serial log it finds there.
+//! The one place a QEMU command line is built (`tilo-vm qemu`): every headless
+//! boot of a Tilo disk goes through here. The machine, firmware, TPM, display,
+//! input, network and console choices live in one table, with the reasons beside
+//! them.
 
 pub mod firmware;
 pub mod serial;
@@ -27,7 +21,6 @@ use serde_json::json;
 use crate::app::Outcome;
 use crate::error::CliError;
 
-/// A refusal with its remedy.
 #[derive(Debug)]
 pub struct QemuError {
     pub detail: String,
@@ -80,13 +73,11 @@ pub enum Arch {
 }
 
 impl Arch {
-    /// This machine's architecture, the guest's when none is named.
     #[must_use]
     pub fn host() -> Self {
         Self::parse(std::env::consts::ARCH).unwrap_or(Self::X86_64)
     }
 
-    /// An architecture by any of its names (`uname -m`, Debian's, Rust's).
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
         match name {
@@ -167,25 +158,18 @@ pub enum LanModel {
     E1000,
 }
 
-/// One virtio block disk, in the order given (the first is `/dev/vda`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Disk {
     pub path: PathBuf,
     pub format: String,
     pub id: String,
-    /// The guest's `/dev/disk/by-id` name. The installer binds a destructive
-    /// target to a WWN or serial, which a virtio disk lacks unless given one.
     pub serial: Option<String>,
     pub readonly: bool,
-    /// Create a blank qcow2 of this size when the file is absent.
     pub create: Option<String>,
-    /// Create the file as a qcow2 child of this image when absent, so the
-    /// image itself stays pristine.
     pub backing: Option<PathBuf>,
 }
 
 impl Disk {
-    /// `PATH[,format=qcow2|raw][,serial=S][,id=ID][,readonly][,create=SIZE][,backing=IMAGE]`
     pub fn parse(spec: &str, index: usize) -> Result<Self, QemuError> {
         let mut parts = spec.split(',');
         let path = PathBuf::from(parts.next().unwrap_or_default());
@@ -253,7 +237,6 @@ impl Disk {
         Ok(disk)
     }
 
-    /// Create the file when it is absent and asked to be.
     pub fn prepare(&self, qemu_img: &str) -> Result<(), QemuError> {
         if self.path.exists() {
             return Ok(());
@@ -286,8 +269,6 @@ impl Disk {
         if self.readonly {
             drive.push_str(",readonly=on");
         }
-        // The serial belongs to the virtio block device: QEMU rejects
-        // serial= on -drive.
         let mut device = format!("virtio-blk-pci,drive={}", self.id);
         if let Some(serial) = &self.serial {
             device.push_str(",serial=");
@@ -297,7 +278,6 @@ impl Disk {
     }
 }
 
-/// `raw` for a raw image file by its name, else `qcow2`.
 fn image_format(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {
         Some("raw" | "img" | "iso") => "raw",
@@ -305,10 +285,6 @@ fn image_format(path: &Path) -> &'static str {
     }
 }
 
-/// A point-to-point Ethernet segment to one other VM on this host, carried
-/// as UDP between two loopback ports. It is a real shared L2 link (broadcasts
-/// and ARP cross it), which user-mode networking, one private NAT per VM,
-/// cannot give two guests. The peer VM gets the mirror image.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Lan {
     pub port: u16,
@@ -318,7 +294,6 @@ pub struct Lan {
 }
 
 impl Lan {
-    /// `PORT:PEER:MAC`, e.g. `23901:23902:52:54:00:23:83:0a`.
     pub fn parse(spec: &str, model: LanModel) -> Result<Self, QemuError> {
         let invalid = || {
             QemuError::new(
@@ -373,8 +348,6 @@ impl Lan {
     }
 }
 
-/// Where a VM's runtime files live. It must be short: `AF_UNIX` socket paths
-/// are capped at 108 bytes.
 #[derive(Debug, Clone)]
 pub struct RunDir(pub PathBuf);
 
@@ -387,7 +360,6 @@ impl RunDir {
     pub fn serial(&self) -> PathBuf {
         self.0.join("serial.log")
     }
-    /// The serial line as a socket something can type into (`--serial-socket`).
     #[must_use]
     pub fn serial_socket(&self) -> PathBuf {
         self.0.join("serial.sock")
@@ -400,7 +372,6 @@ impl RunDir {
     pub fn pidfile(&self) -> PathBuf {
         self.0.join("qemu.pid")
     }
-    /// The host end of the installer/greeter console channel.
     #[must_use]
     pub fn console(&self) -> PathBuf {
         self.0.join("console.sock")
@@ -414,7 +385,6 @@ impl RunDir {
         self.0.join("tpm")
     }
 
-    /// The running QEMU's pid, from its pidfile.
     #[must_use]
     pub fn running(&self) -> Option<u32> {
         let pid = std::fs::read_to_string(self.pidfile())
@@ -440,137 +410,82 @@ impl RunDir {
     }
 }
 
-/// Everything about the machine, as flags. os/dev/vm.sh maps its documented
-/// TILO_* settings onto these.
 #[derive(Debug, Clone, Args)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "one independent flag per QEMU feature"
 )]
 pub struct MachineArgs {
-    /// The VM's runtime directory: monitor, serial log, console, pidfile,
-    /// variable store and TPM state. Keep it short (Unix socket paths).
     #[arg(long)]
     pub run: Option<PathBuf>,
-    /// QEMU's -name.
     #[arg(long, default_value = "tilo")]
     pub name: String,
-    /// Guest architecture (default: this machine's).
     #[arg(long, value_enum)]
     pub arch: Option<Arch>,
-    /// How the guest CPU runs: auto (KVM when this environment can create a
-    /// KVM VM, else TCG emulation), kvm, tcg or hvf.
     #[arg(long, value_enum, default_value = "auto")]
     pub accel: Accel,
-    /// The CPU a KVM guest gets: host, or host-no-sve to diagnose CPU feature selection.
     #[arg(long, value_enum, default_value = "host")]
     pub cpu_variant: CpuVariant,
-    /// Guest memory in MiB.
     #[arg(long, default_value_t = 4096)]
     pub memory: u32,
-    /// Guest CPUs.
     #[arg(long, default_value_t = 4)]
     pub smp: u32,
-    /// The QEMU system emulator (default: qemu-system-<arch>).
     #[arg(long)]
     pub qemu: Option<String>,
-    /// The qemu-img that creates overlays and blank disks.
     #[arg(long, default_value = "qemu-img")]
     pub qemu_img: String,
-    /// A virtio disk, in boot order: PATH[,format=qcow2|raw][,serial=S][,id=ID][,readonly][,create=SIZE][,backing=IMAGE].
     #[arg(long = "disk")]
     pub disks: Vec<String>,
-    /// none (serial only), 2d (screendumps of firmware and greeter), gl
-    /// (virgl, egl-headless) or window (a GTK window here).
     #[arg(long, value_enum, default_value = "2d")]
     pub display: Display,
-    /// The virtio-gpu mode (the compositor modesets the connector's
-    /// preferred mode); bigger costs more software rendering.
     #[arg(long, default_value = "1280x800")]
     pub resolution: String,
-    /// GL render node for --display gl (default: the first non-NVIDIA one).
     #[arg(long)]
     pub rendernode: Option<String>,
-    /// keyboard (USB tablet, and a USB keyboard on ARM), touch (a virtio
-    /// multitouch screen and no keyboard, driven through <run>/qmp.sock) or none.
     #[arg(long, value_enum, default_value = "keyboard")]
     pub input: Input,
-    /// Attach a started software TPM 2.0 whose state persists in --tpm-dir.
-    /// Pins the firmware to a build that measures, or refuses the boot.
     #[arg(long)]
     pub tpm: bool,
-    /// The TPM's state directory (default: <run>/tpm).
     #[arg(long)]
     pub tpm_dir: Option<PathBuf>,
-    /// Keep the pristine variable store across boots, so an enrolment in the
-    /// guest (`/usr/libexec/tilo-secureboot enroll`) sticks.
     #[arg(long)]
     pub secboot: bool,
-    /// The variable store's keys: none (setup mode), persist, microsoft, or
-    /// the path of a prepared store.
     #[arg(long, default_value = "none")]
     pub keys: String,
-    /// Keep the variable store across boots even with the default keys (one
-    /// install cycle's boots share firmware state).
     #[arg(long)]
     pub keep_vars: bool,
-    /// Offer the guest suspend-to-RAM, which the monitor's `system_wakeup`
-    /// resumes (`x86_64` only; ARM `virt` has none).
     #[arg(long)]
     pub s3: bool,
-    /// Where to look for OVMF (repeatable; default: the Fedora and Debian paths).
     #[arg(long = "ovmf-dir")]
     pub ovmf_dirs: Vec<PathBuf>,
-    /// Where to look for AAVMF (repeatable; default: the Fedora and Debian paths).
     #[arg(long = "aavmf-dir")]
     pub aavmf_dirs: Vec<PathBuf>,
-    /// Forward this host port on 127.0.0.1 to the guest's SSH port.
     #[arg(long)]
     pub ssh_port: Option<u16>,
-    /// Another user-network forward, as QEMU's hostfwd value (repeatable),
-    /// e.g. tcp:127.0.0.1:3341-:3340.
     #[arg(long = "forward")]
     pub forwards: Vec<String>,
-    /// No network card at all.
     #[arg(long, conflicts_with_all = ["ssh_port", "forwards"])]
     pub no_net: bool,
-    /// A second NIC on a UDP segment shared with one peer VM: PORT:PEER:MAC.
     #[arg(long)]
     pub lan: Option<String>,
-    /// The --lan NIC: virtio-net-pci, or e1000 for Wake-on-LAN.
     #[arg(long, value_enum, default_value = "virtio-net-pci")]
     pub lan_model: LanModel,
-    /// A sound card whose output QEMU writes to this WAV file.
     #[arg(long)]
     pub audio_wav: Option<PathBuf>,
-    /// The tilo-control console channel (virtio-serial port
-    /// org.tilo.console.0) the installer and greeter answer on, at
-    /// <run>/console.sock.
     #[arg(long)]
     pub console: bool,
-    /// A virtio-serial port the guest writes into a host file: NAME=PATH (repeatable).
     #[arg(long = "virtio-port")]
     pub virtio_ports: Vec<String>,
-    /// Give root this public key, as the systemd credential
-    /// `ssh.authorized_keys.root` in an SMBIOS type 11 OEM string.
     #[arg(long)]
     pub root_key: Option<PathBuf>,
-    /// The serial line as a socket (<run>/serial.sock) something can type
-    /// into, beside the serial log. Nothing has to be attached, but a client
-    /// that connects must keep reading: QEMU blocks on a connected socket
-    /// whose buffer is full, which stops the guest mid-boot.
     #[arg(long)]
     pub serial_socket: bool,
-    /// Write the serial log here instead of <run>/serial.log.
     #[arg(long)]
     pub serial_log: Option<PathBuf>,
-    /// Serve the display as VNC on this unix socket as well, so a remote
-    /// client can watch the guest without a window on this host.
     #[arg(long)]
     pub vnc: Option<PathBuf>,
 }
 
-/// A validated machine.
 #[derive(Debug, Clone)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -708,14 +623,12 @@ impl TryFrom<&MachineArgs> for Machine {
     }
 }
 
-/// What the command line is built from, besides the machine.
 pub struct Resolved<'a> {
     pub run: &'a RunDir,
     pub firmware: &'a firmware::Firmware,
     pub varstore: &'a Path,
     pub accel: &'a [String],
     pub rendernode: &'a str,
-    /// The `-smbios` value carrying root's key.
     pub credential: Option<String>,
 }
 
@@ -742,9 +655,6 @@ impl Machine {
             ""
         };
         if smm {
-            // SMM is what the Secure-Boot firmware's protected store needs;
-            // the store and S3 resume do not coexist in OVMF, and leaving S3
-            // on makes the firmware complain and fall back.
             vec![
                 "-machine".into(),
                 format!("q35,smm=on{keyboard}"),
@@ -769,9 +679,6 @@ impl Machine {
         let (width, height) = self.resolution;
         let mode = format!("xres={width},yres={height}");
         let (plain, gl) = match self.arch {
-            // QEMU's VGA-compatible virtio device is specific to PC machines.
-            // ARM's virt board uses the PCI virtio-gpu, which AAVMF exposes
-            // through GOP and the installer modesets the same way.
             Arch::X86_64 => ("virtio-vga", "virtio-vga-gl"),
             Arch::Aarch64 => ("virtio-gpu-pci", "virtio-gpu-gl-pci"),
         };
@@ -825,8 +732,6 @@ impl Machine {
     fn input_args(&self, run: &RunDir) -> Vec<String> {
         let mut args: Vec<String> = match (self.input, self.arch) {
             (Input::Touch, _) => vec!["-device".into(), "virtio-multitouch-pci".into()],
-            // ARM virt has no implicit PC keyboard; monitor sendkey needs a
-            // guest device.
             (Input::Keyboard, Arch::Aarch64) => [
                 "-device",
                 "qemu-xhci",
@@ -842,9 +747,6 @@ impl Machine {
             }
             (Input::None, _) => return Vec::new(),
         };
-        // QMP carries the absolute tablet's motion and buttons and the touch
-        // screen's fingers: HMP's mouse_move is relative, which an absolute
-        // tablet never sees.
         args.extend([
             "-qmp".into(),
             format!(
@@ -855,7 +757,6 @@ impl Machine {
         args
     }
 
-    /// The whole command line after the emulator.
     #[must_use]
     pub fn args(&self, resolved: &Resolved<'_>) -> Vec<String> {
         let run = resolved.run;
@@ -874,9 +775,6 @@ impl Machine {
         }
         args.extend(self.display_args(resolved.rendernode));
         if let Some(vnc) = &self.vnc {
-            // Beside whatever the display does locally: the guest renders
-            // once, and the VNC server serves those same frames on a socket
-            // this host's network never sees.
             args.extend(["-vnc".into(), format!("unix:{}", path(vnc))]);
         }
         args.extend(self.net_args());
@@ -893,9 +791,6 @@ impl Machine {
             args.extend(["-device".into(), "virtio-serial-pci".into()]);
         }
         if self.console {
-            // The installer and the greeter answer the tilo-control action
-            // protocol on this port; its host end is reachable only by the
-            // user running QEMU. Physical machines have no virtio-serial bus.
             args.extend([
                 "-chardev".into(),
                 format!(
@@ -918,9 +813,6 @@ impl Machine {
             args.extend(["-smbios".into(), credential.clone()]);
         }
         if self.serial_socket {
-            // QEMU writes everything the guest says on the line to the log
-            // too, whether or not anything is connected; with nothing
-            // connected it goes only there.
             args.extend([
                 "-chardev".into(),
                 format!(
@@ -950,7 +842,6 @@ impl Machine {
         args
     }
 
-    /// The accelerator flags, and a warning when emulation stands in for KVM.
     pub fn accel_args(
         &self,
         kvm_usable: impl FnOnce() -> bool,
@@ -972,8 +863,6 @@ impl Machine {
             Accel::Tcg => (tcg(), None),
             Accel::Hvf => (["-accel", "hvf", "-cpu", "host"].map(String::from).to_vec(), None),
             Accel::Auto if kvm_usable() => (kvm(), None),
-            // Emulated CPU: boot and frame timings from this VM say nothing
-            // about a KVM guest or hardware. Do not compare them.
             Accel::Auto => (
                 tcg(),
                 Some("no usable KVM here: this VM runs under TCG emulation, so its timings are not comparable with KVM or hardware".into()),
@@ -981,7 +870,6 @@ impl Machine {
         })
     }
 
-    /// The root key credential for `-smbios`.
     pub fn credential(&self) -> Result<Option<String>, QemuError> {
         let Some(path) = &self.root_key else {
             return Ok(None);
@@ -1008,7 +896,6 @@ impl Machine {
         )))
     }
 
-    /// Resolve everything that depends on this host and print what was chosen.
     fn prepare(&self, run: &RunDir, seed: bool) -> Result<Prepared, QemuError> {
         let firmware = firmware::resolve(&self.firmware, &|path| path.exists())?;
         for note in &firmware.notes {
@@ -1035,8 +922,6 @@ impl Machine {
     }
 }
 
-/// Make the run directory, refusing one whose VM still runs: nothing of it
-/// (its variable store least of all) may change under a running guest.
 fn claim(run: &RunDir) -> Result<(), QemuError> {
     run.check_socket_length()?;
     std::fs::create_dir_all(&run.0).map_err(QemuError::io(&run.0))?;
@@ -1070,8 +955,6 @@ impl Prepared {
     }
 }
 
-/// A GL render node for virglrenderer. NVIDIA (0x10de) is skipped: its EGL
-/// stack works poorly with virglrenderer; a Mesa iGPU is strongly preferred.
 fn detect_rendernode() -> String {
     let mut nodes: Vec<PathBuf> = std::fs::read_dir("/dev/dri")
         .into_iter()
@@ -1101,8 +984,6 @@ fn detect_rendernode() -> String {
         )
 }
 
-/// Can this environment create a KVM VM for `arch`? A container can expose
-/// a /dev/kvm node while denying `KVM_CREATE_VM`, so the node is not enough.
 #[cfg(target_os = "linux")]
 fn kvm_usable(arch: Arch) -> bool {
     use std::os::fd::AsRawFd;
@@ -1139,8 +1020,6 @@ fn kvm_usable(_arch: Arch) -> bool {
     false
 }
 
-/// Put `command` in its own session, so it outlives the command that
-/// started it and no terminal's hangup or interrupt reaches it.
 #[cfg(unix)]
 pub(crate) fn detach(command: &mut Command) {
     use std::os::unix::process::CommandExt as _;
@@ -1182,7 +1061,6 @@ pub(crate) fn terminate(pid: u32) {
 #[cfg(not(unix))]
 pub(crate) fn terminate(_pid: u32) {}
 
-/// Is `tool` an executable on PATH (or a path that exists)?
 pub(crate) fn on_path(tool: &str) -> bool {
     if tool.contains('/') {
         return Path::new(tool).exists();
@@ -1212,7 +1090,6 @@ fn run_quietly(command: &mut Command, what: &str) -> Result<(), QemuError> {
     }
 }
 
-/// Send one command to the human monitor and return what it answered.
 fn monitor(socket: &Path, command: &str) -> std::io::Result<String> {
     #[cfg(unix)]
     {
@@ -1275,7 +1152,6 @@ fn require_run(args: &MachineArgs) -> Result<RunDir, QemuError> {
     })
 }
 
-/// `tilo-vm qemu args`: the command line, without starting anything.
 pub fn args_command(args: &MachineArgs) -> Result<Outcome, CliError> {
     let machine = Machine::try_from(args)?;
     let run = args
@@ -1292,7 +1168,6 @@ pub fn args_command(args: &MachineArgs) -> Result<Outcome, CliError> {
     })
 }
 
-/// `tilo-vm qemu firmware`: what the firmware settings resolve to.
 pub fn firmware_command(args: &MachineArgs) -> Result<Outcome, CliError> {
     let machine = Machine::try_from(args)?;
     let firmware = firmware::resolve(&machine.firmware, &|path| path.exists())?;
@@ -1315,7 +1190,6 @@ pub fn firmware_command(args: &MachineArgs) -> Result<Outcome, CliError> {
     })
 }
 
-/// Start QEMU for `machine` with its runtime files in `run`; the child.
 fn spawn(
     machine: &Machine,
     run: &RunDir,
@@ -1361,17 +1235,12 @@ fn spawn(
     })
 }
 
-/// `tilo-vm qemu boot`: start the VM in the background and return once its
-/// monitor answers.
 pub fn boot_command(args: &MachineArgs, start_timeout: u64) -> Result<Outcome, CliError> {
     let machine = Machine::try_from(args)?;
     let run = require_run(args)?;
     claim(&run)?;
     let prepared = machine.prepare(&run, true)?;
     let mut child = spawn(&machine, &run, &prepared, true)?;
-    // Return only once QEMU has done its cold-start work and published the
-    // monitor: a caller (or a distrobox scope) that ends sooner can take a
-    // healthy QEMU down with it. One that never opens its monitor failed.
     let deadline = Instant::now()
         .checked_add(Duration::from_secs(start_timeout))
         .unwrap_or_else(Instant::now);
@@ -1467,8 +1336,6 @@ struct RunReport {
     serial: Option<PathBuf>,
 }
 
-/// `tilo-vm qemu run`: boot in the foreground until the serial line says
-/// ready or failed, QEMU exits, or time runs out; then power the guest off.
 pub fn run_command(args: &MachineArgs, wait: &RunArgs) -> Result<Outcome, CliError> {
     let mut machine = Machine::try_from(args)?;
     let ready = compile(&wait.ready)?;
@@ -1550,8 +1417,6 @@ pub fn run_command(args: &MachineArgs, wait: &RunArgs) -> Result<Outcome, CliErr
     })
 }
 
-/// The run directory of a foreground run: the one named, or a private
-/// temporary one removed when the run ends.
 fn foreground_run_dir(
     named: Option<&Path>,
 ) -> Result<(RunDir, Option<tempfile::TempDir>), QemuError> {
@@ -1578,7 +1443,6 @@ fn compile(patterns: &[String]) -> Result<Vec<Regex>, QemuError> {
         .collect()
 }
 
-/// Boot a throwaway qcow2 child of the first disk instead of the disk.
 fn boot_overlay(machine: &mut Machine, overlay: &Path) -> Result<(), QemuError> {
     let first = machine
         .disks
@@ -1597,8 +1461,6 @@ fn boot_overlay(machine: &mut Machine, overlay: &Path) -> Result<(), QemuError> 
     Ok(())
 }
 
-/// Watch the serial log until it says ready or failed, QEMU exits, or the
-/// deadline passes: the state, what matched, and QEMU's exit code if it exited.
 fn watch(
     child: &mut Child,
     serial_log: &Path,
@@ -1629,9 +1491,6 @@ fn watch(
     }
 }
 
-/// Ask the guest to power off (an ACPI request through the monitor needs no
-/// guest login), kill QEMU if it is still there after `timeout` seconds, and
-/// return its exit code.
 fn power_off(child: &mut Child, monitor_socket: &Path, timeout: u64) -> Option<i32> {
     if matches!(child.try_wait(), Ok(None)) {
         let _ = monitor(monitor_socket, "system_powerdown");
@@ -1646,7 +1505,6 @@ fn power_off(child: &mut Child, monitor_socket: &Path, timeout: u64) -> Option<i
     child.wait().ok().and_then(|status| status.code())
 }
 
-/// `tilo-vm qemu stop`: power the VM in `run` off at once and stop its TPM.
 pub fn stop_command(run: &Path, tpm_dir: Option<&Path>) -> Outcome {
     let run = RunDir(run.to_path_buf());
     if run.running().is_some() {
@@ -1669,7 +1527,6 @@ pub fn stop_command(run: &Path, tpm_dir: Option<&Path>) -> Outcome {
     }
 }
 
-/// `tilo-vm qemu status`: is the VM in `run` running?
 #[must_use]
 pub fn status_command(run: &Path) -> Outcome {
     let pid = RunDir(run.to_path_buf()).running();
@@ -1767,7 +1624,6 @@ mod tests {
             text.contains("-device qemu-xhci -device usb-tablet -device usb-kbd"),
             "{text}"
         );
-        // No machine string picks an accelerator of its own.
         assert!(!text.contains("accel=kvm"));
     }
 
@@ -1803,7 +1659,6 @@ mod tests {
             "-device virtio-blk-pci,drive=tilo-install-target,serial=tilo-install-target"
         ));
         assert!(text.contains("-drive file=/v/validation.raw,format=raw,if=none,id=tilo-validation,readonly=on -device virtio-blk-pci,drive=tilo-validation,serial=tilo-validation"));
-        // QEMU rejects serial= on -drive.
         assert!(
             !text
                 .split(" -device ")
@@ -1904,7 +1759,6 @@ mod tests {
 
     #[test]
     fn paths_with_commas_are_escaped_and_bad_settings_refused() {
-        // A literal comma cannot be expressed in a --disk spec; it is refused.
         assert!(Disk::parse("/a,,b.qcow2", 0).is_err());
         assert_eq!(escape("/x,y"), "/x,,y");
         let args = Probe::parse_from(["probe", "--arch", "aarch64", "--s3"]).machine;

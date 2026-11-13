@@ -66,7 +66,6 @@ fn choose(
 }
 
 fn available(adapter: &str, port: u16) -> io::Result<bool> {
-    // passt has no configured listen address; QEMU and WHPX bind IPv4 loopback.
     let address = if adapter == "libvirt" {
         Ipv4Addr::UNSPECIFIED
     } else {
@@ -78,8 +77,6 @@ fn available(adapter: &str, port: u16) -> io::Result<bool> {
         Err(error) => return Err(error),
     }
     if adapter == "libvirt" {
-        // Release the IPv4 probe before a dual-stack IPv6 bind. Hosts without
-        // IPv6 can still use the existing IPv4 forwarding configuration.
         match TcpListener::bind((Ipv6Addr::UNSPECIFIED, port)) {
             Ok(listener) => drop(listener),
             Err(error) if error.kind() == ErrorKind::AddrInUse => return Ok(false),

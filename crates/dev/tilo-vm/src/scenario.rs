@@ -1,13 +1,5 @@
-//! Cold-boot scenarios: boot a medium in a throwaway VM and drive it end to
-//! end through the same published actions an agent or a screen reader uses.
-//!
-//! `tilo-vm scenario install` boots an installer medium with `os/dev/vm.sh`
-//! (the headless QEMU path the release gate uses), reaches the installer
-//! over its console channel, installs, powers off through the installer's
-//! own Finish action, cold-boots the target, unlocks it at the only door
-//! early boot has (the keyboard), and checks that first boot reached the
-//! greeter running the tree the installer wrote. Every phase is timed into
-//! the receipt; no artifact may carry the passphrase or a recovery key.
+//! Cold-boot scenarios: boot a medium in a throwaway VM and drive it end to end
+//! through the same published actions an agent or a screen reader uses.
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -32,7 +24,6 @@ pub enum Layout {
 }
 
 impl Layout {
-    /// The installer's `set-method` choice.
     pub fn method(self) -> &'static str {
         match self {
             Self::Erase => "erase",
@@ -91,7 +82,6 @@ pub enum Graphics {
 }
 
 impl Graphics {
-    /// `vm.sh`'s display flag.
     pub fn flag(self) -> &'static str {
         match self {
             Self::Gl => "--gl",
@@ -206,7 +196,6 @@ pub fn has_recovery_key_shape(text: &str) -> bool {
         })
 }
 
-/// The installer backend's private marker for the one-time recovery key.
 pub const RECOVERY_KEY_MARKER: &str = "::tilo-recovery-key::";
 
 /// Empty every file under `dir` that contains `secret`, the recovery-key
@@ -295,11 +284,8 @@ fn contains_sensitive_text(bytes: &[u8], secrets: &[&str]) -> bool {
 mod tests {
     use super::*;
 
-    /// Recovery key shapes are recognised and UUIDs are not; the scrubber withholds secret-bearing files
-    /// and keeps the rest, checks both retained install secrets, and withholds UTF-16 runtime log secrets.
     #[test]
     fn the_scrubber_withholds_every_secret_shape_it_retains() {
-        // Phase: recovery_key_shapes_are_recognised_and_uuids_are_not.
         {
             assert!(has_recovery_key_shape(
                 "key bbbbbbbb-cccccccc-dddddddd-ffffffff-gggggggg-hhhhhhhh-jjjjjjjj-kkkkkkkk."
@@ -312,7 +298,6 @@ mod tests {
             ));
         }
 
-        // Phase: the_scrubber_withholds_secret_bearing_files_and_keeps_the_rest.
         {
             let dir = tempfile::tempdir().unwrap();
             std::fs::create_dir(dir.path().join("nested")).unwrap();
@@ -344,7 +329,6 @@ mod tests {
             assert!(!std::fs::read(&clean).unwrap().is_empty());
         }
 
-        // Phase: scrubber_checks_both_retained_install_secrets.
         {
             let dir = tempfile::tempdir().unwrap();
             let account = dir.path().join("account.txt");
@@ -361,7 +345,6 @@ mod tests {
             assert!(std::fs::read(disk).unwrap().is_empty());
         }
 
-        // Phase: scrubber_withholds_utf16_runtime_log_secrets.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("uart.log");
@@ -375,7 +358,6 @@ mod tests {
             assert!(std::fs::read(path).unwrap().is_empty());
         }
 
-        // Phase: oversized_logs_are_withheld_without_loading_them_into_memory.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("serial.log");
@@ -388,10 +370,8 @@ mod tests {
         }
     }
 
-    /// Credentials from stdin are distinct, bounded and never echoed, and secrets never debug-print.
     #[test]
     fn install_credentials_are_bounded_distinct_and_never_printed() {
-        // Phase: credentials_from_stdin_are_distinct_bounded_and_never_echoed.
         {
             let account = "accountrandom2026";
             let disk = "diskrandomunlock2026";
@@ -413,7 +393,6 @@ mod tests {
             }
         }
 
-        // Phase: secrets_never_debug_print.
         {
             let secret = Unlock::Passphrase.scenario_secret();
             assert_eq!(format!("{secret:?}"), "Secret([redacted])");

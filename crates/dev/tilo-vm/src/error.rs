@@ -6,28 +6,21 @@ use tilo_vm_protocol::RpcError;
 
 use crate::host::Missing;
 
-/// The script that builds a dev disk locally, relative to the worktree.
 pub const LOCAL_BUILD_SCRIPT: &str = "os/dev/build-dev-image.sh";
 
 // Images are public on registry.tilo.so: pulls need no login. Only dev disk
 // downloads, from the forge's package registry, need a credential.
 
-/// What the forge token (`FORGEJO_TOKEN`, or an fgj or tea login) is for.
 pub const FORGE_TOKEN_USE: &str =
     "read only for dev disk downloads (vm create without --image, doctor's published-disk check)";
 
-/// How the docs build tilo-vm; what to run when it is older than the VM.
 pub const REBUILD: &str =
     "cargo build -p tilo-vm, then run target/debug/tilo-vm   (any cargo drop-in works)";
 
-/// What to do with a VM that has no bootc, so `vm upgrade` cannot move it.
 pub const NOT_BOOTC_FIX: &str = "create a VM from a dev image instead: tilo-vm vm create <name>   (the published dev disk; or --image <dev disk.qcow2>)   |   or ask whoever set this VM up to move it onto a dev image";
 
-/// Whether a VM has bootc could not be checked.
 const UNCHECKED_BOOTC: &str = "whether it runs a bootc dev image could not be checked";
 
-/// What to do when no dev disk is published: `local_build` is the path of
-/// [`LOCAL_BUILD_SCRIPT`] when this checkout has it.
 pub fn no_disk_help(local_build: Option<&str>) -> String {
     let local = match local_build {
         Some(script) => format!(
@@ -40,8 +33,6 @@ pub fn no_disk_help(local_build: Option<&str>) -> String {
     format!("ask a human for a shared VM and use it: tilo-vm vm use <name>   |   {local}")
 }
 
-/// How a dial over the peer network failed, from `tilo-device-admin dial`'s
-/// exit status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerFailure {
     /// No answer: offline, asleep, or no relay in common (2).
@@ -103,16 +94,13 @@ pub enum CliError {
         vm: String,
         address: String,
         detail: String,
-        /// What the lookup by name found, e.g. `, and yoga.local does not resolve`.
         lookup: String,
-        /// Whether a MAC is recorded, so `vm wake` can send its magic packet.
         wakeable: bool,
     },
     #[error("device '{vm}' is not on this network, and {failure} over the peer network: {detail}")]
     PeerRoute {
         vm: String,
         failure: PeerFailure,
-        /// What `tilo-device-admin dial` said.
         detail: String,
     },
     #[error("this machine is not enrolled to administer devices: {detail}")]
@@ -122,7 +110,6 @@ pub enum CliError {
         vm: String,
         sent: String,
         seconds: u64,
-        /// What the device reported about its wake setting when last reached.
         wake: Option<String>,
     },
     #[error("cannot reach VM '{vm}' over SSH: {detail}")]
@@ -132,20 +119,14 @@ pub enum CliError {
         debug: Vec<String>,
     },
     #[error("VM '{vm}' has no tilo-vmd; it is not running a Tilo dev image")]
-    DaemonMissing {
-        vm: String,
-        /// Whether the VM has bootc, when it was checked.
-        bootc: Option<bool>,
-    },
+    DaemonMissing { vm: String, bootc: Option<bool> },
     #[error("VM '{vm}' is not running a bootc dev image; {command} needs one")]
     NotBootc { vm: String, command: String },
     #[error("VM '{vm}' refuses its root SSH key {key}")]
     RootKeyRefused {
         vm: String,
         key: String,
-        /// The one-time command that installs the key.
         install: String,
-        /// Whether the adapter passed the key as a credential at creation.
         credentials: bool,
     },
     #[error("{user} on '{vm}' cannot run commands as root without a password (sudo -n: {detail})")]
@@ -158,11 +139,9 @@ pub enum CliError {
     },
     #[error("tilo-vm speaks protocol {client} but the VM's tilo-vmd speaks {daemon}")]
     ProtocolMismatch {
-        /// The VM's name; empty when not known where the mismatch surfaced.
         vm: String,
         client: u32,
         daemon: u32,
-        /// Whether the VM has bootc, when it was checked.
         bootc: Option<bool>,
     },
     #[error("{}", .0.message)]
@@ -206,14 +185,12 @@ pub enum CliError {
     #[error("the VM's image cannot build: it has no {}", missing.join(", "))]
     VmCannotBuild {
         missing: Vec<String>,
-        /// Whether the VM has bootc (so vm upgrade can bring a toolchain).
         bootc: Option<bool>,
     },
     #[error("no dev disk is published for tag '{tag}' ({url})")]
     NoDiskPublished {
         tag: String,
         url: String,
-        /// The local build script, when this checkout has one.
         local_build: Option<String>,
     },
     #[error("tag '{tag}' has no {format} disk for {arch} (published: {})", if available.is_empty() { "none".to_owned() } else { available.join(", ") })]
@@ -251,7 +228,6 @@ pub enum CliError {
     ForgeAuth {
         url: String,
         status: u16,
-        /// Where the token came from, when one was found.
         token: Option<String>,
     },
     #[error("{file} does not match its published checksum (expected {expected}, got {actual})")]
@@ -311,9 +287,7 @@ pub enum CliError {
     Scenario {
         phase: String,
         detail: String,
-        /// The run's artifact directory.
         artifacts: String,
-        /// The VM's console socket (gone once the VM stopped).
         console: String,
     },
     #[error("{what} runs from a Tilo worktree (it drives os/dev/vm.sh)")]
@@ -424,7 +398,6 @@ impl CliError {
             ),
             Self::Remote(error) => error.hint.clone(),
             Self::ToolMissing { tool, .. } => format!("install {tool} and make sure it is on PATH; tilo-vm doctor re-checks"),
-            // A command that explained itself needs no advice beyond reading it.
             Self::CommandFailed { stderr, .. } if !stderr.is_empty() => {
                 "the command's own message above names the cause".into()
             }
@@ -630,7 +603,6 @@ impl CliError {
         json!({ "error": self.to_string(), "hint": self.hint(), "see": self.see() })
     }
 
-    /// The human form: what, then how to fix it, then where to read more.
     pub fn render(&self) -> String {
         let mut text = format!("error: {self}\nhint: {}", self.hint());
         if let Some(see) = self.see() {
@@ -669,8 +641,6 @@ impl From<tilo_vm_protocol::ClientError> for CliError {
 mod tests {
     use super::*;
 
-    /// One sample per variant; the match has no wildcard, so a new variant
-    /// does not compile until it is added here and given a hint.
     #[expect(clippy::too_many_lines, reason = "one sample per variant")]
     fn samples() -> Vec<CliError> {
         let all =
@@ -1077,18 +1047,12 @@ mod tests {
         all
     }
 
-    /// Every error variant has a hint; first-contact hints cover both ways to a VM; no published disk
-    /// says plainly what to do; credential hints name the one login each operation reads; a missing
-    /// hypervisor names the adapter and fix; protocol mismatch hints pick the older side; a VM without bootc
-    /// is named plainly with the fix; a VM that cannot build gets vm upgrade only with bootc; remote errors
-    /// keep the daemon hint.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn every_error_carries_a_hint_that_names_the_fix() {
-        // Phase: every_error_variant_has_a_hint.
         {
             for error in samples() {
                 assert!(!error.hint().trim().is_empty(), "{error:?} has no hint");
@@ -1107,7 +1071,6 @@ mod tests {
             }
         }
 
-        // Phase: first_contact_hints_cover_both_ways_to_a_vm.
         {
             let hint = CliError::NoVm {
                 registry: "/cfg/vms.toml".into(),
@@ -1121,7 +1084,6 @@ mod tests {
             assert!(host.contains("--builder vm"), "{host}");
         }
 
-        // Phase: no_published_disk_says_plainly_what_to_do.
         {
             let without = CliError::NoDiskPublished {
                 tag: "(any)".into(),
@@ -1146,7 +1108,6 @@ mod tests {
             );
         }
 
-        // Phase: disk_downloads_name_the_forge_token.
         {
             let forge = CliError::ForgeAuth {
                 url: "u".into(),
@@ -1158,7 +1119,6 @@ mod tests {
             assert!(FORGE_TOKEN_USE.contains("dev disk downloads"));
         }
 
-        // Phase: a_missing_hypervisor_names_the_adapter_and_the_fix.
         {
             let error = CliError::NoHypervisor(Missing {
                 adapter: "libvirt".into(),
@@ -1172,7 +1132,6 @@ mod tests {
             assert_eq!(error.hint(), "sudo dnf install libvirt");
         }
 
-        // Phase: protocol_mismatch_hints_pick_the_side_that_is_older.
         {
             let mismatch = |client, daemon, bootc| CliError::ProtocolMismatch {
                 vm: "dev".into(),
@@ -1203,7 +1162,6 @@ mod tests {
             }
         }
 
-        // Phase: a_vm_without_bootc_is_named_plainly_with_the_fix.
         {
             let error = CliError::NotBootc {
                 vm: "dev".into(),
@@ -1233,7 +1191,6 @@ mod tests {
             );
         }
 
-        // Phase: a_vm_that_cannot_build_gets_vm_upgrade_only_with_bootc.
         {
             let hint = |bootc| {
                 CliError::VmCannotBuild {
@@ -1249,7 +1206,6 @@ mod tests {
             }
         }
 
-        // Phase: remote_errors_keep_the_daemon_hint.
         {
             let error = CliError::Remote(RpcError {
                 code: 5,

@@ -16,8 +16,6 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
     git_said(dir, args).ok()
 }
 
-/// `git -C dir args`: its trimmed, non-empty stdout, or what went wrong (git's
-/// own stderr), for checks that must say why they could not observe a fact.
 fn git_said(dir: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .arg("-C")
@@ -43,7 +41,6 @@ impl Worktree {
         Some(Self { root, branch })
     }
 
-    /// The default slot: the branch, else the worktree directory's name.
     pub fn default_slot(&self) -> Option<String> {
         let base = self.branch.clone().or_else(|| {
             self.root
@@ -65,17 +62,10 @@ impl Worktree {
         git(&self.root, &["rev-parse", "HEAD"])
     }
 
-    /// The commit this checkout's HEAD names, read the way build provenance
-    /// (`head`) and the acceptance harness read it. Resolving HEAD to its id
-    /// does not open the commit object, so a worktree whose shared object
-    /// store this user cannot read (an unprivileged user's worktree of a
-    /// root-owned CI clone) still answers. A checkout's HEAD always names a
-    /// commit, and that id is the identity: peeling it adds no guarantee.
     pub fn checkout_commit(&self) -> Result<String, String> {
         git_said(&self.root, &["rev-parse", "--verify", "HEAD"])
     }
 
-    /// The full commit a revision names, if this repository has it.
     pub fn rev_parse(&self, rev: &str) -> Option<String> {
         git(
             &self.root,
@@ -88,8 +78,6 @@ impl Worktree {
         )
     }
 
-    /// Everything that differs from HEAD, for provenance: the tracked diff
-    /// plus untracked paths. `None` for a clean tree.
     pub fn dirty_state(&self) -> Option<String> {
         let status = git(&self.root, &["status", "--porcelain"])?;
         let diff = git(&self.root, &["diff", "HEAD"]).unwrap_or_default();
