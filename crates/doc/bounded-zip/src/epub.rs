@@ -1,18 +1,9 @@
-//! EPUB package resolution: `META-INF/container.xml` → rootfile → OPF
-//! `<metadata>`, `<manifest>`, `<spine>` and the cover image.
+//! EPUB package resolution: `META-INF/container.xml` → rootfile → the OPF
+//! package document's `<metadata>`, `<manifest>`, `<spine>` and cover image.
 //!
-//! An EPUB is a ZIP archive with a fixed shape:
-//!
-//! ```text
-//! mimetype                     (stored, "application/epub+zip")
-//! META-INF/container.xml       → points at the OPF package document
-//! <base>/content.opf           → <metadata> + <manifest> + <spine>
-//! <base>/*.xhtml               → the chapters, in spine order
-//! ```
-//!
-//! Both reads here are bounded ([`MAX_CONTAINER_BYTES`], [`MAX_PACKAGE_BYTES`]);
-//! the OPF parse is pure and never touches the archive. All hrefs are resolved
-//! against the OPF's directory and normalised to ZIP entry names.
+//! Both reads are bounded ([`MAX_CONTAINER_BYTES`], [`MAX_PACKAGE_BYTES`]), the
+//! parse is pure, and every href is resolved against the OPF's directory and
+//! normalised to a ZIP entry name.
 
 use std::collections::HashMap;
 use std::io::{Read, Seek};
@@ -28,37 +19,32 @@ pub const MAX_CONTAINER_BYTES: u64 = 512 * 1024;
 /// Generous for the largest real-world OPF manifests.
 pub const MAX_PACKAGE_BYTES: u64 = 2 * 1024 * 1024;
 
-/// Why an EPUB's package document could not be located or parsed.
 #[derive(Debug, thiserror::Error)]
 pub enum EpubError {
-    /// Reading `container.xml` or the OPF from the archive failed.
     #[error("read {name}: {source}")]
     Read {
         name: String,
         #[source]
         source: ZipError,
     },
-    /// `container.xml` or the OPF is not well-formed XML.
     #[error("parse {name}: {source}")]
     Parse {
         name: &'static str,
         #[source]
         source: roxmltree::Error,
     },
-    /// `container.xml` names no package document.
     #[error("no <rootfile> in container.xml")]
     NoRootfile,
-    /// The `<rootfile>` element has no `full-path`.
     #[error("<rootfile> missing full-path")]
     RootfileWithoutPath,
 }
 
-/// The normalised ZIP path of the OPF package document named by
-/// `META-INF/container.xml`.
+/// The normalised ZIP path of the OPF package document `container.xml` names.
 ///
 /// # Errors
+///
 /// [`EpubError::Read`] when `container.xml` is missing or breaches its bound,
-/// [`EpubError::Parse`] when it isn't XML, and [`EpubError::NoRootfile`] /
+/// [`EpubError::Parse`] when it is not XML, [`EpubError::NoRootfile`] and
 /// [`EpubError::RootfileWithoutPath`] when it names no package.
 pub fn find_opf_path<R: Read + Seek>(archive: &mut BoundedArchive<R>) -> Result<String, EpubError> {
     let xml = archive
@@ -81,9 +67,10 @@ pub fn find_opf_path<R: Read + Seek>(archive: &mut BoundedArchive<R>) -> Result<
     Ok(normalize(path))
 }
 
-/// Reads the OPF at `opf_path` (bounded to [`MAX_PACKAGE_BYTES`]) and parses it.
+/// Read and parse the OPF at `opf_path`, bounded to [`MAX_PACKAGE_BYTES`].
 ///
 /// # Errors
+///
 /// [`EpubError::Read`] or [`EpubError::Parse`].
 pub fn read_package<R: Read + Seek>(
     archive: &mut BoundedArchive<R>,
@@ -122,9 +109,10 @@ pub struct OpfPackage {
 }
 
 impl OpfPackage {
-    /// Parses an OPF document whose hrefs are relative to `base`.
+    /// Parse an OPF document whose hrefs are relative to `base`.
     ///
     /// # Errors
+    ///
     /// [`EpubError::Parse`] when `src` is not well-formed XML.
     pub fn parse(src: &str, base: &str) -> Result<Self, EpubError> {
         let doc = Document::parse(src).map_err(|source| EpubError::Parse {
@@ -158,11 +146,9 @@ impl OpfPackage {
             .and_then(|n| n.attribute("content"))
             .map(std::string::ToString::to_string);
 
-        // Manifest: id -> resolved href.
         let mut manifest = HashMap::new();
         let mut nav_href = None;
         let mut ncx_by_id: HashMap<String, String> = HashMap::new();
-        // Cover candidates, in descending confidence.
         let mut cover_by_props: Option<String> = None;
         let mut cover_by_name: Option<String> = None;
         if let Some(man) = doc.descendants().find(|n| n.has_tag_name("manifest")) {
@@ -204,7 +190,6 @@ impl OpfPackage {
             .or_else(|| cover_meta_id.and_then(|id| manifest.get(&id).cloned()))
             .or(cover_by_name);
 
-        // Spine: ordered idrefs -> hrefs; `toc` attr names the NCX item.
         let mut spine = Vec::new();
         let mut ncx_href = None;
         if let Some(sp) = doc.descendants().find(|n| n.has_tag_name("spine")) {
@@ -241,7 +226,6 @@ impl OpfPackage {
     }
 }
 
-/// `href` without its `#fragment`.
 #[must_use]
 pub fn strip_fragment(href: &str) -> &str {
     href.split('#').next().unwrap_or(href)
