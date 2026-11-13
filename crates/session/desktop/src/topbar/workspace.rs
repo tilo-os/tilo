@@ -49,23 +49,13 @@ impl TopBarChrome {
         TextWeight::Semibold
     }
 
-    // The following `draw_*` helpers exist only to keep `Widget::draw` under the line budget; none
-    // is meaningful on its own.
-
-    /// The Tilo mark as the bar's leading control, starting at `x` ; returns where the next control
-    /// starts (`x` itself without the mark).
-    pub(super) fn draw_tilo_mark(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        center_y: f64,
-        x: f64,
-    ) -> f64 {
-        let Some(open) = self.tilo_mark else {
+    /// The Tilo mark as the bar's leading control, starting at `x`: where it stands. Returns where
+    /// the next control starts (`x` itself without the mark).
+    pub(super) fn place_tilo_mark(&mut self, theme: &Theme, center_y: f64, x: f64) -> f64 {
+        if self.tilo_mark.is_none() {
             self.tilo_mark_rect = Rect::ZERO;
             return x;
-        };
+        }
         // The opt-in web menu keeps its minimum pointer target inside the compact bar; native
         // controls retain the smaller bar-control size.
         let control = f64::from(ui::tokens::Metrics::BASE.min_pointer_target);
@@ -75,6 +65,19 @@ impl TopBarChrome {
             x + control,
             center_y + control / 2.0,
         );
+        x + control + f64::from(theme.tokens.spacing.s2)
+    }
+
+    /// Paint the Tilo mark where [`Self::place_tilo_mark`] stood it.
+    pub(super) fn paint_tilo_mark_control(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+    ) {
+        let Some(open) = self.tilo_mark else {
+            return;
+        };
         // The mark's seat is one bar control: its own lift from its face,
         // painted nowhere by hand.
         ui::widget::BarControlFace::new(&self.control_name(Self::CONTROL_TILO_MARK))
@@ -94,7 +97,6 @@ impl TopBarChrome {
             Rect::from_center_size(self.tilo_mark_rect.center(), (side, side)),
             theme,
         );
-        x + control + f64::from(theme.tokens.spacing.s2)
     }
 
     pub(super) fn workspace_label(
@@ -130,19 +132,36 @@ impl TopBarChrome {
         ui::num::f32_of_f64((room - strips_room).max(room.min(96.0)).clamp(32.0, 260.0))
     }
 
-    /// Workspace-name pill (click toggles the workspace menu) and its trailing chevron, starting at
-    /// `x` .
-    pub(super) fn draw_workspace_pill(
+    /// The workspace name's control showing `label`: plain at rest, lifting under the pointer and
+    /// while its menu is open.
+    pub(super) fn workspace_face<'a>(
+        &self,
+        name: &'a str,
+        label: &'a str,
+    ) -> ui::widget::BarControlFace<'a> {
+        let workspace_lens_open = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.snapshot().overlays.ws_settings);
+        let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_WORKSPACE_SETTINGS);
+        ui::widget::BarControlFace::new(name)
+            .label(label)
+            .trailing(Self::WORKSPACE_MENU_ICON)
+            .open(workspace_lens_open)
+            .hovered(hovered)
+    }
+
+    /// Where the workspace-name pill (click toggles the workspace menu) and its trailing chevron
+    /// stand, starting at `x`, and the name it shows; while the workspace is renamed, where its
+    /// field stands instead.
+    pub(super) fn place_workspace_pill(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         center_y: f64,
         x: f64,
     ) {
         let tokens = &theme.tokens;
-        let colors = &tokens.colors;
         let ws_text_style = tokens.typography.style(TextRole::Label);
         // Measured at the same weight it's drawn at (Semibold), so the pill width tracks the glyph
         // advance, not the narrower Regular.
@@ -177,26 +196,17 @@ impl TopBarChrome {
         let pill_h = BAR_CONTROL_PX
             .max((f64::from(ws_h) + f64::from(tokens.spacing.s1) / 2.0).ceil())
             .min(self.rect.height().max(BAR_CONTROL_PX));
-        // A bar control: the workspace name and its chevron, plain at rest,
-        // lifting under the pointer and while its menu is open.
-        let workspace_lens_open = self
-            .chrome
-            .as_ref()
-            .is_some_and(|chrome| chrome.snapshot().overlays.ws_settings);
         let name = self.control_name(Self::CONTROL_WORKSPACE_SETTINGS);
-        let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_WORKSPACE_SETTINGS);
-        let face = ui::widget::BarControlFace::new(&name)
-            .label(&ws_label)
-            .trailing(Self::WORKSPACE_MENU_ICON)
-            .open(workspace_lens_open)
-            .hovered(hovered);
-        let pill_w = face.width(text_renderer, theme);
+        let pill_w = self
+            .workspace_face(&name, &ws_label)
+            .width(text_renderer, theme);
         let ws_pill_outer = Rect::new(
             x - pad,
             center_y - pill_h / 2.0,
             x - pad + pill_w,
             center_y + pill_h / 2.0,
         );
+        self.placed.workspace_label = ws_label;
         if self.renaming_workspace() {
             // The new name is typed where the name stands, so it reads as renaming the workspace,
             // not the strip named after it.
@@ -210,22 +220,43 @@ impl TopBarChrome {
             );
             self.ws_pill_rect = field;
             self.ws_chevron_rect = Rect::ZERO;
-            self.paint_workspace_name_field(scene, transform, theme, text_renderer, field);
+            self.place_workspace_name_field(theme, field);
             return;
         }
         self.ws_pill_rect = ws_pill_outer;
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.settings_anchor(ws_pill_outer);
         }
-        let ground = colors.surfaces.base;
-        let mut ctx = ui::paint::PaintCtx::new(scene, transform, text_renderer, theme);
-        face.paint(&mut ctx, ws_pill_outer, ground);
         let chevron_x = x + f64::from(ws_w) + f64::from(tokens.metrics.icon_label_gap);
         self.ws_chevron_rect = Rect::new(
             chevron_x,
             center_y - chevron / 2.0,
             chevron_x + chevron,
             center_y + chevron / 2.0,
+        );
+    }
+
+    /// Paint the workspace's name, or the field it is renamed in, where
+    /// [`Self::place_workspace_pill`] stood it.
+    pub(super) fn paint_workspace_pill(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        if self.renaming_workspace() {
+            self.paint_workspace_name_field(scene, transform, theme, text_renderer);
+            return;
+        }
+        let name = self.control_name(Self::CONTROL_WORKSPACE_SETTINGS);
+        let label = self.placed.workspace_label.clone();
+        let face = self.workspace_face(&name, &label);
+        let mut ctx = ui::paint::PaintCtx::new(scene, transform, text_renderer, theme);
+        face.paint(
+            &mut ctx,
+            self.ws_pill_rect,
+            theme.tokens.colors.surfaces.base,
         );
     }
 }

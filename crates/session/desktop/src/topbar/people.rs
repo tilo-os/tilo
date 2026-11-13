@@ -102,13 +102,23 @@ impl TopBarChrome {
         self.people_button_rect
     }
 
-    /// The people button, ending at `right_x` : the people glyph in a round seat, plain at rest and
-    /// lifting under the pointer like the bar's other controls. It opens everyone here; the faces
+    /// The people button's chip: the people glyph in a round seat, plain at rest and lifting
+    /// under the pointer like the bar's other controls.
+    fn people_chip<'a>(&self, name: &'a str, hovered: bool) -> ui::widget::BarChipFace<'a> {
+        ui::widget::BarChipFace::new(name, &[])
+            .icons(USERS_GLYPH)
+            .at_height(BAR_CONTROL_PX)
+            .hovered(hovered)
+            .focused(
+                self.focus_ring_visible()
+                    && self.focused_control.as_deref() == Some(Self::CONTROL_COLLABORATORS),
+            )
+    }
+
+    /// Where the people button stands, ending at `right_x`. It opens everyone here; the faces
     /// beside it each open one person's card. Returns where the controls before it end.
-    fn draw_people_button(
+    fn place_people_button(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         center_y: f64,
@@ -126,25 +136,11 @@ impl TopBarChrome {
                 )
                 .contains(point)
             });
-        // The people button is one bar chip: its glyph, its own lift and its press, the same
-        // control the faces beside it compose.
         let name = t("topbar-show-collaborators");
-        let chip = BarChipFace::new(&name, &[])
-            .icons(USERS_GLYPH)
-            .at_height(BAR_CONTROL_PX)
-            .hovered(hovered)
-            .focused(
-                self.focus_ring_visible()
-                    && self.focused_control.as_deref() == Some(Self::CONTROL_COLLABORATORS),
-            );
-        let width = chip.width(text_renderer, theme);
+        let width = self.people_chip(&name, hovered).width(text_renderer, theme);
         let pill = BarChipFace::place_at(right_x - width, center_y, width, BAR_CONTROL_PX);
-        let _ = chip.paint(
-            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-            pill,
-            theme.tokens.colors.surfaces.base,
-        );
         self.people_button_rect = pill;
+        self.placed.people_button = Some(hovered);
         pill.x0 - f64::from(theme.tokens.spacing.s1)
     }
 
@@ -187,13 +183,24 @@ impl TopBarChrome {
         right_x - invite_w - gap - watching_w - people_w - seat >= self.center_lane.x1 + gap
     }
 
-    /// The invite button, ending at `right_x` : a person-plus glyph in an outlined empty seat, the
-    /// seat the next person takes. Its words ("Invite") are its accessible name. Returns where the
-    /// controls before it end.
-    pub(super) fn draw_invite_button(
+    /// The invite button's chip: a person-plus glyph in the seat the next person takes, lifting
+    /// under the pointer like every other bar control. Its words are its accessible name.
+    fn invite_chip<'a>(&self, name: &'a str) -> ui::widget::BarChipFace<'a> {
+        let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_INVITE);
+        ui::widget::BarChipFace::new(name, &[])
+            .icons(INVITE_GLYPH)
+            .at_height(BAR_CONTROL_PX)
+            .hovered(hovered)
+            .focused(
+                self.focus_ring_visible()
+                    && self.focused_control.as_deref() == Some(Self::CONTROL_INVITE),
+            )
+    }
+
+    /// Where the invite button stands, ending at `right_x`. Returns where the controls before it
+    /// end.
+    pub(super) fn place_invite_button(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         center_y: f64,
@@ -210,57 +217,26 @@ impl TopBarChrome {
             self.invite_rect = Rect::ZERO;
             return right_x;
         }
-        // The invite is one bar chip: a person-plus glyph in the seat the next person takes,
-        // lifting under the pointer like every other bar control. Its words are its accessible
-        // name.
-        let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_INVITE);
         let name = t("topbar-invite");
-        let chip = BarChipFace::new(&name, &[])
-            .icons(INVITE_GLYPH)
-            .at_height(BAR_CONTROL_PX)
-            .hovered(hovered)
-            .focused(
-                self.focus_ring_visible()
-                    && self.focused_control.as_deref() == Some(Self::CONTROL_INVITE),
-            );
-        let width = chip.width(text_renderer, theme);
+        let width = self.invite_chip(&name).width(text_renderer, theme);
         let pill = BarChipFace::place_at(right_x - width, center_y, width, BAR_CONTROL_PX);
-        let _ = chip.paint(
-            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-            pill,
-            theme.tokens.colors.surfaces.base,
-        );
         self.invite_rect = pill;
         pill.x0 - f64::from(theme.tokens.spacing.s2)
     }
 
-    /// The others' faces in reading order, then the "+N" badge last, the whole stack ending at
-    /// `stack_right_x` . Returns where the stack stands (zero when nobody else is here). Every
-    /// face is the shared [`ui::presence::FaceStack`]: an agent wears its client's hue as a
+    /// Where the others' faces stand in reading order, then the "+N" badge last, the whole stack
+    /// ending at `stack_right_x`. Returns where the stack stands (zero when nobody else is here).
+    /// Every face is the shared [`ui::presence::FaceStack`]: an agent wears its client's hue as a
     /// rounded square and a person a circle, at every scale the desktop shows people.
-    pub(super) fn draw_avatar_chips(
+    pub(super) fn place_avatar_chips(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
         theme: &Theme,
-        text_renderer: &mut TextRenderer,
         center_y: f64,
         stack_right_x: f64,
     ) -> Rect {
         if self.phone_wide() {
-            return self.draw_phone_face(
-                scene,
-                transform,
-                theme,
-                text_renderer,
-                center_y,
-                stack_right_x,
-            );
+            return self.place_phone_face(theme, center_y, stack_right_x);
         }
-        let colors = &theme.tokens.colors;
-        let faces: Vec<ui::presence::Face<'_>> = (0..self.collaborator_names.len())
-            .map(|i| self.face_of(i, theme))
-            .collect();
         let stack = ui::presence::FaceStack::BAR;
         let gap = f64::from(theme.tokens.spacing.s2);
         let pill_right = self.ws_pill_rect.x1.max(self.rect.x0);
@@ -295,41 +271,66 @@ impl TopBarChrome {
                 (before_middle, (before_middle - pill_right).max(0.0))
             }
         };
-        let mut faces = faces;
-        let (most, past) = stack.split(faces.len());
-        faces.truncate(most);
+        let (most, past) = stack.split(self.collaborator_names.len());
+        let mut shown: Vec<usize> = (0..most).collect();
         let mut more = past;
-        while !faces.is_empty() && stack.width_of(faces.len(), more) > room {
-            faces.pop();
+        while !shown.is_empty() && stack.width_of(shown.len(), more) > room {
+            shown.pop();
             more = more.saturating_add(1);
         }
         if stack.width_of(0, more) > room {
             more = 0;
         }
-        let (rects, badge) = stack.paint(
-            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-            (anchor, center_y),
-            (&faces, more),
-            // The bar's own ground (`draw_overlay_surface`), so the gap between faces and their
-            // rings is the bar, not a grey halo.
-            colors.surfaces.base,
-        );
-        let shown = faces.len();
+        let faces: Vec<ui::presence::Face<'_>> =
+            shown.iter().map(|&i| self.face_of(i, theme)).collect();
+        let (rects, badge) = stack.layout((anchor, center_y), (&faces, more));
         drop(faces);
-        self.faces_shown = shown;
-        self.shown_faces = (0..shown).collect();
+        let count = shown.len();
+        self.faces_shown = count;
+        self.shown_faces.clone_from(&shown);
         self.collaborator_overflow = more;
         self.face_rects = Self::faces_drawn(rects);
-        if shown == 0 && badge.is_none() {
+        self.placed.faces = Some(super::placed::FacesPlaced {
+            shown,
+            more,
+            anchor: (anchor, center_y),
+        });
+        if count == 0 && badge.is_none() {
             return Rect::ZERO;
         }
-        let width = stack.width_of(shown, more);
+        let width = stack.width_of(count, more);
         Rect::new(
             anchor - width,
             center_y - BAR_CONTROL_PX / 2.0,
             anchor,
             center_y + BAR_CONTROL_PX / 2.0,
         )
+    }
+
+    /// Paint the faces where [`Self::place_avatar_chips`] stood them, over the bar's own ground
+    /// (`draw_overlay_surface`), so the gap between faces and their rings is the bar, not a grey
+    /// halo.
+    pub(super) fn paint_avatar_chips(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        let Some(placed) = self.placed.faces.as_ref() else {
+            return;
+        };
+        let faces: Vec<ui::presence::Face<'_>> = placed
+            .shown
+            .iter()
+            .map(|&i| self.face_of(i, theme))
+            .collect();
+        let _ = ui::presence::FaceStack::BAR.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            placed.anchor,
+            (&faces, placed.more),
+            theme.tokens.colors.surfaces.base,
+        );
     }
 
     /// The face of the person at roster index `i` , as everyone looking sees them: an agent wears
@@ -366,22 +367,14 @@ impl TopBarChrome {
             .collect()
     }
 
-    /// A phone-wide bar's one face, ending at `right_x` : the person who did something last,
-    /// agents included, so someone who arrives, comes back or starts working is on the bar the
-    /// moment they do. Everyone else here is the stack's own "+N" badge beside that face. The one
-    /// this view follows is not drawn twice: the banner's face is theirs. The stack keeps the
-    /// bar's gap from the banner's lane and from the workspace's name; the clock yields to it
-    /// (`center_yield`). With no room for the face it keeps the badge alone, counting everyone,
-    /// and with no room for that the people button stands for who is here.
-    fn draw_phone_face(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        center_y: f64,
-        right_x: f64,
-    ) -> Rect {
+    /// Where a phone-wide bar's one face stands, ending at `right_x`: the person who did
+    /// something last, agents included, so someone who arrives, comes back or starts working is on
+    /// the bar the moment they do. Everyone else here is the stack's own "+N" badge beside that
+    /// face. The one this view follows is not drawn twice: the banner's face is theirs. The stack
+    /// keeps the bar's gap from the banner's lane and from the workspace's name; the clock yields
+    /// to it (`center_yield`). With no room for the face it keeps the badge alone, counting
+    /// everyone, and with no room for that the people button stands for who is here.
+    fn place_phone_face(&mut self, theme: &Theme, center_y: f64, right_x: f64) -> Rect {
         let stack = ui::presence::FaceStack::BAR;
         let gap = f64::from(theme.tokens.spacing.s2);
         let mut left = self.ws_pill_rect.x1.max(self.rect.x0) + gap;
@@ -410,16 +403,16 @@ impl TopBarChrome {
         };
         let faces: Vec<ui::presence::Face<'_>> =
             shown.iter().map(|&i| self.face_of(i, theme)).collect();
-        let (rects, _) = stack.paint(
-            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-            (right_x, center_y),
-            (&faces, more),
-            theme.tokens.colors.surfaces.base,
-        );
+        let (rects, _) = stack.layout((right_x, center_y), (&faces, more));
         drop(faces);
         self.face_rects = Self::faces_drawn(rects);
         let width = stack.width_of(shown.len(), more);
-        self.shown_faces = shown;
+        self.shown_faces.clone_from(&shown);
+        self.placed.faces = Some(super::placed::FacesPlaced {
+            shown,
+            more,
+            anchor: (right_x, center_y),
+        });
         if width <= 0.0 {
             return Rect::ZERO;
         }
@@ -431,18 +424,13 @@ impl TopBarChrome {
         )
     }
 
-    /// The "+N" the people button wears where it stands for who is here (no room for a face or
-    /// the stack's own badge): a small neutral count on its corner, which takes none of the bar's
-    /// width, so nobody here goes uncounted however narrow the bar. Its words are the badge's own
-    /// node.
-    fn draw_people_count(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-    ) {
+    /// Where the "+N" the people button wears stands, where the button stands for who is here (no
+    /// room for a face or the stack's own badge): a small neutral count on its corner, which takes
+    /// none of the bar's width, so nobody here goes uncounted however narrow the bar. Its words
+    /// are the badge's own node.
+    fn place_people_count(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
         self.people_count_rect = Rect::ZERO;
+        self.placed.people_count = None;
         let button = self.people_button_rect;
         if self.collaborator_overflow == 0 || button.is_zero_area() {
             return;
@@ -456,78 +444,72 @@ impl TopBarChrome {
             button.x1 - 2.0,
             (button.y0 + 2.0).max(self.rect.y0 + height / 2.0 + 1.0),
         );
-        let rect = Rect::from_center_size(centre, (width, height));
-        ui::widget::BadgeFace::new(rect, &label)
-            .style(ui::widget::ChipStyle::Neutral)
-            .paint(scene, transform, text_renderer, theme);
-        self.people_count_rect = rect;
+        self.people_count_rect = Rect::from_center_size(centre, (width, height));
+        self.placed.people_count = Some(label);
     }
 
-    /// A quiet "+N watching" label for pages reading this workspace, left of the invite button,
-    /// ending at `right_x` . Returns its pointer target (zero when nobody is watching): the bar's
-    /// control height, like the faces'.
-    pub(super) fn draw_watching_chip(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        center_y: f64,
-        right_x: f64,
-    ) -> Rect {
-        let watching = self.watching();
-        if watching == 0 {
-            return Rect::ZERO;
-        }
-        // Pages are a count, not faces: a bar chip with its words and no glyph, so it stands and
-        // lifts like every other control while it opens who is here too.
-        let label = t_args("topbar-watching-count", &[("count", watching.into())]);
+    /// The watching count's chip showing `label`: a bar chip with its words and no glyph, so it
+    /// stands and lifts like every other control while it opens who is here too.
+    fn watching_chip<'a>(&self, label: &'a str, right_x: f64) -> ui::widget::BarChipFace<'a> {
         let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_COLLABORATORS)
             && self.last_cursor.is_some_and(|point| point.x <= right_x);
-        let chip = ui::widget::BarChipFace::new(&label, &[])
-            .label(&label)
+        ui::widget::BarChipFace::new(label, &[])
+            .label(label)
             .at_height(BAR_CONTROL_PX)
             .hovered(hovered)
             .focused(
                 self.focus_ring_visible()
                     && self.focused_control.as_deref() == Some(Self::CONTROL_COLLABORATORS),
-            );
-        let width = chip.width(text_renderer, theme);
+            )
+    }
+
+    /// Where a quiet "+N watching" label for pages reading this workspace stands, left of the
+    /// invite button, ending at `right_x`. Returns its pointer target (zero when nobody is
+    /// watching): the bar's control height, like the faces'. Pages are a count, not faces.
+    pub(super) fn place_watching_chip(
+        &mut self,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        right_x: f64,
+    ) -> Rect {
+        self.placed.watching = None;
+        let watching = self.watching();
+        if watching == 0 {
+            return Rect::ZERO;
+        }
+        let label = t_args("topbar-watching-count", &[("count", watching.into())]);
+        let width = self
+            .watching_chip(&label, right_x)
+            .width(text_renderer, theme);
         let pill =
             ui::widget::BarChipFace::place_at(right_x - width, center_y, width, BAR_CONTROL_PX);
-        let _ = chip.paint(
-            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-            pill,
-            theme.tokens.colors.surfaces.base,
-        );
+        self.placed.watching = Some((label, pill));
         pill
     }
 
-    /// The people cluster, right to left from `right_x` : the invite button, the watching count,
-    /// then the others' faces. The faces open who is here themselves, so the people button stands
-    /// only where someone is here and not even the "+N" badge has room. Returns its left edge,
-    /// where the controls before it end.
-    pub(super) fn draw_people_cluster(
+    /// Where the people cluster stands, right to left from `right_x`: the invite button, the
+    /// watching count, then the others' faces. The faces open who is here themselves, so the
+    /// people button stands only where someone is here and not even the "+N" badge has room.
+    /// Returns its left edge, where the controls before it end.
+    pub(super) fn place_people_cluster(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         (center_y, right_x): (f64, f64),
     ) -> f64 {
         let gap = f64::from(theme.tokens.spacing.s2);
-        let right_x =
-            self.draw_invite_button(scene, transform, theme, text_renderer, center_y, right_x);
-        let watching =
-            self.draw_watching_chip(scene, transform, theme, text_renderer, center_y, right_x);
+        let right_x = self.place_invite_button(theme, text_renderer, center_y, right_x);
+        let watching = self.place_watching_chip(theme, text_renderer, center_y, right_x);
         let right_x = if watching.is_zero_area() {
             right_x
         } else {
             watching.x0 - gap
         };
         self.people_button_rect = Rect::ZERO;
-        self.avatar_stack_rect =
-            self.draw_avatar_chips(scene, transform, theme, text_renderer, center_y, right_x);
+        self.placed.people_button = None;
+        self.placed.faces = None;
+        self.avatar_stack_rect = self.place_avatar_chips(theme, center_y, right_x);
         // Someone is here but the bar had no room for their face or the count: the people button
         // is who is here then.
         if self.avatar_stack_rect.is_zero_area() && !self.collaborator_ids.is_empty() {
@@ -535,9 +517,9 @@ impl TopBarChrome {
                 .collaborator_ids
                 .len()
                 .saturating_sub(usize::from(self.following && self.phone_wide()));
-            self.draw_people_button(scene, transform, theme, text_renderer, center_y, right_x);
+            self.place_people_button(theme, text_renderer, center_y, right_x);
         }
-        self.draw_people_count(scene, transform, theme, text_renderer);
+        self.place_people_count(theme, text_renderer);
         // The watching count opens who is here too.
         if !watching.is_zero_area() {
             self.people_button_rect = if self.people_button_rect.is_zero_area() {
@@ -555,6 +537,60 @@ impl TopBarChrome {
         .filter(|rect| !rect.is_zero_area())
         .map(|rect| rect.x0)
         .fold(right_x, f64::min)
+    }
+
+    /// Paint the people cluster where [`Self::place_people_cluster`] stood it.
+    pub(super) fn paint_people_cluster(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        let ground = theme.tokens.colors.surfaces.base;
+        if !self.invite_rect.is_zero_area() {
+            let name = t("topbar-invite");
+            let _ = self.invite_chip(&name).paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                self.invite_rect,
+                ground,
+            );
+        }
+        if let Some((label, pill)) = self.placed.watching.as_ref() {
+            let _ = self.watching_chip(label, pill.x1).paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                *pill,
+                ground,
+            );
+        }
+        self.paint_avatar_chips(scene, transform, theme, text_renderer);
+        if let Some(hovered) = self.placed.people_button {
+            // The button's own rect, before the watching count joined its target.
+            let width = self.people_button_rect.width();
+            let name = t("topbar-show-collaborators");
+            let chip = self.people_chip(&name, hovered);
+            let own = chip.width(text_renderer, theme);
+            let rect = if self.placed.watching.is_some() && own < width {
+                Rect::new(
+                    self.people_button_rect.x0,
+                    self.people_button_rect.y0,
+                    self.people_button_rect.x0 + own,
+                    self.people_button_rect.y1,
+                )
+            } else {
+                self.people_button_rect
+            };
+            let _ = chip.paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                rect,
+                ground,
+            );
+        }
+        if let Some(label) = self.placed.people_count.as_ref() {
+            ui::widget::BadgeFace::new(self.people_count_rect, label)
+                .style(ui::widget::ChipStyle::Neutral)
+                .paint(scene, transform, text_renderer, theme);
+        }
     }
 }
 

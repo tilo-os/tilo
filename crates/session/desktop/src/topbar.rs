@@ -43,6 +43,7 @@ mod avatar_ask;
 mod clock;
 mod controls;
 mod people;
+mod placed;
 pub mod reveal;
 mod sharing;
 mod space;
@@ -467,6 +468,10 @@ pub struct TopBarChrome {
     arrival_pressable: bool,
     /// Where the people cluster (faces, watching pages, invite) begins.
     people_left_x: f64,
+    /// What the bar's layout decided each part shows ([`Self::lay_out_bar`]).
+    placed: placed::BarPlaced,
+    /// The open ask's words as laid out, and its answer.
+    ask_words: Option<(avatar_ask::AskWords, String)>,
     /// Persistent trusted-chrome disclosure of active screen viewers.
     sharing_indicator_rect: Rect,
     /// "Continue \<app\> from \<device\>": the offer, and its dismiss chip.
@@ -584,6 +589,8 @@ impl TopBarChrome {
             arrival_rect: Rect::ZERO,
             arrival_pressable: false,
             people_left_x: 0.0,
+            placed: placed::BarPlaced::default(),
+            ask_words: None,
             sharing_indicator_rect: Rect::ZERO,
             continuity_rect: Rect::ZERO,
             continuity_dismiss_rect: Rect::ZERO,
@@ -697,69 +704,97 @@ impl TopBarChrome {
         self.rect.height() > 0.0 && self.rect.width() > 0.0
     }
 
-    /// The full bar's session side: the tray, application tray, media and sharing indicators,
-    /// collaborators and the continuity offer. A compact bar on another display carries none of
-    /// these. Returns where the person's own avatar leaves room beside it, for the ask.
-    fn draw_session_clusters(
+    /// Lay the bar out for its rect: where every part stands and what each shows, for the room
+    /// it has. Painting ([`Self::draw_bar`]) and the page's HTML read what this decided; neither
+    /// measures or places anything again.
+    fn lay_out_bar(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
+        let center_y = f64::midpoint(self.rect.y0, self.rect.y1);
+        self.placed.center_y = center_y;
+        // The workspace's name leads, after the mark when there is one: where its label starts,
+        // past its capsule's `s2` leading pad.
+        let label_x = self.place_tilo_mark(
+            theme,
+            center_y,
+            self.rect.x0 + f64::from(theme.tokens.spacing.s3),
+        ) + f64::from(theme.tokens.spacing.s2);
+        self.place_workspace_pill(theme, text_renderer, center_y, label_x);
+        let center_left = f64::midpoint(self.rect.x0, self.rect.x1)
+            - self.center_band_width(theme, text_renderer) / 2.0;
+        self.place_strip_name(
+            theme,
+            text_renderer,
+            center_y,
+            (
+                self.ws_pill_rect.x1,
+                center_left - f64::from(theme.tokens.spacing.s4),
+            ),
+        );
+        // The clock is laid out first, where the bar's centre is, and moved once the bar's right
+        // side is: on a narrow bar it moves left of the faces and buttons there, and with no room
+        // left of them it stands aside rather than under them.
+        self.place_center_widget(theme, text_renderer, center_y);
+        let beside_avatar_x = (!self.is_compact())
+            .then(|| self.place_session_clusters(theme, text_renderer, center_y));
+        self.placed.center_dx = self.center_yield(theme).unwrap_or(0.0);
+        self.placed.ask_beside = beside_avatar_x.is_some();
+        if let Some(beside_avatar_x) = beside_avatar_x {
+            self.place_ask_beside(theme, text_renderer, center_y, beside_avatar_x);
+        } else {
+            self.ask = avatar_ask::AskRects::default();
+            self.ask_words = None;
+        }
+    }
+
+    /// Where the full bar's session side stands: the tray, application tray, media and sharing
+    /// indicators, collaborators and the continuity offer. A compact bar on another display
+    /// carries none of these. Returns where the person's own avatar leaves room beside it, for the
+    /// ask.
+    fn place_session_clusters(
         &mut self,
-        scene: &mut Scene,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         center_y: f64,
     ) -> f64 {
-        let transform = Affine::IDENTITY;
-        // The status cluster paints the pill and its glyphs in one pass.
-        let tray_w = self.draw_tray_pill_body(scene, transform, theme, text_renderer, center_y);
-        // s3 matches the pad_x used when this pill was sized and placed in `draw_tray_pill_body`.
+        let tray_w = self.place_tray_pill(theme, text_renderer, center_y);
         // Every control on the right stands the bar's one control gap (s2) from the next, so the
         // group reads as one row with even spacing at every width.
         let stack_right_x = self.rect.x1
             - f64::from(theme.tokens.spacing.s3)
             - tray_w
             - f64::from(theme.tokens.spacing.s2);
-        let stack_right_x = self.draw_own_avatar(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            stack_right_x,
-        );
+        let stack_right_x = self.place_own_avatar(theme, center_y, stack_right_x);
         let beside_avatar_x = stack_right_x;
-        let stack_right_x = self.draw_app_tray(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            stack_right_x,
-        );
-        // Snapshotted before drawing, so `avatar_stack_rect` can be populated once the drawn circle
-        // count (incl. overflow) is known.
-        let stack_right_x = self.draw_media_indicator(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            stack_right_x,
-        );
+        let stack_right_x = self.place_app_tray(theme, center_y, stack_right_x);
+        let stack_right_x =
+            self.place_media_indicator(theme, text_renderer, center_y, stack_right_x);
+        let stack_right_x =
+            self.place_sharing_indicator(theme, text_renderer, center_y, stack_right_x);
+        let people_left_x =
+            self.place_people_cluster(theme, text_renderer, (center_y, stack_right_x));
+        self.placed.people_x = people_left_x;
+        let notices_left_x =
+            self.place_arrival_notice(theme, text_renderer, (center_y, people_left_x));
+        self.people_left_x =
+            self.place_wave_notice(theme, text_renderer, (center_y, notices_left_x));
+        let continuity = self.continuity_label();
+        self.place_continuity_chip(theme, text_renderer, center_y, continuity);
+        beside_avatar_x
+    }
 
-        let stack_right_x = self.draw_sharing_indicator(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            stack_right_x,
-        );
-        let people_left_x = self.draw_people_cluster(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            (center_y, stack_right_x),
-        );
+    /// Paint the session side where [`Self::place_session_clusters`] stood it.
+    fn paint_session_clusters(
+        &mut self,
+        scene: &mut Scene,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        let transform = Affine::IDENTITY;
+        self.paint_tray_pill(scene, transform, theme, text_renderer);
+        self.paint_own_avatar(scene, transform, theme, text_renderer);
+        self.paint_app_tray(scene, transform, theme, text_renderer);
+        self.paint_media_indicator(scene, transform, theme, text_renderer);
+        self.paint_sharing_indicator(scene, transform, theme, text_renderer);
+        self.paint_people_cluster(scene, transform, theme, text_renderer);
         // The notices beside the faces come and go on their own clock, and what stands left of one
         // moves with it: one part of the bar, so that change damages where they are painted, not
         // the whole bar.
@@ -767,66 +802,34 @@ impl TopBarChrome {
             scene,
             ui::scene_parts::PartKey::new("desktop.topbar.notices", ()),
             |scene| {
-                let notices_left_x = self.draw_arrival_notice(
-                    scene,
-                    transform,
-                    theme,
-                    text_renderer,
-                    (center_y, people_left_x),
-                );
-                self.people_left_x = self.draw_wave_notice(
-                    scene,
-                    transform,
-                    theme,
-                    text_renderer,
-                    (center_y, notices_left_x),
-                );
-                let continuity = self.continuity_label();
-                self.draw_continuity_chip(
-                    scene,
-                    transform,
-                    theme,
-                    text_renderer,
-                    center_y,
-                    continuity.as_deref(),
-                );
-                self.notices_painted(people_left_x)
+                self.paint_arrival_notice(scene, transform, theme, text_renderer);
+                self.paint_wave_notice(scene, transform, theme, text_renderer);
+                self.paint_continuity_chip(scene, transform, theme, text_renderer);
+                self.notices_painted(self.placed.people_x)
             },
         );
-        beside_avatar_x
     }
 
-    /// The ask about the person, beside the bar's right side as [`Self::draw_session_clusters`]
-    /// left it, and the dot the avatar wears for it. It stands left of everything else there: the
+    /// Where the ask about the person stands, beside the bar's right side as
+    /// [`Self::place_session_clusters`] left it. It stands left of everything else there: the
     /// faces, the people button and the notices keep their places, and the ask takes the room left
     /// of them — the band's own, or, where that room cannot hold its words, the band itself — and
-    /// waits as the avatar's dot where even the band cannot. Drawn after the clock, whose lane it
-    /// may take.
-    fn draw_ask_beside(
+    /// waits as the avatar's dot where even the band cannot. Laid out after the clock, whose lane
+    /// it may take.
+    fn place_ask_beside(
         &mut self,
-        scene: &mut Scene,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         center_y: f64,
         beside_avatar_x: f64,
     ) {
-        let transform = Affine::IDENTITY;
         let taken_x = self.right_side_x();
         let ask_right_x = if taken_x < beside_avatar_x {
             taken_x - f64::from(theme.tokens.spacing.s3)
         } else {
             beside_avatar_x
         };
-        self.draw_avatar_ask(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            ask_right_x,
-        );
-        // The dot the avatar wears knows whether the ask's words stand on the bar this frame.
-        self.draw_avatar_ask_dot(scene, transform, theme);
+        self.place_avatar_ask(theme, text_renderer, center_y, ask_right_x);
     }
 
     /// Where what the bar's right side drew begins: the faces, the people and invite buttons, the
@@ -1850,66 +1853,42 @@ impl TopBarChrome {
         // Cache miss — encode at IDENTITY, then splice with `out_transform` .
         let mut local = std::mem::take(&mut self.cached);
         local.reset();
+        // Laid out before anything is painted: the paint below only reads what it decided.
+        self.lay_out_bar(theme, text_renderer);
         let ((), parts) = ui::scene_parts::record(&mut local, |scene| {
             let transform = Affine::IDENTITY;
-            let center_y = f64::midpoint(self.rect.y0, self.rect.y1);
+            let center_y = self.placed.center_y;
             if self.presence() == TopBarPresence::Shown {
                 self.draw_overlay_surface(scene, transform, theme);
             } else if theme.tokens.finishes.bar.is_some() {
                 self.draw_bar_body(scene, transform, theme);
             }
-
-            // The workspace's name leads, after the mark when there is one: where its label starts,
-            // past its capsule's `s2` leading pad.
-            let label_x = self.draw_tilo_mark(
-                scene,
-                transform,
-                theme,
-                center_y,
-                self.rect.x0 + f64::from(theme.tokens.spacing.s3),
-            ) + f64::from(theme.tokens.spacing.s2);
-            self.draw_workspace_pill(scene, transform, theme, text_renderer, center_y, label_x);
-            let center_left = f64::midpoint(self.rect.x0, self.rect.x1)
-                - self.center_band_width(theme, text_renderer) / 2.0;
+            self.paint_tilo_mark_control(scene, transform, theme);
+            self.paint_workspace_pill(scene, transform, theme, text_renderer);
             // The strip shown changes as the person moves between strips: it is one part of the
             // bar, so that change damages where it is painted rather than the whole bar.
-            let strip_span = (
-                self.ws_pill_rect.x1,
-                center_left - f64::from(theme.tokens.spacing.s4),
-            );
             ui::scene_parts::part_drawn(
                 scene,
                 ui::scene_parts::PartKey::new("desktop.topbar.strips", ()),
                 |scene| {
                     // The strip shown, named after the workspace it is in: the frequent level,
                     // where the person looks for "where am I".
-                    self.draw_strip_name(
-                        scene,
-                        transform,
-                        theme,
-                        text_renderer,
-                        center_y,
-                        strip_span,
-                    );
+                    self.paint_strip_name(scene, transform, theme, text_renderer);
                     self.strips_painted()
                         .into_iter()
                         .map(|rect| transform.transform_rect_bbox(rect))
                         .collect()
                 },
             );
-
-            // The clock is laid out first, where the bar's centre is, and painted once the bar's
-            // right side is: on a narrow bar it moves left of the faces and buttons there, and
-            // with no room left of them it stands aside rather than under them.
-            let mut centre = Scene::new();
-            self.draw_center_widget(&mut centre, transform, theme, text_renderer, center_y);
-            let beside_avatar_x = (!self.is_compact())
-                .then(|| self.draw_session_clusters(scene, theme, text_renderer, center_y));
-            if let Some(dx) = self.center_yield(theme) {
-                scene.append(&centre, Some(Affine::translate((dx, 0.0))));
+            if !self.is_compact() {
+                self.paint_session_clusters(scene, theme, text_renderer);
             }
-            if let Some(beside_avatar_x) = beside_avatar_x {
-                self.draw_ask_beside(scene, theme, text_renderer, center_y, beside_avatar_x);
+            self.paint_center_widget(scene, transform, theme, text_renderer, center_y);
+            if self.placed.ask_beside {
+                self.paint_avatar_ask(scene, transform, theme, text_renderer);
+                // The dot the avatar wears knows whether the ask's words stand on the bar this
+                // frame.
+                self.draw_avatar_ask_dot(scene, transform, theme);
             }
             self.draw_focus_indicator(scene, transform, theme);
         });

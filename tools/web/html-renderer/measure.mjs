@@ -15,7 +15,10 @@ const rounds = Number(process.argv[process.argv.indexOf('--rounds') + 1]) || 1;
 // --quick, --select, --phone and --wheel (or QUICK=1 and so on) run one part.
 const part = name => Boolean(process.env[name.toUpperCase()]) || process.argv.includes(`--${name}`);
 mkdirSync(out, {recursive: true});
-const gpuArgs = process.platform === 'linux'
+// SwiftShader, unless `TILO_CHROME_ARGS` points the browser at the machine's GPU
+// (with `VK_DRIVER_FILES` choosing its driver), as a measurement of what a
+// visitor sees wants.
+const gpuArgs = process.platform === 'linux' && !process.env.TILO_CHROME_ARGS
   ? ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader']
   : [];
 const sandbox = process.getuid?.() === 0 ? ['--no-sandbox'] : [];

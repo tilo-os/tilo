@@ -63,21 +63,13 @@ impl TopBarChrome {
         slots
     }
 
-    /// Sizes the tray pill, paints it through the shared status cluster, and returns the layout the
-    /// application tray and media indicator read.
-    pub(super) fn draw_tray_pill_body(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        center_y: f64,
-    ) -> f64 {
+    /// The tray's status cluster as it shows now: its slots, the battery's reading and whether
+    /// the pointer lights it.
+    fn tray_face<'a>(
+        &self,
+        slots: &'a [ui::widget::StatusSlot],
+    ) -> ui::widget::StatusClusterFace<'a> {
         use ui::widget::{StatusCluster, StatusClusterFace};
-        let tokens = &theme.tokens;
-        let pad_x = f64::from(tokens.spacing.s3);
-        let rx = self.rect.x1 - pad_x;
-        let slots = self.tray_slots();
         // The battery's percentage is drawn only where the machine has a reading: an unknown
         // battery contributes nothing, not a zero.
         let status = match self.status.battery_percent() {
@@ -92,17 +84,29 @@ impl TopBarChrome {
             self.hovered_control().as_deref(),
             Some(Self::CONTROL_NOTIFICATIONS | Self::CONTROL_QUICK_SETTINGS)
         );
-        let face = StatusClusterFace::new(&slots, status)
+        StatusClusterFace::new(slots, status)
             .hovered(hovered)
-            .at_height(BAR_CONTROL_PX);
+            .at_height(BAR_CONTROL_PX)
+    }
+
+    /// Where the tray pill stands at the bar's end, and its two targets: the bell and the
+    /// readings beside it. Returns its width.
+    pub(super) fn place_tray_pill(
+        &mut self,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+    ) -> f64 {
+        use ui::widget::StatusClusterFace;
+        let tokens = &theme.tokens;
+        let pad_x = f64::from(tokens.spacing.s3);
+        let rx = self.rect.x1 - pad_x;
+        let slots = self.tray_slots();
+        let face = self.tray_face(&slots);
         let tray_w = face.width(text_renderer, theme);
         self.tray_pill_rect =
             StatusClusterFace::place_at(rx - tray_w, center_y, tray_w, BAR_CONTROL_PX);
-        let layout = face.paint(
-            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-            self.tray_pill_rect,
-            tokens.colors.surfaces.base,
-        );
+        let layout = face.layout(text_renderer, theme, self.tray_pill_rect);
         self.bell_badge_rect = layout.badge;
         self.tray_hit_rect = Rect::new(
             self.tray_pill_rect.x0,
@@ -153,16 +157,31 @@ impl TopBarChrome {
         tray_w
     }
 
-    /// Active microphone/camera use, drawn leftward from `rx`: a bar chip
+    /// Paint the tray pill where [`Self::place_tray_pill`] stood it, through the shared status
+    /// cluster.
+    pub(super) fn paint_tray_pill(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        let slots = self.tray_slots();
+        let _ = self.tray_face(&slots).paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            self.tray_pill_rect,
+            theme.tokens.colors.surfaces.base,
+        );
+    }
+
+    /// Where active microphone/camera use stands, leftward from `rx`: a bar chip
     /// carrying the microphone and camera glyphs and, while it is fresh or
     /// pointed at, the verified app's name. Clicking opens Quick Settings,
     /// whose privacy action can disconnect the active `PipeWire` clients.
     /// Returns the x cursor position the avatar stack should grow leftward
     /// from.
-    pub(super) fn draw_media_indicator(
+    pub(super) fn place_media_indicator(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         center_y: f64,
@@ -172,6 +191,7 @@ impl TopBarChrome {
         use ui::widget::BarChipFace;
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
+        self.placed.media = None;
         if self.status.media.is_empty() {
             self.media_indicator_rect = Rect::ZERO;
             return rx;
@@ -208,24 +228,42 @@ impl TopBarChrome {
         };
         let name = labels.first().copied().unwrap_or_default();
         let live = colors.semantic.success;
-        let mut chip = BarChipFace::new(name, &[])
-            .icons(&glyphs)
-            .at_height(BAR_CONTROL_PX);
-        if !label.is_empty() {
-            chip = chip.label(&label);
-        }
-        if self.media_expanded && !labels.is_empty() {
-            chip = chip.tone(live);
-        }
-        let width = chip.width(text_renderer, theme);
+        let width = super::placed::MediaPlaced::chip_of(name, &glyphs, &label, None)
+            .width(text_renderer, theme);
         self.media_indicator_rect =
             BarChipFace::place_at(rx - width, center_y, width, BAR_CONTROL_PX);
-        let _ = chip.paint(
+        let tone = (self.media_expanded && !labels.is_empty()).then_some(live);
+        self.placed.media = Some(super::placed::MediaPlaced {
+            name: name.to_owned(),
+            glyphs,
+            label,
+            tone,
+        });
+        self.media_indicator_rect.x0 - f64::from(tokens.spacing.s2)
+    }
+
+    /// Paint the media indicator where [`Self::place_media_indicator`] stood it.
+    pub(super) fn paint_media_indicator(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        let Some(media) = self.placed.media.as_ref() else {
+            return;
+        };
+        let _ = super::placed::MediaPlaced::chip_of(
+            &media.name,
+            &media.glyphs,
+            &media.label,
+            media.tone,
+        )
+        .paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             self.media_indicator_rect,
-            tokens.colors.surfaces.base,
+            theme.tokens.colors.surfaces.base,
         );
-        self.media_indicator_rect.x0 - f64::from(tokens.spacing.s2)
     }
 
     /// Pulled at the top of [`Widget::draw`], not pushed by `update` , so a just-dropped battery
@@ -285,20 +323,11 @@ impl TopBarChrome {
                 }));
     }
 
-    /// Running applications' status-notifier icons, drawn leftward from `rx` beside the system tray
-    /// pill. `Passive` items stay hidden, as the protocol asks; one that needs attention carries a
-    /// warning dot. Returns where the next cluster may end.
-    pub(super) fn draw_app_tray(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        center_y: f64,
-        rx: f64,
-    ) -> f64 {
+    /// Where running applications' status-notifier icons stand, leftward from `rx` beside the
+    /// system tray pill. `Passive` items stay hidden, as the protocol asks. Returns where the next
+    /// cluster may end.
+    pub(super) fn place_app_tray(&mut self, theme: &Theme, center_y: f64, rx: f64) -> f64 {
         let tokens = &theme.tokens;
-        let colors = &tokens.colors;
         let items: Vec<AppTrayItem> = self
             .chrome
             .as_ref()
@@ -311,11 +340,11 @@ impl TopBarChrome {
         self.app_tray_images
             .retain(|key, _| items.iter().any(|item| &item.key == key));
         if items.is_empty() {
+            self.placed.app_tray = items;
             return rx;
         }
         let slot = f64::from(tokens.spacing.s6);
         let gap = f64::from(tokens.spacing.s1);
-        let icon_px = 18.0_f64;
         let mut right = rx;
         for item in items.iter().rev() {
             let hit = Rect::new(
@@ -324,6 +353,38 @@ impl TopBarChrome {
                 right,
                 center_y + BAR_CONTROL_PX / 2.0,
             );
+            self.app_tray.push(AppTraySlot {
+                key: item.key.clone(),
+                id: item.id.clone(),
+                owner_app: item.owner_app.clone(),
+                title: item.title.clone(),
+                item_is_menu: item.item_is_menu,
+                rect: hit,
+            });
+            right = hit.x0 - gap;
+        }
+        self.placed.app_tray = items;
+        right - f64::from(tokens.spacing.s3) + gap
+    }
+
+    /// Paint the application tray's icons where [`Self::place_app_tray`] stood them: one that
+    /// needs attention carries a warning dot.
+    pub(super) fn paint_app_tray(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let icon_px = 18.0_f64;
+        let items = std::mem::take(&mut self.placed.app_tray);
+        // The slots were placed right to left.
+        for (index, item) in items.iter().rev().enumerate() {
+            let Some(hit) = self.app_tray.get(index).map(|slot| slot.rect) else {
+                continue;
+            };
             let icon_rect = Rect::from_center_size(hit.center(), (icon_px, icon_px));
             // A tray icon is a bar control: it lifts under the pointer and,
             // reached from the keyboard, shows the bar's focus ring through
@@ -362,17 +423,8 @@ impl TopBarChrome {
                     &vello::kurbo::Circle::new((icon_rect.x1, icon_rect.y0 + 2.0), 3.0),
                 );
             }
-            self.app_tray.push(AppTraySlot {
-                key: item.key.clone(),
-                id: item.id.clone(),
-                owner_app: item.owner_app.clone(),
-                title: item.title.clone(),
-                item_is_menu: item.item_is_menu,
-                rect: hit,
-            });
-            right = hit.x0 - gap;
         }
-        right - f64::from(tokens.spacing.s3) + gap
+        self.placed.app_tray = items;
     }
 
     /// One tray item's image, or its letter badge, in `icon_rect` .

@@ -169,25 +169,41 @@ impl FaceStack {
         (faces, more): (&[Face<'_>], usize),
         ground: Color,
     ) -> (Vec<Rect>, Option<Rect>) {
+        let (rects, badge) = self.layout((right, center_y), (faces, more));
+        for (face, rect) in faces.iter().zip(&rects) {
+            paint_face(ctx, *rect, face, ground);
+        }
+        if let Some(rect) = badge {
+            AvatarFace::paint_overflow(ctx, rect, more, Some(ground));
+        }
+        (rects, badge)
+    }
+
+    /// Where [`Self::paint`] stands each of `faces` and the badge counting
+    /// `more`, ending at `right` and centred on `center_y`, without painting:
+    /// what a host places its targets by before anything is painted.
+    #[must_use]
+    pub fn layout(
+        &self,
+        (right, center_y): (f64, f64),
+        (faces, more): (&[Face<'_>], usize),
+    ) -> (Vec<Rect>, Option<Rect>) {
         let shown = faces.len();
         let slots = shown + usize::from(more > 0);
         let outer = self.side + 2.0 * (RING + GAP);
         let step = self.step();
         let left = right - self.width_of(shown, more);
         let center_of = |slot: usize| Point::new(left + outer / 2.0 + slot as f64 * step, center_y);
-        let mut rects = Vec::with_capacity(shown);
-        for (slot, face) in faces.iter().take(shown).enumerate() {
-            let center = center_of(slot);
-            let side = self.side * face.scale;
-            let rect = Rect::from_center_size(center, (side, side));
-            paint_face(ctx, rect, face, ground);
-            rects.push(rect);
-        }
-        let badge = (more > 0).then(|| {
-            let rect = Rect::from_center_size(center_of(slots - 1), (self.side, self.side));
-            AvatarFace::paint_overflow(ctx, rect, more, Some(ground));
-            rect
-        });
+        let rects = faces
+            .iter()
+            .enumerate()
+            .map(|(slot, face)| {
+                let side = self.side * face.scale;
+                Rect::from_center_size(center_of(slot), (side, side))
+            })
+            .collect();
+        let badge = (more > 0)
+            .then(|| Rect::from_center_size(center_of(slots - 1), (self.side, self.side)));
         (rects, badge)
     }
 }
