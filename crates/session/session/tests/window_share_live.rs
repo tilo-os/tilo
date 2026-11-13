@@ -9,6 +9,8 @@
 //! relay in one process and carry the control messages by hand, so none of that is in them: here
 //! the workspace is made by one device and reaches the other through the person's list, the share
 //! is asked for by the tab alone, and what the viewing session says it received is what arrived.
+//! The same between two devices that were off and came back in either order, and between a
+//! machine and the copy made of it.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -22,23 +24,26 @@
               until their sessions end"
 )]
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::common::people::{Device, log_sessions_at, two_devices_of_one_person};
+use crate::common::people::{
+    Device, Person, log_sessions_at, share_the_fleet, two_devices_of_one_person,
+};
 
 /// The app whose window is shared.
 const NOTES: &str = "so.tilo.notes";
 /// The provider of the session's own actions.
 const SESSION: &str = "so.tilo.session";
-/// What the devices' sessions log here: the live plane, the shares and the routes between the
-/// devices say how far a share came only below `info`.
+/// What the devices' sessions log here: the live plane, the shares, the channels whose keys seal
+/// the plane and the routes between the devices say how far a share came only below `info`.
 const LOGGED: &str = "info,tilo_session::live=debug,tilo_session::window_share=debug,\
-                      tilo_network_actor=debug,tilo_session_client=warn";
-/// How many lines of one kind a failed step shows of a session's log.
-const SHOWN: usize = 120;
+                      tilo_channels=debug,tilo_network_actor=debug,tilo_session_client=warn";
+/// How many kinds of line a failed step shows of one part of a session's log.
+const SHOWN: usize = 90;
 
 /// What `device`'s session says of its window shares: `sharing`, `starting`, `watching` and
 /// `received`, as its `session:window-share` resource reads.
@@ -55,19 +60,103 @@ fn row_of(reading: &Value, part: &str, tab: &str) -> Option<Value> {
         .cloned()
 }
 
-/// The lines of `log` that `keep` keeps, the last [`SHOWN`] of them, none longer than a screen.
+/// What `device` says of who hosts `workspace` (`workspace_hosts`): `Null` while it does not hold
+/// it.
+fn hosting_of(device: &Device, workspace: &str) -> Value {
+    device.ask(&json!({"op": "workspace_hosts"}))["answer"]["workspaces"]
+        .as_array()
+        .and_then(|held| {
+            held.iter()
+                .find(|row| row["room"].as_str() == Some(workspace))
+                .cloned()
+        })
+        .unwrap_or(Value::Null)
+}
+
+/// What `device`'s desk holds of `workspace`: its tabs, each with what it shows, and the window
+/// shares its copy of the workspace's governance names.
+fn desk_of(device: &Device, workspace: &str) -> String {
+    let state = device.state();
+    let Some(held) = state["state"]["workspace_tree"]["workspaces"]
+        .as_array()
+        .and_then(|all| {
+            all.iter()
+                .find(|held| held["room"].as_str() == Some(workspace))
+        })
+    else {
+        return "its desk holds no such workspace".to_owned();
+    };
+    let tabs: Vec<String> = held["strips"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|strip| strip["window_groups"].as_array().into_iter().flatten())
+        .flat_map(|group| group["tabs"].as_array().into_iter().flatten())
+        .map(|tab| {
+            let shows = tab["tile"]
+                .as_object()
+                .and_then(|tile| tile.keys().next().cloned())
+                .unwrap_or_else(|| tab["tile"].to_string());
+            format!("{} {} {shows}", tab["id"], tab["title"])
+        })
+        .collect();
+    let grants: Vec<String> = held["policy"]["grants"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|grant| grant["node"].to_string().contains("window"))
+        .map(|grant| grant["id"].to_string())
+        .collect();
+    format!("tabs {tabs:?}; window shares in its governance {grants:?}")
+}
+
+/// The lines of `log` that `keep` keeps, in the order each kind was first said: a line said again
+/// with other numbers is counted, and shown as it was said first and last.
 fn lines_of(log: &str, keep: impl Fn(&str) -> bool) -> String {
-    let kept: Vec<&str> = log.lines().filter(|line| keep(line)).collect();
-    kept.iter()
-        .skip(kept.len().saturating_sub(SHOWN))
-        .map(|line| line.chars().take(700).collect::<String>())
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut order: Vec<String> = Vec::new();
+    let mut said: BTreeMap<String, (usize, String, String)> = BTreeMap::new();
+    for line in log.lines().filter(|line| keep(line)) {
+        // Without its time, and with every digit alike.
+        let shape: String = line
+            .split_once(' ')
+            .map_or(line, |(_, rest)| rest)
+            .chars()
+            .map(|c| if c.is_ascii_digit() { '#' } else { c })
+            .collect();
+        if let Some((count, _, last)) = said.get_mut(&shape) {
+            *count += 1;
+            line.clone_into(last);
+        } else {
+            order.push(shape.clone());
+            said.insert(shape, (1, line.to_owned(), String::new()));
+        }
+    }
+    let mut out = String::new();
+    for shape in order.iter().take(SHOWN) {
+        let (count, first, last) = &said[shape];
+        let _ = writeln!(
+            out,
+            "x{count} {}",
+            first.chars().take(600).collect::<String>()
+        );
+        if *count > 1 {
+            let _ = writeln!(
+                out,
+                "   last {}",
+                last.chars().take(600).collect::<String>()
+            );
+        }
+    }
+    if order.len() > SHOWN {
+        let _ = writeln!(out, "and {} more kinds of line", order.len() - SHOWN);
+    }
+    out
 }
 
 /// How far a share came on each of `devices`, for a step that never happened: what each session
-/// says of its shares and of who hosts `workspace`, who it says is present there, and what it
-/// logged of the live plane, of the shares and of the windows' control messages.
+/// says of its shares, of who hosts `workspace` and of who is present there, what its desk holds
+/// of the workspace, and what it logged of the live plane, of the workspace's channels, of the
+/// shares and of the windows' control messages.
 fn report(workspace: &str, devices: &[&Device]) -> String {
     let mut out = String::new();
     for device in devices {
@@ -75,14 +164,19 @@ fn report(workspace: &str, devices: &[&Device]) -> String {
         let _ = writeln!(
             out,
             "== {} (device {}) ==\nshares: {}\nhosts: {}\npresent in {workspace}: {:?}\n\
-             -- the live plane --\n{}\n-- the shares --\n{}\n-- the windows' messages --\n{}\n\
-             -- warnings --\n{}",
+             desk in {workspace}: {}\n\
+             -- the live plane --\n{}\n-- the workspace's channels --\n{}\n-- the shares --\n{}\n\
+             -- the windows' messages --\n{}\n-- warnings --\n{}",
             device.label,
             hex::encode(device.cert.device_public_key),
             shares(device),
-            device.ask(&json!({"op": "workspace_hosts"}))["answer"]["workspaces"],
+            hosting_of(device, workspace),
             device.present(workspace),
+            desk_of(device, workspace),
             lines_of(&log, |line| line.contains("tilo_session::live")),
+            lines_of(&log, |line| {
+                line.contains("tilo_channels") && line.contains(workspace)
+            }),
             lines_of(&log, |line| line.contains("tilo_session::window_share")),
             lines_of(&log, |line| {
                 line.contains("tilo_network_actor")
@@ -278,16 +372,6 @@ fn the_shared_window_arrives(workspace: &str, sharer: &Device, viewer: &Device, 
     );
 }
 
-/// The device that made the workspace, and hosts it, shares a window: the person's other device,
-/// which took the workspace from their list, pictures it.
-#[test]
-fn a_window_the_hosting_device_shares_is_pictured_on_the_persons_other_device() {
-    log_sessions_at(LOGGED);
-    let (_site, _ada, laptop, phone) = two_devices_of_one_person();
-    let made = made_on(&phone, &laptop);
-    the_shared_window_arrives(&made, &phone, &laptop, "Shared by the host");
-}
-
 /// The person's other device shares a window in a workspace it took from their list: the device
 /// that made the workspace, and hosts it, pictures it. This is the direction two machines on one
 /// network failed in.
@@ -299,11 +383,77 @@ fn a_window_the_persons_other_device_shares_is_pictured_on_the_hosting_device() 
     the_shared_window_arrives(&made, &laptop, &phone, "Shared with the host");
 }
 
-/// Both of the person's devices in a workspace a site hosts: the site relays the workspace's live
-/// plane, and what one shares the other pictures.
+/// Both devices were off and came back, the hosting device first: the other device finds the
+/// workspace's relay there when its session starts, and what it shares the hosting device
+/// pictures.
 #[test]
-fn a_window_shared_in_a_workspace_a_site_hosts_is_pictured_on_the_persons_other_device() {
+fn a_window_shared_after_both_devices_came_back_the_host_first_is_pictured() {
     log_sessions_at(LOGGED);
-    let (site, _ada, laptop, phone) = two_devices_of_one_person();
-    the_shared_window_arrives(&site.workspace, &laptop, &phone, "Shared at the site");
+    let (_site, _ada, mut laptop, mut phone) = two_devices_of_one_person();
+    let made = made_on(&phone, &laptop);
+    laptop.stop();
+    phone.stop();
+    phone.start();
+    phone.wait_holding(&made);
+    laptop.start();
+    laptop.wait_holding(&made);
+    the_shared_window_arrives(&made, &laptop, &phone, "Shared after the host came back");
+}
+
+/// Both devices were off and the hosting device came back last: when the other device's session
+/// started, the device relaying the workspace was not there to reach. Its live plane opens once
+/// that device is back, and what it shares the hosting device pictures.
+#[test]
+fn a_window_shared_after_the_host_came_back_last_is_pictured() {
+    log_sessions_at(LOGGED);
+    let (_site, _ada, mut laptop, mut phone) = two_devices_of_one_person();
+    let made = made_on(&phone, &laptop);
+    laptop.stop();
+    phone.stop();
+    laptop.start();
+    laptop.wait_holding(&made);
+    // Long enough for the laptop to have tried the phone and found it away.
+    std::thread::sleep(Duration::from_secs(8));
+    phone.start();
+    phone.wait_holding(&made);
+    the_shared_window_arrives(&made, &laptop, &phone, "Shared before the host was back");
+}
+
+/// A desktop that hosts the workspace its desk made, and a machine copied from it while it was
+/// off, re-keyed at boot and certified by their person: the copy holds the workspace from the
+/// copied disk and its host takes it in as the person's further device. The workspace's id.
+fn a_desktop_and_its_copy() -> (Person, Device, Device, String) {
+    let ada = Person::new("Ada");
+    let mut desktop = ada.device("Ada's desktop");
+    desktop.start();
+    tilo_test_env::wait_until("the desktop shows the workspace its desk made", || {
+        desktop.showing().is_some()
+    });
+    let workspace = desktop.showing().expect("the workspace the desk made");
+    desktop.stop();
+    let (mut copy, _) = ada.branch(&desktop);
+    share_the_fleet(&ada, &[&desktop, &copy]);
+    desktop.start();
+    desktop.wait_holding(&workspace);
+    copy.start();
+    eventually(
+        &format!("{} holds {workspace} and its host took it in", copy.label),
+        Duration::from_secs(120),
+        &workspace,
+        &[&desktop, &copy],
+        || {
+            let row = hosting_of(&copy, &workspace);
+            row["awaiting_host"] == json!(false) && row["hosted_here"] == json!(false)
+        },
+    );
+    (ada, desktop, copy, workspace)
+}
+
+/// The machines the failure was found on: one makes and hosts the workspace, the other is a copy
+/// of it that its person certified, and the copy shares a window.
+#[test]
+fn a_window_a_copied_machine_shares_is_pictured_on_the_device_it_was_copied_from() {
+    log_sessions_at(LOGGED);
+    let (_ada, desktop, copy, workspace) = a_desktop_and_its_copy();
+    the_shared_window_arrives(&workspace, &copy, &desktop, "Shared by the copy");
 }

@@ -739,7 +739,7 @@ fn two_devices_of_one_person_carrying(install: impl Fn(&Device)) -> (Site, Perso
 /// Tell each of `devices` about the rest of the person's fleet, as the machine that enrolls a
 /// device does ([`tilo_identity_host::provisioning`]): a device admits what the fleet names, and
 /// dials the siblings it holds, so what the person records reaches their other devices.
-fn share_the_fleet(person: &Person, devices: &[&Device]) {
+pub fn share_the_fleet(person: &Person, devices: &[&Device]) {
     let identity_id = hex::encode(person.public);
     for device in devices {
         let fleet = tilo_identity_host::device_fleet::DeviceFleetStore::at(
