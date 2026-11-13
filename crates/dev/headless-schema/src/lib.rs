@@ -35,11 +35,10 @@ impl SemanticAction {
     }
 }
 
-/// One thing to do to the app.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
-    /// Click the centre of the widget addressed by `name` — either its
-    /// test id or the `Parent/Child[index]` path fallback.
+    /// Click the centre of the widget addressed by `name`: its test id or the `Parent/Child[index]`
+    /// path fallback.
     ClickNamed(String),
     /// Click at raw logical coordinates.
     ClickAt(f64, f64),
@@ -47,19 +46,17 @@ pub enum Action {
     TapNamed(String),
     /// Direct-touch tap at logical coordinates.
     TapAt(f64, f64),
-    /// Drag one touch from start to end, exercising tap cancellation and
-    /// pixel-precise scrolling.
+    /// Drag one touch from start to end, exercising tap cancellation and pixel-precise scrolling.
     SwipeAt(f64, f64, f64, f64),
-    /// Press and release one named key (`Enter`, `Tab`, `Escape`, `Space`,
-    /// `Backspace`, arrows) or a single character.
+    /// Press and release one named key (`Enter`, `Tab`, `Escape`, `Space`, `Backspace`, arrows) or a
+    /// single character.
     Key(String),
     /// Type a string, one press/release pair per character.
     Type(String),
     /// Hold the given modifiers for subsequent actions. Empty clears them.
     Modifiers(Vec<String>),
-    /// Drive frames until a named retained widget appears, or fail after the
-    /// bounded timeout. This lets saved scenarios synchronize with workers
-    /// and asynchronous model delegates without timing sleeps.
+    /// Drive frames until a named retained widget appears, or fail after the bounded timeout, so a
+    /// scenario synchronises with workers and asynchronous model delegates without sleeps.
     WaitForNamed { target: String, timeout_ms: u64 },
     /// Require semantic output or state at this exact point in a scenario.
     Expect(SemanticExpectation),
@@ -70,14 +67,13 @@ pub enum Action {
         semantic_target: Option<String>,
         action: SemanticAction,
     },
-    /// Invoke one published action by address, through the same resolution,
-    /// availability, confirmation and strict binding the live host applies.
+    /// Invoke one published action by address, through the same resolution, availability,
+    /// confirmation and strict binding the live host applies.
     Invoke(Invocation),
 }
 
-/// Invoke one action the app publishes, by its `(resource, action)` address,
-/// through the same door every other caller uses. No coordinates: the
-/// scenario names what to do, not where to click.
+/// Invoke one action the app publishes, by its `(resource, action)` address, through the same door
+/// every other caller uses. No coordinates: the scenario names what to do, not where to click.
 #[derive(Clone, PartialEq)]
 pub struct Invocation {
     pub resource: String,
@@ -91,16 +87,15 @@ pub struct Invocation {
     /// (`unknown_action`, `invalid_arguments`, `action_unavailable`,
     /// `action_confirmation_required`, `action_failed`) instead of running.
     pub expect_error: Option<String>,
-    /// Keep what the action answered under this name: later steps write
-    /// `{{name.value.id}}` (or `{{name.resources.0}}`) in a resource or an
-    /// argument to use it, as a caller chains a created item's id into the
-    /// next call.
+    /// Keep what the action answered under this name: later steps write `{{name.value.id}}` (or
+    /// `{{name.resources.0}}`) in a resource or an argument, as a caller chains a created item's id
+    /// into the next call.
     pub bind: Option<String>,
 }
 
 impl std::fmt::Debug for Invocation {
-    /// Arguments can carry secrets (passphrases); a scenario's debug output
-    /// names the address and the argument names only.
+    /// Arguments can carry secrets (passphrases); a scenario's debug output names the address and
+    /// the argument names only.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Invocation")
             .field("resource", &self.resource)
@@ -133,8 +128,8 @@ pub struct SemanticExpectation {
     pub enabled: Option<bool>,
     pub busy: Option<bool>,
     pub invalid: Option<bool>,
-    /// The editable text's selection as `(anchor, focus)`, UTF-8 bytes into
-    /// `value`: how a document's select-all is checked without reading pixels.
+    /// The editable text's selection as `(anchor, focus)`, UTF-8 bytes into `value`: how a document's
+    /// select-all is checked without reading pixels.
     pub text_selection: Option<(usize, usize)>,
 }
 
@@ -155,8 +150,8 @@ impl SemanticExpectation {
         self
     }
 
-    /// Drive live-equivalent frames until this assertion matches or the
-    /// explicit bound expires. Without this, assertions are immediate.
+    /// Drive live-equivalent frames until this assertion matches or the explicit bound expires.
+    /// Without this, assertions are immediate.
     #[must_use]
     pub fn within(mut self, timeout: std::time::Duration) -> Self {
         self.timeout_ms = Some(u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX));
@@ -235,8 +230,8 @@ impl SemanticExpectation {
         self
     }
 
-    /// Require the editable text's selection to be `anchor` through `focus`,
-    /// as UTF-8 byte offsets into the published `value`.
+    /// Require the editable text's selection to be `anchor` through `focus`, as UTF-8 byte offsets
+    /// into the published `value`.
     #[must_use]
     pub fn text_selection(mut self, anchor: usize, focus: usize) -> Self {
         self.text_selection = Some((anchor, focus));
@@ -244,14 +239,13 @@ impl SemanticExpectation {
     }
 }
 
-/// One offscreen picture of the window, taken once the actions ran and the
-/// window settled: `{"path": "...", "theme": "light", "viewport": [w, h]}`.
+/// One offscreen picture of the window, taken once the actions ran and the window settled:
+/// `{"path": "...", "theme": "light", "viewport": [w, h]}`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Capture {
     /// Where the PNG is written; missing directories are created.
     pub path: String,
-    /// A shipped theme by name (`dark`, `light`, ...); the current one
-    /// when absent.
+    /// A shipped theme by name (`dark`, `light`, ...); the current one when absent.
     pub theme: Option<String>,
     /// The window size in logical pixels; the current one when absent.
     pub viewport: Option<(u32, u32)>,
@@ -261,8 +255,7 @@ pub struct Capture {
 pub struct Spec {
     pub viewport: Option<(u32, u32)>,
     pub actions: Vec<Action>,
-    /// Pictures taken after the actions, in order (`capture`: one object or
-    /// an array of them).
+    /// Pictures taken after the actions, in order (`capture`: one object or an array of them).
     pub captures: Vec<Capture>,
     pub audit: bool,
     pub audit_report: Option<String>,
@@ -270,19 +263,16 @@ pub struct Spec {
     pub targets: Option<String>,
     pub inspect: Option<String>,
     pub results: Option<String>,
-    /// Where to write the published resource tree, with every action's
-    /// address and parameters, once the actions ran: what a scenario can
-    /// `invoke`.
+    /// Where to write the published resource tree, with every action's address and parameters, once
+    /// the actions ran: what a scenario can `invoke`.
     pub resources: Option<String>,
-    /// Draw the desktop's window bar over the app, as a Tilo session does:
-    /// the app's slots, search and History are hosted in it, the app's
-    /// frame stands under it and every capture shows the whole window.
-    /// Coordinates (`click_at`, `tap_at`, `swipe_at`, `targets`) are then
-    /// the window's, as a capture shows it; the bar itself takes no presses.
+    /// Draw the desktop's window bar over the app, as a Tilo session does: the app's slots, search and
+    /// History are hosted in it, the app's frame stands under it, and every capture shows the whole
+    /// window. Coordinates (`click_at`, `tap_at`, `swipe_at`, `targets`) are then the window's; the
+    /// bar itself takes no presses.
     pub window_bar: bool,
-    /// Mount the app as `--shots --scenario <name>` does: built from that
-    /// scenario's fixtures instead of the device's sources, with the
-    /// scenario staged before the actions run.
+    /// Mount the app as `--shots --scenario <name>` does: built from that scenario's fixtures instead
+    /// of the device's sources, with the scenario staged before the actions run.
     pub scenario: Option<String>,
 }
 
@@ -583,10 +573,9 @@ fn parse_invocation(value: &serde_json::Value) -> Result<Invocation, String> {
     })
 }
 
-/// Replace every `{{name.path}}` in `text` with what `bindings` holds there:
-/// a string that is one placeholder becomes the bound JSON value itself
-/// (a number stays a number), and a placeholder inside longer text becomes
-/// the value's text. A path walks object keys and array indexes.
+/// Replace every `{{name.path}}` in `text` with what `bindings` holds there: a string that is one
+/// placeholder becomes the bound JSON value itself (a number stays a number), and a placeholder
+/// inside longer text becomes the value's text. A path walks object keys and array indexes.
 pub fn substitute(
     value: &serde_json::Value,
     bindings: &std::collections::BTreeMap<String, serde_json::Value>,
@@ -642,9 +631,8 @@ fn substitute_text(
     Ok(serde_json::Value::String(out))
 }
 
-/// The value at `path` (`name.key.0`), or with a trailing `|last` the part
-/// of that string after its last `/`: the id at the end of a resource
-/// address an action answered (`{{folder.resources.0|last}}`).
+/// The value at `path` (`name.key.0`), or with a trailing `|last` the part of that string after its
+/// last `/`: the id at the end of a resource address an action answered.
 fn lookup(
     path: &str,
     bindings: &std::collections::BTreeMap<String, serde_json::Value>,
