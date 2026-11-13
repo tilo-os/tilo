@@ -488,7 +488,7 @@ fn store() -> Result<PackageStore, Error> {
     Ok(PackageStore::at(data_root()?))
 }
 
-/// The user's data home (parent of `tilo-rooms/`), distinct from [`data_root`]: it follows
+/// The user's data home (parent of `tilo-workspaces/`), distinct from [`data_root`]: it follows
 /// `XDG_DATA_HOME` like the launcher, not `TILO_APPS_DATA_DIR`. The wrong one silently loses the
 /// app data `uninstall --purge` is asked to remove.
 fn data_home_root() -> Result<PathBuf, Error> {

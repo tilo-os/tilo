@@ -132,13 +132,16 @@ impl Room {
             .env("TILO_ROOMS_FEEDBACK_CHANNEL", "feedback")
             // The listeners, on loopback, each on a port the kernel picks as it binds: two rooms on
             // one machine take the ports they are given, and the room announces the ones it bound.
-            .env("TILO_ROOMS_STATE", state.path().join("tilo-rooms"))
+            .env("TILO_ROOMS_STATE", state.path().join("tilo-workspaces"))
             .env("TILO_ROOMS_WEB", "127.0.0.1:0")
             .env("TILO_ROOMS_RELAY_PLAIN", "127.0.0.1:0")
             .env("TILO_ROOMS_LIVE", "127.0.0.1:0")
             .env("TILO_ROOMS_HTTP", "127.0.0.1:0")
             // The room's state volume, where the host keeps its secrets.
-            .env("TILO_SECRETS_DIR", state.path().join("tilo-rooms/secrets"))
+            .env(
+                "TILO_SECRETS_DIR",
+                state.path().join("tilo-workspaces/secrets"),
+            )
             .env("TILO_RELAY_LOG", "warn")
             .env(
                 "TILO_SOURCE_REVISION",

@@ -97,7 +97,7 @@ def app_home(session: "ra.Session", state: Path) -> Path:
     workspaces = session.state_dump()["workspace_tree"]["workspaces"]
     room = next((workspace["room"] for workspace in workspaces if workspace.get("room")), None)
     assert room, f"no workspace of the desk names its room: {workspaces!r}"
-    home = state / "data/tilo-rooms" / room / "so.tilo.file-explorer"
+    home = state / "data/tilo-workspaces" / room / "so.tilo.file-explorer"
     home.mkdir(parents=True, exist_ok=True)
     return home
 

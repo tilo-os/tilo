@@ -11,7 +11,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 use tilo_files::native::atomic::{Privacy, StorageDirectory};
-const APP: &str = "tilo-rooms/personal/so.tilo.imager.home-export";
+const APP: &str = "tilo-workspaces/personal/so.tilo.imager.home-export";
 
 /// What a service's workspace holds besides the delegated app home, and how it checks its caller's root
 /// custody.
@@ -145,7 +145,7 @@ pub(super) fn prepare(layout: Layout, path: &Path, owner: Owner) -> io::Result<W
             format!("{} work root must be fresh", layout.label),
         ));
     }
-    let workspaces = child(held, c"tilo-rooms")?;
+    let workspaces = child(held, c"tilo-workspaces")?;
     let workspace = child(&workspaces, c"personal")?;
     let app = child(&workspace, c"so.tilo.imager.home-export")?;
     let local = child(&app, c".local")?;

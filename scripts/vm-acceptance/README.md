@@ -220,7 +220,7 @@ the portal backend or the identity's secret providers select these checks (`ci_s
 ### Startup and GPU (A14, R05)
 
 A14 opens Files before anything else in the run does and times it from the app's own
-startup marks (`<data home>/tilo-rooms/<workspace>/so.tilo.file-explorer/.local/state/startup-<N>.json`,
+startup marks (`<data home>/tilo-workspaces/<workspace>/so.tilo.file-explorer/.local/state/startup-<N>.json`,
 process start to `first-frame-presented`): `files_first_frame_s` (3 s) in a VM, which
 renders on a CPU rasterizer or through virgl, `files_first_frame_hw_s` (300 ms) when
 frames reach real display hardware. The compositor's request-to-present time is recorded

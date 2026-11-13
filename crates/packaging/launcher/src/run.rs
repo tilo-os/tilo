@@ -4974,7 +4974,7 @@ mod app_dir_tests {
             );
             for dir in [&a, &b, &personal] {
                 assert!(
-                    dir.starts_with(data.path().join("tilo-rooms")),
+                    dir.starts_with(data.path().join("tilo-workspaces")),
                     "{dir:?} is outside the workspaces tree"
                 );
             }

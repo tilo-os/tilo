@@ -159,7 +159,7 @@ impl Store {
     }
 
     /// Where every workspace's records are, when they are where Terminal
-    /// keeps its own (`<data home>/tilo-rooms`): never seen in a guest, so
+    /// keeps its own (`<data home>/tilo-workspaces`): never seen in a guest, so
     /// no environment reaches another workspace's records.
     pub fn rooms_dir(&self) -> Option<PathBuf> {
         let rooms = self.records.ancestors().nth(4)?;
@@ -300,7 +300,7 @@ mod tests {
         let store = base.for_workspace(&w1);
         assert_eq!(
             store.records_root(),
-            data.join("tilo-rooms/w1/so.tilo.terminal/.local/share")
+            data.join("tilo-workspaces/w1/so.tilo.terminal/.local/share")
         );
         assert_eq!(
             store.workspace(),
@@ -312,14 +312,14 @@ mod tests {
             data.join("ush/workspaces/w1/environments/default/var")
         );
         assert_eq!(store.sessions_dir(), base.sessions_dir());
-        assert_eq!(store.rooms_dir(), Some(data.join("tilo-rooms")));
+        assert_eq!(store.rooms_dir(), Some(data.join("tilo-workspaces")));
         assert!(store.confinement().is_some());
 
         let primary = store.for_workspace(&WorkspaceId::primary());
         assert_eq!(primary, base);
         assert_eq!(
             primary.records_root(),
-            data.join("tilo-rooms/personal/so.tilo.terminal/.local/share")
+            data.join("tilo-workspaces/personal/so.tilo.terminal/.local/share")
         );
         assert_eq!(primary.workspace(), Some(Path::new("/var/workspace")));
         assert_eq!(

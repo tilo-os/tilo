@@ -17,7 +17,7 @@ pub const APP_DIR_ENV: &str = "TILO_APP_DIR";
 pub const PERSONAL_WORKSPACE: &str = "personal";
 
 /// Directory under the user's data home that holds every workspace.
-pub const WORKSPACES_DIR: &str = "tilo-rooms";
+pub const WORKSPACES_DIR: &str = "tilo-workspaces";
 
 /// Directory under the user's data home that holds each app's records of the person's own, shared by
 /// the app's launches in every workspace.
@@ -82,14 +82,12 @@ pub fn workspace_slug(workspace_id: Option<&str>) -> String {
     // `.` and `..` survive the character filter and are the two names that resolve somewhere other
     // than a child.
     if mapped.chars().all(|c| c == '.') {
-        // The prefix names a directory already created on some devices.
-        return format!("room_{}", hex_digest(raw));
+        return format!("workspace_{}", hex_digest(raw));
     }
     // A very long id would hit NAME_MAX and fail the mkdir with an error that says nothing about
     // workspaces.
     if mapped.len() > 128 {
-        // The prefix names a directory already created on some devices.
-        return format!("room_{}", hex_digest(raw));
+        return format!("workspace_{}", hex_digest(raw));
     }
     mapped
 }
@@ -385,7 +383,7 @@ mod tests {
                 );
                 let dir = host_app_dir(data, &slug, "so.tilo.notes");
                 assert!(
-                    dir.starts_with("/data/tilo-rooms/"),
+                    dir.starts_with("/data/tilo-workspaces/"),
                     "{hostile:?} escaped to {}",
                     dir.display()
                 );
@@ -403,13 +401,13 @@ mod tests {
             for hostile in ["..", "../../etc", "/", "a/b"] {
                 let dir = host_app_dir(data, PERSONAL_WORKSPACE, hostile);
                 assert!(
-                    dir.starts_with("/data/tilo-rooms/personal/"),
+                    dir.starts_with("/data/tilo-workspaces/personal/"),
                     "{hostile:?} escaped to {}",
                     dir.display()
                 );
                 assert_eq!(
                     dir.components().count(),
-                    Path::new("/data/tilo-rooms/personal/x")
+                    Path::new("/data/tilo-workspaces/personal/x")
                         .components()
                         .count(),
                     "{hostile:?} produced more than one component: {}",
@@ -481,11 +479,11 @@ mod tests {
             let mut argv = Vec::new();
             push_app_dir(
                 &mut argv,
-                Path::new("/data/tilo-rooms/personal/so.tilo.notes"),
+                Path::new("/data/tilo-workspaces/personal/so.tilo.notes"),
             );
             assert!(
                 argv.windows(3).any(|w| w[0] == "--bind"
-                    && w[1] == "/data/tilo-rooms/personal/so.tilo.notes"
+                    && w[1] == "/data/tilo-workspaces/personal/so.tilo.notes"
                     && w[2] == SANDBOX_APP_DIR),
                 "app dir must be bound read-write at the fixed path: {argv:?}"
             );
@@ -533,7 +531,10 @@ mod tests {
             assert!(dir.join(".local/share").is_dir());
             assert!(dir.join(".config").is_dir());
             assert!(dir.join(".cache").is_dir());
-            assert_eq!(dir, tmp.path().join("tilo-rooms/workspace-a/so.tilo.notes"));
+            assert_eq!(
+                dir,
+                tmp.path().join("tilo-workspaces/workspace-a/so.tilo.notes")
+            );
         }
         {
             let tmp = tempfile::tempdir().unwrap();

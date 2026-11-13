@@ -29,7 +29,7 @@ impl StorageRoots {
             .or_else(|| data.as_ref().map(|p| p.join("tilo-apps")));
         Self {
             app_payloads: payload_root,
-            room_data: data.as_ref().map(|p| p.join("tilo-rooms")),
+            room_data: data.as_ref().map(|p| p.join("tilo-workspaces")),
             app_cache: cache.map(|p| p.join("tilo-apps")),
             // The sync filesystem owns this directory. Until it publishes
             // hydration state, all bytes are truthfully labelled replica data,

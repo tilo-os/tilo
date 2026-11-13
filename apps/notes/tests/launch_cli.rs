@@ -160,10 +160,13 @@ fn a_launch_opens_the_workspaces_notebook() {
         None,
         &temp.path().join("dump.json"),
     );
-    let workspace = data.join("so.tilo.notes").join("rooms").join("personal");
+    let workspace = data
+        .join("so.tilo.notes")
+        .join("workspaces")
+        .join("personal");
     assert!(workspace.join("state.automerge").is_file(), "{workspace:?}");
     assert!(
-        !workspace.join("records").exists(),
+        !workspace.join("documents").exists(),
         "no per-window record beside the workspace's notebook"
     );
 }

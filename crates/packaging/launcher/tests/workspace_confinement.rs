@@ -88,7 +88,7 @@ fn workspaces_and_apps_cannot_read_each_others_directories() {
 
         let host_file = data
             .path
-            .join("tilo-rooms/workspace-a")
+            .join("tilo-workspaces/workspace-a")
             .join(PACKAGE)
             .join("record.txt");
         assert_eq!(
@@ -158,7 +158,7 @@ fn workspaces_and_apps_cannot_read_each_others_directories() {
 
         let victim = data
             .path
-            .join("tilo-rooms/workspace-a")
+            .join("tilo-workspaces/workspace-a")
             .join("so.tilo.totp")
             .join("seeds.bin");
         std::fs::create_dir_all(victim.parent().unwrap()).unwrap();
@@ -220,7 +220,7 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
         assert!(wrote.starts_with("WROTE "), "{wrote}");
         let host = data
             .path
-            .join("tilo-rooms/workspace-a")
+            .join("tilo-workspaces/workspace-a")
             .join(PACKAGE)
             .join(".local/share")
             .join(PACKAGE)

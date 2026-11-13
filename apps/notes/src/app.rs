@@ -4362,7 +4362,7 @@ mod tests {
         let directory = profile
             .path()
             .join("so.tilo.notes")
-            .join("rooms")
+            .join("workspaces")
             .join("personal");
         assert!(directory.is_dir(), "observe the real record directory");
         let backup = profile.path().join("held-record");

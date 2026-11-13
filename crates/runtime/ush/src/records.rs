@@ -1,7 +1,7 @@
 //! Environment records, opened where Terminal keeps its own.
 //!
 //! An environment is a Terminal record, so it lives in Terminal's record store and syncs
-//! with them: `<data home>/tilo-rooms/<workspace>/so.tilo.terminal`, whose `.local/share`
+//! with them: `<data home>/tilo-workspaces/<workspace>/so.tilo.terminal`, whose `.local/share`
 //! is the data home Terminal's store writes under. The supervisor joins the record's
 //! shared writers there and applies actions through the record layer, so every change
 //! carries history and an author.
@@ -24,7 +24,7 @@ use crate::workspace::Confinement;
 
 pub const ROOM: &str = crate::workspace::PRIMARY;
 
-pub const ROOMS_DIR: &str = "tilo-rooms";
+pub const ROOMS_DIR: &str = "tilo-workspaces";
 
 pub const AUTHOR: &str = tilo_environment::RUNTIME_APP_ID;
 

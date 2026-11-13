@@ -14,7 +14,7 @@
 //!    naming the branch as its workspace ([`ui::record::transfer::branch`]). A record an app keeps on
 //!    this device too is the same document there: the local copy's changes are merged in first,
 //!    and the branch's local copy is the very document the branch's engine holds.
-//! 3. What the apps keep for the workspace on this device (`tilo-rooms/<workspace>/<app>`) is
+//! 3. What the apps keep for the workspace on this device (`tilo-workspaces/<workspace>/<app>`) is
 //!    copied, sharing extents where the file system can, every document in it forked the same way.
 //! 4. The workspace's own files (`.workspaces/<workspace>`) are copied the same way.
 //! 5. Its Terminal environments are branched by the runtime that keeps them
@@ -155,7 +155,7 @@ pub(crate) struct Branched {
 }
 
 /// Where this device keeps what a branch copies: the person's data home (the apps' directories
-/// per workspace, `tilo-rooms`) and the device's files (each workspace's own tree in them).
+/// per workspace, `tilo-workspaces`) and the device's files (each workspace's own tree in them).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Places {
     pub(crate) data_home: Option<PathBuf>,
@@ -994,7 +994,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let data = home.path().join("data");
         let files = home.path().join("files");
-        let rooms = data.join("tilo-rooms");
+        let rooms = data.join("tilo-workspaces");
         let notes = rooms
             .join(FROM)
             .join("so.tilo.notes/.local/share/so.tilo.notes/rooms")
@@ -1266,7 +1266,7 @@ mod tests {
         let mut party = record(FROM, "party-parrot");
         write(&engine, &keys, from, (CHAT, &emoji), &mut party);
         let home = tempfile::tempdir().unwrap();
-        let rooms = home.path().join("data/tilo-rooms");
+        let rooms = home.path().join("data/tilo-workspaces");
         // Where an app directory `app` keeps `owner`'s record `record` of `workspace`.
         let kept = |workspace: &str, app: &str, owner: &str, record: &str| {
             rooms

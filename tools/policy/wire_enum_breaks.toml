@@ -237,3 +237,8 @@ reason = "the operations are kept under a new key prefix (`members_v3`): a works
 file = "crates/collab/action-policy/src/member.rs"
 enum = "Actor"
 reason = "an app is no longer a kind of actor: it acts as the person whose session runs it, and `Acting.app` names the app the change was made through; the acting a change records is written and read by one build, and records written before this change are not carried over"
+
+[[break]]
+file = "crates/browser/tilo-browser-runtime/src/disk_key.rs"
+enum = "DiskKey"
+reason = "renamed; no stored data to keep: the page's IndexedDB rows are written again under the new names"

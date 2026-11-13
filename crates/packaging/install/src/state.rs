@@ -2,7 +2,7 @@
 //! payload and removes this only when told to, so it can be listed first with the workspaces it is
 //! in and the bytes it takes.
 //!
-//! It is at `<data home>/tilo-rooms/<workspace>/<package>`, the layout `launcher::appdir` creates.
+//! It is at `<data home>/tilo-workspaces/<workspace>/<package>`, the layout `launcher::appdir` creates.
 
 use std::path::{Path, PathBuf};
 
@@ -16,9 +16,9 @@ pub struct WorkspaceState {
     pub files: usize,
 }
 
-/// The directory every workspace is under. The name is stored format: renaming it would hide every
-/// app's saved data. Mirrors `launcher::appdir::WORKSPACES_DIR`, which the installer cannot link.
-pub const WORKSPACES_DIR: &str = "tilo-rooms";
+/// The directory every workspace is under. Mirrors `launcher::appdir::WORKSPACES_DIR`, which the
+/// installer cannot link.
+pub const WORKSPACES_DIR: &str = "tilo-workspaces";
 
 /// Every workspace in which `package_id` has data, sorted by workspace name. A package that was
 /// never launched has none, which is not an error.

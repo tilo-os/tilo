@@ -148,7 +148,7 @@ impl Env {
         for workspace in ["personal", "b7c1-workspace"] {
             let dir = self
                 .xdg_data()
-                .join("tilo-rooms")
+                .join("tilo-workspaces")
                 .join(workspace)
                 .join("so.tilo.lifecycle");
             std::fs::create_dir_all(dir.join(".local/share")).unwrap();
@@ -158,7 +158,7 @@ impl Env {
 
     fn state_exists(&self, workspace: &str) -> bool {
         self.xdg_data()
-            .join("tilo-rooms")
+            .join("tilo-workspaces")
             .join(workspace)
             .join("so.tilo.lifecycle")
             .exists()

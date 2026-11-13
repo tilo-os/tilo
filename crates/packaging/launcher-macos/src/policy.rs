@@ -55,7 +55,7 @@ use launcher::netgate::EgressDecision;
 const MAX_SYMLINK_HOPS: usize = 40;
 
 /// Where Tilo keeps per-user state on macOS, relative to `HOME`. The runtime
-/// profile is `<this>/runtime`; app containers are `<this>/tilo-rooms/…`.
+/// profile is `<this>/runtime`; app containers are `<this>/tilo-workspaces/…`.
 pub const TILO_SUPPORT_DIR: &str = "Library/Application Support/Tilo";
 
 /// Subdirectory of the container used as `TMPDIR`: the per-user temporary
@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn the_environment_is_the_linux_contract_pointed_at_the_container() {
-        let container = Path::new("/Users/u/Library/Application Support/Tilo/tilo-rooms/r/p");
+        let container = Path::new("/Users/u/Library/Application Support/Tilo/tilo-workspaces/r/p");
         let env = app_environment(container);
         let linux: Vec<String> = appdir::sandbox_env().into_iter().map(|(k, _)| k).collect();
         for key in &linux {
@@ -932,14 +932,15 @@ mod tests {
         assert_eq!(data, Path::new("/Users/u/Library/Application Support/Tilo"));
         assert_eq!(
             container_dir(&data, None, "so.tilo.notes"),
-            data.join("tilo-rooms/personal/so.tilo.notes")
+            data.join("tilo-workspaces/personal/so.tilo.notes")
         );
         assert_ne!(
             container_dir(&data, Some("a"), "so.tilo.notes"),
             container_dir(&data, Some("b"), "so.tilo.notes")
         );
         assert!(
-            container_dir(&data, Some("../../x"), "../..").starts_with(data.join("tilo-rooms"))
+            container_dir(&data, Some("../../x"), "../..")
+                .starts_with(data.join("tilo-workspaces"))
         );
 
         let tmp = tempfile::tempdir().unwrap();

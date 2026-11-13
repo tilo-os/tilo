@@ -311,7 +311,7 @@ mod tests {
             payload: PathBuf::from("/Apps/so.tilo.notes"),
             runtime: Some(PathBuf::from("/Runtime/1")),
             container: PathBuf::from(
-                "/Users/u/Library/Application Support/Tilo/tilo-rooms/personal/so.tilo.notes",
+                "/Users/u/Library/Application Support/Tilo/tilo-workspaces/personal/so.tilo.notes",
             ),
             darwin_cache: Some(PathBuf::from(
                 "/private/var/folders/xy/abc/C/so.tilo+personal+so.tilo.notes",

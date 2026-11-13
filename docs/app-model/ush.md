@@ -53,9 +53,8 @@ Its actions are `add-tool`, `remove-tool`, `grant-dir`, `allow-host`,
 is no other package manifest and no other permission file.
 
 The supervisor keeps the records where Terminal opened in the workspace keeps
-its own — `<data home>/tilo-rooms/<workspace>/so.tilo.terminal/.local/share`,
-in that workspace's room (the directory keeps its stored `rooms` spelling) —
-joins the record's shared writers, applies actions through the
+its own — `<data home>/tilo-workspaces/<workspace>/so.tilo.terminal/.local/share`,
+in that workspace's directory — joins the record's shared writers, applies actions through the
 record layer (attributed to `so.tilo.ush`), and appends. A session that names
 no record gets its workspace's **default environment**, created on first use
 with the system store's current `env-runtime`; every workspace has its own.
@@ -261,7 +260,7 @@ What is the workspace's:
 
 | | The primary workspace | Any other workspace `W` |
 |---|---|---|
-| Records | `tilo-rooms/personal/…` (unchanged) | `tilo-rooms/W/so.tilo.terminal/…`, room `W` |
+| Records | `tilo-workspaces/personal/…` (unchanged) | `tilo-workspaces/W/so.tilo.terminal/…`, room `W` |
 | `~` | the device's files folder (`/var/workspace`) | `W`'s own tree: `/var/workspace/.workspaces/W` |
 | Homes, `/var` state | `environments/<record>/` | `workspaces/W/environments/<record>/` |
 | May be granted | as before | its own tree; nothing else under the files folder |

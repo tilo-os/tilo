@@ -299,7 +299,7 @@ fn keeping_a_workspace_off_this_device_takes_it_off_this_desks() {
 /// one note's record, scoped to the workspace as the app writes it.
 fn note_kept(data: &Path, workspace: &str, body: &str) -> std::path::PathBuf {
     let directory = data
-        .join("tilo-rooms")
+        .join("tilo-workspaces")
         .join(workspace)
         .join("so.tilo.notes/.local/share/so.tilo.notes/rooms")
         .join(workspace)
@@ -435,7 +435,7 @@ fn a_branch_of_a_workspace_holds_what_it_held_and_the_person_goes_there() {
 /// as it was, and a change to one is not the other's.
 fn what_the_branch_keeps(data: &Path, source: &str, kept: &Path, branch: &str) {
     let copied = data
-        .join("tilo-rooms")
+        .join("tilo-workspaces")
         .join(branch)
         .join("so.tilo.notes/.local/share/so.tilo.notes/rooms")
         .join(branch)

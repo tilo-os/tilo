@@ -1,9 +1,9 @@
 //! The page-visible form of a store key: how `IndexedDB` rows name what they
-//! hold. Changing it orphans stored rows.
+//! hold.
 
 use durable_store::StorageKey;
 
-/// The page-visible form of [`StorageKey`]. Changing it orphans stored rows.
+/// The page-visible form of [`StorageKey`].
 ///
 /// Written as derived; read by [`DiskKey::read`], which takes the same JSON.
 /// A derived reader of an internally tagged enum buffers the whole value and
@@ -12,26 +12,18 @@ use durable_store::StorageKey;
 #[derive(serde::Serialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) enum DiskKey {
-    Record {
-        #[serde(rename = "package")]
+    Document {
         app: String,
         workspace: String,
-        record: String,
+        document: String,
     },
-    Package {
-        #[serde(rename = "package")]
+    App {
         app: String,
     },
-    /// One workspace's index. A profile outlives any one build, and its rows
-    /// were written under this name, so the name it is stored under stays.
     WorkspaceIndex {
-        #[serde(rename = "package")]
         app: String,
         workspace: String,
     },
-    /// Rows of the removed package-global record key. Main dropped the key
-    /// without a migration; a page skips these rows instead of failing to load.
-    PackageRecord { package: String, record: String },
     View {
         device: String,
         workspace: String,
@@ -46,12 +38,12 @@ impl From<&StorageKey> for DiskKey {
                 app,
                 workspace,
                 document,
-            } => Self::Record {
+            } => Self::Document {
                 app: app.to_string(),
                 workspace,
-                record: document,
+                document,
             },
-            StorageKey::App { app } => Self::Package {
+            StorageKey::App { app } => Self::App {
                 app: app.to_string(),
             },
             StorageKey::WorkspaceIndex { app, workspace } => Self::WorkspaceIndex {
@@ -86,10 +78,9 @@ impl DiskKey {
             .and_then(serde_json::Value::as_str)
             .ok_or("a stored key names no type")?;
         let names: &[&str] = match kind {
-            "record" => &["package", "workspace", "record"],
-            "package" => &["package"],
-            "workspaceIndex" => &["package", "workspace"],
-            "packageRecord" => &["package", "record"],
+            "document" => &["app", "workspace", "document"],
+            "app" => &["app"],
+            "workspaceIndex" => &["app", "workspace"],
             "view" => &["device", "workspace", "instance"],
             other => return Err(format!("unknown stored key type `{other}`")),
         };
@@ -107,21 +98,15 @@ impl DiskKey {
                 .ok_or_else(|| format!("a `{kind}` key has no `{name}`"))
         };
         Ok(match kind {
-            "record" => Self::Record {
-                app: text("package")?,
+            "document" => Self::Document {
+                app: text("app")?,
                 workspace: text("workspace")?,
-                record: text("record")?,
+                document: text("document")?,
             },
-            "package" => Self::Package {
-                app: text("package")?,
-            },
+            "app" => Self::App { app: text("app")? },
             "workspaceIndex" => Self::WorkspaceIndex {
-                app: text("package")?,
+                app: text("app")?,
                 workspace: text("workspace")?,
-            },
-            "packageRecord" => Self::PackageRecord {
-                package: text("package")?,
-                record: text("record")?,
             },
             _ => Self::View {
                 device: text("device")?,
@@ -134,24 +119,23 @@ impl DiskKey {
         })
     }
 
-    /// The store key this row holds, or `None` for a row of a removed key.
-    pub(crate) fn into_key(self) -> Option<StorageKey> {
-        Some(match self {
-            Self::Record {
+    /// The store key this row holds.
+    pub(crate) fn into_key(self) -> StorageKey {
+        match self {
+            Self::Document {
                 app,
                 workspace,
-                record,
+                document,
             } => StorageKey::Document {
                 app: app.into(),
                 workspace,
-                document: record,
+                document,
             },
-            Self::Package { app } => StorageKey::App { app: app.into() },
+            Self::App { app } => StorageKey::App { app: app.into() },
             Self::WorkspaceIndex { app, workspace } => StorageKey::WorkspaceIndex {
                 app: app.into(),
                 workspace,
             },
-            Self::PackageRecord { .. } => return None,
             Self::View {
                 device,
                 workspace,
@@ -161,7 +145,7 @@ impl DiskKey {
                 workspace,
                 instance,
             },
-        })
+        }
     }
 }
 
@@ -197,21 +181,19 @@ mod tests {
         for key in keys() {
             let written = serde_json::to_string(&DiskKey::from(&key)).unwrap();
             let read = DiskKey::read(&written).unwrap().into_key();
-            assert_eq!(read, Some(key), "{written}");
+            assert_eq!(read, key, "{written}");
         }
     }
 
     #[test]
-    fn a_row_of_the_removed_key_is_skipped_and_a_malformed_one_refused() {
-        let removed = r#"{"type":"packageRecord","package":"p","record":"r"}"#;
-        assert_eq!(DiskKey::read(removed).unwrap().into_key(), None);
+    fn a_malformed_key_is_refused() {
         for refused in [
-            r#"{"type":"package","package":"p","record":"r"}"#,
-            r#"{"type":"record","package":"p","workspace":"w"}"#,
+            r#"{"type":"app","app":"p","document":"r"}"#,
+            r#"{"type":"document","app":"p","workspace":"w"}"#,
             r#"{"type":"view","device":"d","workspace":"w","instance":"7"}"#,
-            r#"{"type":"elsewhere","package":"p"}"#,
-            r#"{"package":"p"}"#,
-            r#"["package","p"]"#,
+            r#"{"type":"elsewhere","app":"p"}"#,
+            r#"{"app":"p"}"#,
+            r#"["app","p"]"#,
         ] {
             assert!(DiskKey::read(refused).is_err(), "{refused}");
         }

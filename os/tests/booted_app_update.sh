@@ -297,7 +297,7 @@ done
 grep -q "Catalogue details are unavailable" <<<"$details" \
   && die "the App Store still says its catalogue details are unavailable"
 ok "the App Store shows $APP_NAME's description and version $NEWER"
-on "ls \$HOME/.local/share/tilo-rooms/*/so.tilo.store/.config/tilo-store/registries.toml" >/dev/null 2>&1 \
+on "ls \$HOME/.local/share/tilo-workspaces/*/so.tilo.store/.config/tilo-store/registries.toml" >/dev/null 2>&1 \
   && die "the App Store keeps a repository list of its own in its sandbox"
 ok "the App Store used the repositories app repo edits, and kept no copy"
 on "kill $store_pid" >/dev/null 2>&1 || true

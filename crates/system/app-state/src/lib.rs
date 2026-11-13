@@ -52,15 +52,11 @@ pub const LOAD_HINT_FILE: &str = "state.hashes";
 pub const CANONICAL_GATE: &str = "canonical.lock";
 pub const LOCK_FILE: &str = "writer.lock";
 /// Subdirectory holding one directory per document. See
-/// [`DocStore::open_workspace_document`]. The name every device already
-/// stores, so it stays.
-pub const DOCUMENTS_DIR: &str = "records";
+/// [`DocStore::open_workspace_document`].
+pub const DOCUMENTS_DIR: &str = "documents";
 /// Subdirectory holding one directory per workspace: that workspace's index
 /// of the documents it holds. See [`DocStore::open_workspace`].
-///
-/// The name is what every device already stores, so it stays: a directory
-/// that exists must keep opening.
-pub const WORKSPACES_DIR: &str = "rooms";
+pub const WORKSPACES_DIR: &str = "workspaces";
 /// Marker in a workspace's directory naming the one document that adopted
 /// it under a new identity.
 const DOCUMENT_SUCCESSOR_CLAIM: &str = "successor-claim";
