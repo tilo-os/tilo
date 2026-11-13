@@ -14,7 +14,6 @@ use tilo_session_client::Event;
 struct Seed {
     release: String,
     workspace: String,
-    workspace_id: u64,
     declared_owner: Person,
     declared_moderator: Person,
     members: Vec<Person>,
@@ -46,6 +45,11 @@ struct Own {
 struct Person {
     seed: u8,
     name: String,
+}
+
+/// The workspace's id, as the release's own `seed.json` names it.
+fn workspace_id(seed: &Seed) -> tilo_relay_protocol::WorkspaceId {
+    tilo_relay_protocol::WorkspaceId::parse(&seed.workspace).expect("the seed names a workspace")
 }
 
 impl Person {
@@ -107,7 +111,6 @@ fn started_or_why(room: &mut Workspace) -> Started {
         }) = room.events.recv_timeout(Duration::from_millis(200))
         {
             return Started {
-                id: tilo_relay::room_workspace_id(&workspace).unwrap(),
                 plain: bound_address(&plain_origin),
                 workspace,
             };
@@ -132,8 +135,8 @@ async fn back_in(
     let (host, host_cert, _) = chat_route(plain, &seed.workspace).await;
     let (key, cert) = person.device();
     let link = page(host, key, cert, &host_cert);
-    link.send(Cmd::Join(seed.workspace_id)).unwrap();
-    let workspace_id = seed.workspace_id;
+    let workspace_id = workspace_id(seed);
+    link.send(Cmd::Join(workspace_id)).unwrap();
     wait_for(
         &format!("{} to be back in the Lounge", person.name),
         || {
@@ -200,7 +203,7 @@ fn the_lounge_a_release_kept_starts_with_everything_in_it() {
         "the Lounge {} kept is the one that opens",
         seed.release
     );
-    assert_eq!(started.id, seed.workspace_id);
+    assert_eq!(started.workspace, seed.workspace);
     let plain = started.plain;
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
@@ -386,9 +389,10 @@ async fn the_member_reads_what_they_wrote(plain: std::net::SocketAddr, seed: &Se
     let (host, host_cert, route) = chat_route(plain, &seed.workspace).await;
     let (key, cert) = reader.device();
     let link = page(host, key, cert, &host_cert);
-    link.send(Cmd::Join(seed.workspace_id)).unwrap();
+    let workspace_id = workspace_id(seed);
+    link.send(Cmd::Join(workspace_id)).unwrap();
     link.send(Cmd::OpenRoute(route.clone())).unwrap();
-    let chat = reads_the_chat(&link, seed.workspace_id, &route).await;
+    let chat = reads_the_chat(&link, workspace_id, &route).await;
     let channels = {
         use tilo_resource::Resource as _;
         chat::Chat::read(&chat).map(|chat| {
@@ -427,7 +431,7 @@ async fn the_member_reads_what_they_wrote(plain: std::net::SocketAddr, seed: &Se
 /// landed: what the host sent, read whether or not this build's Chat reads it.
 async fn reads_the_chat(
     link: &tilo_session_client::Link,
-    workspace_id: u64,
+    workspace_id: tilo_relay_protocol::WorkspaceId,
     route: &tilo_peer_state::document_frame::DocumentRoute,
 ) -> automerge::AutoCommit {
     let mut ready = false;

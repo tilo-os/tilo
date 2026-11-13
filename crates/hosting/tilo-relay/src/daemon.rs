@@ -1812,14 +1812,14 @@ mod tests {
             status.filesystem_endpoints.push(filesystem.clone());
             let status_clock = publish_status(&status_path, &status);
             let owner_endpoint = EndpointAddr::new(iroh::SecretKey::from_bytes(&[91; 32]).public());
-            let workspace_topic = [29; 32];
+            let workspace = [29; 32];
             let bundle_path = temp.path().join("home-peer.toml");
             let bundle = fs::full_replica::HomePeerSet {
                 status_file: status_path.clone(),
                 workspaces: vec![fs::full_replica::HomePeerBundle {
                     ticket: fs::Ticket {
                         node: owner_endpoint.clone(),
-                        workspace: workspace_topic,
+                        workspace,
                     }
                     .encode()
                     .unwrap(),
@@ -1889,7 +1889,7 @@ mod tests {
             assert_ne!(owner_endpoint, filesystem);
             assert_eq!(advertised_ticket.node, owner_endpoint);
             assert_ne!(advertised_ticket.node, registration.endpoint);
-            assert_eq!(advertised_ticket.workspace, workspace_topic);
+            assert_eq!(advertised_ticket.workspace, workspace);
             let auto_bound = crate::client::RelayClient::discover_content_peer(
                 &client_endpoint,
                 relay.node_addr(),

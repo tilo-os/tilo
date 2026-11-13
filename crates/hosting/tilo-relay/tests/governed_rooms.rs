@@ -296,7 +296,7 @@ fn governed_room(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Governe
                 )
                 .unwrap();
         }
-        assert_eq!(role(&bob_peer, phone.device_pubkey()), Some(granted.into()));
+        assert_eq!(role(&bob_peer, phone.device_pubkey()), Some(granted));
 
         // Alice's replica learns governance from the relay's retained history.
         let mut alice_peer = StatePeer::new(
@@ -318,7 +318,7 @@ fn governed_room(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Governe
             &mut alice_presence,
             |peer, _| {
                 role(peer, laptop.device_pubkey()) == Some(collab_types::Role::Owner)
-                    && role(peer, phone.device_pubkey()) == Some(granted.into())
+                    && role(peer, phone.device_pubkey()) == Some(granted)
             },
         )
         .await;
