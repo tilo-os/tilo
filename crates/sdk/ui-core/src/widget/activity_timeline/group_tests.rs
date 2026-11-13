@@ -687,24 +687,15 @@ fn band_rows_keep_chips_names_and_text_inside_the_row() {
         t.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW));
         let theme = Theme::dark();
         let min = f64::from(theme.tokens.metrics.min_pointer_target);
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
         t.place_controls(&theme);
-        t.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::default(),
-        );
 
         let strip = t.filter_strip_rect();
         let mut targets: Vec<(String, Rect)> = t
-            .chip_rects
+            .strip_chips
             .iter()
-            .map(|(k, r)| (format!("{k:?}"), *r))
+            .map(|chip| (format!("{:?}", chip.target), chip.hit))
             .collect();
-        assert!(targets.len() >= 2, "the strip painted no chips");
+        assert!(targets.len() >= 2, "the layout placed no strip chips");
         for (k, r) in &targets {
             assert!(
                 r.y0 >= strip.y0 - 1e-6 && r.y1 <= strip.y1 + 1e-6,
