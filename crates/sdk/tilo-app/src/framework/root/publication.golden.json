@@ -7,6 +7,7 @@
     {
       "address": {
         "resource": "test.shelf",
+        "item": null,
         "action": "grow"
       },
       "semantic_identity": {
@@ -55,6 +56,7 @@
     {
       "address": {
         "resource": "test.shelf",
+        "item": null,
         "action": "double"
       },
       "semantic_identity": {
@@ -90,6 +92,7 @@
     {
       "address": {
         "resource": "test.shelf",
+        "item": null,
         "action": "apply"
       },
       "semantic_identity": {
@@ -142,6 +145,7 @@
     {
       "address": {
         "resource": "test.shelf",
+        "item": null,
         "action": "group"
       },
       "semantic_identity": {
@@ -251,6 +255,7 @@
     {
       "address": {
         "resource": "test.shelf",
+        "item": null,
         "action": "step"
       },
       "semantic_identity": {
@@ -286,6 +291,7 @@
     {
       "address": {
         "resource": "test.shelf",
+        "item": null,
         "action": "wave"
       },
       "semantic_identity": {
@@ -321,6 +327,7 @@
     {
       "address": {
         "resource": "test.shelf",
+        "item": null,
         "action": "render"
       },
       "semantic_identity": {
@@ -387,6 +394,7 @@
     {
       "address": {
         "resource": "test.shelf",
+        "item": null,
         "action": "activate-window"
       },
       "semantic_identity": {
@@ -428,6 +436,7 @@
     {
       "address": {
         "resource": "test.shelf",
+        "item": null,
         "action": "undo"
       },
       "semantic_identity": {
@@ -503,6 +512,7 @@
     {
       "address": {
         "resource": "test.shelf",
+        "item": null,
         "action": "redo"
       },
       "semantic_identity": {
@@ -554,6 +564,7 @@
     {
       "address": {
         "resource": "test.shelf",
+        "item": null,
         "action": "restore"
       },
       "semantic_identity": {
@@ -621,6 +632,7 @@
     {
       "address": {
         "resource": "test.shelf",
+        "item": null,
         "action": "checkpoint"
       },
       "semantic_identity": {
@@ -673,6 +685,7 @@
     {
       "address": {
         "resource": "test.shelf",
+        "item": null,
         "action": "history"
       },
       "semantic_identity": {
@@ -727,6 +740,7 @@
     {
       "address": {
         "resource": "test.shelf",
+        "item": null,
         "action": "diff"
       },
       "semantic_identity": {
@@ -787,6 +801,7 @@
     {
       "address": {
         "resource": "test.shelf",
+        "item": null,
         "action": "review-restore"
       },
       "semantic_identity": {
@@ -857,6 +872,7 @@
     {
       "address": {
         "resource": "test.shelf",
+        "item": null,
         "action": "restore-reviewed"
       },
       "semantic_identity": {
@@ -954,6 +970,7 @@
     {
       "address": {
         "resource": "test.shelf",
+        "item": null,
         "action": "share-link"
       },
       "semantic_identity": {
@@ -1033,6 +1050,7 @@
         {
           "address": {
             "resource": "shelf/item:0",
+            "item": null,
             "action": "take"
           },
           "resource_kind": "test.shelf.item",
@@ -1064,6 +1082,7 @@
         {
           "address": {
             "resource": "shelf/item:0",
+            "item": null,
             "action": "label"
           },
           "resource_kind": "test.shelf.item",
@@ -1095,6 +1114,7 @@
         {
           "address": {
             "resource": "shelf/item:0",
+            "item": null,
             "action": "mark-left"
           },
           "resource_kind": "test.shelf.item",
@@ -1126,6 +1146,7 @@
         {
           "address": {
             "resource": "shelf/item:0",
+            "item": null,
             "action": "mark-right"
           },
           "resource_kind": "test.shelf.item",
@@ -1167,6 +1188,7 @@
         {
           "address": {
             "resource": "shelf/item:1",
+            "item": null,
             "action": "take"
           },
           "resource_kind": "test.shelf.item",
@@ -1198,6 +1220,7 @@
         {
           "address": {
             "resource": "shelf/item:1",
+            "item": null,
             "action": "mark-left"
           },
           "resource_kind": "test.shelf.item",
@@ -1229,6 +1252,7 @@
         {
           "address": {
             "resource": "shelf/item:1",
+            "item": null,
             "action": "mark-right"
           },
           "resource_kind": "test.shelf.item",
@@ -1260,6 +1284,7 @@
         {
           "address": {
             "resource": "shelf/item:1",
+            "item": null,
             "action": "label"
           },
           "resource_kind": "test.shelf.item",
@@ -1301,6 +1326,7 @@
         {
           "address": {
             "resource": "shelf/item:2",
+            "item": null,
             "action": "take"
           },
           "resource_kind": "test.shelf.item",
@@ -1332,6 +1358,7 @@
         {
           "address": {
             "resource": "shelf/item:2",
+            "item": null,
             "action": "label"
           },
           "resource_kind": "test.shelf.item",
@@ -1363,6 +1390,7 @@
         {
           "address": {
             "resource": "shelf/item:2",
+            "item": null,
             "action": "mark-left"
           },
           "resource_kind": "test.shelf.item",
@@ -1394,6 +1422,7 @@
         {
           "address": {
             "resource": "shelf/item:2",
+            "item": null,
             "action": "mark-right"
           },
           "resource_kind": "test.shelf.item",
@@ -1435,6 +1464,7 @@
         {
           "address": {
             "resource": "shelf/visitor",
+            "item": null,
             "action": "mark-left"
           },
           "resource_kind": "test.shelf.visitor",
@@ -1466,6 +1496,7 @@
         {
           "address": {
             "resource": "shelf/visitor",
+            "item": null,
             "action": "mark-right"
           },
           "resource_kind": "test.shelf.visitor",
@@ -1497,6 +1528,7 @@
         {
           "address": {
             "resource": "shelf/visitor",
+            "item": null,
             "action": "label"
           },
           "resource_kind": "test.shelf.visitor",
@@ -1537,6 +1569,7 @@
             {
               "address": {
                 "resource": "shelf/visitor/guest",
+                "item": null,
                 "action": "mark-left"
               },
               "resource_kind": "test.shelf.guest",
@@ -1568,6 +1601,7 @@
             {
               "address": {
                 "resource": "shelf/visitor/guest",
+                "item": null,
                 "action": "mark-right"
               },
               "resource_kind": "test.shelf.guest",
@@ -1599,6 +1633,7 @@
             {
               "address": {
                 "resource": "shelf/visitor/guest",
+                "item": null,
                 "action": "label"
               },
               "resource_kind": "test.shelf.guest",
