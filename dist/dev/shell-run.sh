@@ -95,13 +95,17 @@ done
 
 bin=$repo_root/target/debug
 if ((build)); then
-    say "building tilo-session, tilolang, tilo-control, tilo-launcher, tilo-install, tilo-app-package, nested-session-bus and tilo-runtime-bundle"
+    say "building tilo-session, tilo-quick-settings, tilolang, tilo-control, tilo-launcher, tilo-install, tilo-app-package, nested-session-bus and tilo-runtime-bundle"
     # A shot of a Rust app's view on the canvas builds the session with Tube's sample
     # resources and views linked (`--dev-rust-views`, development builds only).
     session_features=()
     ((rust_views)) && session_features=(--features dev-rust-views)
+    # Quick settings is a surface app the session starts beside itself: built here, it is found
+    # beside the session before the system's own, which is another tree's build and reads
+    # another shape of the session's readings.
     (cd "$repo_root" && cargo build --locked -p tilo-session --bin tilo-session \
         "${session_features[@]}" \
+        -p tilo-quick-settings --bin tilo-quick-settings \
         -p tilolang-cli --bin tilolang -p tilo-control --bin tilo-control \
         -p launcher --bin tilo-launcher -p install --bin tilo-install \
         -p tilo-app-package-cli --bin tilo-app-package \
@@ -121,7 +125,7 @@ if ((build)); then
     # (dist/dev/build-provenance.sh).
     "$repo_root/dist/dev/build-provenance.sh" write "$bin"
 fi
-for tool in tilo-session tilolang tilo-control tilo-launcher tilo-install tilo-app-package nested-session-bus tilo-runtime-bundle fs tilo-model-gateway; do
+for tool in tilo-session tilo-quick-settings tilolang tilo-control tilo-launcher tilo-install tilo-app-package nested-session-bus tilo-runtime-bundle fs tilo-model-gateway; do
     [[ -x $bin/$tool ]] || die "no $bin/$tool (run without --no-build)"
 done
 # The thin-app build every Tilo runtime here is made of: `dist/dev/nested-session-build.sh`

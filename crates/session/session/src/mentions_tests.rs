@@ -449,3 +449,22 @@ fn a_records_tags_are_known_by_its_app_and_route() {
     assert_eq!(told.show.len(), 1);
     assert!(held.knows(NOTES, NOTE));
 }
+
+/// An app's own record (a tilolang app's whole workspace, Notes' notebook) is the workspace's
+/// document, the one that also keeps its index: its change is noted under the empty route, and a
+/// mention in it is told as one in any other record is, never read as a record with no name.
+#[test]
+fn a_mention_in_an_apps_own_record_is_told() {
+    let device = Device::empty();
+    let mut written = notebook("Ask @Bea about the date", Some((4, 8, BEA)), ADA);
+    Device::write_doc(
+        &device.store,
+        &StorageKey::workspace_index(NOTES, WORKSPACE),
+        &mut written,
+    );
+    let shown = Rc::new(Shown::default());
+    device.role(&shown).step();
+    let up = shown.up.borrow();
+    assert_eq!(up.len(), 1, "{up:?}");
+    assert_eq!(up.values().next().unwrap().body, "Ask @Bea about the date");
+}
