@@ -383,9 +383,10 @@ fn dragging_a_windows_bar_onto_another_tabs_it_in() {
     let to = crate::common::wait_for(&mut session, "the second window's bar", |session| {
         on_screen(session, &second_name)
     });
-    // The bar's ground is under its title: a point on the title's pill, not on a control. Press
-    // there, travel to the other window's bar, and let go.
-    let at = |rect: (f64, f64, f64, f64)| (rect.0 + rect.2 / 2.0, rect.1 + rect.3 / 2.0);
+    // What a window's name names is its whole frame, the bar along its top: a point in the bar's
+    // middle, under the title and on no control. Press there, travel to the other window's bar,
+    // and let go.
+    let at = |rect: (f64, f64, f64, f64)| (rect.0 + rect.2 / 2.0, rect.1 + 14.0);
     drag(&mut session, at(from), at(to));
     // The dragged window's place becomes a tab of the window it was let go over.
     until(
