@@ -311,16 +311,18 @@ mod tests {
 
     #[test]
     fn embedded_dictionary_loads_with_sane_normalised_frequencies() {
+        // One parse serves the three phases that read it: every method they
+        // call takes `&self`.
+        let d = Dictionary::english();
+
         eprintln!("phase embedded_dictionary_loads_thousands_of_words");
         {
-            let d = Dictionary::english();
             assert!(d.len() > 10_000, "want tens of thousands, got {}", d.len());
             assert!(!d.is_empty());
         }
 
         eprintln!("phase common_words_present_with_sane_relative_frequency");
         {
-            let d = Dictionary::english();
             assert!(d.contains("the"));
             assert!(d.contains("quick"));
             assert!(d.contains("hello"));
@@ -333,7 +335,6 @@ mod tests {
 
         eprintln!("phase frequency_is_normalised_and_monotone");
         {
-            let d = Dictionary::english();
             let f_the = d.frequency("the");
             let f_quick = d.frequency("quick");
             assert!((0.0..=1.0).contains(&f_the));
@@ -356,9 +357,11 @@ mod tests {
 
     #[test]
     fn prefix_iteration_and_completion_return_ranked_matches() {
+        // One parse serves the two phases that read the English words.
+        let d = Dictionary::english();
+
         eprintln!("phase prefix_iteration_returns_only_matching_words");
         {
-            let d = Dictionary::english();
             let qu: Vec<_> = d.iter_prefix("qu").map(|e| e.word.clone()).collect();
             assert!(qu.iter().all(|w| w.starts_with("qu")));
             assert!(qu.contains(&"quick".to_string()));
@@ -368,7 +371,6 @@ mod tests {
 
         eprintln!("phase complete_ranks_by_frequency");
         {
-            let d = Dictionary::english();
             let top = d.complete("th", 5);
             assert!(!top.is_empty());
             assert_eq!(top[0].word, "the");

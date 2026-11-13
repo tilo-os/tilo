@@ -654,43 +654,24 @@ mod tests {
         assert_eq!(model.decode_top(&path, &geom, &layout, 1)[0].word, "été");
     }
 
+    /// One model over one geometry decodes every row: `decode_top` takes
+    /// `&self`, and no row reads the count of shapes scored.
     #[test]
     fn swipe_decoder_recovers_common_words() {
-        eprintln!("phase decodes_quick");
-        {
-            let (layout, geom) = qwerty_geom();
-            let model = GeometricSwipeModel::english();
-            let path = path_through("quick", &geom, &layout);
+        let (layout, geom) = qwerty_geom();
+        let model = GeometricSwipeModel::english();
+        for (word, leads) in [("quick", true), ("hello", false), ("the", true)] {
+            let path = path_through(word, &geom, &layout);
             let cands = model.decode_top(&path, &geom, &layout, 8);
-            assert!(!cands.is_empty(), "swipe produced candidates");
+            assert!(!cands.is_empty(), "{word}: swipe produced candidates");
             let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
             assert!(
-                words.contains(&"quick"),
-                "expected 'quick' in top-8, got {words:?}"
+                words.contains(&word),
+                "expected {word:?} in top-8, got {words:?}"
             );
-        }
-
-        eprintln!("phase decodes_hello");
-        {
-            let (layout, geom) = qwerty_geom();
-            let model = GeometricSwipeModel::english();
-            let path = path_through("hello", &geom, &layout);
-            let cands = model.decode_top(&path, &geom, &layout, 8);
-            let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
-            assert!(
-                words.contains(&"hello"),
-                "expected 'hello' in top-8, got {words:?}"
-            );
-        }
-
-        eprintln!("phase decodes_the");
-        {
-            let (layout, geom) = qwerty_geom();
-            let model = GeometricSwipeModel::english();
-            let path = path_through("the", &geom, &layout);
-            let cands = model.decode_top(&path, &geom, &layout, 8);
-            let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
-            assert_eq!(cands[0].word, "the", "got {words:?}");
+            if leads {
+                assert_eq!(cands[0].word, word, "got {words:?}");
+            }
         }
     }
 

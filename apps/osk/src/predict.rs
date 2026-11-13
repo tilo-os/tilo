@@ -320,9 +320,13 @@ mod tests {
 
     #[test]
     fn embedded_bigrams_predict_next_words_sensibly() {
+        // One parse serves the three phases that read the embedded tables:
+        // they only call `&self` methods.
+        let english = Predictor::english();
+
         eprintln!("phase embedded_predictor_loads_bigrams");
         {
-            let p = Predictor::english();
+            let p = &english;
             assert!(
                 p.bigram_contexts() > 1000,
                 "want many bigram contexts, got {}",
@@ -341,7 +345,7 @@ mod tests {
 
         eprintln!("phase embedded_real_bigram_predicts_sensibly");
         {
-            let p = Predictor::english();
+            let p = &english;
             let preds = p.predict_next(Some("of"), "");
             assert!(!preds.is_empty());
             let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
@@ -350,7 +354,7 @@ mod tests {
 
         eprintln!("phase embedded_tables_are_consistent");
         {
-            let p = Predictor::english();
+            let p = &english;
             let dict = p.dictionary();
             assert!(
                 dict.words()
