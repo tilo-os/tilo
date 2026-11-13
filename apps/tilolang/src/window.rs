@@ -941,8 +941,9 @@ impl Widget for Window {
         // The workspace's policy names people; presence pairs each participant with theirs.
         self.instance
             .set_persons(presence.roster().into_iter().filter_map(|user| {
-                let person = presence.person_of(&ui::permissions::UserId(user.id.clone()))?;
-                Some((user.id, person.0.clone()))
+                let id = user.id.key();
+                let person = presence.person_of(&ui::permissions::UserId(id.clone()))?;
+                Some((id, person.0.clone()))
             }));
         self.view
             .draw_child(scene, transform, text, theme, presence);
