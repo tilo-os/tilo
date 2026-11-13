@@ -1,21 +1,11 @@
 //! `RegistryEntry` and the canonical signing form.
 //!
-//! The publisher signs `blake3(ENTRY_DOMAIN ||
-//! postcard(entry_signing_payload))`, where `entry_signing_payload`
-//! mirrors [`RegistryEntry`] *without* `signature_hex` — excluding it
-//! avoids a fixed-point loop (the signature must not cover itself).
+//! The publisher signs `blake3(ENTRY_DOMAIN || postcard(entry_signing_payload))`, the payload being
+//! every field but `signature_hex`: a signature cannot cover itself. Verifiers peel the signature off
+//! and re-encode, so any tamper flips the digest.
 //!
-//! Verifiers reconstruct the same bytes by peeling `signature_hex` off
-//! the received entry, re-encoding, and re-hashing; since every other
-//! field is included, any tamper (a swapped `tapp_url`, a changed root
-//! hash, an added category) flips the digest and fails verification.
-//!
-//! App entries keep the shape and signing bytes every released client
-//! reads: the entry's `kind` and a version's bot artifact are serialized only
-//! when present, so an app entry encodes exactly as it did before bots
-//! existed. A bot entry signs under its own domain ([`BOT_ENTRY_DOMAIN`]),
-//! so an app package and a bot program can never be passed off as each
-//! other.
+//! `kind` and a version's bot artifact are serialised only when present, so an app entry encodes as it
+//! did before bots, and a bot entry signs under its own domain ([`BOT_ENTRY_DOMAIN`]).
 
 use std::collections::BTreeMap;
 
@@ -92,7 +82,6 @@ pub struct RegistryImage {
     pub alt: String,
 }
 
-/// Locale-specific image sets, allowing screenshots with translated UI.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct LocalizedImages(pub BTreeMap<String, Vec<RegistryImage>>);
@@ -150,14 +139,12 @@ pub enum EntryValidationError {
     InvalidBotArtifact { reason: &'static str },
 }
 
-/// One listed version of a registry entry, named by the registry whose owner
-/// key signs the catalogue. A bot installed from a directory keeps this so
-/// its room can tell which listing it runs and offer that listing's updates.
+/// A bot installed from a directory keeps this, so its room can name the listing it runs and offer
+/// that listing's updates.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DirectoryRef {
     /// Lowercase hex of the registry owner's public key.
     pub registry_owner: String,
-    /// The entry's package id.
     pub entry: String,
     pub version: String,
 }
@@ -165,7 +152,6 @@ pub struct DirectoryRef {
 /// Most bytes a bot program file may have.
 pub const MAX_BOT_PROGRAM_BYTES: u64 = 262_144;
 
-/// What a registry entry publishes: an app package or a bot program.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EntryKind {
@@ -329,7 +315,6 @@ pub struct TappArtifact {
     /// authenticates the logical package; this additionally pins the exact
     /// transport artifact fetched by clients and reviewed by moderators.
     pub tapp_blake3_hex: String,
-    /// Execution target authenticated by the publisher.
     pub target: RegistryTarget,
 }
 
@@ -355,7 +340,6 @@ pub struct BotRequirements {
     /// Apps whose actions the steps invoke or whose changes the triggers
     /// watch, sorted. A connector is listed only under `connectors`.
     pub apps: Vec<String>,
-    /// Whether the program posts under other names and avatars.
     pub appearance: bool,
     /// Trigger kinds the program reacts to, sorted, for the listing.
     pub triggers: Vec<String>,
@@ -421,7 +405,6 @@ impl RegistryVersion {
     }
 }
 
-/// The URL a registry at `base` serves the program `program_blake3_hex` at.
 #[must_use]
 pub fn bot_program_url(base: &str, program_blake3_hex: &str) -> String {
     format!(
@@ -439,7 +422,6 @@ pub struct RegistryTarget {
     pub platform: String,
     /// Architecture wire name.
     pub architecture: String,
-    /// Minimum ISA level, e.g. `x86_64-v3`.
     pub isa: String,
     /// Runtime the package links: for `tilo-os`, the exact build
     /// (`tilo-runtime/<version>+native.<32 hex>`); optional.
@@ -452,30 +434,20 @@ pub struct RegistryTarget {
     pub interfaces: Vec<String>,
 }
 
-/// One package entry inside a registry — everything the client needs to render a store card and start a download.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistryEntry {
-    /// Reverse-DNS id from `tilo_app_package::Manifest.package.id`.
     pub package_id: String,
     /// App package or bot program; every version's artifact has this kind.
     /// Left out for apps, so an app entry encodes as it always has.
     #[serde(default, skip_serializing_if = "EntryKind::is_app")]
     pub kind: EntryKind,
-    /// Localized display name.
     pub name: LocalizedText,
-    /// Localized product description.
     pub description: LocalizedText,
-    /// Localized short card tagline.
     pub tagline: LocalizedText,
-    /// Locale-specific store artwork.
     pub images: LocalizedImages,
-    /// Canonical language tags supported by the app itself.
     pub supported_languages: Vec<String>,
-    /// Free-form category tags — the UI groups on these.
     pub categories: Vec<String>,
-    /// Optional source-code URL.
     pub source_url: Option<String>,
-    /// Optional project homepage.
     pub homepage: Option<String>,
     /// Ed25519 identity of the publisher (32 bytes, hex); matches
     /// `tilo_app_package::Manifest.publisher.identity` on every `tapp_url` this entry advertises.
@@ -710,7 +682,6 @@ fn validate_images(images: &LocalizedImages) -> Result<(), EntryValidationError>
     Ok(())
 }
 
-/// Conservative canonical BCP-47 validation for app/store metadata.
 pub fn valid_language_tag(tag: &str) -> bool {
     let mut parts = tag.split('-');
     let Some(language) = parts.next() else {
@@ -811,7 +782,6 @@ pub fn index_signing_message<T: Serialize>(index_manifest: &T) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
-/// Convenience: sign an entry in place, filling `signature_hex`; caller is responsible for the publisher's key.
 pub fn sign_entry(entry: &mut RegistryEntry, signing_key: &SigningKey) {
     // Ensure the signing_message is computed over the payload
     // WITHOUT the signature field, so we clear it first.
@@ -1098,14 +1068,12 @@ mod tests {
 
     #[test]
     fn entry_signing_message_covers_every_signed_field() {
-        // phase: entry_json_roundtrip
         {
             let e = sample_entry();
             let s = serde_json::to_string(&e).expect("encode");
             let back: RegistryEntry = serde_json::from_str(&s).expect("decode");
             assert_eq!(back, e);
         }
-        // phase: signing_message_is_independent_of_signature_field
         {
             let mut e = sample_entry();
             let m1 = e.signing_message();
@@ -1113,7 +1081,6 @@ mod tests {
             let m2 = e.signing_message();
             assert_eq!(m1, m2, "signature_hex must not affect signing digest");
         }
-        // phase: signing_message_changes_when_any_signed_field_changes
         {
             let base = sample_entry();
             let base_msg = base.signing_message();
@@ -1154,7 +1121,6 @@ mod tests {
                 assert_ne!(alt.signing_message(), base_msg);
             }
         }
-        // phase: sign_entry_fills_signature_field
         {
             let mut e = sample_entry();
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -1164,7 +1130,6 @@ mod tests {
             sign_entry(&mut e, &key);
             assert_eq!(e.signature_hex, sig1);
         }
-        // phase: index_signing_message_is_domain_separated
         {
             let entry = sample_entry();
             let entry_msg = entry_signing_message(&entry);
@@ -1177,7 +1142,6 @@ mod tests {
 
     #[test]
     fn entry_validation_rejects_bad_locales_platforms_and_architectures() {
-        // phase: localized_metadata_requires_canonical_tags_and_english_fallback
         {
             let mut entry = sample_entry();
             assert_eq!(entry.validate(), Ok(()));
@@ -1221,7 +1185,6 @@ mod tests {
             entry.images = LocalizedImages::default();
             assert_eq!(entry.validate(), Ok(()));
         }
-        // phase: registry_rejects_non_tilo_platforms_and_unsupported_architectures
         {
             let mut entry = sample_entry();
             entry.versions[0].tapp_mut().unwrap().target.platform = "freebsd".into();

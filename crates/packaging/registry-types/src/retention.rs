@@ -1,13 +1,9 @@
 //! How many versions an entry keeps.
 //!
-//! Versions are grouped by target (platform and architecture) and channel
-//! (release or pre-release). Publishers keep the newest `releases` or
-//! `prereleases` of each group and drop the rest when they sign the next
-//! entry; the registry then stops referencing the dropped artifacts and
-//! collects their storage. Every group keeps at least
-//! [`MIN_RETAINED_PER_CHANNEL`], and the registry refuses an entry that drops
-//! a version with fewer newer ones of its group left, so retention never
-//! removes a target's current version or its recent rollback targets.
+//! Versions are grouped by target and channel; publishers keep the newest of each group and drop the rest
+//! when they sign the next entry. The registry refuses an entry that leaves fewer than
+//! [`MIN_RETAINED_PER_CHANNEL`] newer versions behind, so retention never drops a target's current
+//! version or its recent rollback targets.
 
 use std::cmp::Ordering;
 
@@ -17,10 +13,8 @@ use crate::RegistryVersion;
 /// version may leave an entry.
 pub const MIN_RETAINED_PER_CHANNEL: usize = 4;
 
-/// Versions kept per target and channel unless the publisher asks otherwise.
 pub const DEFAULT_RETAINED_PER_CHANNEL: usize = 20;
 
-/// The newest versions an entry keeps per target and channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RetentionPolicy {
     pub releases: usize,
@@ -37,7 +31,7 @@ impl Default for RetentionPolicy {
 }
 
 impl RetentionPolicy {
-    /// Versions kept in one group, never below [`MIN_RETAINED_PER_CHANNEL`].
+    /// Clamped to at least [`MIN_RETAINED_PER_CHANNEL`].
     #[must_use]
     pub fn limit(&self, prerelease: bool) -> usize {
         let configured = if prerelease {
@@ -61,15 +55,13 @@ impl RetentionPolicy {
     }
 }
 
-/// Whether `old` may leave an entry whose versions become `remaining`: at
-/// least [`MIN_RETAINED_PER_CHANNEL`] newer versions of its target and
-/// channel stay.
+/// Whether `old` may leave an entry whose versions become `remaining`: at least
+/// [`MIN_RETAINED_PER_CHANNEL`] newer versions of its target and channel stay.
 #[must_use]
 pub fn may_drop(old: &RegistryVersion, remaining: &[RegistryVersion]) -> bool {
     newer_in_group(old, remaining) >= MIN_RETAINED_PER_CHANNEL
 }
 
-/// Same version group (target, or bot) and channel.
 #[must_use]
 pub fn same_group(left: &RegistryVersion, right: &RegistryVersion) -> bool {
     left.group() == right.group() && is_prerelease(left) == is_prerelease(right)

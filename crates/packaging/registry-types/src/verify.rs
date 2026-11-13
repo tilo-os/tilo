@@ -1,9 +1,5 @@
-//! Signature-verification helpers. No I/O; pure functions over
-//! decoded `RegistryEntry` / `EntryChangeRequest` values.
-//!
-//! Both verify against the publisher's Ed25519 pubkey; the registry
-//! server (or a federation client) separately checks the pubkey is in
-//! the owner's allowlist via [`verify_change_request`].
+//! Signature verification over decoded `RegistryEntry` and `EntryChangeRequest` values: pure, no
+//! I/O. The registry server checks the publisher key against the owner's allowlist separately.
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use thiserror::Error;
@@ -11,38 +7,28 @@ use thiserror::Error;
 use crate::change::{EntryAction, EntryChangeRequest};
 use crate::entry::RegistryEntry;
 
-/// Structured failure modes for [`verify_change_request`].
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum VerifyError {
     #[error("invalid registry metadata: {0}")]
     InvalidMetadata(String),
-    /// The publisher's pubkey (as declared in the entry) is not in the owner's allowlist.
     #[error("publisher pubkey not in allowlist")]
     PublisherNotAllowed,
-    /// The pubkey field decoded fine but is not a valid Ed25519 key point.
     #[error("publisher pubkey is not a valid Ed25519 key: {0}")]
     InvalidPubkey(String),
-    /// Hex parse failed on pubkey or signature.
     #[error("hex decode failed: {0}")]
     BadHex(String),
-    /// Pubkey or signature was the wrong length after hex decode.
     #[error("bad length {got}, expected {expected}")]
     BadLength { expected: usize, got: usize },
-    /// Ed25519 verify rejected the signature — the bytes don't match what the publisher signed.
     #[error("signature does not match signed payload")]
     BadSignature,
-    /// The entry's declared publisher pubkey and the pubkey the
-    /// change-request signature verifies against disagree — blocks a
-    /// valid publisher signing a change over someone else's entry.
+    /// The entry's declared pubkey and the one the change verifies against disagree, which stops a
+    /// publisher signing a change over someone else's entry.
     #[error("entry signature is not valid for the declared publisher pubkey")]
     EntrySignatureMismatch,
 }
 
-/// Verify a [`RegistryEntry`]'s `signature_hex` against its own
-/// declared `publisher_pubkey_hex`. Returns `false` on any
-/// parse/verify failure — structured errors are
-/// [`verify_change_request`]'s domain; a caller walking a big index
-/// only needs "keep or drop".
+/// Whether `entry`'s signature verifies against its own declared `publisher_pubkey_hex`. Any parse
+/// or verify failure is `false`: a caller walking a big index only needs keep or drop.
 pub fn verify_entry_signature(entry: &RegistryEntry) -> bool {
     if entry.validate().is_err() {
         return false;
@@ -57,25 +43,16 @@ pub fn verify_entry_signature(entry: &RegistryEntry) -> bool {
     pk.verify(&msg, &sig).is_ok()
 }
 
-/// Verify a signed [`EntryChangeRequest`]. Both the change-level
-/// signature and the entry-level signature are checked, and the
-/// entry's declared pubkey must appear in `allowlist`.
+/// Verify a signed [`EntryChangeRequest`]: both the change-level and the entry-level signature, with
+/// the entry's declared pubkey in `allowlist`.
 ///
-/// Verification uses the pubkey declared inside the entry — the
-/// allowlist decides *whether that pubkey is welcome*, not *whose key
-/// we verify against*. So the same signature is portable: a
-/// federation client can verify the same bytes against a different
-/// owner's allowlist without re-encoding.
+/// The declared pubkey is what the signature verifies against; the allowlist only decides whether that
+/// key is welcome, so the same bytes verify against another owner's allowlist.
 ///
 /// # Errors
 ///
-/// Returns [`VerifyError::PublisherNotAllowed`] if the entry's declared
-/// pubkey is not in `allowlist`; [`VerifyError::InvalidPubkey`] or
-/// [`VerifyError::BadHex`]/[`VerifyError::BadLength`] if the pubkey or
-/// either signature fails to decode; [`VerifyError::EntrySignatureMismatch`]
-/// if the entry's own signature doesn't verify; and
-/// [`VerifyError::BadSignature`] if the change-level signature doesn't
-/// verify against the declared pubkey.
+/// [`VerifyError`] names the failure: a publisher not allowed, a key or signature that does not
+/// decode, an entry signature that does not verify, or a change signature that does not verify.
 pub fn verify_change_request(
     req: &EntryChangeRequest,
     publisher_pubkey_allowlist: &[[u8; 32]],
@@ -90,33 +67,29 @@ pub fn verify_change_request(
     let pk = VerifyingKey::from_bytes(&declared)
         .map_err(|e| VerifyError::InvalidPubkey(e.to_string()))?;
 
-    // Verify the entry-level sig too — otherwise a valid publisher could
-    // authenticate a change over a stolen-and-tweaked entry.
+    // The entry's own signature too, or a publisher could authenticate a change over a stolen entry.
     if !verify_entry_signature(&req.entry) {
         return Err(VerifyError::EntrySignatureMismatch);
     }
 
-    // Change-level sig.
     let sig = decode_signature_result(&req.publisher_signature_hex)?;
     let msg = req.signing_message();
     pk.verify(&msg, &sig)
         .map_err(|_| VerifyError::BadSignature)?;
 
-    // Cheap invariant: Add/Update carry a version list; Delete may too but isn't required to.
+    // Add and Update carry a version list; Delete may.
     match req.action {
         EntryAction::Add | EntryAction::Update | EntryAction::Delete => {}
     }
     Ok(())
 }
 
-// helpers
 
-/// Public/change-request path — surfaces structured errors so the server can log which failure mode fired.
+/// Errors name the failure mode, for the server to log.
 fn decode_pubkey_hex(hex_str: &str) -> Result<[u8; 32], VerifyError> {
     decode_fixed_hex::<32>(hex_str)
 }
 
-/// Same shape for signatures; kept separate for symmetry with the pubkey path even though the code is identical.
 fn decode_signature_result(hex_str: &str) -> Result<Signature, VerifyError> {
     let bytes = decode_fixed_hex::<64>(hex_str)?;
     Ok(Signature::from_bytes(&bytes))
@@ -135,14 +108,11 @@ fn decode_fixed_hex<const N: usize>(hex_str: &str) -> Result<[u8; N], VerifyErro
     Ok(out)
 }
 
-/// Best-effort pubkey decode for the boolean `verify_entry_signature`
-/// path — any parse failure surfaces as `None` so the outer function returns `false`.
 fn parse_verifying_key_opt(hex_str: &str) -> Option<VerifyingKey> {
     let bytes = decode_fixed_hex::<32>(hex_str).ok()?;
     VerifyingKey::from_bytes(&bytes).ok()
 }
 
-/// Same idea for signatures inside the boolean path.
 fn parse_signature_opt(hex_str: &str) -> Option<Signature> {
     let bytes = decode_fixed_hex::<64>(hex_str).ok()?;
     Some(Signature::from_bytes(&bytes))
@@ -199,20 +169,17 @@ mod tests {
 
     #[test]
     fn entry_signature_verification_rejects_tamper_and_wrong_keys() {
-        // phase: entry_signature_verifies_after_sign
         {
             let (key, mut entry) = key_and_entry();
             sign_entry(&mut entry, &key);
             assert!(verify_entry_signature(&entry));
         }
-        // phase: entry_signature_rejects_tamper
         {
             let (key, mut entry) = key_and_entry();
             sign_entry(&mut entry, &key);
             entry.name = "Tampered".into();
             assert!(!verify_entry_signature(&entry));
         }
-        // phase: entry_signature_rejects_wrong_pubkey
         {
             let (key, mut entry) = key_and_entry();
             sign_entry(&mut entry, &key);
@@ -223,14 +190,12 @@ mod tests {
 
     #[test]
     fn change_request_verification_requires_an_allowlisted_untampered_signer() {
-        // phase: change_request_verifies_when_allowlisted
         {
             let (key, entry) = key_and_entry();
             let allow = [key.verifying_key().to_bytes()];
             let req = sign_change_request(EntryAction::Add, entry, &key);
             assert_eq!(verify_change_request(&req, &allow), Ok(()));
         }
-        // phase: change_request_rejects_unallowlisted_publisher
         {
             let (key, entry) = key_and_entry();
             let allow = [[0u8; 32]]; // deliberately not the publisher's key
@@ -240,7 +205,6 @@ mod tests {
                 Err(VerifyError::PublisherNotAllowed)
             );
         }
-        // phase: change_request_rejects_tampered_entry
         {
             let (key, entry) = key_and_entry();
             let allow = [key.verifying_key().to_bytes()];
@@ -252,7 +216,6 @@ mod tests {
                 Err(VerifyError::EntrySignatureMismatch)
             );
         }
-        // phase: change_request_rejects_tampered_signature
         {
             let (key, entry) = key_and_entry();
             let allow = [key.verifying_key().to_bytes()];
@@ -265,7 +228,6 @@ mod tests {
                 Err(VerifyError::BadSignature)
             );
         }
-        // phase: change_request_rejects_bad_hex
         {
             let (key, mut entry) = key_and_entry();
             entry.publisher_pubkey_hex = "zzzz".into();
