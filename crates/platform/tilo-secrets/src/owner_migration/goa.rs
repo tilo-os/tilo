@@ -110,56 +110,61 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    fn goa_owner_grant_rejects_unbound_queries_before_any_bus_access() {
-        let root = tempfile::tempdir().unwrap();
-        let directory = File::open(root.path()).unwrap();
-        for id in ["", "../other", "account/1", "account:1", "account\n1"] {
+    tilo_test_env::scenario! {
+        fn goa_credentials_refuse_unbound_queries_and_never_print;
+
+        phase goa_owner_grant_rejects_unbound_queries_before_any_bus_access;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let directory = File::open(root.path()).unwrap();
+            for id in ["", "../other", "account/1", "account:1", "account\n1"] {
+                assert!(
+                    GoaCredential::new(&directory, GoaProvider::Google, id, "person@example.test")
+                        .is_err()
+                );
+            }
+            let ordinary = GoaCredential::new(
+                &directory,
+                GoaProvider::Google,
+                "account_1",
+                "person@example.test",
+            );
+            if rustix::process::getuid().as_raw() == 0 {
+                assert!(ordinary.is_err());
+            } else {
+                let grant = ordinary.unwrap();
+                std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+                assert!(matches!(grant.read_blocking(), Err(SecretError::Denied)));
+            }
+            let file = File::create(root.path().join("not-config")).unwrap();
             assert!(
-                GoaCredential::new(&directory, GoaProvider::Google, id, "person@example.test")
-                    .is_err()
+                GoaCredential::new(
+                    &file,
+                    GoaProvider::Microsoft,
+                    "account_1",
+                    "person@example.test"
+                )
+                .is_err()
             );
         }
-        let ordinary = GoaCredential::new(
-            &directory,
-            GoaProvider::Google,
-            "account_1",
-            "person@example.test",
-        );
-        if rustix::process::getuid().as_raw() == 0 {
-            assert!(ordinary.is_err());
-        } else {
-            let grant = ordinary.unwrap();
-            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
-            assert!(matches!(grant.read_blocking(), Err(SecretError::Denied)));
-        }
-        let file = File::create(root.path().join("not-config")).unwrap();
-        assert!(
-            GoaCredential::new(
-                &file,
-                GoaProvider::Microsoft,
-                "account_1",
-                "person@example.test"
-            )
-            .is_err()
-        );
-    }
-    #[test]
-    fn goa_debug_never_exposes_registration_or_variant_credentials() {
-        let credentials = GoaCredentials {
-            registration: Some(GoaRegistration {
-                client_id: "private-client-sentinel".into(),
-                client_secret: Zeroizing::new("private-client-secret-sentinel".into()),
-            }),
-            secret: Secret::new(b"private-variant-token-sentinel".to_vec()),
-        };
-        let debug = format!("{:?} {:?}", credentials, credentials.registration);
-        for secret in [
-            "private-client-sentinel",
-            "private-client-secret-sentinel",
-            "private-variant-token-sentinel",
-        ] {
-            assert!(!debug.contains(secret));
+
+        phase goa_debug_never_exposes_registration_or_variant_credentials;
+        {
+            let credentials = GoaCredentials {
+                registration: Some(GoaRegistration {
+                    client_id: "private-client-sentinel".into(),
+                    client_secret: Zeroizing::new("private-client-secret-sentinel".into()),
+                }),
+                secret: Secret::new(b"private-variant-token-sentinel".to_vec()),
+            };
+            let debug = format!("{:?} {:?}", credentials, credentials.registration);
+            for secret in [
+                "private-client-sentinel",
+                "private-client-secret-sentinel",
+                "private-variant-token-sentinel",
+            ] {
+                assert!(!debug.contains(secret));
+            }
         }
     }
 }

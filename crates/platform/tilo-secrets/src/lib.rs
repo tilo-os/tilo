@@ -676,73 +676,77 @@ mod tests {
         conformance::check_store(&SecretStore::memory("so.tilo.secrets-test")).await;
     }
 
-    #[test]
-    fn immutable_seals_acknowledge_injected_storage_and_validate_keys() {
-        let store = SecretStore::memory("so.tilo.secrets-test");
-        let key = "credentials/first";
-        assert_eq!(
-            store
-                .seal_blocking(key, b"private", PutOptions::default())
-                .unwrap(),
-            Some(key.into())
-        );
-        assert_eq!(
-            store.get_blocking(key).unwrap().unwrap().expose(),
-            b"private"
-        );
-        assert!(
-            store
-                .seal_blocking("", b"private", PutOptions::default())
-                .is_err()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_store_over_a_given_backend_keeps_each_apps_secrets_and_never_prints_them;
 
-    #[test]
-    fn the_memory_store_conforms_blocking() {
-        conformance::check_store_blocking(&SecretStore::memory("so.tilo.secrets-test"));
-    }
+        phase immutable_seals_acknowledge_injected_storage_and_validate_keys;
+        {
+            let store = SecretStore::memory("so.tilo.secrets-test");
+            let key = "credentials/first";
+            assert_eq!(
+                store
+                    .seal_blocking(key, b"private", PutOptions::default())
+                    .unwrap(),
+                Some(key.into())
+            );
+            assert_eq!(
+                store.get_blocking(key).unwrap().unwrap().expose(),
+                b"private"
+            );
+            assert!(
+                store
+                    .seal_blocking("", b"private", PutOptions::default())
+                    .is_err()
+            );
+        }
 
-    #[test]
-    fn apps_do_not_see_each_others_secrets() {
-        let shared: Arc<dyn SecretBackend> = Arc::new(MemoryBackend::default());
-        let a = SecretStore::with_backend("so.tilo.a", shared.clone());
-        let b = SecretStore::with_backend("so.tilo.b", shared);
-        a.put_blocking("token", b"a's", PutOptions::default())
-            .unwrap();
-        assert_eq!(b.get_blocking("token").unwrap(), None);
-        assert_eq!(a.get_blocking("token").unwrap().unwrap().expose(), b"a's");
-    }
+        phase the_memory_store_conforms_blocking;
+        {
+            conformance::check_store_blocking(&SecretStore::memory("so.tilo.secrets-test"));
+        }
 
-    #[test]
-    fn item_secrets_are_kept_per_purpose_and_item() {
-        let store = SecretStore::memory("so.tilo.db-client");
-        let alpha = store.item("password", "profile-alpha");
-        let beta = store.item("password", "profile-beta");
-        let alpha_key = store.item("key-passphrase", "profile-alpha");
-        assert!(!alpha.present_blocking());
-        alpha.put_blocking(b"hunter2").unwrap();
-        assert!(alpha.present_blocking());
-        assert!(!beta.present_blocking());
-        assert!(!alpha_key.present_blocking());
-        assert_eq!(alpha.key(), "password/profile-alpha");
-        assert_eq!(
-            store
-                .get_blocking("password/profile-alpha")
-                .unwrap()
-                .unwrap()
-                .expose(),
-            b"hunter2"
-        );
-        alpha.delete_blocking().unwrap();
-        assert_eq!(alpha.get_blocking().unwrap(), None);
-    }
+        phase apps_do_not_see_each_others_secrets;
+        {
+            let shared: Arc<dyn SecretBackend> = Arc::new(MemoryBackend::default());
+            let a = SecretStore::with_backend("so.tilo.a", shared.clone());
+            let b = SecretStore::with_backend("so.tilo.b", shared);
+            a.put_blocking("token", b"a's", PutOptions::default())
+                .unwrap();
+            assert_eq!(b.get_blocking("token").unwrap(), None);
+            assert_eq!(a.get_blocking("token").unwrap().unwrap().expose(), b"a's");
+        }
 
-    #[test]
-    fn secrets_never_print() {
-        assert_eq!(
-            format!("{:?}", Secret::new(b"hunter2".to_vec())),
-            "Secret(7 bytes)"
-        );
+        phase item_secrets_are_kept_per_purpose_and_item;
+        {
+            let store = SecretStore::memory("so.tilo.db-client");
+            let alpha = store.item("password", "profile-alpha");
+            let beta = store.item("password", "profile-beta");
+            let alpha_key = store.item("key-passphrase", "profile-alpha");
+            assert!(!alpha.present_blocking());
+            alpha.put_blocking(b"hunter2").unwrap();
+            assert!(alpha.present_blocking());
+            assert!(!beta.present_blocking());
+            assert!(!alpha_key.present_blocking());
+            assert_eq!(alpha.key(), "password/profile-alpha");
+            assert_eq!(
+                store
+                    .get_blocking("password/profile-alpha")
+                    .unwrap()
+                    .unwrap()
+                    .expose(),
+                b"hunter2"
+            );
+            alpha.delete_blocking().unwrap();
+            assert_eq!(alpha.get_blocking().unwrap(), None);
+        }
+
+        phase secrets_never_print;
+        {
+            assert_eq!(
+                format!("{:?}", Secret::new(b"hunter2".to_vec())),
+                "Secret(7 bytes)"
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]
