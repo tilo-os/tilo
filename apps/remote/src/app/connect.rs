@@ -1,9 +1,4 @@
 //! Connecting to a saved machine, and giving up on it.
-//!
-//! A connection attempt is a job of the whole system: it says what it is
-//! waiting for, it is bounded ([`CONNECT_DEADLINE`]), and the page it opens
-//! offers a way out. A live session is not ended by one click either: its
-//! scrollback goes with it, so the person is asked.
 
 use super::{
     CONNECT_DEADLINE, ConnectionId, LiveSession, PendingConfirmation, SessionStatus, Store, owner,
@@ -11,8 +6,6 @@ use super::{
 
 impl Store {
     /// A connection attempt the machine has not answered within
-    /// [`CONNECT_DEADLINE`] is given up: "Connecting to X" is a claim with a
-    /// time on it, not a page you sit on.
     pub(super) fn expire_connect(&mut self) {
         let Some(started) = self.connect_started else {
             return;
@@ -33,7 +26,6 @@ impl Store {
     }
 
     /// Give up the attempt in flight: nothing of it is kept, and the page
-    /// says why rather than waiting for ever.
     fn abandon_connect(&mut self, reason: &str) {
         let Some(id) = self.session_for else {
             return;
@@ -68,7 +60,6 @@ impl Store {
     }
 
     /// Ask before a live session ends: one click should not take someone's
-    /// scrollback with it.
     pub(super) fn request_disconnect(&mut self) {
         let Some(id) = self.session_for else {
             return;

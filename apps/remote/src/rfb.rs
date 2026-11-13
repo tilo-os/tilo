@@ -1,24 +1,9 @@
 //! A minimal RFB (Remote Framebuffer, RFC 6143) client codec.
-//!
-//! This is the wire layer behind the VNC session: the handshake, the pixel
-//! format, the client→server messages, and the server→client framebuffer
-//! decoder. It is deliberately transport-agnostic — the decoders take any
-//! [`std::io::Read`], so the exact same code path runs against a fixture
-//! `Cursor` in the unit tests and against a live `TcpStream` in
-//! [`crate::vnc`]. Nothing here is faked: a rectangle decoded from bytes
-//! lands in the framebuffer as real pixels.
-//!
-//! Supported: protocol 3.3/3.7/3.8 version negotiation, `None` and
-//! `VNC Authentication` (single-DES) security, true-colour pixel formats,
-//! and the `Raw`, `CopyRect`, and `RRE` rectangle encodings — the mandatory
-//! baseline every RFB server can speak.
 
 use std::io::{self, Read};
 use std::sync::Arc;
 
 /// Hard ceilings for data supplied by an untrusted RFB peer. They are generous
-/// enough for a 4K desktop while preventing malformed geometry/text metadata
-/// from allocating gigabytes on the transport worker.
 pub const MAX_FRAMEBUFFER_PIXELS: usize = 16_777_216; // 4096 × 4096
 const MAX_SERVER_NAME_BYTES: usize = 16 * 1024;
 const MAX_RECTANGLES_PER_UPDATE: u16 = 4_096;
@@ -40,7 +25,6 @@ pub mod security {
     pub const VNC_AUTH: u8 = 2;
 }
 
-/// A server pixel format (the 16-byte `PIXEL_FORMAT` structure).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PixelFormat {
     pub bits_per_pixel: u8,
@@ -57,8 +41,6 @@ pub struct PixelFormat {
 
 impl PixelFormat {
     /// The format we ask the server to send: 32bpp little-endian true-colour
-    /// with a pixel value of `R<<16 | G<<8 | B` — i.e. bytes `[B, G, R, x]`.
-    /// A trivial conversion to the RGBA the GPU wants.
     pub fn rgb888() -> Self {
         Self {
             bits_per_pixel: 32,
@@ -87,7 +69,6 @@ impl PixelFormat {
             red_shift: b[10],
             green_shift: b[11],
             blue_shift: b[12],
-            // b[13..16] padding
         }
     }
 
@@ -135,7 +116,6 @@ impl PixelFormat {
                 return 0;
             }
             let raw = (v >> shift) & u32::from(max);
-            // Scale the channel's [0, max] range up to [0, 255].
             ((raw * 255 + u32::from(max) / 2) / u32::from(max)) as u8
         };
         [
@@ -147,7 +127,6 @@ impl PixelFormat {
     }
 }
 
-/// The server's `ServerInit` reply: framebuffer size, pixel format, name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerInit {
     pub width: u16,
@@ -184,8 +163,6 @@ impl ServerInit {
     }
 }
 
-/// The RGBA framebuffer the session surface paints. `data` is
-/// `width*height*4` bytes, row-major, straight alpha.
 #[derive(Clone)]
 pub struct Framebuffer {
     pub width: u16,
@@ -229,8 +206,6 @@ impl Framebuffer {
     }
 
     /// Out-of-range coordinates (a malicious or buggy server can send a
-    /// `CopyRect` source outside the framebuffer) read back as transparent
-    /// black rather than panicking.
     fn get_pixel(&self, x: u16, y: u16) -> [u8; 4] {
         if x >= self.width || y >= self.height {
             return [0u8; 4];
@@ -244,7 +219,6 @@ impl Framebuffer {
     }
 }
 
-/// One rectangle header from a `FramebufferUpdate`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RectHeader {
     pub x: u16,
@@ -269,11 +243,6 @@ impl RectHeader {
 }
 
 /// Decode a `FramebufferUpdate` message body (everything after the 1-byte
-/// message type) from `r`, applying each rectangle into `fb`. Returns the
-/// number of rectangles applied.
-///
-/// The same function backs both the fixture tests (`r` is a `Cursor`) and
-/// the live client (`r` is a `TcpStream`).
 pub fn decode_framebuffer_update(
     r: &mut impl Read,
     fb: &mut Framebuffer,
@@ -358,7 +327,6 @@ fn decode_copy_rect(r: &mut impl Read, fb: &mut Framebuffer, rect: RectHeader) -
     r.read_exact(&mut b)?;
     let src_x = u16::from_be_bytes([b[0], b[1]]);
     let src_y = u16::from_be_bytes([b[2], b[3]]);
-    // Snapshot the source region first so overlapping copies are correct.
     let pixels = usize::from(rect.w)
         .checked_mul(usize::from(rect.h))
         .filter(|pixels| *pixels <= MAX_FRAMEBUFFER_PIXELS)
@@ -410,8 +378,6 @@ fn decode_rre(
     let mut bg = vec![0u8; bpp];
     r.read_exact(&mut bg)?;
     let bg_rgba = fmt.decode_pixel(&bg);
-    // Decode and bound every subrectangle before any paint loops. This keeps
-    // malformed later geometry from doing expensive partial background work.
     let mut sub = vec![0u8; bpp + 8];
     let bad_subrect = || {
         io::Error::new(
@@ -445,7 +411,6 @@ fn decode_rre(
             })?;
         pending_subrects.push((color, sx, sy, sw, sh));
     }
-    // Fill the whole rectangle with the background first.
     for dy in 0..rect.h {
         for dx in 0..rect.w {
             fb.put_pixel(
@@ -520,7 +485,6 @@ pub fn client_protocol_version(server_major: u8, server_minor: u8) -> [u8; 12] {
 }
 
 /// Pick the security type we prefer from the server's offer: `None` when
-/// available (no password), else `VNC Authentication`.
 pub fn choose_security(types: &[u8]) -> Option<u8> {
     if types.contains(&security::NONE) {
         Some(security::NONE)
@@ -562,8 +526,6 @@ fn mirror_bits(mut b: u8) -> u8 {
     }
     r
 }
-
-// --- Client→server message encoders ---------------------------------------
 
 /// `SetPixelFormat` (message type 0).
 pub fn encode_set_pixel_format(fmt: &PixelFormat) -> [u8; 20] {
@@ -637,7 +599,6 @@ mod tests {
 
         eprintln!("phase decode_pixel_32bpp_bgrx");
         {
-            // rgb888(): little-endian value R<<16|G<<8|B -> bytes [B,G,R,x].
             let f = PixelFormat::rgb888();
             assert_eq!(
                 f.decode_pixel(&[0x10, 0x20, 0x30, 0x00]),
@@ -647,7 +608,6 @@ mod tests {
 
         eprintln!("phase decode_pixel_16bpp_565");
         {
-            // 16bpp 5-6-5: red_max 31 (shift 11), green 63 (shift 5), blue 31 (0).
             let f = PixelFormat {
                 bits_per_pixel: 16,
                 depth: 16,
@@ -660,9 +620,7 @@ mod tests {
                 green_shift: 5,
                 blue_shift: 0,
             };
-            // Pure red = 0xF800 -> little-endian [0x00, 0xF8].
             assert_eq!(f.decode_pixel(&[0x00, 0xF8]), [255, 0, 0, 255]);
-            // Pure blue = 0x001F -> [0x1F, 0x00].
             assert_eq!(f.decode_pixel(&[0x1F, 0x00]), [0, 0, 255, 255]);
         }
 
@@ -679,13 +637,11 @@ mod tests {
         {
             let f = PixelFormat::rgb888();
             let mut fb = Framebuffer::new(2, 2);
-            // A FramebufferUpdate: pad, count=1; rect at (0,0) 2x2 Raw; 4 px.
             let mut msg = vec![0u8, 0, 1]; // pad + count
             msg.extend_from_slice(&[0, 0, 0, 0]); // x,y
             msg.extend_from_slice(&2u16.to_be_bytes()); // w
             msg.extend_from_slice(&2u16.to_be_bytes()); // h
             msg.extend_from_slice(&encoding::RAW.to_be_bytes());
-            // Four BGRX pixels: red, green, blue, white.
             msg.extend_from_slice(&[0, 0, 255, 0]); // red
             msg.extend_from_slice(&[0, 255, 0, 0]); // green
             msg.extend_from_slice(&[255, 0, 0, 0]); // blue
@@ -703,9 +659,7 @@ mod tests {
         {
             let f = PixelFormat::rgb888();
             let mut fb = Framebuffer::new(2, 1);
-            // Seed (0,0) red.
             Arc::make_mut(&mut fb.data)[0..4].copy_from_slice(&[255, 0, 0, 255]);
-            // CopyRect: copy the 1x1 region at src (0,0) to dst (1,0).
             let mut msg = vec![0u8, 0, 1];
             msg.extend_from_slice(&1u16.to_be_bytes()); // dst x = 1
             msg.extend_from_slice(&0u16.to_be_bytes()); // dst y
@@ -730,7 +684,6 @@ mod tests {
             msg.extend_from_slice(&encoding::RRE.to_be_bytes());
             msg.extend_from_slice(&1u32.to_be_bytes()); // 1 subrect
             msg.extend_from_slice(&[0, 0, 255, 0]); // bg = red (BGRX wire order)
-            // subrect: color blue (BGRX), at (1,1) 1x1
             msg.extend_from_slice(&[255, 0, 0, 0]);
             msg.extend_from_slice(&1u16.to_be_bytes());
             msg.extend_from_slice(&1u16.to_be_bytes());
@@ -883,16 +836,11 @@ mod tests {
 
         eprintln!("phase vnc_auth_matches_independent_des_oracle");
         {
-            // Known-answer vector produced by an independent single-DES
-            // implementation (see the crate's test notes): password "pass",
-            // challenge = 0x00..0x0F, VNC key-byte bit mirroring, DES-ECB.
             let challenge: [u8; 16] = [
                 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
                 0x0e, 0x0f,
             ];
             let resp = vnc_auth_response(&challenge, "pass");
-            // Cross-checked against openssl's `des-ecb` (legacy provider) and
-            // pyDes — both independent single-DES implementations.
             assert_eq!(
                 resp,
                 [

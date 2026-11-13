@@ -1,14 +1,6 @@
-//! Pure data model for the Remote app.
-//!
-//! A workspace is a flat list of saved [`Connection`]s plus a small
-//! amount of view state (which connection is selected, which screen the
-//! user is looking at). The connections are the durable, collaborative
-//! part — they live in the Automerge document (see `crate::doc`) so a
-//! machine list edited on one device converges everywhere it's shared.
-//!
-//! View state (current screen, selection, draft form contents) is
-//! deliberately kept out of the shared document: two people browsing the
-//! same connection list should be able to look at different machines.
+//! The app's data model: a flat list of saved [`Connection`]s, the collaborative part, and
+//! a little per-peer view state. Two people browsing one list can look at different
+//! machines.
 
 use std::collections::HashMap;
 
@@ -18,32 +10,24 @@ use uuid::Uuid;
 
 use crate::resource::CATALOG;
 
-/// Stable identifier for a saved connection. Backs every cross-reference
-/// and the per-connection session state.
 pub type ConnectionId = Uuid;
 
-/// The transport / protocol a connection speaks.
-///
-/// RDP remains a variant so saved, older connection profiles can round-trip
-/// without data loss. Tilo device control is backed by the shell's authenticated
-/// workspace transport and is available for new profiles.
+/// The transport a connection speaks. RDP stays a variant so older profiles round-trip;
+/// Tilo device control rides the shell's authenticated workspace transport.
 #[derive(Model, JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionKind {
-    /// Secure shell — an interactive terminal session.
+    /// Secure shell: an interactive terminal.
     Ssh,
-    /// Virtual Network Computing — a streamed remote framebuffer.
+    /// Virtual Network Computing: a streamed framebuffer.
     Vnc,
-    /// Remote Desktop Protocol — a streamed remote desktop.
+    /// Remote Desktop Protocol.
     Rdp,
-    /// A peer Tilo device reached through the canonical device mesh. The shell
-    /// requires an authenticated exact-target route while reusing the
-    /// target's consented surface stream and input firewall.
+    /// A peer Tilo device reached through the device mesh.
     Tilo,
 }
 
 impl ConnectionKind {
-    /// Short uppercase tag shown on the connection row badge.
     pub fn tag(self) -> &'static str {
         match self {
             ConnectionKind::Ssh => "SSH",
@@ -53,7 +37,6 @@ impl ConnectionKind {
         }
     }
 
-    /// The message naming this protocol in forms and detail panes.
     pub fn label_message(self) -> &'static str {
         match self {
             ConnectionKind::Ssh => "remote-kind-ssh",
@@ -63,27 +46,19 @@ impl ConnectionKind {
         }
     }
 
-    /// The port a fresh connection of this kind defaults to.
     pub fn default_port(self) -> u16 {
         match self {
             ConnectionKind::Ssh => 22,
             ConnectionKind::Vnc => 5900,
             ConnectionKind::Rdp => 3389,
-            // Tilo device control rides the compositor's P2P fabric and has no
-            // application-owned TCP port.
             ConnectionKind::Tilo => 0,
         }
     }
 
-    /// Whether a session of this kind renders as a text terminal (true)
-    /// or as a graphical surface (false).
     pub fn is_terminal(self) -> bool {
         matches!(self, ConnectionKind::Ssh)
     }
 
-    /// Whether the remote side streams a graphical surface to us. Tilo reuses
-    /// the compositor's existing consented surface stream rather than defining
-    /// a parallel remote-desktop protocol.
     pub fn streams_framebuffer(self) -> bool {
         matches!(
             self,
@@ -91,10 +66,8 @@ impl ConnectionKind {
         )
     }
 
-    /// Kinds available when creating a new profile.
-    ///
-    /// Keep the persisted enum broader than this list: hiding an unavailable
-    /// transport from creation must not silently destroy an older profile.
+    /// The kinds available when creating a profile. The persisted enum stays broader, so
+    /// hiding a transport never destroys an older profile.
     pub fn available_to_create() -> [ConnectionKind; 3] {
         [
             ConnectionKind::Ssh,
@@ -103,8 +76,6 @@ impl ConnectionKind {
         ]
     }
 
-    /// Whether Tilo can open this transport today: Remote can honestly
-    /// start a connection attempt over it.
     pub fn is_supported(self) -> bool {
         matches!(
             self,
@@ -112,8 +83,8 @@ impl ConnectionKind {
         )
     }
 
-    /// Iteration order for every persisted kind. Use
-    /// [`Self::available_to_create`] in user-facing creation controls.
+    /// Every persisted kind, in order; creation controls use
+    /// [`Self::available_to_create`].
     pub fn all() -> [ConnectionKind; 4] {
         [
             ConnectionKind::Ssh,
@@ -124,23 +95,21 @@ impl ConnectionKind {
     }
 }
 
-/// How a connection authenticates. Stored alongside the connection but
-/// never carries a live secret in the document — passwords are entered at
-/// connect time and held only in volatile memory.
+/// How a connection signs in. Never a live secret: passwords are entered at connect time
+/// and held in memory.
 #[derive(Model, JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMethod {
-    /// Username + password prompted at connect time.
+    /// Username and password, asked at connect time.
     Password,
-    /// Public-key auth (an agent or on-disk key handles the secret).
+    /// Public-key auth: an agent or a key on disk holds the secret.
     PublicKey,
-    /// Tilo device identity — the P2P fabric authenticates the peer, so
-    /// there is no separate credential to manage.
+    /// Tilo device identity: the mesh authenticates the peer, so there is no credential to
+    /// manage.
     DeviceIdentity,
 }
 
 impl AuthMethod {
-    /// The message naming how a connection signs in.
     pub fn label_message(self) -> &'static str {
         match self {
             AuthMethod::Password => "remote-auth-password",
@@ -157,10 +126,8 @@ impl AuthMethod {
         ]
     }
 
-    /// Authentication methods supported by the selected protocol.
-    ///
-    /// This keeps the form from advertising a credential shape that the live
-    /// transport would silently ignore or reinterpret.
+    /// The methods the protocol supports, so the form never advertises a credential shape
+    /// the transport would ignore.
     pub const fn available_for(kind: ConnectionKind) -> &'static [AuthMethod] {
         match kind {
             ConnectionKind::Ssh => &[Self::Password, Self::PublicKey],
@@ -169,73 +136,52 @@ impl AuthMethod {
         }
     }
 
-    /// Whether this method is valid for the selected protocol.
     pub fn is_supported_by(self, kind: ConnectionKind) -> bool {
         Self::available_for(kind).contains(&self)
     }
 }
 
-/// Reachability of a saved machine, as this device last observed it. Live
-/// state of this device, never part of the saved profile.
+/// How a saved machine last answered, as this device observed it; never part of the
+/// profile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Presence {
-    /// Reachable on the last probe.
     Online,
-    /// Unreachable on the last probe.
     Offline,
-    /// Never probed / status unknown.
     Unknown,
 }
 
-/// One saved remote machine. Its id is its item's in [`Remote`]; the
-/// address parts are written whole, the name merges as text.
+/// One saved machine. Its id is its item's in [`Remote`]; the address parts are written
+/// whole, the name merges as text.
 #[derive(Model, Clone, Debug, PartialEq, Eq)]
 #[model(check = Connection::valid)]
 pub struct Connection {
-    /// The saved connection's id, its item's in [`Remote::connections`].
+    /// The connection's id, its item's in [`Remote::connections`].
     #[model(skip)]
     pub id: ConnectionId,
     /// Name
-    ///
-    /// Shown in the list (e.g. "Home Server").
     #[model(label)]
     pub name: String,
     /// Host
-    ///
-    /// Hostname or IP (e.g. "10.0.0.4" or "build.example.com"). For a
-    /// Tilo relay this is the exact certified device endpoint id; `name` is
-    /// the friendly label shown in the UI.
     pub host: Atom,
     /// Port
     pub port: u16,
     /// User
-    ///
-    /// Empty for kinds that don't need one (Tilo relay).
     pub user: Atom,
     /// Protocol
     pub kind: ConnectionKind,
     /// Authentication
     pub auth: AuthMethod,
     /// Last used
-    ///
-    /// When a session to this machine was last opened, in milliseconds
-    /// since the Unix epoch, on any of the person's devices.
     #[model(readonly)]
     pub last_used_ms: Option<i64>,
     /// Group
-    ///
-    /// Optional one-line note / tag (e.g. "prod", "lab").
     pub group: Atom,
     /// Pinned
-    ///
-    /// Pinned to the top of the list.
     pub favorite: bool,
 }
 
-/// The saved connections: the durable, collaborative part of Remote. Two
-/// devices sharing it converge on one machine list. What this device
-/// observes live (reachability), sessions, the form being filled in and
-/// credentials are never part of it.
+/// The saved connections. What this device observes live, its sessions, the form being
+/// filled in and its credentials are never part of it.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 pub struct Remote {
     /// Saved connections
@@ -243,7 +189,6 @@ pub struct Remote {
 }
 
 impl Remote {
-    /// The saved connections, each carrying its id.
     pub fn list(&self) -> Vec<Connection> {
         self.connections
             .iter()
@@ -256,21 +201,16 @@ impl Remote {
             .collect()
     }
 
-    /// The item id of the saved connection `id`.
     pub fn item(id: ConnectionId) -> Id {
         Id::from_raw(id.to_string())
     }
 }
 
 impl Connection {
-    /// Compact address line, omitting parts that don't apply (a port the
-    /// protocol uses anyway, a user the protocol doesn't sign in with).
     pub fn address(&self) -> String {
         if self.kind == ConnectionKind::Tilo {
-            // A certified endpoint id is intentionally long. The row already
-            // carries the user-assigned connection name and the protocol;
-            // show a stable prefix here while the editable form retains the
-            // exact target id.
+            // A certified endpoint id is long: show a stable prefix here, while the form
+            // keeps the exact target id.
             return compact_tilo_endpoint(&self.host.0);
         }
         let host_part = if self.port == 0 || self.port == self.kind.default_port() {
@@ -285,20 +225,13 @@ impl Connection {
         }
     }
 
-    /// Explain why this persisted profile cannot safely start a transport:
-    /// the catalogue message a window paints in the person's language.
-    ///
-    /// The result is deliberately a stable, non-secret key: it is shared by
-    /// the canvas UI, accessibility tree, resource catalogue, and agent-facing
-    /// availability contract. No connect attempt is made until this returns
-    /// `None`.
+    /// Why this profile cannot safely start a transport, as the catalogue key a window
+    /// paints. No connect attempt starts until it returns `None`.
     pub fn profile_issue(&self) -> Option<&'static str> {
         profile_issue(self.kind, &self.host.0, self.auth)
     }
 
-    /// What every saved connection is, however it was written: named, with
-    /// a host, a port its protocol can use, and an authentication it
-    /// supports.
+    /// What every saved connection is, however it was written.
     fn valid(&self) -> Result<(), Refusal> {
         let draft = ConnectionDraft::from_connection(self);
         match draft.problems().into_iter().next() {
@@ -308,9 +241,8 @@ impl Connection {
     }
 }
 
-/// Compact an exact Tilo endpoint id for list rows and device-picker labels.
-/// The editable form retains the full identity; this rendering helper avoids
-/// overflow and never slices user-controlled UTF-8 by byte offset.
+/// An exact Tilo endpoint id cut short for list rows and picker labels, never by byte
+/// offset.
 pub fn compact_tilo_endpoint(endpoint: &str) -> String {
     let prefix: String = endpoint.chars().take(12).collect();
     if endpoint.chars().nth(12).is_some() {
@@ -338,20 +270,14 @@ fn profile_issue(kind: ConnectionKind, host: &str, auth: AuthMethod) -> Option<&
     None
 }
 
-/// Which top-level screen the UI is showing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Screen {
-    /// The saved-connections list (home).
     List,
-    /// The add / edit connection form. Carries the id being edited, or
-    /// `None` for a brand-new connection.
     Form { editing: Option<ConnectionId> },
-    /// A live (here: sample) session for a specific connection.
     Session { id: ConnectionId },
 }
 
-/// A draft of the add/edit form. Held in the app (not the CRDT) because
-/// an in-progress form is private to the editor until they hit Save.
+/// A draft of the add/edit form, private to the editor until Save.
 #[derive(Clone, Debug)]
 pub struct ConnectionDraft {
     pub name: String,
@@ -378,7 +304,6 @@ impl Default for ConnectionDraft {
 }
 
 impl ConnectionDraft {
-    /// Seed a draft from an existing connection (for the edit flow).
     pub fn from_connection(c: &Connection) -> Self {
         Self {
             name: c.name.clone(),
@@ -391,8 +316,7 @@ impl ConnectionDraft {
         }
     }
 
-    /// Validate the draft, returning a list of human-readable problems.
-    /// An empty list means the draft is ready to save.
+    /// What is wrong with the draft; an empty list means it can be saved.
     pub fn problems(&self) -> Vec<String> {
         let mut out = Vec::new();
         if self.name.trim().is_empty() {
@@ -401,7 +325,7 @@ impl ConnectionDraft {
         if self.host.trim().is_empty() {
             out.push("Host is required".into());
         }
-        // Tilo relay uses a logical channel, no numeric port.
+        // A Tilo relay uses a logical channel, so it has no numeric port.
         if self.kind != ConnectionKind::Tilo {
             match self.port.trim().parse::<u16>() {
                 Ok(0) | Err(_) => out.push("Port must be 1–65535".into()),
@@ -414,7 +338,7 @@ impl ConnectionDraft {
         out
     }
 
-    /// Build a [`Connection`] from a validated draft, reusing `id`.
+    /// The [`Connection`] the draft describes, reusing `id`.
     pub fn build(&self, id: ConnectionId) -> Connection {
         let port = if self.kind == ConnectionKind::Tilo {
             0
@@ -445,13 +369,11 @@ impl ConnectionDraft {
     }
 }
 
-/// In-memory connection store with the runtime operations the UI needs.
-/// Pure logic — no IO, no rendering, no CRDT. The CRDT bridge lives in
-/// `crate::doc`.
+/// The connections in memory with the operations the window needs. No IO, no CRDT.
 #[derive(Clone, Debug, Default)]
 pub struct Workspace {
     pub connections: Vec<Connection>,
-    /// Reachability this device observed, per connection.
+    /// How each connection last answered here.
     pub presence: HashMap<ConnectionId, Presence>,
 }
 
@@ -472,8 +394,7 @@ impl Workspace {
         self.connections.iter_mut().find(|c| c.id == id)
     }
 
-    /// Insert a new connection (or replace one with the same id). Returns
-    /// the id for convenience.
+    /// Insert a new connection, or replace one with the same id.
     pub fn upsert(&mut self, c: Connection) -> ConnectionId {
         let id = c.id;
         if let Some(existing) = self.get_mut(id) {
@@ -484,15 +405,12 @@ impl Workspace {
         id
     }
 
-    /// Remove a connection. Returns true if it existed.
     pub fn remove(&mut self, id: ConnectionId) -> bool {
         let before = self.connections.len();
         self.connections.retain(|c| c.id != id);
         self.connections.len() != before
     }
 
-    /// Toggle the favorite flag; returns the new value (or false if the
-    /// connection is unknown).
     pub fn toggle_favorite(&mut self, id: ConnectionId) -> bool {
         if let Some(c) = self.get_mut(id) {
             c.favorite = !c.favorite;
@@ -502,9 +420,6 @@ impl Workspace {
         }
     }
 
-    /// Connections filtered by a case-insensitive query over name / host
-    /// / user / group, then ordered favorites-first and by name. An empty
-    /// query returns everything (still ordered).
     pub fn filtered(&self, query: &str) -> Vec<&Connection> {
         let q = query.trim().to_lowercase();
         let mut out: Vec<&Connection> = self

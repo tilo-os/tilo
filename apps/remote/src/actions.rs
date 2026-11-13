@@ -1,15 +1,7 @@
-//! What Remote does beside editing the saved connections, as typed
-//! effects, and the live rows it publishes.
-//!
-//! The saved connections are the [`Remote`](crate::model::Remote) model:
-//! their fields are edited at their paths, and adding, deleting and recording
-//! a use are its verbs ([`crate::resource`]). Opening a live session is an
-//! effect on its connection. The framebuffer, input stream, and credential
-//! auth remain app-owned one-off I/O and touch no document; a connection's
-//! password or key passphrase lives in this device's secret store. And
-//! presentation — which screen is showing, the selected row, the in-progress
-//! add/edit draft, scale / fullscreen, the nav rail — is per-peer view state,
-//! as is whether a machine answered.
+//! What Remote does beside editing the saved connections, as typed effects, and the live
+//! rows it publishes. Opening a session is an effect on its connection; the framebuffer,
+//! input stream and credential auth touch no document, and a credential lives in this
+//! device's secret store. What screen shows, the selection and the draft are per-peer.
 
 use tilo_actions::ActionSpec;
 use ui::framework::LiveRow;
@@ -19,37 +11,30 @@ use crate::model::{Connection, ConnectionId, ConnectionKind};
 use crate::resource::CATALOG;
 use ui::i18n::ArgValue;
 
-/// What Remote does that is no edit of the saved connections: showing them,
-/// opening and closing live sessions, typing into one, and the SSH host-key
-/// decisions this device keeps for itself.
+/// What Remote does beyond editing the saved connections: showing them, opening and closing
+/// sessions, typing into one, and this device's SSH host-key decisions.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "remote.effect")]
 pub enum RemoteEffect {
-    /// Show connections.
     #[effect(view, idempotent)]
     ShowConnections,
-    /// New connection.
     #[effect(view, label = "remote-new-connection")]
     New,
-    /// Open connection settings.
     #[effect(view, row)]
     EditConnection {
         #[param("The saved connection's id")]
         connection: ConnectionId,
     },
-    /// Connect.
     #[effect(row, job, privileged, kind = "read", label = "remote-connect-confirm")]
     Connect {
         #[param("The saved connection's id")]
         connection: ConnectionId,
     },
-    /// Disconnect session.
     #[effect(row, idempotent, label = "remote-disconnect")]
     Disconnect {
         #[param("The saved connection's id")]
         connection: ConnectionId,
     },
-    /// Send text to session.
     #[effect(job, privileged)]
     SendText {
         #[param("The saved connection whose session receives it")]
@@ -57,8 +42,6 @@ pub enum RemoteEffect {
         #[param("Text to deliver to the connected SSH terminal")]
         text: String,
     },
-    /// Send file to session: copy one local file to the connected SSH
-    /// machine.
     #[effect(row, job, privileged)]
     PutFile {
         #[param("The saved connection whose SSH session receives it")]
@@ -68,8 +51,6 @@ pub enum RemoteEffect {
         #[param("Where to write it on the remote machine")]
         remote_path: String,
     },
-    /// Fetch file from session: copy one file from the connected SSH
-    /// machine to this device.
     #[effect(row, job, privileged)]
     FetchFile {
         #[param("The saved connection whose SSH session reads it")]
@@ -95,12 +76,10 @@ pub enum RemoteEffect {
     },
 }
 
-/// Open a connection's settings.
 pub(crate) fn open_spec(id: ConnectionId) -> ActionSpec {
     RemoteEffect::EditConnection { connection: id }.bound()
 }
 
-/// Open a live session to a connection, when it can start one.
 pub(crate) fn connect_spec(connection: &Connection) -> ActionSpec {
     let readiness = crate::session::connection_readiness(connection);
     let mut spec = RemoteEffect::Connect {
@@ -134,15 +113,13 @@ pub(crate) fn connect_spec(connection: &Connection) -> ActionSpec {
 /// A host-key decision stays on this device.
 const HOST_KEY_TAGS: &[&str] = &["ssh", "host-key", "device-private"];
 
-/// `spec`, tagged with what it touches.
 fn tagged(mut spec: ActionSpec, tags: &[&str]) -> ActionSpec {
     spec.type_mut().contract.tags = tags.iter().map(|tag| (*tag).to_string()).collect();
     spec
 }
 
-/// The open session: disconnect it, and the SSH host-key decision its
-/// first contact or a changed key asks for. Text is sent with the
-/// `send-text` effect, naming the connection.
+/// The open session: disconnect it, and the host-key decision a first contact or a changed
+/// key asks for. Text is sent with the `send-text` effect, naming the connection.
 pub fn session_row(
     connection: &Connection,
     host_key_issue: Option<&crate::ssh::HostKeyIssue>,
@@ -211,8 +188,7 @@ pub fn session_row(
     }
 }
 
-/// The effects a saved connection offers beside its verbs: its settings
-/// and its connect, merged into the connection's published item by id.
+/// The effects a saved connection offers beside its verbs: its settings and its connect.
 pub fn connection_row(connection: &Connection) -> LiveRow {
     LiveRow::new(
         crate::resource::connection_resource_id(connection.id),

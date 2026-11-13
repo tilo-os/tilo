@@ -1,25 +1,4 @@
 //! Root widget for the Remote app.
-//!
-//! Owns the connection [`Workspace`] (as the resource presents it, plus
-//! what this device observed of each machine's reachability), the current
-//! [`Screen`], the add / edit draft and the live session. The
-//! window is a [`NavShell`]: a docked rail of destinations beside the
-//! current screen; the screen's name and actions are the window bar's
-//! (`window_bar`).
-//! The list and the form are toolkit widgets rebuilt from this state
-//! (`crate::view`); a connected session is `SessionPane`, which paints
-//! the remote terminal grid or framebuffer.
-//!
-//! The window is a bound view: [`window`] lays it out over the saved
-//! connections the document holds. What it shows lives in a [`Store`] it
-//! shares with the view's effect handler and the live rows the view
-//! publishes; the window keeps only its widgets.
-//!
-//! Controls report through one queue of `Action`s, drained after every
-//! event, so the pointer, the keyboard, assistive technology and the
-//! resource actions agents call share one path. Saved connections change
-//! only through the resource's dispatcher; a connection's password or key
-//! passphrase lives in this device's secret store.
 
 use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
@@ -66,10 +45,6 @@ use ui::lock::MutexRecover as _;
 use ui::widget::DrawChild;
 
 /// A live transport backing an open session. SSH is a `russh` PTY channel
-/// feeding the terminal grid; VNC is an RFB client
-/// decoding the remote framebuffer. `Error` holds a pre-flight failure
-/// (e.g. missing credentials) so the surface can show the reason without
-/// opening a session.
 enum LiveSession {
     Ssh(Box<SshSession>),
     Vnc(VncSession),
@@ -92,7 +67,6 @@ enum LiveSession {
     Sample(SampleSurface),
 }
 
-/// What a staged connected session shows.
 #[cfg(feature = "samples")]
 enum SampleSurface {
     /// A terminal grid, as an SSH session fills it.
@@ -146,10 +120,6 @@ struct TiloSession {
 type UnitBacklog = std::collections::VecDeque<Vec<u8>>;
 
 /// Encoded units waiting for the decode worker before the backlog is
-/// dropped: two seconds of a 30 fps stream.
-/// How long a connection attempt is given before the page says it did not
-/// answer: a Tilo case waits for the owner's consent, and an SSH or VNC
-/// handshake waits on the network, but neither waits without end.
 const CONNECT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(45);
 
 /// Remote, as the ledger and the waiting stack name it.
@@ -160,7 +130,6 @@ fn owner() -> ui::attention::Owner {
 const TILO_UNIT_BACKLOG: usize = 60;
 
 /// How long the session waits for an asked-for keyframe before asking
-/// again, in case the request or the keyframe was lost too.
 const TILO_KEYFRAME_RETRY: std::time::Duration = std::time::Duration::from_millis(300);
 
 impl TiloSession {
@@ -264,24 +233,27 @@ enum PendingResourceOperation {
         /// The caller to answer; a test drives the settlement without one.
         reply: Option<ui::framework::EffectReply>,
         connection_id: ConnectionId,
+        /// Monotonic identity for a live session. A saved profile can be reopened
         session_generation: u64,
     },
     SshInput {
+        /// The caller to answer; a test drives the settlement without one.
         reply: Option<ui::framework::EffectReply>,
         connection_id: ConnectionId,
+        /// Monotonic identity for a live session. A saved profile can be reopened
         session_generation: u64,
         acknowledgement: std::sync::mpsc::Receiver<Result<(), String>>,
     },
     FileTransfer {
+        /// The caller to answer; a test drives the settlement without one.
         reply: Option<ui::framework::EffectReply>,
         connection_id: ConnectionId,
+        /// Monotonic identity for a live session. A saved profile can be reopened
         session_generation: u64,
         completion: std::sync::mpsc::Receiver<Result<u64, String>>,
     },
 }
 
-/// Everything a control can ask for. Queued by the views
-/// ([`crate::view`]) and applied by [`RemoteApp::apply`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
     /// Go to a rail destination.
@@ -291,7 +263,6 @@ pub(crate) enum Action {
     /// Open the form to edit an existing connection.
     EditConnection(ConnectionId),
     /// Ask before opening a live session. Resource actions receive the same
-    /// confirmation from the shell, so every path is equally explicit.
     RequestConnect(ConnectionId),
     /// Ask before removing a shared saved profile.
     RequestDelete(ConnectionId),
@@ -319,7 +290,6 @@ pub(crate) enum Action {
     Disconnect,
 }
 
-/// A discoverable Tilo peer, surfaced in the form's device picker.
 #[derive(Clone, Debug)]
 struct TiloDevice {
     name: String,
@@ -379,32 +349,24 @@ impl PendingConfirmation {
 }
 
 /// The open session's transport and what its surface last showed, shared
-/// between the app (which opens, closes and reports on it) and the
-/// [`SessionPane`] that paints it and forwards input to it.
 struct SessionCore {
     live: Option<LiveSession>,
     /// The most recent remote framebuffer, rebuilt only when a new frame
     /// arrives.
     fb_image: Option<PenikoImage>,
     /// Where the framebuffer was last painted, so pointer events map back
-    /// into remote-desktop coordinates.
     fb_canvas: Option<Rect>,
     /// Current VNC pointer button mask (bit 0 = left, 1 = middle, 2 = right).
     vnc_buttons: u8,
     /// The keys this pane pressed on the remote machine and has not released
-    /// there yet, by the physical key: the evdev keycode for a Tilo session,
-    /// the keysym for VNC. Released together when the pane loses the
-    /// keyboard, so no key stays held on the remote side.
     held_keys: Vec<(PhysicalKey, u32)>,
     /// Wheel movement not yet sent to a VNC desktop, in wheel clicks: a
-    /// trackpad scrolls in pixels, a desktop in whole clicks.
     vnc_wheel: (f64, f64),
     /// Whether the remote desktop is scaled to fit (vs. its own size).
     scale_to_fit: bool,
     /// Last pointer position over the pane.
     pointer: Point,
     /// Requests for the shell's collaboration broker: opening and closing
-    /// Tilo workspace control, and the input sent through it.
     collab_outbox: Vec<ui::collaboration::CollabRequest>,
     /// The surface changed since it was last painted.
     changed: bool,
@@ -437,7 +399,6 @@ impl SessionCore {
     }
 
     /// Drain live-session I/O: SSH output into the grid, new VNC and Tilo
-    /// frames into the image. Returns whether the surface changed.
     fn pump(&mut self) -> bool {
         let mut changed = false;
         match self.live.as_mut() {
@@ -473,7 +434,6 @@ impl SessionCore {
     }
 
     /// Map a logical point to remote-desktop pixel coordinates, if it falls
-    /// on the live VNC framebuffer.
     fn vnc_pointer_target(&self, p: Point) -> Option<(u16, u16)> {
         let s = self.vnc_session()?;
         let canvas = self.fb_canvas?;
@@ -492,7 +452,6 @@ impl SessionCore {
     }
 
     /// Release on the remote machine every key this pane still holds there:
-    /// the pane lost the keyboard, and the release will not reach it.
     fn release_held_keys(&mut self) {
         for (_, key) in std::mem::take(&mut self.held_keys) {
             self.send_release(key);
@@ -500,8 +459,6 @@ impl SessionCore {
     }
 
     /// Release on the remote machine the key this pane pressed there as
-    /// `physical`, if it still holds it: the key came up, whether or not its
-    /// release reaches the pane.
     fn release_key(&mut self, physical: PhysicalKey) {
         if let Some(at) = self.held_keys.iter().position(|(key, _)| *key == physical) {
             let (_, key) = self.held_keys.remove(at);
@@ -510,7 +467,6 @@ impl SessionCore {
     }
 
     /// Send the release of `key`, as its press sent it: a keysym to a VNC
-    /// desktop, an evdev keycode to a Tilo session.
     fn send_release(&mut self, key: u32) {
         if let Some(s) = self.vnc_session() {
             let _ = s.send_input(VncInput::Key { down: false, key });
@@ -524,7 +480,6 @@ impl SessionCore {
     }
 
     /// Note that `key` was pressed (`Some`) or released on the remote
-    /// machine; a release answers with what its press sent.
     fn track_key(&mut self, physical: PhysicalKey, pressed: Option<u32>) -> Option<u32> {
         let at = self.held_keys.iter().position(|(key, _)| *key == physical);
         let released = at.map(|at| self.held_keys.remove(at).1);
@@ -536,10 +491,6 @@ impl SessionCore {
     }
 
     /// Scroll the live remote desktop under `p` by `delta`: each whole wheel
-    /// click is a press and release of the wheel's button (RFB 6143 §7.5.5),
-    /// at most [`VNC_WHEEL_BURST`] of them per event. `false` when the
-    /// pointer is not over the desktop. A trackpad clicks every
-    /// `wheel_line` logical pixels.
     fn forward_vnc_wheel(
         &mut self,
         p: Point,
@@ -562,7 +513,6 @@ impl SessionCore {
     }
 
     /// Send the current button mask at `p` to the live remote desktop, if
-    /// the pointer is over it.
     fn forward_vnc_pointer(&self, p: Point) {
         if let (Some(s), Some((x, y))) = (self.vnc_session(), self.vnc_pointer_target(p)) {
             let _ = s.send_input(VncInput::Pointer {
@@ -616,10 +566,10 @@ fn fingerprint(value: &impl Hash) -> u64 {
     hasher.finish()
 }
 
-/// What the content column shows.
 #[derive(Hash)]
 enum Content {
     List {
+        /// Which list the rail points at.
         destination: Destination,
         rows: Vec<RowModel>,
         has_connections: bool,
@@ -634,14 +584,11 @@ enum Content {
 }
 
 /// The window: the rail and the current screen, or the session alone while
-/// it fills the window, and the confirmation it asks; what they show is the
-/// [`Store`]'s.
 pub struct RemoteApp {
     store: Shared,
     /// The open session's transport, shared with the store and its pane.
     session: SharedSession,
     /// The connections as the document holds them, shown as they change;
-    /// `None` for a window outside the framework.
     live: Option<Live<Remote>>,
     /// The `(revision, loads)` of the connections last shown.
     presented: Option<(u64, u64)>,
@@ -664,8 +611,6 @@ pub(crate) struct Staged(Option<String>);
 /// The [`Store`] as the window and the view share it.
 pub(crate) type Shared = Rc<RefCell<Store>>;
 
-/// What the window, the view's effect handler and the live rows the view
-/// publishes share: the connections, the screen, the draft and the session.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent flag (fullscreen, validation, paint \
@@ -673,25 +618,22 @@ pub(crate) type Shared = Rc<RefCell<Store>>;
 )]
 pub(crate) struct Store {
     /// The saved connections as the resource last presented them, plus what
-    /// this device observed of their reachability.
     workspace: Workspace,
     /// Which screen is showing.
     screen: Screen,
     /// Which list the rail points at.
     destination: Destination,
     /// The connection last opened, saved or found by search, marked in the
-    /// list.
     selected: Option<ConnectionId>,
     /// In-progress add / edit draft (only meaningful on the form).
     draft: ConnectionDraft,
     /// The text behind the form's fields.
     fields: FormFields,
     /// What stops the draft from being saved; empty until Save is tried,
-    /// then kept current as the person edits.
     problems: FormProblems,
     /// Save was tried on this draft, so its problems follow every edit.
     validating: bool,
-    /// The open session's transport, shared with its pane.
+    /// The open session's transport, shared with the store and its pane.
     session: SharedSession,
     /// Connection id the open session belongs to.
     session_for: Option<ConnectionId>,
@@ -700,7 +642,6 @@ pub(crate) struct Store {
     /// invocation against a newer session for the same connection id.
     session_generation: u64,
     /// The connect attempt in flight: when it started, and the job the
-    /// whole system sees while it runs.
     connect_started: Option<ui::time::Instant>,
     connect_job: Option<(ConnectionId, ui::jobs::Running)>,
     /// The session fills the window, without the rail.
@@ -710,11 +651,8 @@ pub(crate) struct Store {
     next_tilo_session_id: u64,
 
     /// The resource's door: the single path by which a saved connection is
-    /// added, edited, renamed, pinned, or deleted, shared with the palette,
-    /// agents and scripts. `None` until the framework attaches the surface.
     dispatch: Option<ui::framework::Dispatcher<crate::resource::Remote>>,
     /// What the resource and its effects publish, for the rows' controls.
-    /// `None` until the framework attaches the surface.
     actions: Option<ui::framework::Actions<crate::resource::Remote>>,
     /// This device's store for the connections' passwords and passphrases.
     secrets: Option<ui::secrets::SecretStore>,
@@ -723,9 +661,7 @@ pub(crate) struct Store {
     /// Built for a screenshot: no transport starts.
     capture: bool,
     /// The time, in milliseconds since the Unix epoch, "last used" reads
-    /// against in a screenshot.
     now_override: Option<i64>,
-    /// What this window submitted, for tests of a bare widget.
     #[cfg(test)]
     submitted: RefCell<Vec<Invoke<crate::model::Remote>>>,
     pending_resource_operation: Option<PendingResourceOperation>,
@@ -733,16 +669,14 @@ pub(crate) struct Store {
     /// never replicated with the connection profile.
     pending_confirmation: Option<PendingConfirmation>,
     /// The pending confirmation is to be asked, in a dialog the window
-    /// builds when it next looks.
     asking: bool,
     /// The queue every control reports to.
     requests: Requests,
     /// Search hits picked in the platform search, waiting to be shown.
     opened: Rc<RefCell<Vec<String>>>,
     /// The scenario a capture staged, staged once the window has shown the
-    /// document.
     staged: Option<Staged>,
-    /// An effect changed what the window shows since it last looked.
+    /// The surface changed since it was last painted.
     changed: bool,
     dirty: bool,
 }
@@ -775,8 +709,6 @@ impl RemoteApp {
         }
     }
 
-    /// A bare widget holding the sample roster and what a capture observes
-    /// of it, for tests.
     #[cfg(test)]
     fn sample() -> Self {
         let sample = Sample::new();
@@ -814,7 +746,6 @@ impl RemoteApp {
         }
     }
 
-    /// Stage a named screenshot scenario (see [`Store::stage`]).
     #[cfg(test)]
     fn stage(&mut self, scenario: Option<&str>) {
         self.state().stage(scenario);
@@ -822,7 +753,6 @@ impl RemoteApp {
     }
 
     /// Show the connections the document holds, when they changed since the
-    /// window last showed them.
     fn follow_document(&mut self) {
         let Some(shown) = self
             .live
@@ -835,8 +765,6 @@ impl RemoteApp {
     }
 
     /// Bring the widgets in step with the store: stage a capture's
-    /// scenario, fill the window with the session or not, ask the pending
-    /// confirmation, and rebuild the views when what they show changed.
     fn follow_store(&mut self) {
         let staged = {
             let mut store = self.state();
@@ -930,9 +858,6 @@ impl RemoteApp {
 }
 
 /// The window as the view lays it out: it shows the connections the
-/// document holds, answers the effects through the store it shares with
-/// them, publishes each connection and the open session as live rows, and
-/// stages a capture's scenario.
 pub(crate) fn window(cx: &ViewCx<Remote>, mut window: RemoteApp) -> Element {
     window.live = Some(cx.live().clone());
     window.state().attach_framework(cx);
@@ -953,8 +878,6 @@ pub(crate) fn window(cx: &ViewCx<Remote>, mut window: RemoteApp) -> Element {
         });
     }
     cx.publishing(
-        // Each saved connection's settings and connect, and the open
-        // session.
         Publishes::new().live_rows(move || store.borrow().live_connection_rows()),
         Box::new(window),
     )
@@ -999,15 +922,11 @@ impl Store {
     }
 
     /// Where the platform search hands the hits a person picks: the view
-    /// registers an opener that pushes each hit's anchor here.
     pub(crate) fn open_requests(&self) -> Rc<RefCell<Vec<String>>> {
         Rc::clone(&self.opened)
     }
 
     /// Stage the view state of a named screenshot scenario. The connections
-    /// themselves come from the scenario's resource actions
-    /// ([`crate::resource::RemoteShell::scenario`]); what they do not hold
-    /// (reachability, nearby devices) from the capture's [`Sample`].
     pub(crate) fn stage(&mut self, scenario: Option<&str>) {
         match scenario.unwrap_or_default() {
             "pinned" => self.apply(Action::Show(Destination::Pinned)),
@@ -1137,7 +1056,7 @@ impl Store {
         self.workspace.filtered("")
     }
 
-    /// Apply a queued [`Action`] to the app state.
+    /// Apply `action`, and show what it changed.
     fn apply(&mut self, action: Action) {
         self.dirty = true;
         match action {
@@ -1190,8 +1109,6 @@ impl Store {
             Action::SetKind(k) => {
                 self.read_fields();
                 self.draft.kind = k;
-                // Keep the port in step with the kind's default unless the
-                // user already typed a custom one for this kind.
                 if k == ConnectionKind::Tilo {
                     self.draft.port = String::new();
                     self.draft.auth = AuthMethod::DeviceIdentity;
@@ -1258,7 +1175,6 @@ impl Store {
 
     fn delete_connection(&mut self, id: ConnectionId) {
         self.workspace.remove(id);
-        // Asked already, in this window's own dialog.
         let saved = crate::model::Remote::paths().connections;
         self.submit(Invoke::edit(&saved.remove(&crate::model::Remote::item(id))));
         self.forget_credentials(id);
@@ -1285,10 +1201,6 @@ impl Store {
     }
 
     /// Submit a field edit or verb of the saved connections through the
-    /// resource's door — the one way this window changes them, shared with
-    /// the palette, agents and scripts. The rows it changes are presented
-    /// back; the caller updates the workspace for immediate feedback.
-    /// Without a dispatcher (a bare widget in a test) nothing is saved.
     fn submit(&self, invoke: Result<Invoke<crate::model::Remote>, serde_json::Error>) {
         // A connection always encodes; nothing to submit otherwise.
         let Ok(invoke) = invoke else {
@@ -1313,13 +1225,11 @@ impl Store {
     }
 
     /// The time "last used" reads against, in milliseconds since the Unix
-    /// epoch.
     fn now_ms(&self) -> i64 {
         self.now_override.unwrap_or_else(ui::time::unix_now_ms_i64)
     }
 
     /// Stable, non-secret identity used to revalidate a confirmation after a
-    /// collaborator may have edited the shared profile.
     fn confirmation_target(connection: &Connection) -> String {
         format!(
             "{}|{}|{}|{}|{}",
@@ -1332,15 +1242,11 @@ impl Store {
     }
 
     /// An outcome worth a moment's notice (a revalidation that cancelled an
-    /// action), in the window's bar. It holds no credential material.
-    /// Record what happened in the ledger: Remote's outcomes do not expire
-    /// and nothing of them takes the keyboard.
     fn notify(message: impl Into<String>) {
         ui::attention::publish(ui::attention::Notice::did(owner(), message));
     }
 
     /// Commit the form's draft through the resource, and its credential into
-    /// this device's secret store.
     fn save_form(&mut self) {
         self.read_fields();
         let problems = self.draft.problems();
@@ -1357,7 +1263,6 @@ impl Store {
         };
         let id = editing.unwrap_or_else(Uuid::new_v4);
         let mut conn = self.draft.build(id);
-        // Preserve favorite + last used across an edit.
         if let Some(existing) = self.workspace.get(id) {
             conn.favorite = existing.favorite;
             conn.last_used_ms = existing.last_used_ms;
@@ -1387,7 +1292,6 @@ impl Store {
     }
 
     /// Once Save has been tried, keep the form's problems in step with what
-    /// the person types, so a fixed field loses its error at once.
     fn revalidate(&mut self) {
         if !self.validating || !matches!(self.screen, Screen::Form { .. }) {
             return;
@@ -1424,15 +1328,10 @@ impl Store {
     }
 
     /// Show the saved connections the resource holds: this window's edits,
-    /// a collaborator's, an undo. A session to a connection that is gone
-    /// ends.
     pub(crate) fn adopt_resource_state(&mut self, state: &[crate::model::Connection]) {
         if self.workspace.connections() == state {
             return;
         }
-        // A connection deleted elsewhere (the palette, an agent, another
-        // device) takes this device's credentials with it, as deleting it
-        // here does.
         let gone: Vec<ConnectionId> = self
             .workspace
             .connections()
@@ -1470,7 +1369,6 @@ impl Store {
     }
 
     /// Take the resource's door and this device's secret store from the
-    /// view; a capture shows its sample's reachability and nearby devices.
     fn attach_framework(&mut self, cx: &ViewCx<Remote>) {
         self.dispatch = Some(cx.dispatcher());
         self.actions = Some(cx.actions());
@@ -1489,9 +1387,6 @@ impl Store {
     }
 
     /// One list row per connection the destination shows. The meta says
-    /// when the machine was last used, or what about the saved connection
-    /// stops it from opening; what this device lacks is said when a session
-    /// is opened, where it can be acted on.
     fn rows(&self) -> Vec<RowModel> {
         let now_ms = self.now_ms();
         self.ordered()
@@ -1502,7 +1397,6 @@ impl Store {
                     readiness @ (TransportReadiness::BackendUnavailable
                     | TransportReadiness::InvalidProfile) => CATALOG.t(readiness.label_message()),
                     TransportReadiness::Ready | TransportReadiness::NeedsLiveSessionCapability => {
-                        // Another device's clock may run ahead of this one.
                         c.last_used_ms.map_or_else(
                             || "Never connected".to_owned(),
                             |at_ms| {
@@ -1593,7 +1487,6 @@ impl Store {
     }
 
     /// What a session that shows no remote surface says, and the one way
-    /// forward it offers.
     fn status_model(&self, id: ConnectionId) -> StatusModel {
         let connection = self.workspace.get(id);
         let name = connection.map_or("the machine", |c| c.name.as_str());
@@ -1689,7 +1582,6 @@ impl Store {
             return None;
         };
         let command = mods.control_key() || mods.super_key();
-        // A connected session's keys belong to the remote machine.
         let surface = matches!(self.content(), Content::Surface(_));
         match logical_key {
             Key::Character(c) if command && !surface && c.eq_ignore_ascii_case("n") => {
@@ -1724,9 +1616,6 @@ impl Default for RemoteApp {
 }
 
 /// Sort Save's problems by the field that repairs each.
-/// What saving `conn` from the form submits: the new connection, or the
-/// fields an edit of one of the `saved` connections changed, as one step;
-/// `None` when an edit changed nothing.
 pub(crate) fn save_invoke(
     saved: &[Connection],
     conn: &Connection,
@@ -1773,10 +1662,6 @@ fn child_node(taffy: &TaffyTree<()>, node: NodeId) -> Option<NodeId> {
     taffy.children(node).ok()?.first().copied()
 }
 
-// ===========================================================================
-// Widget impl
-// ===========================================================================
-
 impl Collaborative for RemoteApp {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
         std::mem::take(&mut self.session.borrow_mut().collab_outbox)
@@ -1791,7 +1676,6 @@ impl Collaborative for RemoteApp {
 
 impl Store {
     /// Follow what the collaboration broker says of the Tilo session's
-    /// workspace control; `true` when it was this session's.
     fn workspace_control(&mut self, event: &ui::collaboration::CollabEvent) -> bool {
         let ui::collaboration::CollabEvent::WorkspaceControl { session_id, event } = event else {
             return false;
@@ -1854,9 +1738,6 @@ impl Widget for RemoteApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        // The saved connections follow the document; then the window
-        // catches up on what the effects did, picked search hits and queued
-        // controls.
         self.follow_document();
         self.follow_store();
         {
@@ -1943,10 +1824,6 @@ impl Widget for RemoteApp {
             .min()
     }
 
-    // Seen ahead of the framework's shortcuts, the action palette and a
-    // dialog, which keep keys from the session pane: a key the pane pressed
-    // on the remote machine is released there when it comes up, even when
-    // its release goes to the palette, so Ctrl+K leaves no Ctrl held there.
     fn observe_physical_input(&mut self, input: ui::widget::PhysicalInput) {
         match input {
             ui::widget::PhysicalInput::Key {
@@ -1961,7 +1838,6 @@ impl Widget for RemoteApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // A confirmation is modal: nothing reaches the window behind it.
         if let Some(dialog) = self.dialog.as_mut() {
             dialog.handle_detached(
                 event,
@@ -2077,8 +1953,6 @@ impl Widget for RemoteApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // A live session needs continuous frames so incoming remote data
-        // (PTY output, framebuffer updates) is drained and painted.
         self.session.borrow().live_active() || self.body().needs_animation_frame()
     }
 }

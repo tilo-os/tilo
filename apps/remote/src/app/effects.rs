@@ -12,7 +12,6 @@ use super::{Action, LiveSession, PendingResourceOperation, Store, owner};
 
 impl Store {
     /// The open session, published as a live row beside the saved
-    /// connections: disconnect, send text, and the SSH host-key decisions.
     pub(crate) fn live_connection_rows(&self) -> Vec<ui::framework::LiveRow> {
         let mut rows: Vec<_> = self
             .workspace
@@ -33,7 +32,6 @@ impl Store {
     }
 
     /// Answer `effect`. Opening a session and sending text answer once the
-    /// transport says how it went ([`Self::settle_pending_effect`]).
     pub(crate) fn answer_effect(
         &mut self,
         effect: crate::actions::RemoteEffect,
@@ -135,8 +133,6 @@ impl Store {
     }
 
     /// Move one file over the connected SSH session. The job is the whole
-    /// system's, so its progress stays visible after the page closes; the
-    /// effect answers when the transfer ends, with its failure named.
     fn start_file_transfer(
         &mut self,
         connection: ConnectionId,
@@ -195,7 +191,6 @@ impl Store {
     }
 
     /// Trust the SSH host key `observed` on first contact with `connection_id`,
-    /// then connect.
     fn trust_host_key(
         &mut self,
         connection_id: ConnectionId,
@@ -272,7 +267,6 @@ impl Store {
     }
 
     /// How the session effect still waiting ended, once it has; `cancelled`
-    /// when its caller gave up on it.
     pub(crate) fn pending_outcome(&mut self, cancelled: bool) -> Option<Result<(), String>> {
         let pending = self.pending_resource_operation.as_ref()?;
         if cancelled
@@ -362,7 +356,6 @@ impl Store {
 
 impl Store {
     /// Open the saved `connection` and answer with how the transport went:
-    /// pending while it dials, done once it is connected, else why not.
     fn connect(
         &mut self,
         connection: crate::model::ConnectionId,

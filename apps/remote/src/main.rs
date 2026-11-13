@@ -1,6 +1,4 @@
-//! Remote connections — standard Tilo application entry point: the live
-//! window and the framework's `--shots`, `--headless` and `--native-audit`
-//! modes.
+//! Remote's entry point: the live window, the capture and headless modes.
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;

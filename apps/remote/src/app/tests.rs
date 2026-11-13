@@ -42,7 +42,6 @@ fn insertion(connection: &Connection, at: usize) -> Invoke<Remote> {
 }
 
 /// An app holding the sample connections and the legacy RDP profile, as
-/// the `session-rdp` scenario's actions leave it.
 fn demo() -> RemoteApp {
     RemoteApp::sample()
 }
@@ -531,7 +530,6 @@ fn connecting_asks_first_revalidates_and_explains_unavailable_transports() {
             app.state().status_model(rdp).action,
             Some(("Edit connection", Action::EditConnection(rdp)))
         );
-        // Ending a live session asks first: its scrollback goes with it.
         app.apply(Action::Disconnect);
         assert!(app.dialog.is_some(), "closing a session asks first");
         app.apply(Action::ConfirmPending);
@@ -824,7 +822,6 @@ fn connected_tilo_session() -> RemoteApp {
 }
 
 /// The keys `app` sent its Tilo session since last asked, as evdev keycode
-/// and whether it went down.
 fn sent_keys(app: &mut RemoteApp) -> Vec<(u32, bool)> {
     app.take_collab_requests()
         .into_iter()
@@ -883,12 +880,6 @@ fn a_key_held_when_the_pane_loses_the_keyboard_is_released_on_the_remote_machine
     );
 }
 
-/// The window takes some keys before the session pane sees them: Ctrl+K
-/// opens the action palette, which then keeps every key release, Ctrl's
-/// among them, from the window behind it. A key the pane pressed on the
-/// remote machine is still released there when it comes up; otherwise Ctrl
-/// stays held on the remote side and the next letters typed there arrive as
-/// Ctrl chords (Ctrl+W closing a tab, Ctrl+Q quitting).
 #[test]
 fn a_key_whose_release_the_window_takes_is_still_released_on_the_remote_machine() {
     use winit::keyboard::KeyCode;
@@ -904,7 +895,6 @@ fn a_key_whose_release_the_window_takes_is_still_released_on_the_remote_machine(
     ));
     assert_eq!(sent_keys(&mut app), [(29, true)], "Ctrl goes down there");
 
-    // The palette took the release; the window still observed it.
     Widget::observe_physical_input(&mut app, released(KeyCode::ControlLeft));
     assert_eq!(
         sent_keys(&mut app),
@@ -925,8 +915,6 @@ fn a_key_whose_release_the_window_takes_is_still_released_on_the_remote_machine(
         "a key the pane never pressed there is not released there"
     );
 
-    // A dialog over the window or History holding it: the window observes
-    // the keyboard as lost.
     assert!(pane.handle_key(
         &key_at(KeyCode::ShiftLeft, ElementState::Pressed),
         ModifiersState::empty()
@@ -1039,7 +1027,6 @@ fn keys_map_to_the_remote_machine() {
     );
     assert_eq!(vnc_keysym(&Key::Named(NamedKey::Escape)), Some(0xff1b));
     assert_eq!(vnc_keysym(&Key::Character("a".into())), Some(0x61));
-    // Ctrl+C is the Control key held, then C: both reach a VNC desktop.
     assert_eq!(vnc_keysym(&Key::Named(NamedKey::Control)), Some(0xffe3));
     assert_eq!(vnc_keysym(&Key::Named(NamedKey::Shift)), Some(0xffe1));
     assert_eq!(vnc_keysym(&Key::Named(NamedKey::Alt)), Some(0xffe9));
@@ -1073,7 +1060,6 @@ fn the_wheel_scrolls_a_vnc_desktop() {
     assert_eq!(clicks(&line(0.0, -2.0), 1.0), [0x10, 0x10]);
     assert_eq!(clicks(&line(1.0, 0.0), 1.0), [0x20]);
     assert_eq!(clicks(&line(-1.0, 0.0), 1.0), [0x40]);
-    // At scale 2, a click is two notches of physical pixels.
     let most_of_a_click = -0.6 * notch * 2.0;
     assert!(
         clicks(&pixels(0.0, most_of_a_click), 2.0).is_empty(),
