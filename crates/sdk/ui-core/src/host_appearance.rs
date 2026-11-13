@@ -112,69 +112,73 @@ mod tests {
     use crate::color::Oklch;
     use vello::peniko::Color;
 
-    #[test]
-    fn scheme_picks_the_matching_base_and_no_preference_is_dark() {
-        let theme = |scheme| {
-            theme(HostAppearance {
-                scheme,
-                ..HostAppearance::default()
-            })
-        };
-        assert_eq!(theme(Some(Scheme::Light)).name, Theme::light().name);
-        assert_eq!(
-            theme(Some(Scheme::Light)).tokens.colors.surfaces.content,
-            Theme::light().tokens.colors.surfaces.content
-        );
-        assert_eq!(
-            theme(Some(Scheme::Dark)).tokens.colors.surfaces.content,
-            Theme::dark().tokens.colors.surfaces.content
-        );
-        assert_eq!(
-            theme(None).tokens.colors.surfaces.content,
-            Theme::dark().tokens.colors.surfaces.content
-        );
-        assert_eq!(
-            theme(None).border_focus,
-            Theme::dark().border_focus,
-            "no host accent keeps the default colour"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_host_appearance_becomes_the_matching_theme;
 
-    #[test]
-    fn the_host_accent_becomes_your_colour_at_presence_lightness() {
-        let theme = theme(HostAppearance {
-            scheme: Some(Scheme::Light),
-            accent: Some([0xE0, 0x40, 0x80]),
-            ..HostAppearance::default()
-        });
-        let accent = Color::from_rgb8(0xE0, 0x40, 0x80);
-        let you = theme.tokens.colors.intent.you;
-        assert_eq!(theme.border_focus, theme.tokens.colors.intent.accent_ink);
-        let ring = Oklch::from_color(theme.border_focus);
-        let ring_d = (ring.h - Oklch::from_color(you).h).rem_euclid(360.0);
-        assert!(
-            ring_d.min(360.0 - ring_d) <= 15.0,
-            "the ring is your colour's hue"
-        );
-        let (a, y) = (Oklch::from_color(accent), Oklch::from_color(you));
-        let d = (a.h - y.h).rem_euclid(360.0);
-        assert!(
-            d.min(360.0 - d) <= 15.0,
-            "the presence hue nearest the host's is taken"
-        );
-        assert_eq!(
-            Some(theme.tokens.colors.you),
-            crate::tokens::nearest_presence_hue(accent)
-        );
-        assert!(
-            (y.l - theme.tokens.colors.presence.lightness).abs() < 0.01,
-            "at the presence lightness, not the host's"
-        );
-        assert_eq!(
-            theme.tokens.colors.surfaces.content,
-            Theme::light().tokens.colors.surfaces.content,
-            "surfaces are untouched"
-        );
+        phase scheme_picks_the_matching_base_and_no_preference_is_dark;
+        {
+            let theme = |scheme| {
+                theme(HostAppearance {
+                    scheme,
+                    ..HostAppearance::default()
+                })
+            };
+            assert_eq!(theme(Some(Scheme::Light)).name, Theme::light().name);
+            assert_eq!(
+                theme(Some(Scheme::Light)).tokens.colors.surfaces.content,
+                Theme::light().tokens.colors.surfaces.content
+            );
+            assert_eq!(
+                theme(Some(Scheme::Dark)).tokens.colors.surfaces.content,
+                Theme::dark().tokens.colors.surfaces.content
+            );
+            assert_eq!(
+                theme(None).tokens.colors.surfaces.content,
+                Theme::dark().tokens.colors.surfaces.content
+            );
+            assert_eq!(
+                theme(None).border_focus,
+                Theme::dark().border_focus,
+                "no host accent keeps the default colour"
+            );
+        }
+
+        phase the_host_accent_becomes_your_colour_at_presence_lightness;
+        {
+            let theme = theme(HostAppearance {
+                scheme: Some(Scheme::Light),
+                accent: Some([0xE0, 0x40, 0x80]),
+                ..HostAppearance::default()
+            });
+            let accent = Color::from_rgb8(0xE0, 0x40, 0x80);
+            let you = theme.tokens.colors.intent.you;
+            assert_eq!(theme.border_focus, theme.tokens.colors.intent.accent_ink);
+            let ring = Oklch::from_color(theme.border_focus);
+            let ring_d = (ring.h - Oklch::from_color(you).h).rem_euclid(360.0);
+            assert!(
+                ring_d.min(360.0 - ring_d) <= 15.0,
+                "the ring is your colour's hue"
+            );
+            let (a, y) = (Oklch::from_color(accent), Oklch::from_color(you));
+            let d = (a.h - y.h).rem_euclid(360.0);
+            assert!(
+                d.min(360.0 - d) <= 15.0,
+                "the presence hue nearest the host's is taken"
+            );
+            assert_eq!(
+                Some(theme.tokens.colors.you),
+                crate::tokens::nearest_presence_hue(accent)
+            );
+            assert!(
+                (y.l - theme.tokens.colors.presence.lightness).abs() < 0.01,
+                "at the presence lightness, not the host's"
+            );
+            assert_eq!(
+                theme.tokens.colors.surfaces.content,
+                Theme::light().tokens.colors.surfaces.content,
+                "surfaces are untouched"
+            );
+        }
     }
 
     #[test]
@@ -217,32 +221,36 @@ mod tests {
         }
     }
 
-    #[test]
-    fn each_change_is_reported_once_unless_forced() {
-        let mut source = source(crate::host::AccessibilityInputs::default());
-        assert_eq!(
-            source.take_change(false),
-            Some(HostAppearance::default()),
-            "the first reading applies"
-        );
-        assert_eq!(source.take_change(false), None);
-        assert!(source.take_change(true).is_some(), "force re-applies");
-        source.note_window_theme(Some(winit::window::Theme::Light));
-        let change = source.take_change(false).expect("scheme change");
-        assert_eq!(change.scheme, Some(Scheme::Light));
-        assert_eq!(source.take_change(false), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_source_reports_each_change_once_and_keeps_launcher_requests;
 
-    #[test]
-    fn launcher_accessibility_requests_survive_the_host() {
-        let mut source = source(crate::host::AccessibilityInputs {
-            high_contrast: true,
-            reduce_motion: true,
-            ..crate::host::AccessibilityInputs::default()
-        });
-        let applied = source.take_change(false).expect("first reading");
-        assert!(applied.high_contrast);
-        assert!(applied.reduce_motion);
+        phase each_change_is_reported_once_unless_forced;
+        {
+            let mut source = source(crate::host::AccessibilityInputs::default());
+            assert_eq!(
+                source.take_change(false),
+                Some(HostAppearance::default()),
+                "the first reading applies"
+            );
+            assert_eq!(source.take_change(false), None);
+            assert!(source.take_change(true).is_some(), "force re-applies");
+            source.note_window_theme(Some(winit::window::Theme::Light));
+            let change = source.take_change(false).expect("scheme change");
+            assert_eq!(change.scheme, Some(Scheme::Light));
+            assert_eq!(source.take_change(false), None);
+        }
+
+        phase launcher_accessibility_requests_survive_the_host;
+        {
+            let mut source = source(crate::host::AccessibilityInputs {
+                high_contrast: true,
+                reduce_motion: true,
+                ..crate::host::AccessibilityInputs::default()
+            });
+            let applied = source.take_change(false).expect("first reading");
+            assert!(applied.high_contrast);
+            assert!(applied.reduce_motion);
+        }
     }
 
     /// Tests share one process: a settings document one installs process-wide is read by every test

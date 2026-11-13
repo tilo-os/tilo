@@ -175,41 +175,45 @@ mod tests {
         }
     }
 
-    #[test]
-    fn detail_deduplicates_shared_provenance_without_losing_actions() {
-        let entries = [entry(1, "Ada", "brief.md"), entry(2, "Maren", "brief.md")];
-        let detail = HistorySelectionDetail::from_range(&entries, (0, 1)).unwrap();
-        assert_eq!(detail.entry_ids.len(), 2);
-        assert_eq!(detail.authors, ["Ada", "Maren"]);
-        assert_eq!(detail.resources.len(), 1);
-        assert_eq!(detail.group_label.as_deref(), Some("Launch"));
-        assert_eq!(detail.title, "Launch");
-        assert!(detail.can_compare && detail.can_undo);
-    }
+    tilo_test_env::scenario! {
+        fn a_selections_detail_keeps_its_actions_and_never_names_an_identifier;
 
-    #[test]
-    fn identifiers_are_not_names() {
-        for opaque in [
-            "3f2a9c41d0b7e8aa",
-            "notes.note/3f2a9c41d0b7e8aa5c1d",
-            "8d0c6a8e-2f1b-4c3d-9e4f-5a6b7c8d9e0f",
-            "bafkreigh2akiscaildc4qp7k3ak7w3y6p4",
-        ] {
-            assert!(contains_opaque_id(opaque), "{opaque}");
-            assert_eq!(human_label(opaque, "other"), None, "{opaque}");
+        phase detail_deduplicates_shared_provenance_without_losing_actions;
+        {
+            let entries = [entry(1, "Ada", "brief.md"), entry(2, "Maren", "brief.md")];
+            let detail = HistorySelectionDetail::from_range(&entries, (0, 1)).unwrap();
+            assert_eq!(detail.entry_ids.len(), 2);
+            assert_eq!(detail.authors, ["Ada", "Maren"]);
+            assert_eq!(detail.resources.len(), 1);
+            assert_eq!(detail.group_label.as_deref(), Some("Launch"));
+            assert_eq!(detail.title, "Launch");
+            assert!(detail.can_compare && detail.can_undo);
         }
-        for readable in ["Launch brief", "Q3 2026 plan", "brief.md", "Notes"] {
-            assert!(!contains_opaque_id(readable), "{readable}");
+
+        phase identifiers_are_not_names;
+        {
+            for opaque in [
+                "3f2a9c41d0b7e8aa",
+                "notes.note/3f2a9c41d0b7e8aa5c1d",
+                "8d0c6a8e-2f1b-4c3d-9e4f-5a6b7c8d9e0f",
+                "bafkreigh2akiscaildc4qp7k3ak7w3y6p4",
+            ] {
+                assert!(contains_opaque_id(opaque), "{opaque}");
+                assert_eq!(human_label(opaque, "other"), None, "{opaque}");
+            }
+            for readable in ["Launch brief", "Q3 2026 plan", "brief.md", "Notes"] {
+                assert!(!contains_opaque_id(readable), "{readable}");
+            }
+            assert_eq!(human_label("note-7", "note-7"), None);
+            assert_eq!(human_label("  ", "x"), None);
+            let target = HistoryResourceTarget {
+                app_id: Some("org.tilo.Notes".into()),
+                app_label: Some("Notes".into()),
+                id: "3f2a9c41d0b7e8aa".into(),
+                kind: "notes.note".into(),
+                label: "3f2a9c41d0b7e8aa".into(),
+            };
+            assert_eq!(target.display_name(), Some("Notes"));
         }
-        assert_eq!(human_label("note-7", "note-7"), None);
-        assert_eq!(human_label("  ", "x"), None);
-        let target = HistoryResourceTarget {
-            app_id: Some("org.tilo.Notes".into()),
-            app_label: Some("Notes".into()),
-            id: "3f2a9c41d0b7e8aa".into(),
-            kind: "notes.note".into(),
-            label: "3f2a9c41d0b7e8aa".into(),
-        };
-        assert_eq!(target.display_name(), Some("Notes"));
     }
 }

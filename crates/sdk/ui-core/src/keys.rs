@@ -165,21 +165,24 @@ mod tests {
         assert_eq!(token(&parse("Shift")), None, "a modifier is no shortcut");
     }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_chord_types_named_by_the_latin_key_on_a_cyrillic_layout() {
-        let cyrillic = u32::from('с');
-        let latin = u32::from('c');
-        let (logical, _) = chord(cyrillic, None, latin, true);
-        assert_eq!(logical, Key::Character("c".into()));
-        let (typed, _) = chord(cyrillic, None, latin, false);
-        assert_eq!(typed, Key::Character("с".into()));
-    }
+    tilo_test_env::scenario! {
+        #[cfg(target_os = "linux")]
+        fn a_chord_is_named_by_the_latin_key_only_on_a_layout_that_is_not_latin;
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_diacritic_on_a_latin_layout_stays_as_typed_in_a_chord() {
-        let (logical, _) = chord(u32::from('ü'), None, u32::from('u'), true);
-        assert_eq!(logical, Key::Character("ü".into()));
+        phase a_chord_types_named_by_the_latin_key_on_a_cyrillic_layout;
+        {
+            let cyrillic = u32::from('с');
+            let latin = u32::from('c');
+            let (logical, _) = chord(cyrillic, None, latin, true);
+            assert_eq!(logical, Key::Character("c".into()));
+            let (typed, _) = chord(cyrillic, None, latin, false);
+            assert_eq!(typed, Key::Character("с".into()));
+        }
+
+        phase a_diacritic_on_a_latin_layout_stays_as_typed_in_a_chord;
+        {
+            let (logical, _) = chord(u32::from('ü'), None, u32::from('u'), true);
+            assert_eq!(logical, Key::Character("ü".into()));
+        }
     }
 }

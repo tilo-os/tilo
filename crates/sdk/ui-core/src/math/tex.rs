@@ -1081,9 +1081,10 @@ fn tex_misc_symbol(name: &str) -> Option<char> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn tex_parses_fractions_scripts_environments_and_operators() {
-        // phase: parses_fraction_root_scripts_and_greek
+    tilo_test_env::scenario! {
+        fn tex_parses_fractions_scripts_environments_and_operators;
+
+        phase parses_fraction_root_scripts_and_greek;
         {
             let parsed = parse_tex(r"\frac{\alpha_1 + x^2}{\sqrt[3]{1-x}}");
             assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
@@ -1093,7 +1094,8 @@ mod tests {
             assert!(matches!(num[0], Node::Char('α')));
             assert!(matches!(den[0], Node::Sqrt { index: Some(_), .. }));
         }
-        // phase: accepts_common_math_wrappers_and_prime_scripts
+
+        phase accepts_common_math_wrappers_and_prime_scripts;
         {
             for source in [r"$f'(x)$", r"\(f''(x)\)", r"\[f'''(x)\]"] {
                 let parsed = parse_tex(source);
@@ -1105,7 +1107,8 @@ mod tests {
                 assert!(matches!(parsed.expr.root[1], Node::Sup { .. }));
             }
         }
-        // phase: parses_left_right_and_matrix_environments
+
+        phase parses_left_right_and_matrix_environments;
         {
             let parsed = parse_tex(r"\left[\begin{matrix}a&b\\c&d\end{matrix}\right]");
             assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
@@ -1118,7 +1121,8 @@ mod tests {
             };
             assert_eq!((rows.len(), rows[0].len()), (2, 2));
         }
-        // phase: parses_large_operator_limits_and_cases
+
+        phase parses_large_operator_limits_and_cases;
         {
             let parsed =
                 parse_tex(r"\sum_{i=1}^{n} x_i + \begin{cases}x^2&x>0\\0&x\le0\end{cases}");
@@ -1140,7 +1144,8 @@ mod tests {
                 }
             )));
         }
-        // phase: unknown_commands_survive_and_report_diagnostic
+
+        phase unknown_commands_survive_and_report_diagnostic;
         {
             let parsed = parse_tex(r"x + \packageMacro{y}");
             assert_eq!(parsed.diagnostics.len(), 1);
@@ -1154,9 +1159,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn tex_round_trips_a_practical_corpus_and_visual_edits() {
-        // phase: practical_tex_formula_corpus_parses_without_loss
+    tilo_test_env::scenario! {
+        fn tex_round_trips_a_practical_corpus_and_visual_edits;
+
+        phase practical_tex_formula_corpus_parses_without_loss;
         {
             let formulas = [
                 r"x=\frac{-b\pm\sqrt{b^2-4ac}}{2a}",
@@ -1180,7 +1186,8 @@ mod tests {
                 assert!(!parsed.expr.root.is_empty(), "{source}");
             }
         }
-        // phase: visually_edited_tree_serializes_back_to_parseable_tex
+
+        phase visually_edited_tree_serializes_back_to_parseable_tex;
         {
             let parsed = parse_tex(r"\left[\frac{\hat{x}}{y}\right]+");
             let source = serialize_tex(&parsed.expr);

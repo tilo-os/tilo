@@ -199,81 +199,85 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_part_drawn_first_is_lifted_at_rest_with_its_pose() {
-        let mut scene = Scene::new();
-        let recording = Recording::begin(&scene);
-        let pose = Pose {
-            opacity: 0.5,
-            scale: 0.9,
-            pivot: Point::new(5.0, 5.0),
-            offset: Vec2::new(0.0, 4.0),
-        };
-        lifted(
-            &mut scene,
-            Affine::translate((100.0, 0.0)),
-            (PartKey::new(KEY, 0), Rect::new(0.0, 0.0, 10.0, 10.0)),
-            pose,
-            square,
-        );
-        let lifted = recording.finish();
-        assert!(
-            scene.encoding().draw_tags.is_empty(),
-            "the frame keeps none of it"
-        );
-        assert_eq!(lifted.len(), 1);
-        let part = &lifted[0];
-        assert_eq!(part.bounds, Rect::new(100.0, 0.0, 110.0, 10.0));
-        assert_eq!(
-            part.pose.pivot,
-            Point::new(105.0, 5.0),
-            "in the frame's coordinates"
-        );
-        assert_eq!(part.pose.offset, Vec2::new(0.0, 4.0));
-        assert!(!part.scene.encoding().draw_tags.is_empty(), "drawn at rest");
-    }
+    tilo_test_env::scenario! {
+        fn a_part_is_lifted_out_of_the_frame_only_when_a_recording_can_take_it;
 
-    #[test]
-    fn a_part_over_something_drawn_stays_in_the_frame() {
-        let mut scene = Scene::new();
-        let recording = Recording::begin(&scene);
-        square(&mut scene, Affine::IDENTITY);
-        let before = scene.encoding().draw_tags.len();
-        lifted(
-            &mut scene,
-            Affine::IDENTITY,
-            (PartKey::new(KEY, 0), Rect::new(0.0, 0.0, 10.0, 10.0)),
-            Pose::faded(0.5),
-            square,
-        );
-        assert!(recording.finish().is_empty());
-        assert!(
-            scene.encoding().draw_tags.len() > before,
-            "drawn in place, faded"
-        );
-    }
+        phase a_part_drawn_first_is_lifted_at_rest_with_its_pose;
+        {
+            let mut scene = Scene::new();
+            let recording = Recording::begin(&scene);
+            let pose = Pose {
+                opacity: 0.5,
+                scale: 0.9,
+                pivot: Point::new(5.0, 5.0),
+                offset: Vec2::new(0.0, 4.0),
+            };
+            lifted(
+                &mut scene,
+                Affine::translate((100.0, 0.0)),
+                (PartKey::new(KEY, 0), Rect::new(0.0, 0.0, 10.0, 10.0)),
+                pose,
+                square,
+            );
+            let lifted = recording.finish();
+            assert!(
+                scene.encoding().draw_tags.is_empty(),
+                "the frame keeps none of it"
+            );
+            assert_eq!(lifted.len(), 1);
+            let part = &lifted[0];
+            assert_eq!(part.bounds, Rect::new(100.0, 0.0, 110.0, 10.0));
+            assert_eq!(
+                part.pose.pivot,
+                Point::new(105.0, 5.0),
+                "in the frame's coordinates"
+            );
+            assert_eq!(part.pose.offset, Vec2::new(0.0, 4.0));
+            assert!(!part.scene.encoding().draw_tags.is_empty(), "drawn at rest");
+        }
 
-    #[test]
-    fn without_a_recording_a_part_is_drawn_in_its_pose() {
-        let mut scene = Scene::new();
-        lifted(
-            &mut scene,
-            Affine::IDENTITY,
-            (PartKey::new(KEY, 0), Rect::new(0.0, 0.0, 10.0, 10.0)),
-            Pose::faded(0.0),
-            square,
-        );
-        assert!(
-            scene.encoding().draw_tags.is_empty(),
-            "an invisible part draws nothing"
-        );
-        lifted(
-            &mut scene,
-            Affine::IDENTITY,
-            (PartKey::new(KEY, 0), Rect::new(0.0, 0.0, 10.0, 10.0)),
-            Pose::REST,
-            square,
-        );
-        assert!(!scene.encoding().draw_tags.is_empty());
+        phase a_part_over_something_drawn_stays_in_the_frame;
+        {
+            let mut scene = Scene::new();
+            let recording = Recording::begin(&scene);
+            square(&mut scene, Affine::IDENTITY);
+            let before = scene.encoding().draw_tags.len();
+            lifted(
+                &mut scene,
+                Affine::IDENTITY,
+                (PartKey::new(KEY, 0), Rect::new(0.0, 0.0, 10.0, 10.0)),
+                Pose::faded(0.5),
+                square,
+            );
+            assert!(recording.finish().is_empty());
+            assert!(
+                scene.encoding().draw_tags.len() > before,
+                "drawn in place, faded"
+            );
+        }
+
+        phase without_a_recording_a_part_is_drawn_in_its_pose;
+        {
+            let mut scene = Scene::new();
+            lifted(
+                &mut scene,
+                Affine::IDENTITY,
+                (PartKey::new(KEY, 0), Rect::new(0.0, 0.0, 10.0, 10.0)),
+                Pose::faded(0.0),
+                square,
+            );
+            assert!(
+                scene.encoding().draw_tags.is_empty(),
+                "an invisible part draws nothing"
+            );
+            lifted(
+                &mut scene,
+                Affine::IDENTITY,
+                (PartKey::new(KEY, 0), Rect::new(0.0, 0.0, 10.0, 10.0)),
+                Pose::REST,
+                square,
+            );
+            assert!(!scene.encoding().draw_tags.is_empty());
+        }
     }
 }

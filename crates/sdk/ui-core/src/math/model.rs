@@ -557,14 +557,16 @@ mod tests {
         to_linear(&parse(s))
     }
 
-    #[test]
-    fn linear_math_parses_into_structured_nodes_and_back() {
-        // phase: char_run_round_trips
+    tilo_test_env::scenario! {
+        fn linear_math_parses_into_structured_nodes_and_back;
+
+        phase char_run_round_trips;
         {
             assert_eq!(lin("x+1"), "x+1");
             assert_eq!(lin("2*x-3"), "2*x-3");
         }
-        // phase: power_builds_sup
+
+        phase power_builds_sup;
         {
             let e = parse("x^2");
             assert_eq!(
@@ -578,7 +580,8 @@ mod tests {
             );
             assert_eq!(to_linear(&e), "x^(2)");
         }
-        // phase: fraction_builds_frac
+
+        phase fraction_builds_frac;
         {
             let e = parse("(x+1)/(x-3)");
             match &e.root[0] {
@@ -589,7 +592,8 @@ mod tests {
                 other => panic!("expected frac, got {other:?}"),
             }
         }
-        // phase: sqrt_builds_radical
+
+        phase sqrt_builds_radical;
         {
             let e = parse("sqrt(x+1)");
             match &e.root[0] {
@@ -607,7 +611,8 @@ mod tests {
                 other => panic!("expected sqrt, got {other:?}"),
             }
         }
-        // phase: function_call_builds_func
+
+        phase function_call_builds_func;
         {
             let e = parse("sin(x)");
             match &e.root[0] {
@@ -618,7 +623,8 @@ mod tests {
                 other => panic!("expected func, got {other:?}"),
             }
         }
-        // phase: nested_root_index
+
+        phase nested_root_index;
         {
             let e = parse("root(3,x)");
             match &e.root[0] {

@@ -134,52 +134,56 @@ impl PresenceVisibility {
 mod presence_choice_tests {
     use super::*;
 
-    /// A public workspace shows strangers a face and nothing of where it is; a private one shows where;
-    /// Nothing shows nothing and sees no pointers.
-    #[test]
-    fn what_people_see_defaults_by_workspace_and_round_trips() {
-        assert_eq!(
-            PresenceVisibility::default_for(true),
-            PresenceVisibility::ThatImHere
-        );
-        assert_eq!(
-            PresenceVisibility::default_for(false),
-            PresenceVisibility::WhereIAm
-        );
-        assert!(!PresenceVisibility::ThatImHere.shows_where());
-        assert!(PresenceVisibility::ThatImHere.shows_presence());
-        assert!(!PresenceVisibility::Nothing.shows_presence());
-        assert!(!PresenceVisibility::Nothing.sees_pointers());
-        for choice in [
-            PresenceVisibility::WhereIAm,
-            PresenceVisibility::ThatImHere,
-            PresenceVisibility::Nothing,
-        ] {
-            assert_eq!(PresenceVisibility::from_id(choice.id()), Some(choice));
-        }
-    }
+    tilo_test_env::scenario! {
+        fn presence_and_availability_follow_the_workspace_and_the_person;
 
-    /// Locked is away; five quiet minutes is idle unless another status was chosen.
-    #[test]
-    fn idle_and_away_come_on_their_own() {
-        let quiet = IDLE_AFTER;
-        assert_eq!(
-            Availability::shown(Availability::Available, false, quiet),
-            Availability::Idle
-        );
-        assert_eq!(
-            Availability::shown(Availability::Available, false, Duration::from_secs(10)),
-            Availability::Available
-        );
-        assert_eq!(
-            Availability::shown(Availability::Focusing, false, quiet),
-            Availability::Focusing
-        );
-        assert_eq!(
-            Availability::shown(Availability::Focusing, true, Duration::ZERO),
-            Availability::Away
-        );
-        assert!(Availability::Idle.dims() && Availability::Away.dims());
-        assert!(!Availability::Focusing.dims());
+        phase what_people_see_defaults_by_workspace_and_round_trips;
+        // A public workspace shows strangers a face and nothing of where it is; a private one shows where;
+        // Nothing shows nothing and sees no pointers.
+        {
+            assert_eq!(
+                PresenceVisibility::default_for(true),
+                PresenceVisibility::ThatImHere
+            );
+            assert_eq!(
+                PresenceVisibility::default_for(false),
+                PresenceVisibility::WhereIAm
+            );
+            assert!(!PresenceVisibility::ThatImHere.shows_where());
+            assert!(PresenceVisibility::ThatImHere.shows_presence());
+            assert!(!PresenceVisibility::Nothing.shows_presence());
+            assert!(!PresenceVisibility::Nothing.sees_pointers());
+            for choice in [
+                PresenceVisibility::WhereIAm,
+                PresenceVisibility::ThatImHere,
+                PresenceVisibility::Nothing,
+            ] {
+                assert_eq!(PresenceVisibility::from_id(choice.id()), Some(choice));
+            }
+        }
+
+        phase idle_and_away_come_on_their_own;
+        // Locked is away; five quiet minutes is idle unless another status was chosen.
+        {
+            let quiet = IDLE_AFTER;
+            assert_eq!(
+                Availability::shown(Availability::Available, false, quiet),
+                Availability::Idle
+            );
+            assert_eq!(
+                Availability::shown(Availability::Available, false, Duration::from_secs(10)),
+                Availability::Available
+            );
+            assert_eq!(
+                Availability::shown(Availability::Focusing, false, quiet),
+                Availability::Focusing
+            );
+            assert_eq!(
+                Availability::shown(Availability::Focusing, true, Duration::ZERO),
+                Availability::Away
+            );
+            assert!(Availability::Idle.dims() && Availability::Away.dims());
+            assert!(!Availability::Focusing.dims());
+        }
     }
 }

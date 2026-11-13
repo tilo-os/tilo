@@ -327,9 +327,10 @@ mod tests {
         HistoryEntryId([b; 16])
     }
 
-    #[test]
-    fn named_ranges_round_trip_as_bounded_marker_changes() {
-        // phase: a_name_round_trips_through_the_document
+    tilo_test_env::scenario! {
+        fn named_ranges_round_trip_as_bounded_marker_changes;
+
+        phase a_name_round_trips_through_the_document;
         {
             let mut doc = AutoCommit::new();
             doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
@@ -345,7 +346,8 @@ mod tests {
             assert_eq!(ranges[0].end, Some(id(9)));
             assert!(ranges[0].named_by.is_some(), "the writer is recorded");
         }
-        // phase: an_open_range_has_no_end_until_it_is_closed
+
+        phase an_open_range_has_no_end_until_it_is_closed;
         {
             let mut doc = AutoCommit::new();
             let rec = name_range(&mut doc, &id(1), None, "Working");
@@ -358,7 +360,8 @@ mod tests {
             let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
             assert_eq!(ranges[0].end, Some(id(4)));
         }
-        // phase: clearing_a_name_removes_the_band_and_nothing_else
+
+        phase clearing_a_name_removes_the_band_and_nothing_else;
         {
             let mut doc = AutoCommit::new();
             let a = name_range(&mut doc, &id(1), Some(&id(2)), "One");
@@ -371,7 +374,8 @@ mod tests {
             assert_eq!(ranges.len(), 1);
             assert_eq!(ranges[0].id, b);
         }
-        // phase: naming_a_version_is_recognisable_as_a_marker_change
+
+        phase naming_a_version_is_recognisable_as_a_marker_change;
         {
             let mut doc = AutoCommit::new();
             doc.put(automerge::ROOT, "content", "hello").unwrap();
@@ -392,7 +396,8 @@ mod tests {
             let patches = doc.diff(&before, &after);
             assert!(!is_group_marker(&patches));
         }
-        // phase: a_very_long_name_is_capped_rather_than_stored_whole
+
+        phase a_very_long_name_is_capped_rather_than_stored_whole;
         {
             let mut doc = AutoCommit::new();
             name_range(&mut doc, &id(1), None, &"x".repeat(1000));
@@ -400,7 +405,8 @@ mod tests {
             let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
             assert_eq!(ranges[0].label.chars().count(), MAX_LABEL_LEN);
         }
-        // phase: a_record_under_a_key_that_is_not_a_change_id_is_skipped
+
+        phase a_record_under_a_key_that_is_not_a_change_id_is_skipped;
         {
             let mut doc = AutoCommit::new();
             let rec = doc
@@ -412,9 +418,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn group_edits_rewrite_bands_atomically_and_refuse_stale_input() {
-        // phase: split_merge_and_boundary_move_rewrite_named_bands_atomically
+    tilo_test_env::scenario! {
+        fn group_edits_rewrite_bands_atomically_and_refuse_stale_input;
+
+        phase split_merge_and_boundary_move_rewrite_named_bands_atomically;
         {
             let mut doc = AutoCommit::new();
             let original = name_range(&mut doc, &id(1), Some(&id(8)), "Whole task");
@@ -454,7 +461,8 @@ mod tests {
             assert_eq!(ranges[0].id, merged);
             assert_eq!(ranges[0].label, "Finished task");
         }
-        // phase: correcting_an_automatic_seam_materializes_both_sessions_then_moves_it
+
+        phase correcting_an_automatic_seam_materializes_both_sessions_then_moves_it;
         {
             let mut doc = AutoCommit::new();
             let (left, right) = materialize_and_move_boundary(
@@ -492,7 +500,8 @@ mod tests {
                     && range.end == Some(id(4))
             }));
         }
-        // phase: stale_group_edits_write_nothing
+
+        phase stale_group_edits_write_nothing;
         {
             let mut doc = AutoCommit::new();
             let before = doc.get_heads();
@@ -514,9 +523,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn peers_naming_ranges_converge() {
-        // phase: two_peers_naming_the_same_range_converge_on_one_name
+    tilo_test_env::scenario! {
+        fn peers_naming_ranges_converge;
+
+        phase two_peers_naming_the_same_range_converge_on_one_name;
         {
             let mut alice = AutoCommit::new();
             alice.set_actor(automerge::ActorId::from("alice".as_bytes()));
@@ -546,7 +556,8 @@ mod tests {
                 a[0].label
             );
         }
-        // phase: two_peers_naming_different_ranges_both_survive
+
+        phase two_peers_naming_different_ranges_both_survive;
         {
             let mut alice = AutoCommit::new();
             alice.set_actor(automerge::ActorId::from("alice".as_bytes()));

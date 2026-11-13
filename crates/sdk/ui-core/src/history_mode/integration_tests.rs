@@ -23,9 +23,10 @@ static BOUND: HistoryDefinition = HistoryDefinition {
     }],
 };
 
-#[test]
-fn managed_components_bind_shared_history_to_their_real_owner() {
-    // phase: managed_bound_history_resolves_real_owner_instead_of_outer_state
+tilo_test_env::scenario! {
+    fn managed_components_bind_shared_history_to_their_real_owner;
+
+    phase managed_bound_history_resolves_real_owner_instead_of_outer_state;
     {
         let host = ProbeHost::new();
         let definition = runner_probe_definition();
@@ -82,7 +83,8 @@ fn managed_components_bind_shared_history_to_their_real_owner() {
         );
         assert!(!names.contains("unrelated outer"));
     }
-    // phase: managed_component_bundle_automatically_installs_shared_history_in_frame_runner
+
+    phase managed_component_bundle_automatically_installs_shared_history_in_frame_runner;
     {
         let (_host, component) = component_with_history();
         let mut driver = FrameHarness::from_component(
@@ -101,7 +103,8 @@ fn managed_components_bind_shared_history_to_their_real_owner() {
         driver.click_named("history-open").unwrap();
         assert!(driver.targets().contains_key("activity_timeline"));
     }
-    // phase: managed_component_tile_automatically_composes_shared_history
+
+    phase managed_component_tile_automatically_composes_shared_history;
     {
         let (_host, component) = component_with_history();
         let root = crate::widget::TileHost::from_component(component);
@@ -127,13 +130,10 @@ pub(crate) static RESTORABLE: HistoryDefinition = HistoryDefinition {
     }],
 };
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn managed_review_confirmation_rechecks_authority_and_freshness() {
-    // phase: managed_review_confirm_restores_exactly_one_authored_change_and_can_cancel
+tilo_test_env::scenario! {
+    fn managed_review_confirmation_rechecks_authority_and_freshness;
+
+    phase managed_review_confirm_restores_exactly_one_authored_change_and_can_cancel;
     {
         let mut state = State::new();
         state.doc.put(ROOT, "body", "old").unwrap();
@@ -199,7 +199,8 @@ fn managed_review_confirmation_rechecks_authority_and_freshness() {
             "live"
         );
     }
-    // phase: actual_confirmation_rechecks_unchanged_grant_expiry_replacement_and_actor_mapping
+
+    phase actual_confirmation_rechecks_unchanged_grant_expiry_replacement_and_actor_mapping;
     {
         use crate::permissions::*;
         for case in ["expiry", "replacement", "actor"] {
@@ -231,7 +232,8 @@ fn managed_review_confirmation_rechecks_authority_and_freshness() {
             assert!(driver.a11y_node_named("Refresh review").is_some());
         }
     }
-    // phase: stale_review_requires_refresh_and_cancelled_footer_target_cannot_confirm
+
+    phase stale_review_requires_refresh_and_cancelled_footer_target_cannot_confirm;
     {
         let mut driver = review_driver();
         driver.click_named("history-restore").unwrap();

@@ -1333,37 +1333,79 @@ mod layout_tests {
         }
     }
 
-    #[test]
-    fn an_exponent_of_any_length_sits_raised_above_its_base() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let size = 22.0_f32;
-        for source in ["x^2", "x^(2-2)", "x^(n+1)"] {
-            let laid = layout(&parse(source).root, &mut tr, size);
-            let glyphs: Vec<_> = laid
-                .boxes
-                .iter()
-                .filter(|math_box| matches!(math_box.kind, BoxKind::Glyph { .. }))
-                .collect();
-            let (base, exponent) = glyphs.split_first().expect("x and its exponent");
-            let base_line = base.y + base.baseline;
-            assert!(!exponent.is_empty(), "{source} has an exponent");
-            for script in exponent {
-                assert!(
-                    box_size(&script.kind) < box_size(&base.kind),
-                    "{source}: smaller"
-                );
-                let raised = base_line - (script.y + script.baseline);
-                assert!(
-                    raised >= f64::from(size) * 0.3,
-                    "{source}: the exponent sits {raised:.1}px above the base line"
+    tilo_test_env::scenario! {
+        fn expressions_are_raised_wrapped_and_measured_at_the_content_size;
+
+        phase an_exponent_of_any_length_sits_raised_above_its_base;
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let size = 22.0_f32;
+            for source in ["x^2", "x^(2-2)", "x^(n+1)"] {
+                let laid = layout(&parse(source).root, &mut tr, size);
+                let glyphs: Vec<_> = laid
+                    .boxes
+                    .iter()
+                    .filter(|math_box| matches!(math_box.kind, BoxKind::Glyph { .. }))
+                    .collect();
+                let (base, exponent) = glyphs.split_first().expect("x and its exponent");
+                let base_line = base.y + base.baseline;
+                assert!(!exponent.is_empty(), "{source} has an exponent");
+                for script in exponent {
+                    assert!(
+                        box_size(&script.kind) < box_size(&base.kind),
+                        "{source}: smaller"
+                    );
+                    let raised = base_line - (script.y + script.baseline);
+                    assert!(
+                        raised >= f64::from(size) * 0.3,
+                        "{source}: the exponent sits {raised:.1}px above the base line"
+                    );
+                }
+            }
+        }
+
+        phase a_long_expression_wraps_before_its_top_level_operators;
+        {
+            let mut tr = TextRenderer::new();
+            let row: Row = "a+b+c+d+e+f+g+h=x".chars().map(Node::Char).collect();
+            let whole = layout(&row, &mut tr, 20.0);
+            let wrapped = layout_wrapped(&row, &mut tr, 20.0, whole.width / 2.0);
+            assert!(wrapped.height > whole.height * 1.5, "it takes more lines");
+            assert!(wrapped.width <= whole.width / 2.0 + 20.0);
+            for index in 0..=row.len() {
+                assert_eq!(
+                    wrapped
+                        .gaps
+                        .iter()
+                        .filter(|g| g.steps.is_empty() && g.index == index)
+                        .count(),
+                    1,
+                    "gap {index}"
                 );
             }
+            // A sign is never split from its operand.
+            let signed: Row = "a=-b".chars().map(Node::Char).collect();
+            assert!(!breaks_before(&signed, 2));
+            assert!(breaks_before(&signed, 1));
+        }
+
+        phase glyphs_are_measured_at_the_content_size_whatever_the_text_scale;
+        {
+            let mut plain = TextRenderer::new();
+            let mut scaled = TextRenderer::new();
+            scaled.set_text_scale(2.0);
+            assert!(
+                (measure_glyph(&mut plain, 'x', 20.0) - measure_glyph(&mut scaled, 'x', 20.0)).abs()
+                    < 0.01,
+                "the renderer's text scale does not grow math glyphs past their geometry"
+            );
         }
     }
 
-    #[test]
-    fn functions_operators_scripts_and_delimiters_get_math_spacing_and_baselines() {
-        // phase: func_name_and_argument_share_size_and_baseline
+    tilo_test_env::scenario! {
+        fn functions_operators_scripts_and_delimiters_get_math_spacing_and_baselines;
+
+        phase func_name_and_argument_share_size_and_baseline;
         // The 3D default surface `sin(√(x²+y²))`: a `sin` at the frag top floats above its argument
         // and reads as an oversized, misaligned glyph. The name and its parenthesised argument must
         // be the same font size AND share the row baseline.
@@ -1396,7 +1438,8 @@ mod layout_tests {
              (name {name_baseline:.2} vs paren {paren_baseline:.2})"
             );
         }
-        // phase: binary_and_relation_operators_receive_math_spacing
+
+        phase binary_and_relation_operators_receive_math_spacing;
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let compact = parse("xy");
@@ -1415,7 +1458,8 @@ mod layout_tests {
                 "relations receive wider TeX-style spacing than binary operators"
             );
         }
-        // phase: paired_scripts_share_a_column_above_and_below_the_baseline
+
+        phase paired_scripts_share_a_column_above_and_below_the_baseline;
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let row = vec![
@@ -1435,7 +1479,8 @@ mod layout_tests {
             assert!(script_gaps.iter().any(|gap| gap.top < laid.baseline));
             assert!(script_gaps.iter().any(|gap| gap.bottom > laid.baseline));
         }
-        // phase: tex_delimiters_enclose_tall_content_and_accents_fit_their_base
+
+        phase tex_delimiters_enclose_tall_content_and_accents_fit_their_base;
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let parsed = parse_tex(r"\left[\frac{\hat{x}}{y}\right]");
@@ -1474,13 +1519,10 @@ mod layout_tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn matrix_cells_align_to_shared_rows_columns_and_baselines() {
-        // phase: matrix_cells_align_to_shared_rows_and_columns
+    tilo_test_env::scenario! {
+        fn matrix_cells_align_to_shared_rows_columns_and_baselines;
+
+        phase matrix_cells_align_to_shared_rows_and_columns;
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let row = vec![Node::Paren {
@@ -1540,7 +1582,8 @@ mod layout_tests {
             assert!(delimiters[0].y < content_top);
             assert!(delimiters[0].y + delimiters[0].h > content_bottom);
         }
-        // phase: matrix_rows_share_baselines_and_remain_in_source_order
+
+        phase matrix_rows_share_baselines_and_remain_in_source_order;
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let row = vec![Node::Paren {
@@ -1595,42 +1638,5 @@ mod layout_tests {
                 "delimiter and matrix must share an optical centre"
             );
         }
-    }
-
-    #[test]
-    fn a_long_expression_wraps_before_its_top_level_operators() {
-        let mut tr = TextRenderer::new();
-        let row: Row = "a+b+c+d+e+f+g+h=x".chars().map(Node::Char).collect();
-        let whole = layout(&row, &mut tr, 20.0);
-        let wrapped = layout_wrapped(&row, &mut tr, 20.0, whole.width / 2.0);
-        assert!(wrapped.height > whole.height * 1.5, "it takes more lines");
-        assert!(wrapped.width <= whole.width / 2.0 + 20.0);
-        for index in 0..=row.len() {
-            assert_eq!(
-                wrapped
-                    .gaps
-                    .iter()
-                    .filter(|g| g.steps.is_empty() && g.index == index)
-                    .count(),
-                1,
-                "gap {index}"
-            );
-        }
-        // A sign is never split from its operand.
-        let signed: Row = "a=-b".chars().map(Node::Char).collect();
-        assert!(!breaks_before(&signed, 2));
-        assert!(breaks_before(&signed, 1));
-    }
-
-    #[test]
-    fn glyphs_are_measured_at_the_content_size_whatever_the_text_scale() {
-        let mut plain = TextRenderer::new();
-        let mut scaled = TextRenderer::new();
-        scaled.set_text_scale(2.0);
-        assert!(
-            (measure_glyph(&mut plain, 'x', 20.0) - measure_glyph(&mut scaled, 'x', 20.0)).abs()
-                < 0.01,
-            "the renderer's text scale does not grow math glyphs past their geometry"
-        );
     }
 }

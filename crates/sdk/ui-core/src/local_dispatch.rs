@@ -175,129 +175,133 @@ mod tests {
         }
     }
 
-    #[test]
-    fn dispatch_applies_actions_as_one_undo_boundary_with_the_clicking_actor() {
-        {
-            let mut doc = AutoCommit::new();
-            let mut host = LocalDispatch::new();
-            host.try_dispatch(
-                &mut doc,
-                PUT_TYPE,
-                &Put {
-                    key: "score".into(),
-                    value: 42,
-                },
-            )
-            .unwrap();
-            assert_eq!(
-                doc.get(&ROOT, "score").unwrap().unwrap().0.as_i64(),
-                Some(42)
-            );
-        }
+    tilo_test_env::scenario! {
+        fn local_dispatch_applies_actions_under_the_action_host_contract;
 
+        phase dispatch_applies_actions_as_one_undo_boundary_with_the_clicking_actor;
         {
-            let actor = automerge::ActorId::from(vec![7, 8, 9, 10]);
-            let mut doc = AutoCommit::new().with_actor(actor.clone());
-            let mut host = LocalDispatch::new();
-            host.try_dispatch_with_context(
-                &mut doc,
-                PUT_TYPE,
-                &Put {
-                    key: "score".into(),
-                    value: 42,
-                },
-                ActionContext::for_app("org.tilo.Test", "Test"),
-            )
-            .unwrap();
-            let changes = doc.get_changes(&[]);
-            assert_eq!(
-                changes.last().map(automerge::Change::actor_id),
-                Some(&actor)
-            );
-        }
-
-        {
-            let mut doc = AutoCommit::new();
-            // A pre-existing app write; the bracket must start *after* it.
-            doc.put(&ROOT, "seed", ScalarValue::Str("s".into()))
+            {
+                let mut doc = AutoCommit::new();
+                let mut host = LocalDispatch::new();
+                host.try_dispatch(
+                    &mut doc,
+                    PUT_TYPE,
+                    &Put {
+                        key: "score".into(),
+                        value: 42,
+                    },
+                )
                 .unwrap();
-            let heads_before_actions = doc.get_heads();
+                assert_eq!(
+                    doc.get(&ROOT, "score").unwrap().unwrap().0.as_i64(),
+                    Some(42)
+                );
+            }
 
-            let mut host = LocalDispatch::new();
-            host.try_dispatch(
-                &mut doc,
-                PUT_TYPE,
-                &Put {
-                    key: "a".into(),
-                    value: 1,
-                },
-            )
-            .unwrap();
-            host.try_dispatch(
-                &mut doc,
-                PUT_TYPE,
-                &Put {
-                    key: "b".into(),
-                    value: 2,
-                },
-            )
-            .unwrap();
+            {
+                let actor = automerge::ActorId::from(vec![7, 8, 9, 10]);
+                let mut doc = AutoCommit::new().with_actor(actor.clone());
+                let mut host = LocalDispatch::new();
+                host.try_dispatch_with_context(
+                    &mut doc,
+                    PUT_TYPE,
+                    &Put {
+                        key: "score".into(),
+                        value: 42,
+                    },
+                    ActionContext::for_app("org.tilo.Test", "Test"),
+                )
+                .unwrap();
+                let changes = doc.get_changes(&[]);
+                assert_eq!(
+                    changes.last().map(automerge::Change::actor_id),
+                    Some(&actor)
+                );
+            }
 
-            let committed = host
-                .take_committed()
-                .expect("first dispatch armed the boundary");
-            assert_eq!(
-                committed, heads_before_actions,
-                "bracket covers only the actions"
-            );
-            assert!(
-                host.take_committed().is_none(),
-                "reading clears the boundary"
-            );
+            {
+                let mut doc = AutoCommit::new();
+                // A pre-existing app write; the bracket must start *after* it.
+                doc.put(&ROOT, "seed", ScalarValue::Str("s".into()))
+                    .unwrap();
+                let heads_before_actions = doc.get_heads();
+
+                let mut host = LocalDispatch::new();
+                host.try_dispatch(
+                    &mut doc,
+                    PUT_TYPE,
+                    &Put {
+                        key: "a".into(),
+                        value: 1,
+                    },
+                )
+                .unwrap();
+                host.try_dispatch(
+                    &mut doc,
+                    PUT_TYPE,
+                    &Put {
+                        key: "b".into(),
+                        value: 2,
+                    },
+                )
+                .unwrap();
+
+                let committed = host
+                    .take_committed()
+                    .expect("first dispatch armed the boundary");
+                assert_eq!(
+                    committed, heads_before_actions,
+                    "bracket covers only the actions"
+                );
+                assert!(
+                    host.take_committed().is_none(),
+                    "reading clears the boundary"
+                );
+            }
+
+            {
+                let mut doc = AutoCommit::new();
+                let mut host = LocalDispatch::new();
+                assert!(matches!(
+                    host.try_dispatch(&mut doc, "test.refuse", &Refuse),
+                    Err(tilo_actions::ActionError::Refused(_))
+                ));
+                assert!(host.take_committed().is_none());
+                assert!(doc.get_heads().is_empty());
+            }
         }
 
+        phase dispatch_context_and_optimism_keep_the_action_host_contract;
         {
-            let mut doc = AutoCommit::new();
-            let mut host = LocalDispatch::new();
-            assert!(matches!(
-                host.try_dispatch(&mut doc, "test.refuse", &Refuse),
-                Err(tilo_actions::ActionError::Refused(_))
-            ));
-            assert!(host.take_committed().is_none());
-            assert!(doc.get_heads().is_empty());
-        }
-    }
-
-    #[test]
-    fn dispatch_context_and_optimism_keep_the_action_host_contract() {
-        {
-            let mut doc = AutoCommit::new();
-            let mut host = LocalDispatch::new();
-            host.try_dispatch_with_context(
-                &mut doc,
-                PUT_TYPE,
-                &Put {
-                    key: "score".into(),
-                    value: 9,
-                },
-                ActionContext::for_resource("counter:1", "counter", "Score"),
-            )
-            .unwrap();
-            let heads = doc.get_heads();
-            let change = doc
-                .get_change_by_hash(&heads[0])
-                .expect("contextual action committed");
-            let context = change
-                .message()
-                .and_then(|message| ActionContext::from_change_message(message))
-                .expect("context embedded in change");
-            assert_eq!(
-                context
-                    .resource
-                    .as_ref()
-                    .map(|resource| resource.label.as_str()),
-                Some("Score")
-            );
+            {
+                let mut doc = AutoCommit::new();
+                let mut host = LocalDispatch::new();
+                host.try_dispatch_with_context(
+                    &mut doc,
+                    PUT_TYPE,
+                    &Put {
+                        key: "score".into(),
+                        value: 9,
+                    },
+                    ActionContext::for_resource("counter:1", "counter", "Score"),
+                )
+                .unwrap();
+                let heads = doc.get_heads();
+                let change = doc
+                    .get_change_by_hash(&heads[0])
+                    .expect("contextual action committed");
+                let context = change
+                    .message()
+                    .and_then(|message| ActionContext::from_change_message(message))
+                    .expect("context embedded in change");
+                assert_eq!(
+                    context
+                        .resource
+                        .as_ref()
+                        .map(|resource| resource.label.as_str()),
+                    Some("Score")
+                );
+            }
         }
     }
 }

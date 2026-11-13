@@ -213,32 +213,45 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pixels_are_requested_at_the_scale_the_icon_is_painted() {
-        let source = Arc::new(Solid("firefox", std::sync::Mutex::new(Vec::new())));
-        let image = AppImage(source.clone());
-        let mut scene = Scene::new();
-        let rect = Rect::new(0.0, 0.0, 14.0, 14.0);
-        assert!(draw_app_image(&mut scene, Affine::IDENTITY, rect, &image));
-        assert!(draw_app_image(&mut scene, Affine::scale(2.0), rect, &image));
-        assert!(draw_app_image(&mut scene, Affine::scale(1.5), rect, &image));
-        assert_eq!(*source.1.lock().unwrap(), vec![14, 28, 21]);
+    tilo_test_env::scenario! {
+        fn app_artwork_is_decoded_once_drawn_at_scale_and_compared_by_identity;
+
+        phase pixels_are_requested_at_the_scale_the_icon_is_painted;
+        {
+            let source = Arc::new(Solid("firefox", std::sync::Mutex::new(Vec::new())));
+            let image = AppImage(source.clone());
+            let mut scene = Scene::new();
+            let rect = Rect::new(0.0, 0.0, 14.0, 14.0);
+            assert!(draw_app_image(&mut scene, Affine::IDENTITY, rect, &image));
+            assert!(draw_app_image(&mut scene, Affine::scale(2.0), rect, &image));
+            assert!(draw_app_image(&mut scene, Affine::scale(1.5), rect, &image));
+            assert_eq!(*source.1.lock().unwrap(), vec![14, 28, 21]);
+        }
+
+        phase handed_over_artwork_is_decoded_once_and_bounded;
+        {
+            let image = AppImage::from_png("app:files", &png()).expect("a png");
+            assert_eq!(image.key(), "app:files");
+            let pixels = image.pixels(32).expect("its pixels");
+            assert_eq!((pixels.width, pixels.height), (1, 1));
+            assert!(AppImage::from_png("app:x", b"not a png").is_none());
+            assert!(AppImage::from_png("app:x", &[]).is_none());
+            assert!(AppImage::from_png("app:x", &vec![0; MAX_PNG_BYTES + 1]).is_none());
+        }
+
+        phase images_compare_by_artwork_identity;
+        {
+            let a = AppImage::new(Solid("a", std::sync::Mutex::new(Vec::new())));
+            let a2 = AppImage::new(Solid("a", std::sync::Mutex::new(Vec::new())));
+            let b = AppImage::new(Solid("b", std::sync::Mutex::new(Vec::new())));
+            assert_eq!(a, a2);
+            assert_ne!(a, b);
+        }
     }
 
     /// A PNG one red pixel wide and tall.
     fn png() -> Vec<u8> {
         crate::png::encode_rgba8(1, 1, &[255, 0, 0, 255]).unwrap()
-    }
-
-    #[test]
-    fn handed_over_artwork_is_decoded_once_and_bounded() {
-        let image = AppImage::from_png("app:files", &png()).expect("a png");
-        assert_eq!(image.key(), "app:files");
-        let pixels = image.pixels(32).expect("its pixels");
-        assert_eq!((pixels.width, pixels.height), (1, 1));
-        assert!(AppImage::from_png("app:x", b"not a png").is_none());
-        assert!(AppImage::from_png("app:x", &[]).is_none());
-        assert!(AppImage::from_png("app:x", &vec![0; MAX_PNG_BYTES + 1]).is_none());
     }
 
     #[test]
@@ -253,14 +266,5 @@ mod tests {
         );
         assert!(app_artwork("org.example.None").is_none());
         assert!(app_artwork("").is_none());
-    }
-
-    #[test]
-    fn images_compare_by_artwork_identity() {
-        let a = AppImage::new(Solid("a", std::sync::Mutex::new(Vec::new())));
-        let a2 = AppImage::new(Solid("a", std::sync::Mutex::new(Vec::new())));
-        let b = AppImage::new(Solid("b", std::sync::Mutex::new(Vec::new())));
-        assert_eq!(a, a2);
-        assert_ne!(a, b);
     }
 }

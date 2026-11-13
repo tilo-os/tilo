@@ -294,9 +294,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn catch_up_names_people_groups_and_outcomes() {
-        // phase: catch_up_uses_the_same_explicit_group_across_people
+    tilo_test_env::scenario! {
+        fn catch_up_names_people_groups_and_outcomes;
+
+        phase catch_up_uses_the_same_explicit_group_across_people;
         {
             let entries = vec![entry(1, "Ada", 100), entry(2, "Maren", 110)];
             let digest = ActivityDigest::from_entries(
@@ -317,7 +318,8 @@ mod tests {
             assert_eq!(digest.briefs[0].actions.len(), 2);
             assert_eq!(digest.briefs[0].actions[1].author.name, "Maren");
         }
-        // phase: catch_up_names_two_people_and_counts_the_rest
+
+        phase catch_up_names_two_people_and_counts_the_rest;
         {
             let entries = vec![
                 entry(1, "Bob", 100),
@@ -335,7 +337,8 @@ mod tests {
                 Some("Bob, Ada + 2 · Prepare launch brief")
             );
         }
-        // phase: a_participant_history_cannot_name_is_not_counted_as_a_person
+
+        phase a_participant_history_cannot_name_is_not_counted_as_a_person;
         {
             let entries = vec![
                 entry(1, "Ada", 100),
@@ -349,7 +352,8 @@ mod tests {
             assert_eq!(digest.total_changes, 2);
             assert_eq!(digest.people, 1);
         }
-        // phase: unnamed_aggregate_titles_describe_outcomes_instead_of_schema_counts
+
+        phase unnamed_aggregate_titles_describe_outcomes_instead_of_schema_counts;
         {
             let mut first = entry(1, "Ada", 100);
             let mut second = entry(2, "Maren", 110);
@@ -377,9 +381,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn catch_up_sessions_follow_corrected_named_boundaries() {
-        // phase: corrected_named_boundaries_redraw_catch_up_sessions_not_action_order
+    tilo_test_env::scenario! {
+        fn catch_up_sessions_follow_corrected_named_boundaries;
+
+        phase corrected_named_boundaries_redraw_catch_up_sessions_not_action_order;
         {
             let mut entries = (1..=4)
                 .map(|id| entry(id, "Ada", u64::from(id) * 10))

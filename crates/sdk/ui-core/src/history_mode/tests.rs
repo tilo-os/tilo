@@ -38,13 +38,10 @@ fn two_titles() -> (AutoCommit, HistoryEntryId, HistoryEntryId) {
     )
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn selected_snapshots_are_exact_isolated_and_reachable() {
-    // phase: selected_snapshot_is_isolated_from_the_live_document
+tilo_test_env::scenario! {
+    fn selected_snapshots_are_exact_isolated_and_reachable;
+
+    phase selected_snapshot_is_isolated_from_the_live_document;
     {
         // Catches materializing a historical selection through the live document,
         // which would either show the latest value or advance the live frontier.
@@ -60,7 +57,8 @@ fn selected_snapshots_are_exact_isolated_and_reachable() {
         assert_eq!(value(&doc, "title").as_deref(), Some("two"));
         assert_eq!(doc.get_heads(), live_heads);
     }
-    // phase: pending_live_edits_are_neither_committed_nor_projected_as_history
+
+    phase pending_live_edits_are_neither_committed_nor_projected_as_history;
     {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "title", "committed").unwrap();
@@ -89,7 +87,8 @@ fn selected_snapshots_are_exact_isolated_and_reachable() {
         assert_eq!(doc.pending_ops(), 1);
         assert_eq!(value(&doc, "title").as_deref(), Some("draft"));
     }
-    // phase: selected_change_uses_its_causal_frontier_without_an_unrelated_branch
+
+    phase selected_change_uses_its_causal_frontier_without_an_unrelated_branch;
     {
         // Catches deriving versions from causal-list positions: a concurrent edit
         // ordered before the selected change would leak into its preview.
@@ -120,7 +119,8 @@ fn selected_snapshots_are_exact_isolated_and_reachable() {
         assert_eq!(value(&historical, "status"), None);
         assert_eq!(snapshot.heads(), &[selected_hash]);
     }
-    // phase: controller_keeps_older_entries_reachable_beyond_its_first_page
+
+    phase controller_keeps_older_entries_reachable_beyond_its_first_page;
     {
         // The controller lists the newest page first; an older durable
         // version stays a request away and selectable, never gone.
@@ -149,7 +149,8 @@ fn selected_snapshots_are_exact_isolated_and_reachable() {
             Some(0)
         );
     }
-    // phase: comparison_switches_between_exact_before_and_after_snapshots
+
+    phase comparison_switches_between_exact_before_and_after_snapshots;
     {
         let (doc, _, two) = two_titles();
         let mut history =
@@ -170,9 +171,10 @@ fn selected_snapshots_are_exact_isolated_and_reachable() {
     }
 }
 
-#[test]
-fn the_pinned_preview_survives_refresh_until_back_to_live() {
-    // phase: refresh_keeps_the_pinned_preview_and_back_to_live_clears_it
+tilo_test_env::scenario! {
+    fn the_pinned_preview_survives_refresh_until_back_to_live;
+
+    phase refresh_keeps_the_pinned_preview_and_back_to_live_clears_it;
     {
         // Catches refresh silently advancing a preview, and catches a failed
         // selection destroying the last valid historical state.
@@ -199,7 +201,8 @@ fn the_pinned_preview_survives_refresh_until_back_to_live() {
         assert!(history.snapshot().is_none());
         assert!(!history.has_live_updates());
     }
-    // phase: select_before_refresh_updates_projection_without_advancing_the_pinned_preview
+
+    phase select_before_refresh_updates_projection_without_advancing_the_pinned_preview;
     {
         let (mut doc, one, _) = two_titles();
         let mut history =
@@ -221,13 +224,10 @@ fn the_pinned_preview_survives_refresh_until_back_to_live() {
     }
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn restore_review_is_scoped_to_a_preview_and_refuses_effect_receipts() {
-    // phase: restore_review_is_scoped_and_invalidated_by_selection_or_live_changes
+tilo_test_env::scenario! {
+    fn restore_review_is_scoped_to_a_preview_and_refuses_effect_receipts;
+
+    phase restore_review_is_scoped_and_invalidated_by_selection_or_live_changes;
     {
         let (mut doc, one, two) = two_titles();
         let original_heads = doc.get_heads();
@@ -279,7 +279,8 @@ fn restore_review_is_scoped_to_a_preview_and_refuses_effect_receipts() {
         );
         assert_eq!(doc.get_heads(), changed_heads, "validation is read-only");
     }
-    // phase: restore_review_requires_a_preview_and_refuses_effect_receipts
+
+    phase restore_review_requires_a_preview_and_refuses_effect_receipts;
     {
         // Catches treating durable proof of an external effect as restorable app
         // content; reverting its CRDT receipt cannot undo the external effect.
@@ -308,7 +309,8 @@ fn restore_review_is_scoped_to_a_preview_and_refuses_effect_receipts() {
             Err(HistoryError::EffectOnlySelection)
         );
     }
-    // phase: newly_committed_effect_receipt_cannot_bypass_review_before_refresh
+
+    phase newly_committed_effect_receipt_cannot_bypass_review_before_refresh;
     {
         // Catches classifying a selected current-document change from stale
         // cached entries rather than the same committed graph used for preview.

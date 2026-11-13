@@ -1043,139 +1043,178 @@ mod tests {
         emulator.events(&touch(phase, id, x, y), |_| false)
     }
 
-    #[test]
-    fn a_tap_maps_to_press_and_release_only_after_touch_end() {
-        use TouchPointerEvent::{Move, Press, Release};
-        use winit::event::{MouseButton, TouchPhase};
-        let mut emulator = TouchPointerEmulator::default();
-        assert!(feed(&mut emulator, TouchPhase::Started, 7, 10.0, 20.0).is_empty());
-        assert_eq!(
-            feed(&mut emulator, TouchPhase::Ended, 7, 11.0, 20.0),
-            vec![
-                Move((11.0, 20.0).into()),
-                Press(MouseButton::Left),
-                Release(MouseButton::Left),
-                Move((-1.0, -1.0).into()),
-            ]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn touch_contacts_become_taps_scrolls_pinches_and_holds;
 
-    #[test]
-    fn movement_scrolls_and_lift_ends_the_scroll() {
-        use TouchPointerEvent::{Move, Scroll};
-        use winit::event::TouchPhase;
-        let mut emulator = TouchPointerEmulator::default();
-        assert!(feed(&mut emulator, TouchPhase::Started, 1, 40.0, 40.0).is_empty());
-        assert_eq!(
-            feed(&mut emulator, TouchPhase::Moved, 1, 80.0, 40.0),
-            vec![
-                Move((40.0, 40.0).into()),
-                Scroll {
-                    delta: (40.0, 0.0).into(),
-                    phase: TouchPhase::Moved,
-                }
-            ]
-        );
-        assert_eq!(
-            feed(&mut emulator, TouchPhase::Ended, 1, 80.0, 40.0),
-            vec![Scroll {
-                delta: (0.0, 0.0).into(),
-                phase: TouchPhase::Ended,
-            }]
-        );
-        assert_eq!(emulator.long_press_deadline(), None);
-    }
-
-    #[test]
-    fn a_second_finger_withdraws_the_first_fingers_tap() {
-        use winit::event::TouchPhase;
-        let mut emulator = TouchPointerEmulator::default();
-        assert!(feed(&mut emulator, TouchPhase::Started, 2, 5.0, 5.0).is_empty());
-        assert_eq!(
-            feed(&mut emulator, TouchPhase::Started, 3, 80.0, 5.0),
-            vec![TouchPointerEvent::Move((-1.0, -1.0).into())]
-        );
-        assert!(feed(&mut emulator, TouchPhase::Ended, 2, 5.0, 5.0).is_empty());
-        assert!(
-            feed(&mut emulator, TouchPhase::Ended, 3, 80.0, 5.0).is_empty(),
-            "no finger of a withdrawn two-finger contact clicks"
-        );
-    }
-
-    #[test]
-    fn spreading_two_fingers_pinches_about_their_centre() {
-        use winit::event::TouchPhase;
-        let mut emulator = TouchPointerEmulator::default();
-        feed(&mut emulator, TouchPhase::Started, 1, 100.0, 100.0);
-        feed(&mut emulator, TouchPhase::Started, 2, 200.0, 100.0);
-        let mut scale = 1.0;
-        let mut phases = Vec::new();
-        for x in [220.0, 240.0, 260.0] {
-            for event in feed(&mut emulator, TouchPhase::Moved, 2, x, 100.0) {
-                if let TouchPointerEvent::Pinch { delta, phase } = event {
-                    scale *= 1.0 + delta;
-                    phases.push(phase);
-                }
-            }
+        phase a_tap_maps_to_press_and_release_only_after_touch_end;
+        {
+            use TouchPointerEvent::{Move, Press, Release};
+            use winit::event::{MouseButton, TouchPhase};
+            let mut emulator = TouchPointerEmulator::default();
+            assert!(feed(&mut emulator, TouchPhase::Started, 7, 10.0, 20.0).is_empty());
+            assert_eq!(
+                feed(&mut emulator, TouchPhase::Ended, 7, 11.0, 20.0),
+                vec![
+                    Move((11.0, 20.0).into()),
+                    Press(MouseButton::Left),
+                    Release(MouseButton::Left),
+                    Move((-1.0, -1.0).into()),
+                ]
+            );
         }
-        assert!((scale - 1.6).abs() < 1e-9, "{scale}");
-        assert_eq!(phases.first(), Some(&TouchPhase::Started));
-        let end = feed(&mut emulator, TouchPhase::Ended, 2, 260.0, 100.0);
-        assert!(end.contains(&TouchPointerEvent::Pinch {
-            delta: 0.0,
-            phase: TouchPhase::Ended,
-        }));
-        assert!(feed(&mut emulator, TouchPhase::Ended, 1, 100.0, 100.0).is_empty());
-    }
 
-    #[test]
-    fn two_fingers_moving_together_scroll() {
-        use winit::event::TouchPhase;
-        let mut emulator = TouchPointerEmulator::default();
-        feed(&mut emulator, TouchPhase::Started, 1, 100.0, 300.0);
-        feed(&mut emulator, TouchPhase::Started, 2, 200.0, 300.0);
-        feed(&mut emulator, TouchPhase::Moved, 1, 100.0, 260.0);
-        let events = feed(&mut emulator, TouchPhase::Moved, 2, 200.0, 260.0);
-        assert!(events.contains(&TouchPointerEvent::Scroll {
-            delta: (0.0, -20.0).into(),
-            phase: TouchPhase::Moved,
-        }));
-        assert!(
-            feed(&mut emulator, TouchPhase::Ended, 1, 100.0, 260.0).contains(
-                &TouchPointerEvent::Scroll {
+        phase movement_scrolls_and_lift_ends_the_scroll;
+        {
+            use TouchPointerEvent::{Move, Scroll};
+            use winit::event::TouchPhase;
+            let mut emulator = TouchPointerEmulator::default();
+            assert!(feed(&mut emulator, TouchPhase::Started, 1, 40.0, 40.0).is_empty());
+            assert_eq!(
+                feed(&mut emulator, TouchPhase::Moved, 1, 80.0, 40.0),
+                vec![
+                    Move((40.0, 40.0).into()),
+                    Scroll {
+                        delta: (40.0, 0.0).into(),
+                        phase: TouchPhase::Moved,
+                    }
+                ]
+            );
+            assert_eq!(
+                feed(&mut emulator, TouchPhase::Ended, 1, 80.0, 40.0),
+                vec![Scroll {
                     delta: (0.0, 0.0).into(),
                     phase: TouchPhase::Ended,
-                }
-            )
-        );
-    }
+                }]
+            );
+            assert_eq!(emulator.long_press_deadline(), None);
+        }
 
-    #[test]
-    fn a_still_hold_becomes_a_secondary_click_and_its_lift_is_inert() {
-        use TouchPointerEvent::{Move, Press, Release};
-        use winit::event::{MouseButton, TouchPhase};
-        let mut emulator = TouchPointerEmulator::default();
-        feed(&mut emulator, TouchPhase::Started, 4, 50.0, 60.0);
-        feed(&mut emulator, TouchPhase::Moved, 4, 54.0, 60.0);
-        let deadline = emulator.long_press_deadline().expect("armed");
-        let early = deadline
-            .checked_sub(crate::time::Duration::from_millis(1))
-            .expect("a deadline in the future");
-        assert!(emulator.poll(early).is_none(), "not before the deadline");
-        let (_, events) = emulator
-            .poll(deadline)
-            .expect("the hold fires at its deadline");
-        assert_eq!(
-            events,
-            vec![
-                Move((50.0, 60.0).into()),
-                Press(MouseButton::Right),
-                Release(MouseButton::Right),
-            ]
-        );
-        assert!(emulator.poll(deadline).is_none(), "fires once");
-        assert!(feed(&mut emulator, TouchPhase::Moved, 4, 90.0, 60.0).is_empty());
-        assert!(feed(&mut emulator, TouchPhase::Ended, 4, 90.0, 60.0).is_empty());
+        phase a_second_finger_withdraws_the_first_fingers_tap;
+        {
+            use winit::event::TouchPhase;
+            let mut emulator = TouchPointerEmulator::default();
+            assert!(feed(&mut emulator, TouchPhase::Started, 2, 5.0, 5.0).is_empty());
+            assert_eq!(
+                feed(&mut emulator, TouchPhase::Started, 3, 80.0, 5.0),
+                vec![TouchPointerEvent::Move((-1.0, -1.0).into())]
+            );
+            assert!(feed(&mut emulator, TouchPhase::Ended, 2, 5.0, 5.0).is_empty());
+            assert!(
+                feed(&mut emulator, TouchPhase::Ended, 3, 80.0, 5.0).is_empty(),
+                "no finger of a withdrawn two-finger contact clicks"
+            );
+        }
+
+        phase spreading_two_fingers_pinches_about_their_centre;
+        {
+            use winit::event::TouchPhase;
+            let mut emulator = TouchPointerEmulator::default();
+            feed(&mut emulator, TouchPhase::Started, 1, 100.0, 100.0);
+            feed(&mut emulator, TouchPhase::Started, 2, 200.0, 100.0);
+            let mut scale = 1.0;
+            let mut phases = Vec::new();
+            for x in [220.0, 240.0, 260.0] {
+                for event in feed(&mut emulator, TouchPhase::Moved, 2, x, 100.0) {
+                    if let TouchPointerEvent::Pinch { delta, phase } = event {
+                        scale *= 1.0 + delta;
+                        phases.push(phase);
+                    }
+                }
+            }
+            assert!((scale - 1.6).abs() < 1e-9, "{scale}");
+            assert_eq!(phases.first(), Some(&TouchPhase::Started));
+            let end = feed(&mut emulator, TouchPhase::Ended, 2, 260.0, 100.0);
+            assert!(end.contains(&TouchPointerEvent::Pinch {
+                delta: 0.0,
+                phase: TouchPhase::Ended,
+            }));
+            assert!(feed(&mut emulator, TouchPhase::Ended, 1, 100.0, 100.0).is_empty());
+        }
+
+        phase two_fingers_moving_together_scroll;
+        {
+            use winit::event::TouchPhase;
+            let mut emulator = TouchPointerEmulator::default();
+            feed(&mut emulator, TouchPhase::Started, 1, 100.0, 300.0);
+            feed(&mut emulator, TouchPhase::Started, 2, 200.0, 300.0);
+            feed(&mut emulator, TouchPhase::Moved, 1, 100.0, 260.0);
+            let events = feed(&mut emulator, TouchPhase::Moved, 2, 200.0, 260.0);
+            assert!(events.contains(&TouchPointerEvent::Scroll {
+                delta: (0.0, -20.0).into(),
+                phase: TouchPhase::Moved,
+            }));
+            assert!(
+                feed(&mut emulator, TouchPhase::Ended, 1, 100.0, 260.0).contains(
+                    &TouchPointerEvent::Scroll {
+                        delta: (0.0, 0.0).into(),
+                        phase: TouchPhase::Ended,
+                    }
+                )
+            );
+        }
+
+        phase a_still_hold_becomes_a_secondary_click_and_its_lift_is_inert;
+        {
+            use TouchPointerEvent::{Move, Press, Release};
+            use winit::event::{MouseButton, TouchPhase};
+            let mut emulator = TouchPointerEmulator::default();
+            feed(&mut emulator, TouchPhase::Started, 4, 50.0, 60.0);
+            feed(&mut emulator, TouchPhase::Moved, 4, 54.0, 60.0);
+            let deadline = emulator.long_press_deadline().expect("armed");
+            let early = deadline
+                .checked_sub(crate::time::Duration::from_millis(1))
+                .expect("a deadline in the future");
+            assert!(emulator.poll(early).is_none(), "not before the deadline");
+            let (_, events) = emulator
+                .poll(deadline)
+                .expect("the hold fires at its deadline");
+            assert_eq!(
+                events,
+                vec![
+                    Move((50.0, 60.0).into()),
+                    Press(MouseButton::Right),
+                    Release(MouseButton::Right),
+                ]
+            );
+            assert!(emulator.poll(deadline).is_none(), "fires once");
+            assert!(feed(&mut emulator, TouchPhase::Moved, 4, 90.0, 60.0).is_empty());
+            assert!(feed(&mut emulator, TouchPhase::Ended, 4, 90.0, 60.0).is_empty());
+        }
+
+        phase moving_past_the_slop_disarms_the_hold;
+        {
+            use winit::event::TouchPhase;
+            let mut emulator = TouchPointerEmulator::default();
+            feed(&mut emulator, TouchPhase::Started, 5, 50.0, 60.0);
+            feed(&mut emulator, TouchPhase::Moved, 5, 50.0, 100.0);
+            assert_eq!(emulator.long_press_deadline(), None);
+        }
+
+        phase raw_touch_contacts_overlap_without_cancelling_each_other;
+        {
+            use winit::event::TouchPhase;
+            let mut emulator = TouchPointerEmulator::default();
+            for (phase, id, x) in [
+                (TouchPhase::Started, 1, 10.0),
+                (TouchPhase::Started, 2, 60.0),
+                (TouchPhase::Ended, 1, 10.0),
+                (TouchPhase::Ended, 2, 60.0),
+            ] {
+                assert!(
+                    emulator
+                        .events(&touch(phase, id, x, 10.0), |_| true)
+                        .is_empty()
+                );
+            }
+            assert!(emulator.raw.is_empty());
+            emulator.events(&touch(TouchPhase::Started, 3, 10.0, 10.0), |_| true);
+            assert!(feed(&mut emulator, TouchPhase::Started, 4, 300.0, 300.0).is_empty());
+            assert_eq!(
+                feed(&mut emulator, TouchPhase::Ended, 4, 300.0, 300.0).len(),
+                4,
+                "move, press, release, leave"
+            );
+        }
     }
 
     fn feed_drag(
@@ -1188,309 +1227,278 @@ mod tests {
         emulator.events_claimed(&touch(phase, id, x, y), |_| TouchClaim::Drag)
     }
 
-    #[test]
-    fn where_a_drag_moves_things_a_finger_drags_taps_and_holds() {
-        use TouchPointerEvent::{Move, Press, Release};
-        use winit::event::{MouseButton, TouchPhase};
-        let gone = Move((-1.0, -1.0).into());
+    tilo_test_env::scenario! {
+        fn a_finger_drags_or_scrolls_by_what_lies_under_it;
+
+        phase where_a_drag_moves_things_a_finger_drags_taps_and_holds;
         {
+            use TouchPointerEvent::{Move, Press, Release};
+            use winit::event::{MouseButton, TouchPhase};
+            let gone = Move((-1.0, -1.0).into());
+            {
+                let mut emulator = TouchPointerEmulator::default();
+                assert!(feed_drag(&mut emulator, TouchPhase::Started, 1, 50.0, 60.0).is_empty());
+                assert!(
+                    feed_drag(&mut emulator, TouchPhase::Moved, 1, 54.0, 60.0).is_empty(),
+                    "within the slop nothing moves yet"
+                );
+                assert_eq!(
+                    feed_drag(&mut emulator, TouchPhase::Moved, 1, 90.0, 60.0),
+                    vec![
+                        Move((50.0, 60.0).into()),
+                        Press(MouseButton::Left),
+                        Move((90.0, 60.0).into())
+                    ]
+                );
+                assert_eq!(emulator.long_press_deadline(), None, "a drag is no hold");
+                assert_eq!(
+                    feed_drag(&mut emulator, TouchPhase::Moved, 1, 120.0, 70.0),
+                    vec![Move((120.0, 70.0).into())]
+                );
+                assert_eq!(
+                    feed_drag(&mut emulator, TouchPhase::Ended, 1, 121.0, 70.0),
+                    vec![Move((121.0, 70.0).into()), Release(MouseButton::Left), gone]
+                );
+            }
+            {
+                let mut emulator = TouchPointerEmulator::default();
+                feed_drag(&mut emulator, TouchPhase::Started, 2, 10.0, 20.0);
+                assert_eq!(
+                    feed_drag(&mut emulator, TouchPhase::Ended, 2, 11.0, 20.0),
+                    vec![
+                        Move((11.0, 20.0).into()),
+                        Press(MouseButton::Left),
+                        Release(MouseButton::Left),
+                        gone
+                    ]
+                );
+            }
+            {
+                let mut emulator = TouchPointerEmulator::default();
+                feed_drag(&mut emulator, TouchPhase::Started, 3, 50.0, 60.0);
+                let deadline = emulator.long_press_deadline().expect("armed");
+                let (_, events) = emulator.poll(deadline).expect("the hold fires");
+                assert_eq!(
+                    events,
+                    vec![
+                        Move((50.0, 60.0).into()),
+                        Press(MouseButton::Right),
+                        Release(MouseButton::Right)
+                    ]
+                );
+                assert!(feed_drag(&mut emulator, TouchPhase::Moved, 3, 90.0, 60.0).is_empty());
+                assert!(feed_drag(&mut emulator, TouchPhase::Ended, 3, 90.0, 60.0).is_empty());
+            }
+            {
+                let mut emulator = TouchPointerEmulator::default();
+                feed_drag(&mut emulator, TouchPhase::Started, 4, 50.0, 60.0);
+                feed_drag(&mut emulator, TouchPhase::Moved, 4, 90.0, 60.0);
+                assert_eq!(
+                    feed_drag(&mut emulator, TouchPhase::Started, 5, 200.0, 60.0),
+                    vec![Move((90.0, 60.0).into()), Release(MouseButton::Left), gone]
+                );
+            }
+        }
+
+        phase where_a_drag_goes_only_across_a_vertical_swipe_still_scrolls;
+        // Where a drag moves things only across (a switch's knob), the direction at the slop decides:
+        // across drags, up or down scrolls.
+        {
+            use TouchPointerEvent::{Move, Press, Release, Scroll};
+            use winit::event::{MouseButton, TouchPhase};
+            let feed_across = |emulator: &mut TouchPointerEmulator, phase, x: f64, y: f64| {
+                emulator.events_claimed(&touch(phase, 1, x, y), |_| TouchClaim::DragAcross)
+            };
+            let gone = Move((-1.0, -1.0).into());
             let mut emulator = TouchPointerEmulator::default();
-            assert!(feed_drag(&mut emulator, TouchPhase::Started, 1, 50.0, 60.0).is_empty());
+            assert!(feed_across(&mut emulator, TouchPhase::Started, 50.0, 60.0).is_empty());
             assert!(
-                feed_drag(&mut emulator, TouchPhase::Moved, 1, 54.0, 60.0).is_empty(),
-                "within the slop nothing moves yet"
+                feed_across(&mut emulator, TouchPhase::Moved, 54.0, 66.0).is_empty(),
+                "within the slop nothing is decided"
             );
             assert_eq!(
-                feed_drag(&mut emulator, TouchPhase::Moved, 1, 90.0, 60.0),
+                feed_across(&mut emulator, TouchPhase::Moved, 58.0, 90.0),
+                vec![
+                    Move((50.0, 60.0).into()),
+                    Scroll {
+                        delta: (8.0, 30.0).into(),
+                        phase: TouchPhase::Moved
+                    }
+                ],
+                "mostly down: a scroll"
+            );
+            assert_eq!(
+                feed_across(&mut emulator, TouchPhase::Moved, 100.0, 92.0),
+                vec![
+                    Move((50.0, 60.0).into()),
+                    Scroll {
+                        delta: (42.0, 2.0).into(),
+                        phase: TouchPhase::Moved
+                    }
+                ],
+                "once scrolling, it stays a scroll whichever way it turns"
+            );
+            assert_eq!(
+                feed_across(&mut emulator, TouchPhase::Ended, 100.0, 92.0),
+                vec![Scroll {
+                    delta: (0.0, 0.0).into(),
+                    phase: TouchPhase::Ended
+                }]
+            );
+
+            assert!(feed_across(&mut emulator, TouchPhase::Started, 50.0, 60.0).is_empty());
+            assert_eq!(
+                feed_across(&mut emulator, TouchPhase::Moved, 70.0, 66.0),
                 vec![
                     Move((50.0, 60.0).into()),
                     Press(MouseButton::Left),
-                    Move((90.0, 60.0).into())
-                ]
-            );
-            assert_eq!(emulator.long_press_deadline(), None, "a drag is no hold");
-            assert_eq!(
-                feed_drag(&mut emulator, TouchPhase::Moved, 1, 120.0, 70.0),
-                vec![Move((120.0, 70.0).into())]
+                    Move((70.0, 66.0).into())
+                ],
+                "mostly across: a drag from where the finger landed"
             );
             assert_eq!(
-                feed_drag(&mut emulator, TouchPhase::Ended, 1, 121.0, 70.0),
-                vec![Move((121.0, 70.0).into()), Release(MouseButton::Left), gone]
+                feed_across(&mut emulator, TouchPhase::Moved, 72.0, 120.0),
+                vec![Move((72.0, 120.0).into())],
+                "once dragging, it stays a drag"
             );
-        }
-        {
-            let mut emulator = TouchPointerEmulator::default();
-            feed_drag(&mut emulator, TouchPhase::Started, 2, 10.0, 20.0);
             assert_eq!(
-                feed_drag(&mut emulator, TouchPhase::Ended, 2, 11.0, 20.0),
+                feed_across(&mut emulator, TouchPhase::Ended, 72.0, 120.0),
+                vec![Move((72.0, 120.0).into()), Release(MouseButton::Left), gone]
+            );
+
+            assert!(feed_across(&mut emulator, TouchPhase::Started, 10.0, 20.0).is_empty());
+            assert_eq!(
+                feed_across(&mut emulator, TouchPhase::Ended, 11.0, 21.0),
                 vec![
-                    Move((11.0, 20.0).into()),
+                    Move((11.0, 21.0).into()),
                     Press(MouseButton::Left),
                     Release(MouseButton::Left),
                     gone
-                ]
+                ],
+                "a tap clicks"
             );
         }
+
+        phase a_held_item_is_picked_up_moved_and_put_back;
         {
+            use TouchPointerEvent::{Move, Press, Release, Scroll};
+            use winit::event::{MouseButton, TouchPhase};
+            let gone = Move((-1.0, -1.0).into());
+            let feed_held = |emulator: &mut TouchPointerEmulator, phase, id, x, y| {
+                emulator.events_claimed(&touch(phase, id, x, y), |_| TouchClaim::HoldDrag)
+            };
+            {
+                let mut emulator = TouchPointerEmulator::default();
+                assert!(feed_held(&mut emulator, TouchPhase::Started, 1, 50.0, 60.0).is_empty());
+                let deadline = emulator.long_press_deadline().expect("armed");
+                let (_, events) = emulator.poll(deadline).expect("the hold picks it up");
+                assert_eq!(
+                    events,
+                    vec![Move((50.0, 60.0).into()), Press(MouseButton::Left)]
+                );
+                assert!(emulator.poll(deadline).is_none(), "picked up once");
+                assert!(
+                    feed_held(&mut emulator, TouchPhase::Moved, 1, 52.0, 60.0).is_empty(),
+                    "within the slop it stays put"
+                );
+                assert_eq!(
+                    feed_held(&mut emulator, TouchPhase::Moved, 1, 50.0, 120.0),
+                    vec![Move((50.0, 120.0).into())]
+                );
+                assert_eq!(
+                    feed_held(&mut emulator, TouchPhase::Ended, 1, 50.0, 130.0),
+                    vec![Move((50.0, 130.0).into()), Release(MouseButton::Left), gone]
+                );
+            }
+            {
+                let mut emulator = TouchPointerEmulator::default();
+                feed_held(&mut emulator, TouchPhase::Started, 2, 50.0, 60.0);
+                let deadline = emulator.long_press_deadline().expect("armed");
+                emulator.poll(deadline).expect("the hold picks it up");
+                assert_eq!(
+                    feed_held(&mut emulator, TouchPhase::Ended, 2, 51.0, 60.0),
+                    vec![
+                        Move((51.0, 60.0).into()),
+                        Press(MouseButton::Right),
+                        Release(MouseButton::Right),
+                        Release(MouseButton::Left),
+                        gone
+                    ]
+                );
+            }
+            {
+                let mut emulator = TouchPointerEmulator::default();
+                feed_held(&mut emulator, TouchPhase::Started, 3, 50.0, 60.0);
+                let events = feed_held(&mut emulator, TouchPhase::Moved, 3, 50.0, 100.0);
+                assert!(
+                    matches!(events.as_slice(), [Move(_), Scroll { .. }]),
+                    "{events:?}"
+                );
+                assert_eq!(emulator.long_press_deadline(), None, "a swipe is no hold");
+            }
+            {
+                let mut emulator = TouchPointerEmulator::default();
+                feed_held(&mut emulator, TouchPhase::Started, 4, 50.0, 60.0);
+                let deadline = emulator.long_press_deadline().expect("armed");
+                emulator.poll(deadline).expect("the hold picks it up");
+                assert_eq!(
+                    feed_held(&mut emulator, TouchPhase::Started, 5, 200.0, 60.0),
+                    vec![Move((50.0, 60.0).into()), Release(MouseButton::Left), gone]
+                );
+            }
+        }
+
+        phase a_gesture_settles_once_it_has_reached_its_target;
+        {
+            use winit::event::TouchPhase;
             let mut emulator = TouchPointerEmulator::default();
-            feed_drag(&mut emulator, TouchPhase::Started, 3, 50.0, 60.0);
+            assert!(emulator.settled(), "no finger down");
+
+            feed(&mut emulator, TouchPhase::Started, 1, 10.0, 10.0);
+            assert!(!emulator.settled(), "a tap lands at the lift");
+            feed(&mut emulator, TouchPhase::Ended, 1, 10.0, 10.0);
+            assert!(emulator.settled());
+
+            feed(&mut emulator, TouchPhase::Started, 2, 10.0, 10.0);
             let deadline = emulator.long_press_deadline().expect("armed");
-            let (_, events) = emulator.poll(deadline).expect("the hold fires");
-            assert_eq!(
-                events,
-                vec![
-                    Move((50.0, 60.0).into()),
-                    Press(MouseButton::Right),
-                    Release(MouseButton::Right)
-                ]
-            );
-            assert!(feed_drag(&mut emulator, TouchPhase::Moved, 3, 90.0, 60.0).is_empty());
-            assert!(feed_drag(&mut emulator, TouchPhase::Ended, 3, 90.0, 60.0).is_empty());
-        }
-        {
-            let mut emulator = TouchPointerEmulator::default();
-            feed_drag(&mut emulator, TouchPhase::Started, 4, 50.0, 60.0);
-            feed_drag(&mut emulator, TouchPhase::Moved, 4, 90.0, 60.0);
-            assert_eq!(
-                feed_drag(&mut emulator, TouchPhase::Started, 5, 200.0, 60.0),
-                vec![Move((90.0, 60.0).into()), Release(MouseButton::Left), gone]
-            );
-        }
-    }
-
-    /// Where a drag moves things only across (a switch's knob), the direction at the slop decides:
-    /// across drags, up or down scrolls.
-    #[test]
-    fn where_a_drag_goes_only_across_a_vertical_swipe_still_scrolls() {
-        use TouchPointerEvent::{Move, Press, Release, Scroll};
-        use winit::event::{MouseButton, TouchPhase};
-        let feed_across = |emulator: &mut TouchPointerEmulator, phase, x: f64, y: f64| {
-            emulator.events_claimed(&touch(phase, 1, x, y), |_| TouchClaim::DragAcross)
-        };
-        let gone = Move((-1.0, -1.0).into());
-        let mut emulator = TouchPointerEmulator::default();
-        assert!(feed_across(&mut emulator, TouchPhase::Started, 50.0, 60.0).is_empty());
-        assert!(
-            feed_across(&mut emulator, TouchPhase::Moved, 54.0, 66.0).is_empty(),
-            "within the slop nothing is decided"
-        );
-        assert_eq!(
-            feed_across(&mut emulator, TouchPhase::Moved, 58.0, 90.0),
-            vec![
-                Move((50.0, 60.0).into()),
-                Scroll {
-                    delta: (8.0, 30.0).into(),
-                    phase: TouchPhase::Moved
-                }
-            ],
-            "mostly down: a scroll"
-        );
-        assert_eq!(
-            feed_across(&mut emulator, TouchPhase::Moved, 100.0, 92.0),
-            vec![
-                Move((50.0, 60.0).into()),
-                Scroll {
-                    delta: (42.0, 2.0).into(),
-                    phase: TouchPhase::Moved
-                }
-            ],
-            "once scrolling, it stays a scroll whichever way it turns"
-        );
-        assert_eq!(
-            feed_across(&mut emulator, TouchPhase::Ended, 100.0, 92.0),
-            vec![Scroll {
-                delta: (0.0, 0.0).into(),
-                phase: TouchPhase::Ended
-            }]
-        );
-
-        assert!(feed_across(&mut emulator, TouchPhase::Started, 50.0, 60.0).is_empty());
-        assert_eq!(
-            feed_across(&mut emulator, TouchPhase::Moved, 70.0, 66.0),
-            vec![
-                Move((50.0, 60.0).into()),
-                Press(MouseButton::Left),
-                Move((70.0, 66.0).into())
-            ],
-            "mostly across: a drag from where the finger landed"
-        );
-        assert_eq!(
-            feed_across(&mut emulator, TouchPhase::Moved, 72.0, 120.0),
-            vec![Move((72.0, 120.0).into())],
-            "once dragging, it stays a drag"
-        );
-        assert_eq!(
-            feed_across(&mut emulator, TouchPhase::Ended, 72.0, 120.0),
-            vec![Move((72.0, 120.0).into()), Release(MouseButton::Left), gone]
-        );
-
-        assert!(feed_across(&mut emulator, TouchPhase::Started, 10.0, 20.0).is_empty());
-        assert_eq!(
-            feed_across(&mut emulator, TouchPhase::Ended, 11.0, 21.0),
-            vec![
-                Move((11.0, 21.0).into()),
-                Press(MouseButton::Left),
-                Release(MouseButton::Left),
-                gone
-            ],
-            "a tap clicks"
-        );
-    }
-
-    #[test]
-    fn a_held_item_is_picked_up_moved_and_put_back() {
-        use TouchPointerEvent::{Move, Press, Release, Scroll};
-        use winit::event::{MouseButton, TouchPhase};
-        let gone = Move((-1.0, -1.0).into());
-        let feed_held = |emulator: &mut TouchPointerEmulator, phase, id, x, y| {
-            emulator.events_claimed(&touch(phase, id, x, y), |_| TouchClaim::HoldDrag)
-        };
-        {
-            let mut emulator = TouchPointerEmulator::default();
-            assert!(feed_held(&mut emulator, TouchPhase::Started, 1, 50.0, 60.0).is_empty());
-            let deadline = emulator.long_press_deadline().expect("armed");
-            let (_, events) = emulator.poll(deadline).expect("the hold picks it up");
-            assert_eq!(
-                events,
-                vec![Move((50.0, 60.0).into()), Press(MouseButton::Left)]
-            );
-            assert!(emulator.poll(deadline).is_none(), "picked up once");
+            emulator.poll(deadline).expect("the hold fires");
             assert!(
-                feed_held(&mut emulator, TouchPhase::Moved, 1, 52.0, 60.0).is_empty(),
-                "within the slop it stays put"
+                emulator.settled(),
+                "a hold has landed its secondary click; the lift does nothing"
             );
-            assert_eq!(
-                feed_held(&mut emulator, TouchPhase::Moved, 1, 50.0, 120.0),
-                vec![Move((50.0, 120.0).into())]
-            );
-            assert_eq!(
-                feed_held(&mut emulator, TouchPhase::Ended, 1, 50.0, 130.0),
-                vec![Move((50.0, 130.0).into()), Release(MouseButton::Left), gone]
-            );
+            feed(&mut emulator, TouchPhase::Ended, 2, 10.0, 10.0);
+
+            feed(&mut emulator, TouchPhase::Started, 6, 10.0, 100.0);
+            feed(&mut emulator, TouchPhase::Moved, 6, 10.0, 90.0);
+            assert!(!emulator.settled(), "within the slop it may still tap");
+            feed(&mut emulator, TouchPhase::Moved, 6, 10.0, 60.0);
+            assert!(emulator.settled(), "a scroll has no target to land on");
+            feed(&mut emulator, TouchPhase::Ended, 6, 10.0, 60.0);
+
+            emulator.events_claimed(&touch(TouchPhase::Started, 7, 10.0, 100.0), |_| {
+                TouchClaim::Drag
+            });
+            emulator.events_claimed(&touch(TouchPhase::Moved, 7, 60.0, 100.0), |_| {
+                TouchClaim::Drag
+            });
+            assert!(!emulator.settled(), "a drag keeps what it picked up");
+            emulator.events_claimed(&touch(TouchPhase::Ended, 7, 60.0, 100.0), |_| {
+                TouchClaim::Drag
+            });
+            assert!(emulator.settled());
+
+            feed(&mut emulator, TouchPhase::Started, 3, 100.0, 100.0);
+            feed(&mut emulator, TouchPhase::Started, 4, 200.0, 100.0);
+            feed(&mut emulator, TouchPhase::Ended, 4, 200.0, 100.0);
+            assert!(!emulator.settled(), "one finger of a pinch is still down");
+            feed(&mut emulator, TouchPhase::Ended, 3, 100.0, 100.0);
+            assert!(emulator.settled());
+
+            emulator.events(&touch(TouchPhase::Started, 5, 10.0, 10.0), |_| true);
+            assert!(!emulator.settled(), "a raw contact is read until it lifts");
+            emulator.events(&touch(TouchPhase::Ended, 5, 10.0, 10.0), |_| true);
+            assert!(emulator.settled());
         }
-        {
-            let mut emulator = TouchPointerEmulator::default();
-            feed_held(&mut emulator, TouchPhase::Started, 2, 50.0, 60.0);
-            let deadline = emulator.long_press_deadline().expect("armed");
-            emulator.poll(deadline).expect("the hold picks it up");
-            assert_eq!(
-                feed_held(&mut emulator, TouchPhase::Ended, 2, 51.0, 60.0),
-                vec![
-                    Move((51.0, 60.0).into()),
-                    Press(MouseButton::Right),
-                    Release(MouseButton::Right),
-                    Release(MouseButton::Left),
-                    gone
-                ]
-            );
-        }
-        {
-            let mut emulator = TouchPointerEmulator::default();
-            feed_held(&mut emulator, TouchPhase::Started, 3, 50.0, 60.0);
-            let events = feed_held(&mut emulator, TouchPhase::Moved, 3, 50.0, 100.0);
-            assert!(
-                matches!(events.as_slice(), [Move(_), Scroll { .. }]),
-                "{events:?}"
-            );
-            assert_eq!(emulator.long_press_deadline(), None, "a swipe is no hold");
-        }
-        {
-            let mut emulator = TouchPointerEmulator::default();
-            feed_held(&mut emulator, TouchPhase::Started, 4, 50.0, 60.0);
-            let deadline = emulator.long_press_deadline().expect("armed");
-            emulator.poll(deadline).expect("the hold picks it up");
-            assert_eq!(
-                feed_held(&mut emulator, TouchPhase::Started, 5, 200.0, 60.0),
-                vec![Move((50.0, 60.0).into()), Release(MouseButton::Left), gone]
-            );
-        }
-    }
-
-    #[test]
-    fn moving_past_the_slop_disarms_the_hold() {
-        use winit::event::TouchPhase;
-        let mut emulator = TouchPointerEmulator::default();
-        feed(&mut emulator, TouchPhase::Started, 5, 50.0, 60.0);
-        feed(&mut emulator, TouchPhase::Moved, 5, 50.0, 100.0);
-        assert_eq!(emulator.long_press_deadline(), None);
-    }
-
-    #[test]
-    fn raw_touch_contacts_overlap_without_cancelling_each_other() {
-        use winit::event::TouchPhase;
-        let mut emulator = TouchPointerEmulator::default();
-        for (phase, id, x) in [
-            (TouchPhase::Started, 1, 10.0),
-            (TouchPhase::Started, 2, 60.0),
-            (TouchPhase::Ended, 1, 10.0),
-            (TouchPhase::Ended, 2, 60.0),
-        ] {
-            assert!(
-                emulator
-                    .events(&touch(phase, id, x, 10.0), |_| true)
-                    .is_empty()
-            );
-        }
-        assert!(emulator.raw.is_empty());
-        emulator.events(&touch(TouchPhase::Started, 3, 10.0, 10.0), |_| true);
-        assert!(feed(&mut emulator, TouchPhase::Started, 4, 300.0, 300.0).is_empty());
-        assert_eq!(
-            feed(&mut emulator, TouchPhase::Ended, 4, 300.0, 300.0).len(),
-            4,
-            "move, press, release, leave"
-        );
-    }
-
-    #[test]
-    fn a_gesture_settles_once_it_has_reached_its_target() {
-        use winit::event::TouchPhase;
-        let mut emulator = TouchPointerEmulator::default();
-        assert!(emulator.settled(), "no finger down");
-
-        feed(&mut emulator, TouchPhase::Started, 1, 10.0, 10.0);
-        assert!(!emulator.settled(), "a tap lands at the lift");
-        feed(&mut emulator, TouchPhase::Ended, 1, 10.0, 10.0);
-        assert!(emulator.settled());
-
-        feed(&mut emulator, TouchPhase::Started, 2, 10.0, 10.0);
-        let deadline = emulator.long_press_deadline().expect("armed");
-        emulator.poll(deadline).expect("the hold fires");
-        assert!(
-            emulator.settled(),
-            "a hold has landed its secondary click; the lift does nothing"
-        );
-        feed(&mut emulator, TouchPhase::Ended, 2, 10.0, 10.0);
-
-        feed(&mut emulator, TouchPhase::Started, 6, 10.0, 100.0);
-        feed(&mut emulator, TouchPhase::Moved, 6, 10.0, 90.0);
-        assert!(!emulator.settled(), "within the slop it may still tap");
-        feed(&mut emulator, TouchPhase::Moved, 6, 10.0, 60.0);
-        assert!(emulator.settled(), "a scroll has no target to land on");
-        feed(&mut emulator, TouchPhase::Ended, 6, 10.0, 60.0);
-
-        emulator.events_claimed(&touch(TouchPhase::Started, 7, 10.0, 100.0), |_| {
-            TouchClaim::Drag
-        });
-        emulator.events_claimed(&touch(TouchPhase::Moved, 7, 60.0, 100.0), |_| {
-            TouchClaim::Drag
-        });
-        assert!(!emulator.settled(), "a drag keeps what it picked up");
-        emulator.events_claimed(&touch(TouchPhase::Ended, 7, 60.0, 100.0), |_| {
-            TouchClaim::Drag
-        });
-        assert!(emulator.settled());
-
-        feed(&mut emulator, TouchPhase::Started, 3, 100.0, 100.0);
-        feed(&mut emulator, TouchPhase::Started, 4, 200.0, 100.0);
-        feed(&mut emulator, TouchPhase::Ended, 4, 200.0, 100.0);
-        assert!(!emulator.settled(), "one finger of a pinch is still down");
-        feed(&mut emulator, TouchPhase::Ended, 3, 100.0, 100.0);
-        assert!(emulator.settled());
-
-        emulator.events(&touch(TouchPhase::Started, 5, 10.0, 10.0), |_| true);
-        assert!(!emulator.settled(), "a raw contact is read until it lifts");
-        emulator.events(&touch(TouchPhase::Ended, 5, 10.0, 10.0), |_| true);
-        assert!(emulator.settled());
     }
 
     #[test]

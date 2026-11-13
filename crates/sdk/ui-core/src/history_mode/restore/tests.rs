@@ -48,190 +48,194 @@ static DEEP_MAP_WITH_PROTECTED_ROOT: HistoryRestoreSchema = HistoryRestoreSchema
     validate: |_| Ok(()),
 };
 
-#[test]
-fn whole_retains_same_kind_map_identity_at_map_properties() {
-    let mut doc = AutoCommit::new();
-    let root = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
-    let changed = doc.put_object(&root, "changed", ObjType::Map).unwrap();
-    let untouched = doc.put_object(&root, "untouched", ObjType::Map).unwrap();
-    doc.put(&changed, "value", "target").unwrap();
-    doc.put(&untouched, "value", "stable").unwrap();
-    let target = doc.get_heads();
-    doc.put(&changed, "value", "live").unwrap();
-    let live = doc.get_heads();
-    let prepared = prepare_content_restore(&doc, &MAP, &live, &target).unwrap();
-    assert_eq!(
-        apply_prepared_content_restore(&mut doc, &prepared).unwrap(),
-        RestoreOutcome::Changed
-    );
-    assert_eq!(doc.get(ROOT, "content").unwrap().unwrap().1, root);
-    assert_eq!(doc.get(&root, "changed").unwrap().unwrap().1, changed);
-    assert_eq!(doc.get(&root, "untouched").unwrap().unwrap().1, untouched);
-    assert_eq!(
-        doc.get(&changed, "value").unwrap().unwrap().0.as_str(),
-        Some("target")
-    );
-    assert!(doc.pending_ops() > 0);
-}
+tilo_test_env::scenario! {
+    fn whole_restore_keeps_and_renews_map_identities;
 
-#[test]
-fn whole_retains_nested_map_identities_with_exact_unknown_keys() {
-    let mut doc = AutoCommit::new();
-    let root = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
-    let map = doc.put_object(&root, "unknown-map", ObjType::Map).unwrap();
-    let untouched = doc.put_object(&root, "untouched", ObjType::Map).unwrap();
-    let unchanged_list = doc
-        .put_object(&root, "unchanged-list", ObjType::List)
-        .unwrap();
-    doc.insert(&unchanged_list, 0, "stable").unwrap();
-    let unchanged_text = doc
-        .put_object(&root, "unchanged-text", ObjType::Text)
-        .unwrap();
-    doc.splice_text(&unchanged_text, 0, 0, "stable").unwrap();
-    doc.put(&map, "value", "target").unwrap();
-    doc.put(&untouched, "stable", true).unwrap();
-    doc.put(&root, "target-only", 7_i64).unwrap();
-    let target = doc.get_heads();
-    doc.put(&map, "value", "live").unwrap();
-    doc.delete(&root, "target-only").unwrap();
-    doc.put(&root, "current-only", 9_i64).unwrap();
-    let live = doc.get_heads();
-    let prepared = prepare_content_restore(&doc, &MAP, &live, &target).unwrap();
-    let target_projection = prepared.target_projection().clone();
-    assert_eq!(
-        apply_prepared_content_restore(&mut doc, &prepared).unwrap(),
-        RestoreOutcome::Changed
-    );
-    assert_eq!(doc.get(ROOT, "content").unwrap().unwrap().1, root);
-    assert_eq!(doc.get(&root, "unknown-map").unwrap().unwrap().1, map);
-    assert_eq!(doc.get(&root, "untouched").unwrap().unwrap().1, untouched);
-    assert_eq!(
-        doc.get(&root, "unchanged-list").unwrap().unwrap().1,
-        unchanged_list
-    );
-    assert_eq!(
-        doc.get(&root, "unchanged-text").unwrap().unwrap().1,
-        unchanged_text
-    );
-    assert!(doc.get(&root, "current-only").unwrap().is_none());
-    assert_eq!(
-        doc.get(&root, "target-only").unwrap().unwrap().0.as_i64(),
-        Some(7)
-    );
-    assert_eq!(selection::content(&doc, &MAP).unwrap(), target_projection);
-    doc.commit().unwrap();
-    let bytes = doc.clone().save();
-    let loaded = AutoCommit::load(&bytes).unwrap();
-    assert_eq!(loaded.get(ROOT, "content").unwrap().unwrap().1, root);
-    assert_eq!(loaded.get(&root, "unknown-map").unwrap().unwrap().1, map);
-}
+    phase whole_retains_same_kind_map_identity_at_map_properties;
+    {
+        let mut doc = AutoCommit::new();
+        let root = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
+        let changed = doc.put_object(&root, "changed", ObjType::Map).unwrap();
+        let untouched = doc.put_object(&root, "untouched", ObjType::Map).unwrap();
+        doc.put(&changed, "value", "target").unwrap();
+        doc.put(&untouched, "value", "stable").unwrap();
+        let target = doc.get_heads();
+        doc.put(&changed, "value", "live").unwrap();
+        let live = doc.get_heads();
+        let prepared = prepare_content_restore(&doc, &MAP, &live, &target).unwrap();
+        assert_eq!(
+            apply_prepared_content_restore(&mut doc, &prepared).unwrap(),
+            RestoreOutcome::Changed
+        );
+        assert_eq!(doc.get(ROOT, "content").unwrap().unwrap().1, root);
+        assert_eq!(doc.get(&root, "changed").unwrap().unwrap().1, changed);
+        assert_eq!(doc.get(&root, "untouched").unwrap().unwrap().1, untouched);
+        assert_eq!(
+            doc.get(&changed, "value").unwrap().unwrap().0.as_str(),
+            Some("target")
+        );
+        assert!(doc.pending_ops() > 0);
+    }
 
-#[test]
-fn whole_kind_replacements_copy_target_and_use_fresh_object_ids() {
-    let mut doc = AutoCommit::new();
-    let root = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
-    let target_map = doc.put_object(&root, "map", ObjType::Map).unwrap();
-    doc.put(&target_map, "value", "map").unwrap();
-    let target_list = doc.put_object(&root, "list", ObjType::List).unwrap();
-    doc.insert(&target_list, 0, "list").unwrap();
-    let target_text = doc.put_object(&root, "text", ObjType::Text).unwrap();
-    doc.splice_text(&target_text, 0, 0, "text").unwrap();
-    doc.put(&root, "scalar", "scalar").unwrap();
-    let target = doc.get_heads();
+    phase whole_retains_nested_map_identities_with_exact_unknown_keys;
+    {
+        let mut doc = AutoCommit::new();
+        let root = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
+        let map = doc.put_object(&root, "unknown-map", ObjType::Map).unwrap();
+        let untouched = doc.put_object(&root, "untouched", ObjType::Map).unwrap();
+        let unchanged_list = doc
+            .put_object(&root, "unchanged-list", ObjType::List)
+            .unwrap();
+        doc.insert(&unchanged_list, 0, "stable").unwrap();
+        let unchanged_text = doc
+            .put_object(&root, "unchanged-text", ObjType::Text)
+            .unwrap();
+        doc.splice_text(&unchanged_text, 0, 0, "stable").unwrap();
+        doc.put(&map, "value", "target").unwrap();
+        doc.put(&untouched, "stable", true).unwrap();
+        doc.put(&root, "target-only", 7_i64).unwrap();
+        let target = doc.get_heads();
+        doc.put(&map, "value", "live").unwrap();
+        doc.delete(&root, "target-only").unwrap();
+        doc.put(&root, "current-only", 9_i64).unwrap();
+        let live = doc.get_heads();
+        let prepared = prepare_content_restore(&doc, &MAP, &live, &target).unwrap();
+        let target_projection = prepared.target_projection().clone();
+        assert_eq!(
+            apply_prepared_content_restore(&mut doc, &prepared).unwrap(),
+            RestoreOutcome::Changed
+        );
+        assert_eq!(doc.get(ROOT, "content").unwrap().unwrap().1, root);
+        assert_eq!(doc.get(&root, "unknown-map").unwrap().unwrap().1, map);
+        assert_eq!(doc.get(&root, "untouched").unwrap().unwrap().1, untouched);
+        assert_eq!(
+            doc.get(&root, "unchanged-list").unwrap().unwrap().1,
+            unchanged_list
+        );
+        assert_eq!(
+            doc.get(&root, "unchanged-text").unwrap().unwrap().1,
+            unchanged_text
+        );
+        assert!(doc.get(&root, "current-only").unwrap().is_none());
+        assert_eq!(
+            doc.get(&root, "target-only").unwrap().unwrap().0.as_i64(),
+            Some(7)
+        );
+        assert_eq!(selection::content(&doc, &MAP).unwrap(), target_projection);
+        doc.commit().unwrap();
+        let bytes = doc.clone().save();
+        let loaded = AutoCommit::load(&bytes).unwrap();
+        assert_eq!(loaded.get(ROOT, "content").unwrap().unwrap().1, root);
+        assert_eq!(loaded.get(&root, "unknown-map").unwrap().unwrap().1, map);
+    }
 
-    let live_map = doc.put_object(&root, "map", ObjType::List).unwrap();
-    doc.insert(&live_map, 0, "live").unwrap();
-    doc.put(&root, "list", "live-scalar").unwrap();
-    let live_text = doc.put_object(&root, "text", ObjType::List).unwrap();
-    let _live_scalar = doc.put_object(&root, "scalar", ObjType::Map).unwrap();
-    let live = doc.get_heads();
-    let prepared = prepare_content_restore(&doc, &MAP, &live, &target).unwrap();
-    apply_prepared_content_restore(&mut doc, &prepared).unwrap();
+    phase whole_kind_replacements_copy_target_and_use_fresh_object_ids;
+    {
+        let mut doc = AutoCommit::new();
+        let root = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
+        let target_map = doc.put_object(&root, "map", ObjType::Map).unwrap();
+        doc.put(&target_map, "value", "map").unwrap();
+        let target_list = doc.put_object(&root, "list", ObjType::List).unwrap();
+        doc.insert(&target_list, 0, "list").unwrap();
+        let target_text = doc.put_object(&root, "text", ObjType::Text).unwrap();
+        doc.splice_text(&target_text, 0, 0, "text").unwrap();
+        doc.put(&root, "scalar", "scalar").unwrap();
+        let target = doc.get_heads();
 
-    let (map_value, restored_map) = doc.get(&root, "map").unwrap().unwrap();
-    let (list_value, restored_list) = doc.get(&root, "list").unwrap().unwrap();
-    let (text_value, restored_text) = doc.get(&root, "text").unwrap().unwrap();
-    assert!(matches!(map_value, Value::Object(ObjType::Map)));
-    assert!(matches!(list_value, Value::Object(ObjType::List)));
-    assert!(matches!(text_value, Value::Object(ObjType::Text)));
-    assert_ne!(restored_map, live_map);
-    assert_ne!(restored_text, live_text);
-    assert_ne!(restored_map, target_map);
-    assert_ne!(restored_list, target_list);
-    assert_ne!(restored_text, target_text);
-    assert_eq!(
-        doc.get(&restored_map, "value").unwrap().unwrap().0.as_str(),
-        Some("map")
-    );
-    assert_eq!(doc.text(&restored_text).unwrap(), "text");
-    assert_eq!(
-        doc.get(&root, "scalar").unwrap().unwrap().0.as_str(),
-        Some("scalar")
-    );
-}
+        let live_map = doc.put_object(&root, "map", ObjType::List).unwrap();
+        doc.insert(&live_map, 0, "live").unwrap();
+        doc.put(&root, "list", "live-scalar").unwrap();
+        let live_text = doc.put_object(&root, "text", ObjType::List).unwrap();
+        let _live_scalar = doc.put_object(&root, "scalar", ObjType::Map).unwrap();
+        let live = doc.get_heads();
+        let prepared = prepare_content_restore(&doc, &MAP, &live, &target).unwrap();
+        apply_prepared_content_restore(&mut doc, &prepared).unwrap();
 
-#[test]
-fn whole_same_key_replacement_keeps_current_id_and_never_revives_old_id() {
-    let mut doc = AutoCommit::new();
-    let original = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
-    doc.put(&original, "value", "target").unwrap();
-    let target = doc.get_heads();
-    doc.delete(ROOT, "content").unwrap();
-    let replacement = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
-    doc.put(&replacement, "value", "target").unwrap();
-    let equal_live = doc.get_heads();
-    let prepared = prepare_content_restore(&doc, &MAP, &equal_live, &target).unwrap();
-    assert_eq!(
-        apply_prepared_content_restore(&mut doc, &prepared).unwrap(),
-        RestoreOutcome::Unchanged
-    );
-    assert_eq!(doc.pending_ops(), 0);
-    assert_eq!(doc.get(ROOT, "content").unwrap().unwrap().1, replacement);
-    assert_ne!(replacement, original);
+        let (map_value, restored_map) = doc.get(&root, "map").unwrap().unwrap();
+        let (list_value, restored_list) = doc.get(&root, "list").unwrap().unwrap();
+        let (text_value, restored_text) = doc.get(&root, "text").unwrap().unwrap();
+        assert!(matches!(map_value, Value::Object(ObjType::Map)));
+        assert!(matches!(list_value, Value::Object(ObjType::List)));
+        assert!(matches!(text_value, Value::Object(ObjType::Text)));
+        assert_ne!(restored_map, live_map);
+        assert_ne!(restored_text, live_text);
+        assert_ne!(restored_map, target_map);
+        assert_ne!(restored_list, target_list);
+        assert_ne!(restored_text, target_text);
+        assert_eq!(
+            doc.get(&restored_map, "value").unwrap().unwrap().0.as_str(),
+            Some("map")
+        );
+        assert_eq!(doc.text(&restored_text).unwrap(), "text");
+        assert_eq!(
+            doc.get(&root, "scalar").unwrap().unwrap().0.as_str(),
+            Some("scalar")
+        );
+    }
 
-    doc.put(&replacement, "value", "live").unwrap();
-    let changed_live = doc.get_heads();
-    let prepared = prepare_content_restore(&doc, &MAP, &changed_live, &target).unwrap();
-    apply_prepared_content_restore(&mut doc, &prepared).unwrap();
-    assert_eq!(doc.get(ROOT, "content").unwrap().unwrap().1, replacement);
-    assert_ne!(doc.get(ROOT, "content").unwrap().unwrap().1, original);
-    assert_eq!(
-        doc.get(&replacement, "value").unwrap().unwrap().0.as_str(),
-        Some("target")
-    );
-}
+    phase whole_same_key_replacement_keeps_current_id_and_never_revives_old_id;
+    {
+        let mut doc = AutoCommit::new();
+        let original = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
+        doc.put(&original, "value", "target").unwrap();
+        let target = doc.get_heads();
+        doc.delete(ROOT, "content").unwrap();
+        let replacement = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
+        doc.put(&replacement, "value", "target").unwrap();
+        let equal_live = doc.get_heads();
+        let prepared = prepare_content_restore(&doc, &MAP, &equal_live, &target).unwrap();
+        assert_eq!(
+            apply_prepared_content_restore(&mut doc, &prepared).unwrap(),
+            RestoreOutcome::Unchanged
+        );
+        assert_eq!(doc.pending_ops(), 0);
+        assert_eq!(doc.get(ROOT, "content").unwrap().unwrap().1, replacement);
+        assert_ne!(replacement, original);
 
-#[test]
-fn whole_optional_map_absence_is_exact_and_recreation_uses_a_fresh_id() {
-    static OPTIONAL_MAP: HistoryRestoreSchema = HistoryRestoreSchema {
-        id: "test.optional-map",
-        version: 1,
-        roots: &[HistoryRestoreRoot {
-            key: "content",
-            required: false,
-            expected_type: RestoreValueType::Object(ObjType::Map),
-        }],
-        selectors: &[],
-        preserved: &[],
-        validate_result: |_| Ok(()),
-        preserved_roots: &[],
-        validate: |_| Ok(()),
-    };
-    let mut doc = AutoCommit::new();
-    let missing = doc.get_heads();
-    let historical = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
-    let present = doc.get_heads();
-    doc.delete(ROOT, "content").unwrap();
-    let live = doc.get_heads();
-    let prepared = prepare_content_restore(&doc, &OPTIONAL_MAP, &live, &present).unwrap();
-    apply_prepared_content_restore(&mut doc, &prepared).unwrap();
-    let recreated = doc.get(ROOT, "content").unwrap().unwrap().1;
-    assert_ne!(recreated, historical);
-    doc.commit();
-    let live = doc.get_heads();
-    let prepared = prepare_content_restore(&doc, &OPTIONAL_MAP, &live, &missing).unwrap();
-    apply_prepared_content_restore(&mut doc, &prepared).unwrap();
-    assert!(doc.get(ROOT, "content").unwrap().is_none());
+        doc.put(&replacement, "value", "live").unwrap();
+        let changed_live = doc.get_heads();
+        let prepared = prepare_content_restore(&doc, &MAP, &changed_live, &target).unwrap();
+        apply_prepared_content_restore(&mut doc, &prepared).unwrap();
+        assert_eq!(doc.get(ROOT, "content").unwrap().unwrap().1, replacement);
+        assert_ne!(doc.get(ROOT, "content").unwrap().unwrap().1, original);
+        assert_eq!(
+            doc.get(&replacement, "value").unwrap().unwrap().0.as_str(),
+            Some("target")
+        );
+    }
+
+    phase whole_optional_map_absence_is_exact_and_recreation_uses_a_fresh_id;
+    {
+        static OPTIONAL_MAP: HistoryRestoreSchema = HistoryRestoreSchema {
+            id: "test.optional-map",
+            version: 1,
+            roots: &[HistoryRestoreRoot {
+                key: "content",
+                required: false,
+                expected_type: RestoreValueType::Object(ObjType::Map),
+            }],
+            selectors: &[],
+            preserved: &[],
+            validate_result: |_| Ok(()),
+            preserved_roots: &[],
+            validate: |_| Ok(()),
+        };
+        let mut doc = AutoCommit::new();
+        let missing = doc.get_heads();
+        let historical = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
+        let present = doc.get_heads();
+        doc.delete(ROOT, "content").unwrap();
+        let live = doc.get_heads();
+        let prepared = prepare_content_restore(&doc, &OPTIONAL_MAP, &live, &present).unwrap();
+        apply_prepared_content_restore(&mut doc, &prepared).unwrap();
+        let recreated = doc.get(ROOT, "content").unwrap().unwrap().1;
+        assert_ne!(recreated, historical);
+        doc.commit();
+        let live = doc.get_heads();
+        let prepared = prepare_content_restore(&doc, &OPTIONAL_MAP, &live, &missing).unwrap();
+        apply_prepared_content_restore(&mut doc, &prepared).unwrap();
+        assert!(doc.get(ROOT, "content").unwrap().is_none());
+    }
 }
 
 fn text_fixture() -> (AutoCommit, Vec<ChangeHash>, Vec<ChangeHash>) {
@@ -254,13 +258,10 @@ fn assert_unchanged(doc: &AutoCommit, before: &mut AutoCommit) {
     assert_eq!(after.save(), before.save());
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn restore_rebuilds_every_content_type_while_keeping_live_metadata() {
-    // phase: restores_text_in_one_owned_pending_transaction_without_losing_history
+tilo_test_env::scenario! {
+    fn restore_rebuilds_every_content_type_while_keeping_live_metadata;
+
+    phase restores_text_in_one_owned_pending_transaction_without_losing_history;
     // Catches an engine that commits, swaps the live document/actor, or truncates history.
     {
         let (mut doc, target, live) = text_fixture();
@@ -282,7 +283,8 @@ fn restore_rebuilds_every_content_type_while_keeping_live_metadata() {
             assert!(doc.get_change_by_hash(hash).is_some());
         }
     }
-    // phase: preserves_current_noncontent_values_objects_and_conflicts
+
+    phase preserves_current_noncontent_values_objects_and_conflicts;
     // Catches restoration escaping the allowlist, or flattening metadata conflicts.
     {
         let (mut doc, _, _) = text_fixture();
@@ -339,7 +341,8 @@ fn restore_rebuilds_every_content_type_while_keeping_live_metadata() {
             );
         }
     }
-    // phase: resurrects_nested_maps_lists_references_and_all_scalar_types
+
+    phase resurrects_nested_maps_lists_references_and_all_scalar_types;
     // Catches lossy scalars, wrong list order, and failed nested resurrection.
     {
         let mut doc = AutoCommit::new();
@@ -399,7 +402,8 @@ fn restore_rebuilds_every_content_type_while_keeping_live_metadata() {
             }
         }
     }
-    // phase: restores_unicode_text_and_exact_typed_marks_in_every_encoding
+
+    phase restores_unicode_text_and_exact_typed_marks_in_every_encoding;
     // Catches byte/codepoint index confusion and ignored mark-only changes.
     {
         for (encoding, end) in [
@@ -447,7 +451,8 @@ fn restore_rebuilds_every_content_type_while_keeping_live_metadata() {
             assert_eq!(doc.marks(&text).unwrap()[0].end, end);
         }
     }
-    // phase: changed_text_restores_inserted_marks_and_removes_new_marks
+
+    phase changed_text_restores_inserted_marks_and_removes_new_marks;
     {
         let (mut doc, _, _) = text_fixture();
         let text = doc.get(ROOT, "content").unwrap().unwrap().1;
@@ -475,7 +480,8 @@ fn restore_rebuilds_every_content_type_while_keeping_live_metadata() {
             vec![Mark::new("language".into(), "de", 0, 3)]
         );
     }
-    // phase: protected_rich_text_blocks_and_marks_remain_intact
+
+    phase protected_rich_text_blocks_and_marks_remain_intact;
     {
         let (mut doc, target, _) = text_fixture();
         let text = doc
@@ -505,13 +511,10 @@ fn restore_rebuilds_every_content_type_while_keeping_live_metadata() {
     }
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn restore_rejects_invalid_targets_before_any_mutation() {
-    // phase: rejects_stale_pending_unknown_and_malformed_targets_without_mutation
+tilo_test_env::scenario! {
+    fn restore_rejects_invalid_targets_before_any_mutation;
+
+    phase rejects_stale_pending_unknown_and_malformed_targets_without_mutation;
     {
         let (mut doc, target, live) = text_fixture();
         let mut before = doc.clone();
@@ -537,7 +540,8 @@ fn restore_rejects_invalid_targets_before_any_mutation() {
             Err(RestoreError::SchemaInvalid(_))
         ));
     }
-    // phase: rejects_invalid_schema_and_conflicted_target_content
+
+    phase rejects_invalid_schema_and_conflicted_target_content;
     {
         let (mut doc, target, _) = text_fixture();
         for roots in [
@@ -574,7 +578,8 @@ fn restore_rejects_invalid_targets_before_any_mutation() {
         ));
         assert_unchanged(&doc, &mut before);
     }
-    // phase: rejects_isolated_historical_view_as_live_document
+
+    phase rejects_isolated_historical_view_as_live_document;
     // An isolated read view must not masquerade as the canonical live frontier.
     {
         let (mut doc, target, _) = text_fixture();
@@ -586,7 +591,8 @@ fn restore_rejects_invalid_targets_before_any_mutation() {
         );
         assert_unchanged(&doc, &mut before);
     }
-    // phase: nested_target_conflict_is_rejected_even_if_current_winner_is_equal
+
+    phase nested_target_conflict_is_rejected_even_if_current_winner_is_equal;
     {
         let mut doc = AutoCommit::new();
         let root = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
@@ -609,7 +615,8 @@ fn restore_rejects_invalid_targets_before_any_mutation() {
         ));
         assert_unchanged(&doc, &mut before);
     }
-    // phase: missing_required_roots_in_live_or_target_fail_without_mutation
+
+    phase missing_required_roots_in_live_or_target_fail_without_mutation;
     {
         let (mut doc, target, live) = text_fixture();
         let mut before = doc.clone();
@@ -627,7 +634,8 @@ fn restore_rejects_invalid_targets_before_any_mutation() {
         ));
         assert_unchanged(&doc, &mut before);
     }
-    // phase: target_rich_text_blocks_fail_before_live_mutation
+
+    phase target_rich_text_blocks_fail_before_live_mutation;
     {
         let (mut doc, _, _) = text_fixture();
         let text = doc.get(ROOT, "content").unwrap().unwrap().1;
@@ -646,9 +654,10 @@ fn restore_rejects_invalid_targets_before_any_mutation() {
     }
 }
 
-#[test]
-fn restore_transactions_track_exact_heads_and_content_identity() {
-    // phase: unchanged_content_creates_no_transaction_even_when_metadata_differs
+tilo_test_env::scenario! {
+    fn restore_transactions_track_exact_heads_and_content_identity;
+
+    phase unchanged_content_creates_no_transaction_even_when_metadata_differs;
     {
         let (mut doc, _, _) = text_fixture();
         let target = doc.get_heads();
@@ -663,7 +672,8 @@ fn restore_transactions_track_exact_heads_and_content_identity() {
         assert!(doc.commit().is_none());
         assert_eq!(doc.get_heads(), live);
     }
-    // phase: apply_rechecks_exact_heads_and_refuses_pending_work
+
+    phase apply_rechecks_exact_heads_and_refuses_pending_work;
     {
         let (mut doc, target, live) = text_fixture();
         let prepared = prepare_content_restore(&doc, &TEXT, &live, &target).unwrap();
@@ -682,7 +692,8 @@ fn restore_transactions_track_exact_heads_and_content_identity() {
         );
         assert_unchanged(&doc, &mut before);
     }
-    // phase: optional_root_creation_deletion_and_unchanged_content_identity
+
+    phase optional_root_creation_deletion_and_unchanged_content_identity;
     {
         let (mut doc, _, _) = text_fixture();
         let missing = doc.get_heads();
@@ -704,7 +715,8 @@ fn restore_transactions_track_exact_heads_and_content_identity() {
         assert!(doc.get(ROOT, "optional").unwrap().is_none());
         assert_eq!(doc.get(ROOT, "content").unwrap().unwrap().1, text);
     }
-    // phase: selected_full_frontier_excludes_unrelated_concurrent_content_and_normalizes_heads
+
+    phase selected_full_frontier_excludes_unrelated_concurrent_content_and_normalizes_heads;
     {
         let mut doc = AutoCommit::new();
         let root = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
@@ -762,9 +774,10 @@ static REJECT_LIVE: HistoryRestoreSchema = HistoryRestoreSchema {
     ..TEXT
 };
 
-#[test]
-fn restore_failures_roll_back_every_prior_write() {
-    // phase: trial_validator_failure_does_not_touch_live_state
+tilo_test_env::scenario! {
+    fn restore_failures_roll_back_every_prior_write;
+
+    phase trial_validator_failure_does_not_touch_live_state;
     {
         let (doc, target, live) = text_fixture();
         let mut before = doc.clone();
@@ -774,7 +787,8 @@ fn restore_failures_roll_back_every_prior_write() {
         ));
         assert_unchanged(&doc, &mut before);
     }
-    // phase: live_validator_failure_rolls_back_every_write
+
+    phase live_validator_failure_rolls_back_every_write;
     {
         let (mut doc, target, live) = text_fixture();
         doc.set_actor(automerge::ActorId::from(b"reject-live".as_slice()));
@@ -787,7 +801,8 @@ fn restore_failures_roll_back_every_prior_write() {
         assert_eq!(content_text(&doc), "two");
         assert_unchanged(&doc, &mut before);
     }
-    // phase: live_postcondition_failure_rolls_back_prior_successful_writes
+
+    phase live_postcondition_failure_rolls_back_prior_successful_writes;
     // Inject a corrupt private plan to exercise the live postcondition, rather than
     // introducing a production fault-injection hook or mutating the live document.
     {
@@ -810,7 +825,8 @@ fn restore_failures_roll_back_every_prior_write() {
         assert!(doc.get(ROOT, "z-not-content").unwrap().is_none());
         assert_unchanged(&doc, &mut before);
     }
-    // phase: automerge_write_error_rolls_back_prior_successful_writes
+
+    phase automerge_write_error_rolls_back_prior_successful_writes;
     // A mark on a list provokes a real Automerge InvalidOp only after the root and
     // list element have been written. The malformed plan is private test state.
     {
@@ -840,36 +856,104 @@ fn restore_failures_roll_back_every_prior_write() {
     }
 }
 
-#[test]
-fn selected_text_conflicts_preserve_error_precedence_and_live_state() {
-    let mut doc = AutoCommit::new();
-    let text = doc.put_object(ROOT, "content", ObjType::Text).unwrap();
-    doc.splice_text(&text, 0, 0, "x").unwrap();
-    doc.commit().unwrap();
-    let clean_target = doc.get_heads();
+tilo_test_env::scenario! {
+    fn restore_refuses_or_rolls_back_without_touching_live_state;
 
-    let mut peer = doc.fork();
-    doc.put(&text, 0, "a").unwrap();
-    peer.put(&text, 0, "b").unwrap();
-    doc.merge(&mut peer).unwrap();
-    let conflicted = doc.get_heads();
-    assert_eq!(doc.get_all(&text, 0).unwrap().len(), 2);
-    let mut before = doc.clone();
-    assert_eq!(
-        prepare_content_restore(&doc, &TEXT, &conflicted, &clean_target).unwrap_err(),
-        RestoreError::UnsupportedConflict("content/0".into())
-    );
-    assert_unchanged(&doc, &mut before);
+    phase selected_text_conflicts_preserve_error_precedence_and_live_state;
+    {
+        let mut doc = AutoCommit::new();
+        let text = doc.put_object(ROOT, "content", ObjType::Text).unwrap();
+        doc.splice_text(&text, 0, 0, "x").unwrap();
+        doc.commit().unwrap();
+        let clean_target = doc.get_heads();
 
-    doc.put(&text, 0, "current").unwrap();
-    let live = doc.get_heads();
-    assert_eq!(doc.get_all(&text, 0).unwrap().len(), 1);
-    let mut before = doc.clone();
-    assert_eq!(
-        prepare_content_restore(&doc, &TEXT, &live, &conflicted).unwrap_err(),
-        RestoreError::UnsupportedConflict("content/0".into())
-    );
-    assert_unchanged(&doc, &mut before);
+        let mut peer = doc.fork();
+        doc.put(&text, 0, "a").unwrap();
+        peer.put(&text, 0, "b").unwrap();
+        doc.merge(&mut peer).unwrap();
+        let conflicted = doc.get_heads();
+        assert_eq!(doc.get_all(&text, 0).unwrap().len(), 2);
+        let mut before = doc.clone();
+        assert_eq!(
+            prepare_content_restore(&doc, &TEXT, &conflicted, &clean_target).unwrap_err(),
+            RestoreError::UnsupportedConflict("content/0".into())
+        );
+        assert_unchanged(&doc, &mut before);
+
+        doc.put(&text, 0, "current").unwrap();
+        let live = doc.get_heads();
+        assert_eq!(doc.get_all(&text, 0).unwrap().len(), 1);
+        let mut before = doc.clone();
+        assert_eq!(
+            prepare_content_restore(&doc, &TEXT, &live, &conflicted).unwrap_err(),
+            RestoreError::UnsupportedConflict("content/0".into())
+        );
+        assert_unchanged(&doc, &mut before);
+    }
+
+    phase depth_boundary_writer_and_postcondition_failures_roll_back_exact_state;
+    {
+        std::thread::Builder::new()
+            .name("depth-boundary-error-rollback".into())
+            .stack_size(2 * 1024 * 1024)
+            .spawn(depth_boundary_writer_and_postcondition_failures_roll_back_exact_state_inner)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    phase records_containing_table_objects_are_refused_without_mutation;
+    {
+        let mut doc = AutoCommit::new();
+        let root = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
+        doc.put(&root, "value", "target").unwrap();
+        doc.put_object(ROOT, "table", ObjType::Table).unwrap();
+        let target = doc.get_heads();
+        doc.put(&root, "value", "live").unwrap();
+        let live = doc.get_heads();
+        let before = doc.save();
+        assert!(matches!(
+            prepare_content_restore(&doc, &MAP, &live, &target),
+            Err(RestoreError::UnsupportedContent(_))
+        ));
+        assert_eq!(doc.save(), before);
+    }
+
+    phase a_record_at_another_stored_version_is_refused_unread_and_unwritten;
+    {
+        // A registration describes content at its own version: its selectors,
+        // validators and writer all assume that shape. A record another version
+        // wrote is therefore refused before it is read or written, and the
+        // refusal names both versions instead of reading it as a broken record.
+        let (mut doc, target, live) = text_fixture();
+        let before = doc.save();
+        assert_eq!(
+            prepare_content_restore(&doc, text_schema_at(2), &live, &target).unwrap_err(),
+            RestoreError::SchemaVersion {
+                expected: 2,
+                stored: 1,
+            }
+        );
+        assert_eq!(doc.save(), before);
+
+        // A record stored past the registration's version, after its migration.
+        let mut migrated = doc.fork();
+        tilo_resource::evolution::write_version(&mut migrated, 3).unwrap();
+        let (migrated_heads, migrated_save) = (migrated.get_heads(), migrated.save());
+        for schema in [&TEXT, text_schema_at(2)] {
+            assert_eq!(
+                prepare_content_restore(&migrated, schema, &migrated_heads, &target).unwrap_err(),
+                RestoreError::SchemaVersion {
+                    expected: schema.version,
+                    stored: 3,
+                }
+            );
+        }
+        assert_eq!(migrated.get_heads(), migrated_heads);
+        assert_eq!(migrated.save(), migrated_save);
+
+        assert!(prepare_content_restore(&doc, &TEXT, &live, &target).is_ok());
+    }
 }
 
 static OPTIONAL: HistoryRestoreSchema = HistoryRestoreSchema {
@@ -966,17 +1050,6 @@ fn assert_deep_writer_snapshot(
     );
 }
 
-#[test]
-fn depth_boundary_writer_and_postcondition_failures_roll_back_exact_state() {
-    std::thread::Builder::new()
-        .name("depth-boundary-error-rollback".into())
-        .stack_size(2 * 1024 * 1024)
-        .spawn(depth_boundary_writer_and_postcondition_failures_roll_back_exact_state_inner)
-        .unwrap()
-        .join()
-        .unwrap();
-}
-
 fn depth_boundary_writer_and_postcondition_failures_roll_back_exact_state_inner() {
     use super::projection::{ExactScalar, Node, SemanticMark};
 
@@ -1066,59 +1139,6 @@ fn depth_boundary_writer_and_postcondition_failures_roll_back_exact_state_inner(
     drop(postcondition);
 }
 
-#[test]
-fn records_containing_table_objects_are_refused_without_mutation() {
-    let mut doc = AutoCommit::new();
-    let root = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
-    doc.put(&root, "value", "target").unwrap();
-    doc.put_object(ROOT, "table", ObjType::Table).unwrap();
-    let target = doc.get_heads();
-    doc.put(&root, "value", "live").unwrap();
-    let live = doc.get_heads();
-    let before = doc.save();
-    assert!(matches!(
-        prepare_content_restore(&doc, &MAP, &live, &target),
-        Err(RestoreError::UnsupportedContent(_))
-    ));
-    assert_eq!(doc.save(), before);
-}
-
 fn text_schema_at(version: u32) -> &'static HistoryRestoreSchema {
     Box::leak(Box::new(HistoryRestoreSchema { version, ..TEXT }))
-}
-
-#[test]
-fn a_record_at_another_stored_version_is_refused_unread_and_unwritten() {
-    // A registration describes content at its own version: its selectors,
-    // validators and writer all assume that shape. A record another version
-    // wrote is therefore refused before it is read or written, and the
-    // refusal names both versions instead of reading it as a broken record.
-    let (mut doc, target, live) = text_fixture();
-    let before = doc.save();
-    assert_eq!(
-        prepare_content_restore(&doc, text_schema_at(2), &live, &target).unwrap_err(),
-        RestoreError::SchemaVersion {
-            expected: 2,
-            stored: 1,
-        }
-    );
-    assert_eq!(doc.save(), before);
-
-    // A record stored past the registration's version, after its migration.
-    let mut migrated = doc.fork();
-    tilo_resource::evolution::write_version(&mut migrated, 3).unwrap();
-    let (migrated_heads, migrated_save) = (migrated.get_heads(), migrated.save());
-    for schema in [&TEXT, text_schema_at(2)] {
-        assert_eq!(
-            prepare_content_restore(&migrated, schema, &migrated_heads, &target).unwrap_err(),
-            RestoreError::SchemaVersion {
-                expected: schema.version,
-                stored: 3,
-            }
-        );
-    }
-    assert_eq!(migrated.get_heads(), migrated_heads);
-    assert_eq!(migrated.save(), migrated_save);
-
-    assert!(prepare_content_restore(&doc, &TEXT, &live, &target).is_ok());
 }

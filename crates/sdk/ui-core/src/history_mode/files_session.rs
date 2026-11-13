@@ -776,9 +776,10 @@ mod tests {
             authors: crate::history_source::AuthorDirectory::new(),
         })
     }
-    #[test]
-    fn files_activity_follows_the_clock_and_rejects_incoherent_pages() {
-        // phase: activity_refresh_follows_the_background_clock
+    tilo_test_env::scenario! {
+        fn files_activity_follows_the_clock_and_rejects_incoherent_pages;
+
+        phase activity_refresh_follows_the_background_clock;
         {
             let pumped = crate::background::Pumped::new();
             let mut controller = {
@@ -798,7 +799,8 @@ mod tests {
             controller.drain();
             assert!(!pumped.is_idle(), "the due refresh queued the next load");
         }
-        // phase: a_host_without_background_work_reports_history_unavailable
+
+        phase a_host_without_background_work_reports_history_unavailable;
         {
             let mut controller = {
                 let _background = Background::new(crate::background::NoBackground).enter();
@@ -809,7 +811,8 @@ mod tests {
             assert_eq!(controller.message, "This file has no history here");
             assert!(!controller.has_results(), "no immediate retry loop");
         }
-        // phase: files_activity_rejects_incoherent_page_metadata_and_order
+
+        phase files_activity_rejects_incoherent_page_metadata_and_order;
         {
             struct Pages(std::sync::Mutex<std::collections::VecDeque<Value>>);
             impl FileHistoryTransport for Pages {
@@ -1032,13 +1035,10 @@ mod tests {
             frontier: [4; 32],
         }
     }
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn files_reviews_are_fenced_against_denial_cancellation_and_delay() {
-        // phase: round1_denial_fences_delayed_preview_and_review_but_keeps_exact_settlement
+    tilo_test_env::scenario! {
+        fn files_reviews_are_fenced_against_denial_cancellation_and_delay;
+
+        phase round1_denial_fences_delayed_preview_and_review_but_keeps_exact_settlement;
         {
             for changed_binding in [false, true] {
                 let mut controller = controller();
@@ -1102,7 +1102,8 @@ mod tests {
                 );
             }
         }
-        // phase: files_confirmation_from_cancelled_review_cannot_confirm_new_review
+
+        phase files_confirmation_from_cancelled_review_cannot_confirm_new_review;
         {
             let mut controller = controller();
             controller.active = false;
@@ -1129,7 +1130,8 @@ mod tests {
                 "a valid confirmation admits exactly one intent"
             );
         }
-        // phase: files_cancel_and_new_review_reject_delayed_old_review
+
+        phase files_cancel_and_new_review_reject_delayed_old_review;
         {
             let mut controller = controller();
             let old = controller.key;
@@ -1158,13 +1160,10 @@ mod tests {
             );
         }
     }
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn files_generations_keep_their_intent_and_access_checks() {
-        // phase: files_closed_generation_cannot_install_old_review_or_foreign_preview
+    tilo_test_env::scenario! {
+        fn files_generations_keep_their_intent_and_access_checks;
+
+        phase files_closed_generation_cannot_install_old_review_or_foreign_preview;
         {
             let mut controller = controller();
             let old = controller.key;
@@ -1197,7 +1196,8 @@ mod tests {
             assert!(controller.scope.is_none());
             assert!(controller.message.contains("another file"));
         }
-        // phase: files_closed_generation_retains_original_intent_result_without_retargeting
+
+        phase files_closed_generation_retains_original_intent_result_without_retargeting;
         {
             let mut controller = controller();
             let review = review([5; 32]);
@@ -1235,7 +1235,8 @@ mod tests {
             assert!(controller.review.is_none());
             assert!(controller.after.is_none());
         }
-        // phase: files_selection_during_activity_load_resumes_real_transport_access_checks
+
+        phase files_selection_during_activity_load_resumes_real_transport_access_checks;
         {
             fn phase_files_selection_during_activity_load_resumes_real_transport_access_checks() {
                 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

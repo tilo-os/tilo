@@ -2076,154 +2076,390 @@ pub fn draw_icon_layered(
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_icon_svg_is_a_document_of_the_glyph_on_a_tile() {
-        let svg = icon_svg(Icon::FileText);
-        assert!(svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""));
-        assert!(svg.ends_with("</svg>"));
-        assert_eq!(
-            svg.matches("<path d=\"").count(),
-            icon_subpaths(Icon::FileText).len()
-        );
+    tilo_test_env::scenario! {
+        fn icons_parse_and_draw_as_their_lucide_paths;
+
+        phase an_icon_svg_is_a_document_of_the_glyph_on_a_tile;
+        {
+            let svg = icon_svg(Icon::FileText);
+            assert!(svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""));
+            assert!(svg.ends_with("</svg>"));
+            assert_eq!(
+                svg.matches("<path d=\"").count(),
+                icon_subpaths(Icon::FileText).len()
+            );
+        }
+
+        phase the_drawing_set_draws;
+        {
+            for icon in [
+                Icon::Brush,
+                Icon::Circle,
+                Icon::Slash,
+                Icon::Pipette,
+                Icon::Eraser,
+                Icon::LockOpen,
+                Icon::Bot,
+                Icon::SquareDashed,
+                Icon::CircleDashed,
+                Icon::Lasso,
+                Icon::WandSparkles,
+                Icon::PaintBucket,
+                Icon::SquaresUnite,
+                Icon::SquaresSubtract,
+                Icon::SquaresIntersect,
+                Icon::SquaresExclude,
+            ] {
+                let sub = icon_subpaths(icon);
+                assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
+                assert!(sub.iter().all(|p| element_count(p) > 0), "{icon:?}");
+            }
+        }
+
+        phase individual_icons_parse_to_their_expected_non_empty_subpaths;
+        {
+            let cases = [
+                (
+                    Icon::LayoutGrid,
+                    4,
+                    Some(1),
+                    "layout-grid has 4 rect subpaths",
+                ),
+                (
+                    Icon::Settings2,
+                    4,
+                    Some(1),
+                    "settings-2 has 2 paths + 2 circles",
+                ),
+                (Icon::Shield, 1, Some(6), "shield path is multi-segment"),
+                (Icon::Wifi, 4, Some(1), "wifi = 3 arcs + 1 dot path"),
+                (Icon::ChevronUp, 1, Some(3), "chevron is M,L,L"),
+                (Icon::Plus, 2, None, "plus = horizontal + vertical stroke"),
+                (Icon::Search, 2, Some(1), "search = circle + handle line"),
+                (Icon::Camera, 2, Some(1), "camera = body path + lens circle"),
+                (Icon::Power, 2, Some(1), "power = stem + arc"),
+            ];
+            for (icon, count, min_elements, why) in cases {
+                let sub = icon_subpaths(icon);
+                assert_eq!(sub.len(), count, "{icon:?}: {why}");
+                if let Some(min) = min_elements {
+                    for p in &sub {
+                        assert!(
+                            element_count(p) >= min,
+                            "{icon:?}: subpath must emit at least {min} path elements ({why})"
+                        );
+                    }
+                }
+            }
+        }
+
+        phase everyday_icons_have_their_lucide_subpath_counts;
+        {
+            // Each glyph keeps every element of its Lucide source, and every
+            // element is a non-empty stroke.
+            let cases = [
+                (Icon::EyeOff, 4),
+                (Icon::Phone, 1),
+                (Icon::Link, 2),
+                (Icon::MapPin, 2),
+                (Icon::QrCode, 12),
+                (Icon::ScanLine, 5),
+                (Icon::Maximize, 4),
+                (Icon::Minimize, 4),
+                (Icon::SwitchCamera, 5),
+                (Icon::User, 2),
+                (Icon::UserPlus, 4),
+                (Icon::Hash, 4),
+                (Icon::Smile, 4),
+                (Icon::SmilePlus, 6),
+                (Icon::Video, 2),
+                (Icon::PhoneOff, 3),
+                (Icon::Lock, 2),
+                (Icon::MessageSquare, 1),
+                (Icon::MessageCircle, 1),
+                (Icon::ListChecks, 5),
+                (Icon::Clock, 2),
+                (Icon::AlarmClock, 6),
+                (Icon::Hourglass, 4),
+                (Icon::Bookmark, 1),
+                (Icon::Tag, 2),
+                (Icon::Rss, 3),
+                (Icon::Upload, 3),
+                (Icon::Type, 3),
+                (Icon::Box, 3),
+                (Icon::Contrast, 2),
+                (Icon::Columns2, 2),
+                (Icon::Palette, 5),
+                (Icon::Crop, 2),
+                (Icon::Usb, 7),
+                (Icon::CircleCheck, 2),
+                (Icon::Circle, 1),
+                (Icon::AArrowDown, 4),
+                (Icon::AArrowUp, 4),
+                (Icon::Ruler, 5),
+                (Icon::Disc3, 4),
+                (Icon::Bold, 1),
+                (Icon::Italic, 3),
+                (Icon::Underline, 2),
+                (Icon::Strikethrough, 3),
+                (Icon::Superscript, 3),
+                (Icon::Subscript, 3),
+                (Icon::Heading1, 4),
+                (Icon::Heading2, 4),
+                (Icon::ListOrdered, 6),
+                (Icon::Quote, 2),
+                (Icon::ReplyAll, 3),
+                (Icon::Forward, 2),
+                (Icon::MailOpen, 2),
+                (Icon::AlignLeft, 3),
+                (Icon::AlignCenter, 3),
+                (Icon::AlignRight, 3),
+                (Icon::AlignJustify, 3),
+                (Icon::BringToFront, 3),
+                (Icon::SendToBack, 4),
+                (Icon::Baseline, 3),
+                (Icon::Highlighter, 2),
+                (Icon::Table, 4),
+                (Icon::ListTree, 5),
+                (Icon::Shuffle, 5),
+                (Icon::Repeat, 4),
+                (Icon::Repeat1, 5),
+                (Icon::Heart, 1),
+                (Icon::HeartFilled, 1),
+                (Icon::Captions, 5),
+                (Icon::ListMusic, 5),
+                (Icon::Speaker, 4),
+                (Icon::Headphones, 1),
+                (Icon::HeadphoneOff, 5),
+                (Icon::Gauge, 2),
+                (Icon::LocateFixed, 6),
+                (Icon::Navigation, 1),
+                (Icon::Flag, 1),
+                (Icon::CornerUpLeft, 2),
+                (Icon::CornerUpRight, 2),
+                (Icon::ArrowUpLeft, 2),
+                (Icon::ArrowUpRight, 2),
+                (Icon::ArrowDownLeft, 2),
+                (Icon::ArrowDownRight, 2),
+                (Icon::Coffee, 4),
+                (Icon::Utensils, 3),
+                (Icon::Beer, 5),
+                (Icon::Landmark, 6),
+                (Icon::Trees, 4),
+                (Icon::TrainFront, 6),
+                (Icon::BedDouble, 4),
+                (Icon::ShoppingBag, 3),
+                (Icon::Hospital, 5),
+                (Icon::Droplet, 1),
+                (Icon::Wind, 3),
+                (Icon::Cloud, 1),
+                (Icon::CloudRain, 4),
+                (Icon::CloudSnow, 7),
+                (Icon::Moon, 1),
+                (Icon::Hand, 4),
+                (Icon::PawPrint, 4),
+                (Icon::Plane, 1),
+                (Icon::Trophy, 6),
+                (Icon::Lightbulb, 3),
+                (Icon::SdCard, 4),
+                (Icon::Smartphone, 2),
+                (Icon::Tablet, 2),
+                (Icon::Laptop, 1),
+            ];
+            for (icon, count) in cases {
+                let sub = icon_subpaths(icon);
+                assert_eq!(sub.len(), count, "{icon:?}");
+                for p in &sub {
+                    assert!(element_count(p) > 0, "{icon:?} emitted an empty subpath");
+                }
+            }
+        }
     }
 
-    #[test]
-    fn every_glyph_is_found_by_its_lucide_name() {
-        for name in [
-            "layout-grid",
-            "settings-2",
-            "mouse",
-            "keyboard",
-            "users",
-            "printer",
-            "globe",
-            "wifi",
-            "bluetooth",
-            "monitor",
-            "battery",
-            "shield",
-            "maximize-2",
-            "minimize-2",
-            "x",
-            "chevron-up",
-            "chevron-down",
-            "chevron-left",
-            "plus",
-            "search",
-            "pen-tool",
-            "code",
-            "terminal",
-            "file-text",
-            "bar-chart",
-            "layers",
-            "settings",
-            "home",
-            "camera",
-            "power",
-            "folder",
-            "folder-open",
-            "file",
-            "image",
-            "music",
-            "film",
-            "archive",
-            "file-code",
-            "arrow-left",
-            "arrow-right",
-            "arrow-up",
-            "arrow-down",
-            "chevron-right",
-            "rotate-ccw",
-            "rotate-cw",
-            "copy",
-            "scissors",
-            "clipboard-paste",
-            "trash-2",
-            "pencil",
-            "square",
-            "minus",
-            "folder-plus",
-            "file-plus",
-            "list",
-            "star",
-            "pin",
-            "hard-drive",
-            "check",
-            "flame",
-            "gallery-vertical-end",
-            "history",
-            "timer",
-            "thumbs-up",
-            "thumbs-down",
-            "list-video",
-            "picture-in-picture-2",
-            "sparkles",
-            "eye",
-            "mouse-pointer-2",
-            "menu",
-            "info",
-            "cloud-download",
-            "arrow-up-down",
-            "bell",
-            "play",
-            "pause",
-            "refresh",
-            "external-link",
-            "trash",
-            "more-horizontal",
-            "inbox",
-            "send",
-            "reply",
-            "mail",
-            "paperclip",
-            "calendar",
-            "ban",
-            "download",
-            "sun",
-            "volume-2",
-            "volume-x",
-            "wifi-off",
-            "ethernet-port",
-            "mic",
-            "mic-off",
-            "skip-forward",
-            "skip-back",
-            "arrow-big-up",
-            "delete",
-            "corner-down-left",
-            "undo-2",
-            "redo-2",
-            "brush",
-            "circle",
-            "slash",
-            "type",
-            "pipette",
-            "eraser",
-            "eye-off",
-            "lock",
-            "lock-open",
-            "bot",
-            "user",
-            "flag",
-            "droplet",
-            "palette",
-            "panel-right",
-            "panel-bottom",
-            "square-dashed",
-            "circle-dashed",
-            "lasso",
-            "wand-sparkles",
-            "paint-bucket",
-            "contrast",
-            "squares-unite",
-            "squares-subtract",
-            "squares-intersect",
-            "squares-exclude",
-        ] {
-            let icon = Icon::from_name(name).unwrap_or_else(|| panic!("{name} names a glyph"));
-            assert_eq!(icon.name(), name);
+    tilo_test_env::scenario! {
+        fn icons_are_found_by_name_and_by_file_kind;
+
+        phase every_glyph_is_found_by_its_lucide_name;
+        {
+            for name in [
+                "layout-grid",
+                "settings-2",
+                "mouse",
+                "keyboard",
+                "users",
+                "printer",
+                "globe",
+                "wifi",
+                "bluetooth",
+                "monitor",
+                "battery",
+                "shield",
+                "maximize-2",
+                "minimize-2",
+                "x",
+                "chevron-up",
+                "chevron-down",
+                "chevron-left",
+                "plus",
+                "search",
+                "pen-tool",
+                "code",
+                "terminal",
+                "file-text",
+                "bar-chart",
+                "layers",
+                "settings",
+                "home",
+                "camera",
+                "power",
+                "folder",
+                "folder-open",
+                "file",
+                "image",
+                "music",
+                "film",
+                "archive",
+                "file-code",
+                "arrow-left",
+                "arrow-right",
+                "arrow-up",
+                "arrow-down",
+                "chevron-right",
+                "rotate-ccw",
+                "rotate-cw",
+                "copy",
+                "scissors",
+                "clipboard-paste",
+                "trash-2",
+                "pencil",
+                "square",
+                "minus",
+                "folder-plus",
+                "file-plus",
+                "list",
+                "star",
+                "pin",
+                "hard-drive",
+                "check",
+                "flame",
+                "gallery-vertical-end",
+                "history",
+                "timer",
+                "thumbs-up",
+                "thumbs-down",
+                "list-video",
+                "picture-in-picture-2",
+                "sparkles",
+                "eye",
+                "mouse-pointer-2",
+                "menu",
+                "info",
+                "cloud-download",
+                "arrow-up-down",
+                "bell",
+                "play",
+                "pause",
+                "refresh",
+                "external-link",
+                "trash",
+                "more-horizontal",
+                "inbox",
+                "send",
+                "reply",
+                "mail",
+                "paperclip",
+                "calendar",
+                "ban",
+                "download",
+                "sun",
+                "volume-2",
+                "volume-x",
+                "wifi-off",
+                "ethernet-port",
+                "mic",
+                "mic-off",
+                "skip-forward",
+                "skip-back",
+                "arrow-big-up",
+                "delete",
+                "corner-down-left",
+                "undo-2",
+                "redo-2",
+                "brush",
+                "circle",
+                "slash",
+                "type",
+                "pipette",
+                "eraser",
+                "eye-off",
+                "lock",
+                "lock-open",
+                "bot",
+                "user",
+                "flag",
+                "droplet",
+                "palette",
+                "panel-right",
+                "panel-bottom",
+                "square-dashed",
+                "circle-dashed",
+                "lasso",
+                "wand-sparkles",
+                "paint-bucket",
+                "contrast",
+                "squares-unite",
+                "squares-subtract",
+                "squares-intersect",
+                "squares-exclude",
+            ] {
+                let icon = Icon::from_name(name).unwrap_or_else(|| panic!("{name} names a glyph"));
+                assert_eq!(icon.name(), name);
+            }
+            assert_eq!(Icon::from_name("no-such-glyph"), None);
         }
-        assert_eq!(Icon::from_name("no-such-glyph"), None);
+
+        phase every_icon_is_found_by_its_name;
+        {
+            let names: std::collections::HashSet<_> = Icon::ALL.iter().map(|i| i.name()).collect();
+            assert_eq!(names.len(), Icon::ALL.len(), "two icons share a name");
+            for icon in Icon::ALL {
+                assert_eq!(Icon::from_name(icon.name()), Some(icon));
+            }
+            assert_eq!(Icon::LayoutGrid.name(), "layout-grid");
+            assert_eq!(Icon::Settings2.name(), "settings-2");
+        }
+
+        phase icon_for_path_classifies_by_extension;
+        {
+            use std::path::Path;
+            assert_eq!(
+                icon_for_path(Path::new("/home/user/Pictures"), true),
+                Icon::Folder
+            );
+            assert_eq!(
+                icon_for_path(Path::new("/x/archive.zip"), true),
+                Icon::Folder
+            );
+            assert_eq!(
+                icon_for_path(Path::new("a/photo.PNG"), false),
+                Icon::Image,
+                "case-insensitive"
+            );
+            assert_eq!(icon_for_path(Path::new("song.flac"), false), Icon::Music);
+            assert_eq!(icon_for_path(Path::new("clip.mkv"), false), Icon::Film);
+            assert_eq!(
+                icon_for_path(Path::new("bundle.tar.gz"), false),
+                Icon::Archive
+            );
+            assert_eq!(icon_for_path(Path::new("main.rs"), false), Icon::FileCode);
+            assert_eq!(icon_for_path(Path::new("notes.md"), false), Icon::FileText);
+            assert_eq!(
+                icon_for_path(Path::new("report.docx"), false),
+                Icon::FileText
+            );
+            assert_eq!(icon_for_path(Path::new("Makefile"), false), Icon::File);
+            assert_eq!(icon_for_path(Path::new("blob.qwerty"), false), Icon::File);
+        }
     }
 
     /// Walk a path's elements; returns the count so tests can assert "non-empty" without matching
@@ -2232,87 +2468,10 @@ mod tests {
         p.elements().iter().count()
     }
 
-    #[test]
-    fn the_drawing_set_draws() {
-        for icon in [
-            Icon::Brush,
-            Icon::Circle,
-            Icon::Slash,
-            Icon::Pipette,
-            Icon::Eraser,
-            Icon::LockOpen,
-            Icon::Bot,
-            Icon::SquareDashed,
-            Icon::CircleDashed,
-            Icon::Lasso,
-            Icon::WandSparkles,
-            Icon::PaintBucket,
-            Icon::SquaresUnite,
-            Icon::SquaresSubtract,
-            Icon::SquaresIntersect,
-            Icon::SquaresExclude,
-        ] {
-            let sub = icon_subpaths(icon);
-            assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
-            assert!(sub.iter().all(|p| element_count(p) > 0), "{icon:?}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn icon_families_have_their_lucide_subpath_counts;
 
-    #[test]
-    fn every_icon_is_found_by_its_name() {
-        let names: std::collections::HashSet<_> = Icon::ALL.iter().map(|i| i.name()).collect();
-        assert_eq!(names.len(), Icon::ALL.len(), "two icons share a name");
-        for icon in Icon::ALL {
-            assert_eq!(Icon::from_name(icon.name()), Some(icon));
-        }
-        assert_eq!(Icon::LayoutGrid.name(), "layout-grid");
-        assert_eq!(Icon::Settings2.name(), "settings-2");
-    }
-
-    #[test]
-    fn individual_icons_parse_to_their_expected_non_empty_subpaths() {
-        let cases = [
-            (
-                Icon::LayoutGrid,
-                4,
-                Some(1),
-                "layout-grid has 4 rect subpaths",
-            ),
-            (
-                Icon::Settings2,
-                4,
-                Some(1),
-                "settings-2 has 2 paths + 2 circles",
-            ),
-            (Icon::Shield, 1, Some(6), "shield path is multi-segment"),
-            (Icon::Wifi, 4, Some(1), "wifi = 3 arcs + 1 dot path"),
-            (Icon::ChevronUp, 1, Some(3), "chevron is M,L,L"),
-            (Icon::Plus, 2, None, "plus = horizontal + vertical stroke"),
-            (Icon::Search, 2, Some(1), "search = circle + handle line"),
-            (Icon::Camera, 2, Some(1), "camera = body path + lens circle"),
-            (Icon::Power, 2, Some(1), "power = stem + arc"),
-        ];
-        for (icon, count, min_elements, why) in cases {
-            let sub = icon_subpaths(icon);
-            assert_eq!(sub.len(), count, "{icon:?}: {why}");
-            if let Some(min) = min_elements {
-                for p in &sub {
-                    assert!(
-                        element_count(p) >= min,
-                        "{icon:?}: subpath must emit at least {min} path elements ({why})"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn icon_families_have_their_lucide_subpath_counts() {
-        // phase: status_tray_icons_have_their_expected_subpaths
+        phase status_tray_icons_have_their_expected_subpaths;
         // Wi-Fi's subpaths are addressed *by index* to show signal strength
         // (see [`draw_icon_layered`]) — a reordering upstream would silently
         // light the wrong bars rather than fail to compile.
@@ -2337,7 +2496,8 @@ mod tests {
             assert_eq!(icon_subpaths(Icon::SkipForward).len(), 2, "triangle + bar");
             assert_eq!(icon_subpaths(Icon::SkipBack).len(), 2, "triangle + bar");
         }
-        // phase: extended_icon_subpath_counts
+
+        phase extended_icon_subpath_counts;
         {
             assert_eq!(icon_subpaths(Icon::Star).len(), 1, "star = 1 outline");
             assert_eq!(icon_subpaths(Icon::Bell).len(), 2, "bell = dome + clapper");
@@ -2396,7 +2556,8 @@ mod tests {
                 "corner-down-left = hook + head"
             );
         }
-        // phase: workspace_icon_subpath_counts
+
+        phase workspace_icon_subpath_counts;
         {
             assert_eq!(
                 icon_subpaths(Icon::PenTool).len(),
@@ -2447,7 +2608,8 @@ mod tests {
                 }
             }
         }
-        // phase: video_navigation_icons_match_lucide_subpath_counts
+
+        phase video_navigation_icons_match_lucide_subpath_counts;
         {
             for (icon, expected) in [
                 (Icon::Flame, 1),
@@ -2468,7 +2630,8 @@ mod tests {
                 );
             }
         }
-        // phase: file_manager_icon_subpath_counts
+
+        phase file_manager_icon_subpath_counts;
         {
             assert_eq!(icon_subpaths(Icon::Folder).len(), 1);
             assert_eq!(icon_subpaths(Icon::File).len(), 2, "file = page + corner");
@@ -2501,9 +2664,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn icons_draw_every_subpath_as_strokes_pointing_the_named_way() {
-        // phase: draw_icon_layered_paints_every_subpath
+    tilo_test_env::scenario! {
+        fn icons_draw_every_subpath_as_strokes_pointing_the_named_way;
+
+        phase draw_icon_layered_paints_every_subpath;
         {
             let mut scene = Scene::new();
             let mut seen = Vec::new();
@@ -2520,7 +2684,8 @@ mod tests {
             );
             assert_eq!(seen, vec![0, 1, 2, 3]);
         }
-        // phase: draw_icon_does_not_panic_on_zero_rect
+
+        phase draw_icon_does_not_panic_on_zero_rect;
         {
             let mut scene = Scene::new();
             draw_icon(
@@ -2532,7 +2697,8 @@ mod tests {
                 LUCIDE_DEFAULT_STROKE_PX,
             );
         }
-        // phase: icon_draw_method_emits_strokes
+
+        phase icon_draw_method_emits_strokes;
         {
             use vello_encoding::DrawTag;
             let mut scene = Scene::new();
@@ -2553,7 +2719,8 @@ mod tests {
                 "Icon::draw must stroke at least one subpath"
             );
         }
-        // phase: the_skip_glyphs_point_the_way_they_are_named
+
+        phase the_skip_glyphs_point_the_way_they_are_named;
         // The two skip glyphs are mirror images, so a swap produces two icons
         // that each look fine alone and both point the wrong way. Pin the
         // direction geometrically: the bar sits on the side the triangle points at.
@@ -2591,13 +2758,10 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn every_icon_family_produces_non_empty_subpaths() {
-        // phase: all_icons_produce_non_empty_subpaths
+    tilo_test_env::scenario! {
+        fn every_icon_family_produces_non_empty_subpaths;
+
+        phase all_icons_produce_non_empty_subpaths;
         {
             for icon in [
                 Icon::LayoutGrid,
@@ -2657,7 +2821,8 @@ mod tests {
                 }
             }
         }
-        // phase: mail_icons_produce_non_empty_subpaths
+
+        phase mail_icons_produce_non_empty_subpaths;
         {
             for icon in [
                 Icon::Inbox,
@@ -2690,7 +2855,8 @@ mod tests {
                 "download = stem + head + tray"
             );
         }
-        // phase: file_manager_icons_produce_non_empty_subpaths
+
+        phase file_manager_icons_produce_non_empty_subpaths;
         {
             for icon in [
                 Icon::Folder,
@@ -2734,159 +2900,5 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn everyday_icons_have_their_lucide_subpath_counts() {
-        // Each glyph keeps every element of its Lucide source, and every
-        // element is a non-empty stroke.
-        let cases = [
-            (Icon::EyeOff, 4),
-            (Icon::Phone, 1),
-            (Icon::Link, 2),
-            (Icon::MapPin, 2),
-            (Icon::QrCode, 12),
-            (Icon::ScanLine, 5),
-            (Icon::Maximize, 4),
-            (Icon::Minimize, 4),
-            (Icon::SwitchCamera, 5),
-            (Icon::User, 2),
-            (Icon::UserPlus, 4),
-            (Icon::Hash, 4),
-            (Icon::Smile, 4),
-            (Icon::SmilePlus, 6),
-            (Icon::Video, 2),
-            (Icon::PhoneOff, 3),
-            (Icon::Lock, 2),
-            (Icon::MessageSquare, 1),
-            (Icon::MessageCircle, 1),
-            (Icon::ListChecks, 5),
-            (Icon::Clock, 2),
-            (Icon::AlarmClock, 6),
-            (Icon::Hourglass, 4),
-            (Icon::Bookmark, 1),
-            (Icon::Tag, 2),
-            (Icon::Rss, 3),
-            (Icon::Upload, 3),
-            (Icon::Type, 3),
-            (Icon::Box, 3),
-            (Icon::Contrast, 2),
-            (Icon::Columns2, 2),
-            (Icon::Palette, 5),
-            (Icon::Crop, 2),
-            (Icon::Usb, 7),
-            (Icon::CircleCheck, 2),
-            (Icon::Circle, 1),
-            (Icon::AArrowDown, 4),
-            (Icon::AArrowUp, 4),
-            (Icon::Ruler, 5),
-            (Icon::Disc3, 4),
-            (Icon::Bold, 1),
-            (Icon::Italic, 3),
-            (Icon::Underline, 2),
-            (Icon::Strikethrough, 3),
-            (Icon::Superscript, 3),
-            (Icon::Subscript, 3),
-            (Icon::Heading1, 4),
-            (Icon::Heading2, 4),
-            (Icon::ListOrdered, 6),
-            (Icon::Quote, 2),
-            (Icon::ReplyAll, 3),
-            (Icon::Forward, 2),
-            (Icon::MailOpen, 2),
-            (Icon::AlignLeft, 3),
-            (Icon::AlignCenter, 3),
-            (Icon::AlignRight, 3),
-            (Icon::AlignJustify, 3),
-            (Icon::BringToFront, 3),
-            (Icon::SendToBack, 4),
-            (Icon::Baseline, 3),
-            (Icon::Highlighter, 2),
-            (Icon::Table, 4),
-            (Icon::ListTree, 5),
-            (Icon::Shuffle, 5),
-            (Icon::Repeat, 4),
-            (Icon::Repeat1, 5),
-            (Icon::Heart, 1),
-            (Icon::HeartFilled, 1),
-            (Icon::Captions, 5),
-            (Icon::ListMusic, 5),
-            (Icon::Speaker, 4),
-            (Icon::Headphones, 1),
-            (Icon::HeadphoneOff, 5),
-            (Icon::Gauge, 2),
-            (Icon::LocateFixed, 6),
-            (Icon::Navigation, 1),
-            (Icon::Flag, 1),
-            (Icon::CornerUpLeft, 2),
-            (Icon::CornerUpRight, 2),
-            (Icon::ArrowUpLeft, 2),
-            (Icon::ArrowUpRight, 2),
-            (Icon::ArrowDownLeft, 2),
-            (Icon::ArrowDownRight, 2),
-            (Icon::Coffee, 4),
-            (Icon::Utensils, 3),
-            (Icon::Beer, 5),
-            (Icon::Landmark, 6),
-            (Icon::Trees, 4),
-            (Icon::TrainFront, 6),
-            (Icon::BedDouble, 4),
-            (Icon::ShoppingBag, 3),
-            (Icon::Hospital, 5),
-            (Icon::Droplet, 1),
-            (Icon::Wind, 3),
-            (Icon::Cloud, 1),
-            (Icon::CloudRain, 4),
-            (Icon::CloudSnow, 7),
-            (Icon::Moon, 1),
-            (Icon::Hand, 4),
-            (Icon::PawPrint, 4),
-            (Icon::Plane, 1),
-            (Icon::Trophy, 6),
-            (Icon::Lightbulb, 3),
-            (Icon::SdCard, 4),
-            (Icon::Smartphone, 2),
-            (Icon::Tablet, 2),
-            (Icon::Laptop, 1),
-        ];
-        for (icon, count) in cases {
-            let sub = icon_subpaths(icon);
-            assert_eq!(sub.len(), count, "{icon:?}");
-            for p in &sub {
-                assert!(element_count(p) > 0, "{icon:?} emitted an empty subpath");
-            }
-        }
-    }
-
-    #[test]
-    fn icon_for_path_classifies_by_extension() {
-        use std::path::Path;
-        assert_eq!(
-            icon_for_path(Path::new("/home/user/Pictures"), true),
-            Icon::Folder
-        );
-        assert_eq!(
-            icon_for_path(Path::new("/x/archive.zip"), true),
-            Icon::Folder
-        );
-        assert_eq!(
-            icon_for_path(Path::new("a/photo.PNG"), false),
-            Icon::Image,
-            "case-insensitive"
-        );
-        assert_eq!(icon_for_path(Path::new("song.flac"), false), Icon::Music);
-        assert_eq!(icon_for_path(Path::new("clip.mkv"), false), Icon::Film);
-        assert_eq!(
-            icon_for_path(Path::new("bundle.tar.gz"), false),
-            Icon::Archive
-        );
-        assert_eq!(icon_for_path(Path::new("main.rs"), false), Icon::FileCode);
-        assert_eq!(icon_for_path(Path::new("notes.md"), false), Icon::FileText);
-        assert_eq!(
-            icon_for_path(Path::new("report.docx"), false),
-            Icon::FileText
-        );
-        assert_eq!(icon_for_path(Path::new("Makefile"), false), Icon::File);
-        assert_eq!(icon_for_path(Path::new("blob.qwerty"), false), Icon::File);
     }
 }

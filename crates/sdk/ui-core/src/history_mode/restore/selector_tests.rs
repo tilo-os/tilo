@@ -47,48 +47,68 @@ static CONTENT_EXCEPT: HistoryRestoreSchema = HistoryRestoreSchema {
     validate_result: |_| Ok(()),
 };
 
-#[test]
-fn map_content_except_restores_authored_keys_and_preserves_excluded_state() {
-    let mut doc = at_sheets_version();
-    let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
-    let presence = doc.put_object(&profile, "presence", ObjType::Map).unwrap();
-    doc.put(&profile, "name", "target").unwrap();
-    doc.put(&profile, "target-only", 7_i64).unwrap();
-    doc.put(&profile, "last_used", 1_i64).unwrap();
-    doc.put(&presence, "status", "historic").unwrap();
-    let target = doc.get_heads();
-    doc.put(&profile, "name", "live").unwrap();
-    doc.delete(&profile, "target-only").unwrap();
-    doc.put(&profile, "current-only", true).unwrap();
-    doc.put(&profile, "last_used", 9_i64).unwrap();
-    doc.put(&presence, "status", "current").unwrap();
-    assert_eq!(
-        restore(&mut doc, &CONTENT_EXCEPT, &target),
-        RestoreOutcome::Changed
-    );
-    assert_eq!(object(&doc, &ROOT, "profile"), profile);
-    assert_eq!(object(&doc, &profile, "presence"), presence);
-    assert_eq!(
-        doc.get(&profile, "name").unwrap().unwrap().0.as_str(),
-        Some("target")
-    );
-    assert_eq!(
-        doc.get(&profile, "target-only")
-            .unwrap()
-            .unwrap()
-            .0
-            .as_i64(),
-        Some(7)
-    );
-    assert!(doc.get(&profile, "current-only").unwrap().is_none());
-    assert_eq!(
-        doc.get(&profile, "last_used").unwrap().unwrap().0.as_i64(),
-        Some(9)
-    );
-    assert_eq!(
-        doc.get(&presence, "status").unwrap().unwrap().0.as_str(),
-        Some("current")
-    );
+tilo_test_env::scenario! {
+    fn content_selectors_restore_within_their_codec_and_ownership_bounds;
+
+    phase map_content_except_restores_authored_keys_and_preserves_excluded_state;
+    {
+        let mut doc = at_sheets_version();
+        let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
+        let presence = doc.put_object(&profile, "presence", ObjType::Map).unwrap();
+        doc.put(&profile, "name", "target").unwrap();
+        doc.put(&profile, "target-only", 7_i64).unwrap();
+        doc.put(&profile, "last_used", 1_i64).unwrap();
+        doc.put(&presence, "status", "historic").unwrap();
+        let target = doc.get_heads();
+        doc.put(&profile, "name", "live").unwrap();
+        doc.delete(&profile, "target-only").unwrap();
+        doc.put(&profile, "current-only", true).unwrap();
+        doc.put(&profile, "last_used", 9_i64).unwrap();
+        doc.put(&presence, "status", "current").unwrap();
+        assert_eq!(
+            restore(&mut doc, &CONTENT_EXCEPT, &target),
+            RestoreOutcome::Changed
+        );
+        assert_eq!(object(&doc, &ROOT, "profile"), profile);
+        assert_eq!(object(&doc, &profile, "presence"), presence);
+        assert_eq!(
+            doc.get(&profile, "name").unwrap().unwrap().0.as_str(),
+            Some("target")
+        );
+        assert_eq!(
+            doc.get(&profile, "target-only")
+                .unwrap()
+                .unwrap()
+                .0
+                .as_i64(),
+            Some(7)
+        );
+        assert!(doc.get(&profile, "current-only").unwrap().is_none());
+        assert_eq!(
+            doc.get(&profile, "last_used").unwrap().unwrap().0.as_i64(),
+            Some(9)
+        );
+        assert_eq!(
+            doc.get(&presence, "status").unwrap().unwrap().0.as_str(),
+            Some("current")
+        );
+    }
+
+    phase accepted_selector_and_protected_codec_boundaries;
+    {
+        on_deep_stack(
+            "accepted-selector-protected-boundaries",
+            accepted_selector_and_protected_codec_boundaries_inner,
+        );
+    }
+
+    phase deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action;
+    {
+        on_deep_stack(
+            "deep-owned-state-restore",
+            deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner,
+        );
+    }
 }
 
 const SHEETS_NODE: HistoryRestoreNode = HistoryRestoreNode::MapOverlay(&HistoryMapOverlay {
@@ -148,9 +168,10 @@ fn at_sheets_version() -> AutoCommit {
     doc
 }
 
-#[test]
-fn selectors_restore_only_selected_children_of_mixed_containers() {
-    // phase: sheets_shorter_list_preserves_mixed_parent_and_current_active
+tilo_test_env::scenario! {
+    fn selectors_restore_only_selected_children_of_mixed_containers;
+
+    phase sheets_shorter_list_preserves_mixed_parent_and_current_active;
     // Replacing wb would lose both its identity and the current presentation state.
     {
         let (mut doc, wb, target) = sheets_fixture();
@@ -171,7 +192,8 @@ fn selectors_restore_only_selected_children_of_mixed_containers() {
         );
         assert!(doc.pending_ops() > 0);
     }
-    // phase: absent_structural_parent_deletes_only_optional_selected_child
+
+    phase absent_structural_parent_deletes_only_optional_selected_child;
     {
         let (mut doc, wb, _) = sheets_fixture();
         assert_eq!(restore(&mut doc, &SHEETS, &[]), RestoreOutcome::Changed);
@@ -179,7 +201,8 @@ fn selectors_restore_only_selected_children_of_mixed_containers() {
         assert!(doc.get(&wb, "sheets").unwrap().is_none());
         assert_eq!(doc.get(&wb, "active").unwrap().unwrap().0.as_i64(), Some(1));
     }
-    // phase: creates_absent_mixed_container_with_selected_children_only
+
+    phase creates_absent_mixed_container_with_selected_children_only;
     // A missing live structural container must not import its historical view state.
     {
         let (mut doc, _, target) = sheets_fixture();
@@ -189,7 +212,8 @@ fn selectors_restore_only_selected_children_of_mixed_containers() {
         assert_eq!(doc.length(object(&doc, &wb, "sheets")), 1);
         assert!(doc.get(&wb, "active").unwrap().is_none());
     }
-    // phase: optional_selected_child_absence_preserves_present_parent_and_unknown_children
+
+    phase optional_selected_child_absence_preserves_present_parent_and_unknown_children;
     {
         let mut doc = at_sheets_version();
         let wb = doc.put_object(ROOT, "wb", ObjType::Map).unwrap();
@@ -205,7 +229,8 @@ fn selectors_restore_only_selected_children_of_mixed_containers() {
             Some("current")
         );
     }
-    // phase: omission_is_admitted_only_when_combined_result_validator_accepts_it
+
+    phase omission_is_admitted_only_when_combined_result_validator_accepts_it;
     {
         let mut doc = at_sheets_version();
         let connections = doc.put_object(ROOT, "connections", ObjType::Map).unwrap();
@@ -223,9 +248,10 @@ fn selectors_restore_only_selected_children_of_mixed_containers() {
     }
 }
 
-#[test]
-fn selectors_keep_protected_content_and_refuse_selected_conflicts() {
-    // phase: nested_protected_historical_differences_are_noop
+tilo_test_env::scenario! {
+    fn selectors_keep_protected_content_and_refuse_selected_conflicts;
+
+    phase nested_protected_historical_differences_are_noop;
     {
         let (mut doc, wb, _) = sheets_fixture();
         let target = doc.get_heads();
@@ -238,7 +264,8 @@ fn selectors_keep_protected_content_and_refuse_selected_conflicts() {
         assert_eq!(doc.pending_ops(), 0);
         assert_eq!(object(&doc, &wb, "sheets"), sheets);
     }
-    // phase: nested_selected_conflicts_refuse_but_protected_conflicts_retain_every_op
+
+    phase nested_selected_conflicts_refuse_but_protected_conflicts_retain_every_op;
     {
         let (mut doc, wb, target) = sheets_fixture();
         doc.commit();
@@ -267,7 +294,8 @@ fn selectors_keep_protected_content_and_refuse_selected_conflicts() {
         ));
         assert_eq!(doc.pending_ops(), 0);
     }
-    // phase: recursive_overlays_keep_every_mixed_ancestor_and_protected_object
+
+    phase recursive_overlays_keep_every_mixed_ancestor_and_protected_object;
     {
         let mut doc = at_sheets_version();
         let document = doc.put_object(ROOT, "document", ObjType::Map).unwrap();
@@ -296,7 +324,8 @@ fn selectors_keep_protected_content_and_refuse_selected_conflicts() {
             Some("original")
         );
     }
-    // phase: reject_policy_refuses_new_entity_but_allows_retained_profile_edits
+
+    phase reject_policy_refuses_new_entity_but_allows_retained_profile_edits;
     {
         let mut doc = at_sheets_version();
         let connections = doc.put_object(ROOT, "connections", ObjType::Map).unwrap();
@@ -402,13 +431,10 @@ fn profile(doc: &mut AutoCommit, connections: &ObjId, key: &str, name: &str) -> 
     id
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn selectors_preserve_identity_membership_and_roll_back_failures() {
-    // phase: remote_retains_operational_identity_deletes_entities_and_resurrects_content_only
+tilo_test_env::scenario! {
+    fn selectors_preserve_identity_membership_and_roll_back_failures;
+
+    phase remote_retains_operational_identity_deletes_entities_and_resurrects_content_only;
     {
         let mut doc = at_sheets_version();
         let connections = doc.put_object(ROOT, "connections", ObjType::Map).unwrap();
@@ -446,7 +472,8 @@ fn selectors_preserve_identity_membership_and_roll_back_failures() {
         assert!(doc.get(&resurrect, "presence").unwrap().is_none());
         assert!(doc.get(&resurrect, "last_used").unwrap().is_none());
     }
-    // phase: browser_add_remove_membership_and_tombstone_resurrection
+
+    phase browser_add_remove_membership_and_tombstone_resurrection;
     {
         let mut doc = at_sheets_version();
         let add = doc
@@ -503,7 +530,8 @@ fn selectors_preserve_identity_membership_and_roll_back_failures() {
             Some(true)
         );
     }
-    // phase: real_browser_tags_and_unicode_family_identities_restore
+
+    phase real_browser_tags_and_unicode_family_identities_restore;
     // Browser's actual tags contain colons; UTF-8 identity captures are byte-bounded.
     {
         let mut doc = at_sheets_version();
@@ -556,7 +584,8 @@ fn selectors_preserve_identity_membership_and_roll_back_failures() {
             Err(RestoreError::InvalidSchema(_))
         ));
     }
-    // phase: combined_result_validator_preflight_and_live_failure_roll_back_all_writes
+
+    phase combined_result_validator_preflight_and_live_failure_roll_back_all_writes;
     {
         let (mut doc, wb, target) = sheets_fixture();
         let live = doc.get_heads();
@@ -648,13 +677,10 @@ fn schema(selectors: Vec<HistoryRootSelector>) -> &'static HistoryRestoreSchema 
         ..SHEETS
     }))
 }
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn selector_families_and_overlays_are_validated_at_registration_and_capture() {
-    // phase: families_accept_disjoint_suffixes_and_reject_static_intersections
+tilo_test_env::scenario! {
+    fn selector_families_and_overlays_are_validated_at_registration_and_capture;
+
+    phase families_accept_disjoint_suffixes_and_reject_static_intersections;
     // Valid suffix-separated families must work; registrations admitting shared keys
     // or protected keys must fail independently of whether that key exists today.
     {
@@ -708,7 +734,8 @@ fn selector_families_and_overlays_are_validated_at_registration_and_capture() {
             Err(RestoreError::InvalidSchema(_))
         ));
     }
-    // phase: family_capture_bounds_and_required_membership_are_checked_on_current_and_target
+
+    phase family_capture_bounds_and_required_membership_are_checked_on_current_and_target;
     {
         let bounded = schema(vec![family("draft.", "", 3, STRING)]);
         let mut doc = at_sheets_version();
@@ -741,7 +768,8 @@ fn selector_families_and_overlays_are_validated_at_registration_and_capture() {
             Err(RestoreError::SchemaInvalid(_))
         ));
     }
-    // phase: invalid_overlay_shapes_and_recursive_static_graphs_fail_registration
+
+    phase invalid_overlay_shapes_and_recursive_static_graphs_fail_registration;
     {
         let mut doc = at_sheets_version();
         let heads = doc.get_heads();
@@ -977,330 +1005,467 @@ fn complement_row(doc: &mut AutoCommit, parent: &ObjId, key: &str, name: &str) -
     row
 }
 
-#[test]
-fn complement_structural_dispatch_works_at_fixed_entry_and_family_positions() {
-    let mut fixed = at_sheets_version();
-    let outer = fixed.put_object(ROOT, "outer", ObjType::Map).unwrap();
-    let profile = fixed.put_object(&outer, "profile", ObjType::Map).unwrap();
-    let outer_view = fixed.put_object(&outer, "view", ObjType::Map).unwrap();
-    let presence = fixed
-        .put_object(&profile, "presence", ObjType::Map)
-        .unwrap();
-    fixed.put(&profile, "name", "target").unwrap();
-    fixed.put(&presence, "status", "historic").unwrap();
-    let target = fixed.get_heads();
-    fixed.put(&profile, "name", "live").unwrap();
-    fixed.put(&presence, "status", "current").unwrap();
-    restore(&mut fixed, &FIXED_COMPLEMENT_SCHEMA, &target);
-    assert_eq!(object(&fixed, &ROOT, "outer"), outer);
-    assert_eq!(object(&fixed, &outer, "profile"), profile);
-    assert_eq!(object(&fixed, &outer, "view"), outer_view);
-    assert_eq!(object(&fixed, &profile, "presence"), presence);
-    assert_eq!(
-        string_at(&fixed, &profile, "name").as_deref(),
-        Some("target")
-    );
-    assert_eq!(
-        string_at(&fixed, &presence, "status").as_deref(),
-        Some("current")
-    );
+tilo_test_env::scenario! {
+    fn complement_selectors_restore_what_was_authored_and_keep_what_was_excluded;
 
-    let mut entries = at_sheets_version();
-    let connections = entries
-        .put_object(ROOT, "connections", ObjType::Map)
-        .unwrap();
-    let row = complement_row(&mut entries, &connections, "a", "target");
-    let presence = object(&entries, &row, "presence");
-    let target = entries.get_heads();
-    entries.put(&row, "name", "live").unwrap();
-    entries.put(&presence, "status", "current").unwrap();
-    restore(&mut entries, &COMPLEMENT_ROWS, &target);
-    assert_eq!(object(&entries, &ROOT, "connections"), connections);
-    assert_eq!(object(&entries, &connections, "a"), row);
-    assert_eq!(object(&entries, &row, "presence"), presence);
-
-    let mut family = at_sheets_version();
-    let record = family
-        .put_object(ROOT, "record:item-a", ObjType::Map)
-        .unwrap();
-    let presence = family
-        .put_object(&record, "presence", ObjType::Map)
-        .unwrap();
-    family.put(&record, "name", "target").unwrap();
-    family.put(&presence, "status", "historic").unwrap();
-    let target = family.get_heads();
-    family.put(&record, "name", "live").unwrap();
-    family.put(&presence, "status", "current").unwrap();
-    restore(&mut family, &COMPLEMENT_FAMILY, &target);
-    assert_eq!(object(&family, &ROOT, "record:item-a"), record);
-    assert_eq!(object(&family, &record, "presence"), presence);
-    assert_eq!(
-        string_at(&family, &record, "name").as_deref(),
-        Some("target")
-    );
-}
-
-#[test]
-fn complement_membership_resurrection_omits_excluded_fields_and_never_revives_ids() {
-    let mut doc = at_sheets_version();
-    let connections = doc.put_object(ROOT, "connections", ObjType::Map).unwrap();
-    let retained = complement_row(&mut doc, &connections, "a", "target-a");
-    let retained_presence = object(&doc, &retained, "presence");
-    let historic_b = complement_row(&mut doc, &connections, "b", "target-b");
-    let historic_empty = doc.put_object(&connections, "empty", ObjType::Map).unwrap();
-    doc.put(&historic_empty, "last_used", 4_i64).unwrap();
-    let target = doc.get_heads();
-    doc.put(&retained, "name", "live-a").unwrap();
-    doc.put(&retained_presence, "status", "current").unwrap();
-    doc.delete(&connections, "b").unwrap();
-    doc.delete(&connections, "empty").unwrap();
-    complement_row(&mut doc, &connections, "c", "current-c");
-    restore(&mut doc, &COMPLEMENT_ROWS, &target);
-    assert_eq!(object(&doc, &connections, "a"), retained);
-    assert_eq!(object(&doc, &retained, "presence"), retained_presence);
-    assert!(doc.get(&connections, "c").unwrap().is_none());
-    let restored_b = object(&doc, &connections, "b");
-    let restored_empty = object(&doc, &connections, "empty");
-    assert_ne!(restored_b, historic_b);
-    assert_ne!(restored_empty, historic_empty);
-    for row in [&restored_b, &restored_empty] {
-        assert!(doc.get(row, "presence").unwrap().is_none());
-        assert!(doc.get(row, "last_used").unwrap().is_none());
-    }
-    assert_eq!(
-        string_at(&doc, &restored_b, "name").as_deref(),
-        Some("target-b")
-    );
-    assert_eq!(doc.length(&restored_empty), 0);
-
-    doc.commit();
-    doc.delete(&connections, "b").unwrap();
-    let live = doc.get_heads();
-    let prepared = prepare_content_restore(&doc, &COMPLEMENT_ROWS, &live, &target).unwrap();
-    apply_prepared_content_restore(&mut doc, &prepared).unwrap();
-    let restored_again = object(&doc, &connections, "b");
-    assert_ne!(restored_again, historic_b);
-    assert_ne!(restored_again, restored_b);
-}
-
-#[test]
-fn complement_reject_policy_allows_retained_edits_but_refuses_empty_resurrection() {
-    let mut doc = at_sheets_version();
-    let connections = doc.put_object(ROOT, "connections", ObjType::Map).unwrap();
-    let retained = complement_row(&mut doc, &connections, "a", "target");
-    let target = doc.get_heads();
-    doc.put(&retained, "name", "live").unwrap();
-    tilo_resource::evolution::write_version(&mut doc, COMPLEMENT_ROWS_REJECT_SCHEMA.version)
-        .unwrap();
-    let live = doc.get_heads();
-    assert!(prepare_content_restore(&doc, &COMPLEMENT_ROWS_REJECT_SCHEMA, &live, &target).is_ok());
-
-    let empty = doc.put_object(&connections, "empty", ObjType::Map).unwrap();
-    doc.put(&empty, "last_used", 1_i64).unwrap();
-    let target_with_empty = doc.get_heads();
-    doc.delete(&connections, "empty").unwrap();
-    let live = doc.get_heads();
-    let mut before = doc.clone();
-    assert!(matches!(
-        prepare_content_restore(
-            &doc,
-            &COMPLEMENT_ROWS_REJECT_SCHEMA,
-            &live,
-            &target_with_empty
-        ),
-        Err(RestoreError::SchemaInvalid(_))
-    ));
-    assert_eq!(doc.clone().save(), before.save());
-}
-
-#[test]
-fn complement_omit_resurrection_still_obeys_the_combined_result_validator() {
-    let mut doc = at_sheets_version();
-    let connections = doc.put_object(ROOT, "connections", ObjType::Map).unwrap();
-    complement_row(&mut doc, &connections, "missing", "target");
-    let target = doc.get_heads();
-    doc.delete(&connections, "missing").unwrap();
-    tilo_resource::evolution::write_version(&mut doc, COMPLEMENT_REQUIRE_PRESENCE.version).unwrap();
-    let live = doc.get_heads();
-    let before = doc.clone().save();
-    assert!(matches!(
-        prepare_content_restore(&doc, &COMPLEMENT_REQUIRE_PRESENCE, &live, &target),
-        Err(RestoreError::SchemaInvalid(_))
-    ));
-    assert_eq!(doc.clone().save(), before);
-    assert_eq!(doc.pending_ops(), 0);
-}
-
-#[test]
-fn complement_live_validator_failure_rolls_back_multiple_writes_and_identities() {
-    let mut doc = at_sheets_version();
-    let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
-    let presence = doc.put_object(&profile, "presence", ObjType::Map).unwrap();
-    doc.put(&presence, "status", "current").unwrap();
-    doc.put(&profile, "a", "target-a").unwrap();
-    doc.put(&profile, "b", "target-b").unwrap();
-    let target = doc.get_heads();
-    doc.put(&profile, "a", "live-a").unwrap();
-    doc.delete(&profile, "b").unwrap();
-    doc.put(&profile, "c", "live-c").unwrap();
-    tilo_resource::evolution::write_version(&mut doc, COMPLEMENT_REFUSE_LIVE.version).unwrap();
-    let live = doc.get_heads();
-    doc.set_actor(automerge::ActorId::from(b"selector-live".as_slice()));
-    let prepared = prepare_content_restore(&doc, &COMPLEMENT_REFUSE_LIVE, &live, &target).unwrap();
-    let before = doc.clone().save();
-    assert!(matches!(
-        apply_prepared_content_restore(&mut doc, &prepared),
-        Err(RestoreError::SchemaInvalid(_))
-    ));
-    assert_eq!(doc.clone().save(), before);
-    assert_eq!(doc.pending_ops(), 0);
-    assert_eq!(object(&doc, &ROOT, "profile"), profile);
-    assert_eq!(object(&doc, &profile, "presence"), presence);
-    assert_eq!(string_at(&doc, &profile, "a").as_deref(), Some("live-a"));
-    assert!(doc.get(&profile, "b").unwrap().is_none());
-    assert_eq!(string_at(&doc, &profile, "c").as_deref(), Some("live-c"));
-}
-
-#[test]
-fn complement_preserves_conflicted_excluded_alternatives_absence_and_rich_text() {
-    let mut doc = at_sheets_version();
-    let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
-    doc.put(&profile, "name", "target").unwrap();
-    let runtime_text = doc
-        .put_object(&profile, "runtime_text", ObjType::Text)
-        .unwrap();
-    doc.splice_text(&runtime_text, 0, 0, "runtime").unwrap();
-    doc.mark(
-        &runtime_text,
-        Mark::new("bold".into(), true, 0, 7),
-        ExpandMark::Both,
-    )
-    .unwrap();
-    let block = doc.split_block(&runtime_text, 0).unwrap();
-    doc.put(&block, "kind", "paragraph").unwrap();
-    doc.commit();
-    let mut historic_peer = doc.fork();
-    doc.put(&profile, "historic_missing", "historical-left")
-        .unwrap();
-    historic_peer
-        .put(&profile, "historic_missing", "historical-right")
-        .unwrap();
-    doc.merge(&mut historic_peer).unwrap();
-    let target = doc.get_heads();
-    doc.delete(&profile, "historic_missing").unwrap();
-    doc.commit();
-    let mut peer = doc.fork();
-    doc.put(&profile, "last_used", 1_i64).unwrap();
-    peer.put(&profile, "last_used", 2_i64).unwrap();
-    let left_presence = doc.put_object(&profile, "presence", ObjType::Map).unwrap();
-    doc.put(&left_presence, "status", "left").unwrap();
-    let right_presence = peer.put_object(&profile, "presence", ObjType::Map).unwrap();
-    peer.put(&right_presence, "status", "right").unwrap();
-    doc.merge(&mut peer).unwrap();
-    doc.put(&profile, "name", "live").unwrap();
-    tilo_resource::evolution::write_version(&mut doc, CONTENT_EXCEPT.version).unwrap();
-    let live = doc.get_heads();
-    let last_used: Vec<_> = doc
-        .get_all(&profile, "last_used")
-        .unwrap()
-        .into_iter()
-        .map(|(value, id)| (value.into_owned(), id))
-        .collect();
-    let presence: Vec<_> = doc
-        .get_all(&profile, "presence")
-        .unwrap()
-        .into_iter()
-        .map(|(value, id)| (value.into_owned(), id))
-        .collect();
-    let left_status: Vec<_> = doc
-        .get_all(&left_presence, "status")
-        .unwrap()
-        .into_iter()
-        .map(|(value, id)| (value.into_owned(), id))
-        .collect();
-    let right_status: Vec<_> = doc
-        .get_all(&right_presence, "status")
-        .unwrap()
-        .into_iter()
-        .map(|(value, id)| (value.into_owned(), id))
-        .collect();
-    let text_marks = doc.marks(&runtime_text).unwrap();
-    let prepared = prepare_content_restore(&doc, &CONTENT_EXCEPT, &live, &target).unwrap();
-    apply_prepared_content_restore(&mut doc, &prepared).unwrap();
-    assert_eq!(doc.get_all(&profile, "last_used").unwrap(), last_used);
-    assert_eq!(doc.get_all(&profile, "presence").unwrap(), presence);
-    assert_eq!(doc.get_all(&left_presence, "status").unwrap(), left_status);
-    assert_eq!(
-        doc.get_all(&right_presence, "status").unwrap(),
-        right_status
-    );
-    assert!(doc.get(&profile, "historic_missing").unwrap().is_none());
-    assert_eq!(object(&doc, &profile, "runtime_text"), runtime_text);
-    assert_eq!(doc.get(&runtime_text, 0).unwrap().unwrap().1, block);
-    assert_eq!(doc.marks(&runtime_text).unwrap(), text_marks);
-    assert_eq!(string_at(&doc, &profile, "name").as_deref(), Some("target"));
-}
-
-#[test]
-fn complement_heterogeneous_authored_content_is_exact_and_unbounded_by_registration() {
-    let mut doc = at_sheets_version();
-    let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
-    let nested_map = doc.put_object(&profile, "map", ObjType::Map).unwrap();
-    doc.put(&nested_map, "value", "map").unwrap();
-    let list = doc.put_object(&profile, "list", ObjType::List).unwrap();
-    doc.insert(&list, 0, "first").unwrap();
-    doc.insert(&list, 1, "second").unwrap();
-    let text = doc.put_object(&profile, "text", ObjType::Text).unwrap();
-    doc.splice_text(&text, 0, 0, "text").unwrap();
-    let values = [
-        ScalarValue::Bytes(vec![0, 255]),
-        ScalarValue::Str("string".into()),
-        ScalarValue::Int(-8),
-        ScalarValue::Uint(8),
-        ScalarValue::F64(-0.0),
-        ScalarValue::Counter(4.into()),
-        ScalarValue::Timestamp(9),
-        ScalarValue::Boolean(true),
-        ScalarValue::Null,
-        ScalarValue::Unknown {
-            type_code: 15,
-            bytes: vec![5],
-        },
-        ScalarValue::F64(f64::from_bits(0x7ff8_0000_0000_0123)),
-    ];
-    for (index, value) in values.iter().enumerate() {
-        doc.put(&profile, format!("scalar-{index}"), value.clone())
+    phase complement_structural_dispatch_works_at_fixed_entry_and_family_positions;
+    {
+        let mut fixed = at_sheets_version();
+        let outer = fixed.put_object(ROOT, "outer", ObjType::Map).unwrap();
+        let profile = fixed.put_object(&outer, "profile", ObjType::Map).unwrap();
+        let outer_view = fixed.put_object(&outer, "view", ObjType::Map).unwrap();
+        let presence = fixed
+            .put_object(&profile, "presence", ObjType::Map)
             .unwrap();
+        fixed.put(&profile, "name", "target").unwrap();
+        fixed.put(&presence, "status", "historic").unwrap();
+        let target = fixed.get_heads();
+        fixed.put(&profile, "name", "live").unwrap();
+        fixed.put(&presence, "status", "current").unwrap();
+        restore(&mut fixed, &FIXED_COMPLEMENT_SCHEMA, &target);
+        assert_eq!(object(&fixed, &ROOT, "outer"), outer);
+        assert_eq!(object(&fixed, &outer, "profile"), profile);
+        assert_eq!(object(&fixed, &outer, "view"), outer_view);
+        assert_eq!(object(&fixed, &profile, "presence"), presence);
+        assert_eq!(
+            string_at(&fixed, &profile, "name").as_deref(),
+            Some("target")
+        );
+        assert_eq!(
+            string_at(&fixed, &presence, "status").as_deref(),
+            Some("current")
+        );
+
+        let mut entries = at_sheets_version();
+        let connections = entries
+            .put_object(ROOT, "connections", ObjType::Map)
+            .unwrap();
+        let row = complement_row(&mut entries, &connections, "a", "target");
+        let presence = object(&entries, &row, "presence");
+        let target = entries.get_heads();
+        entries.put(&row, "name", "live").unwrap();
+        entries.put(&presence, "status", "current").unwrap();
+        restore(&mut entries, &COMPLEMENT_ROWS, &target);
+        assert_eq!(object(&entries, &ROOT, "connections"), connections);
+        assert_eq!(object(&entries, &connections, "a"), row);
+        assert_eq!(object(&entries, &row, "presence"), presence);
+
+        let mut family = at_sheets_version();
+        let record = family
+            .put_object(ROOT, "record:item-a", ObjType::Map)
+            .unwrap();
+        let presence = family
+            .put_object(&record, "presence", ObjType::Map)
+            .unwrap();
+        family.put(&record, "name", "target").unwrap();
+        family.put(&presence, "status", "historic").unwrap();
+        let target = family.get_heads();
+        family.put(&record, "name", "live").unwrap();
+        family.put(&presence, "status", "current").unwrap();
+        restore(&mut family, &COMPLEMENT_FAMILY, &target);
+        assert_eq!(object(&family, &ROOT, "record:item-a"), record);
+        assert_eq!(object(&family, &record, "presence"), presence);
+        assert_eq!(
+            string_at(&family, &record, "name").as_deref(),
+            Some("target")
+        );
     }
-    let long_key = "k".repeat(1025);
-    doc.put(&profile, long_key.as_str(), "long-key").unwrap();
-    doc.put(&profile, "odd/\nname", "literal").unwrap();
-    doc.put(&profile, "target-only", "target").unwrap();
-    let target = doc.get_heads();
-    doc.put(&nested_map, "value", "live").unwrap();
-    doc.put(&list, 0, "live").unwrap();
-    doc.splice_text(&text, 0, 4, "live").unwrap();
-    doc.delete(&profile, "target-only").unwrap();
-    doc.put(&profile, "current-only", "current").unwrap();
-    tilo_resource::evolution::write_version(&mut doc, CONTENT_EXCEPT.version).unwrap();
-    let live = doc.get_heads();
-    let prepared = prepare_content_restore(&doc, &CONTENT_EXCEPT, &live, &target).unwrap();
-    let target_projection = prepared.target_projection().clone();
-    apply_prepared_content_restore(&mut doc, &prepared).unwrap();
-    assert_eq!(
-        selection::content(&doc, &CONTENT_EXCEPT).unwrap(),
-        target_projection
-    );
-    assert_eq!(object(&doc, &profile, "map"), nested_map);
-    assert_eq!(
-        doc.get(&profile, long_key.as_str())
+
+    phase complement_membership_resurrection_omits_excluded_fields_and_never_revives_ids;
+    {
+        let mut doc = at_sheets_version();
+        let connections = doc.put_object(ROOT, "connections", ObjType::Map).unwrap();
+        let retained = complement_row(&mut doc, &connections, "a", "target-a");
+        let retained_presence = object(&doc, &retained, "presence");
+        let historic_b = complement_row(&mut doc, &connections, "b", "target-b");
+        let historic_empty = doc.put_object(&connections, "empty", ObjType::Map).unwrap();
+        doc.put(&historic_empty, "last_used", 4_i64).unwrap();
+        let target = doc.get_heads();
+        doc.put(&retained, "name", "live-a").unwrap();
+        doc.put(&retained_presence, "status", "current").unwrap();
+        doc.delete(&connections, "b").unwrap();
+        doc.delete(&connections, "empty").unwrap();
+        complement_row(&mut doc, &connections, "c", "current-c");
+        restore(&mut doc, &COMPLEMENT_ROWS, &target);
+        assert_eq!(object(&doc, &connections, "a"), retained);
+        assert_eq!(object(&doc, &retained, "presence"), retained_presence);
+        assert!(doc.get(&connections, "c").unwrap().is_none());
+        let restored_b = object(&doc, &connections, "b");
+        let restored_empty = object(&doc, &connections, "empty");
+        assert_ne!(restored_b, historic_b);
+        assert_ne!(restored_empty, historic_empty);
+        for row in [&restored_b, &restored_empty] {
+            assert!(doc.get(row, "presence").unwrap().is_none());
+            assert!(doc.get(row, "last_used").unwrap().is_none());
+        }
+        assert_eq!(
+            string_at(&doc, &restored_b, "name").as_deref(),
+            Some("target-b")
+        );
+        assert_eq!(doc.length(&restored_empty), 0);
+
+        doc.commit();
+        doc.delete(&connections, "b").unwrap();
+        let live = doc.get_heads();
+        let prepared = prepare_content_restore(&doc, &COMPLEMENT_ROWS, &live, &target).unwrap();
+        apply_prepared_content_restore(&mut doc, &prepared).unwrap();
+        let restored_again = object(&doc, &connections, "b");
+        assert_ne!(restored_again, historic_b);
+        assert_ne!(restored_again, restored_b);
+    }
+
+    phase complement_reject_policy_allows_retained_edits_but_refuses_empty_resurrection;
+    {
+        let mut doc = at_sheets_version();
+        let connections = doc.put_object(ROOT, "connections", ObjType::Map).unwrap();
+        let retained = complement_row(&mut doc, &connections, "a", "target");
+        let target = doc.get_heads();
+        doc.put(&retained, "name", "live").unwrap();
+        tilo_resource::evolution::write_version(&mut doc, COMPLEMENT_ROWS_REJECT_SCHEMA.version)
+            .unwrap();
+        let live = doc.get_heads();
+        assert!(prepare_content_restore(&doc, &COMPLEMENT_ROWS_REJECT_SCHEMA, &live, &target).is_ok());
+
+        let empty = doc.put_object(&connections, "empty", ObjType::Map).unwrap();
+        doc.put(&empty, "last_used", 1_i64).unwrap();
+        let target_with_empty = doc.get_heads();
+        doc.delete(&connections, "empty").unwrap();
+        let live = doc.get_heads();
+        let mut before = doc.clone();
+        assert!(matches!(
+            prepare_content_restore(
+                &doc,
+                &COMPLEMENT_ROWS_REJECT_SCHEMA,
+                &live,
+                &target_with_empty
+            ),
+            Err(RestoreError::SchemaInvalid(_))
+        ));
+        assert_eq!(doc.clone().save(), before.save());
+    }
+
+    phase complement_omit_resurrection_still_obeys_the_combined_result_validator;
+    {
+        let mut doc = at_sheets_version();
+        let connections = doc.put_object(ROOT, "connections", ObjType::Map).unwrap();
+        complement_row(&mut doc, &connections, "missing", "target");
+        let target = doc.get_heads();
+        doc.delete(&connections, "missing").unwrap();
+        tilo_resource::evolution::write_version(&mut doc, COMPLEMENT_REQUIRE_PRESENCE.version).unwrap();
+        let live = doc.get_heads();
+        let before = doc.clone().save();
+        assert!(matches!(
+            prepare_content_restore(&doc, &COMPLEMENT_REQUIRE_PRESENCE, &live, &target),
+            Err(RestoreError::SchemaInvalid(_))
+        ));
+        assert_eq!(doc.clone().save(), before);
+        assert_eq!(doc.pending_ops(), 0);
+    }
+
+    phase complement_live_validator_failure_rolls_back_multiple_writes_and_identities;
+    {
+        let mut doc = at_sheets_version();
+        let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
+        let presence = doc.put_object(&profile, "presence", ObjType::Map).unwrap();
+        doc.put(&presence, "status", "current").unwrap();
+        doc.put(&profile, "a", "target-a").unwrap();
+        doc.put(&profile, "b", "target-b").unwrap();
+        let target = doc.get_heads();
+        doc.put(&profile, "a", "live-a").unwrap();
+        doc.delete(&profile, "b").unwrap();
+        doc.put(&profile, "c", "live-c").unwrap();
+        tilo_resource::evolution::write_version(&mut doc, COMPLEMENT_REFUSE_LIVE.version).unwrap();
+        let live = doc.get_heads();
+        doc.set_actor(automerge::ActorId::from(b"selector-live".as_slice()));
+        let prepared = prepare_content_restore(&doc, &COMPLEMENT_REFUSE_LIVE, &live, &target).unwrap();
+        let before = doc.clone().save();
+        assert!(matches!(
+            apply_prepared_content_restore(&mut doc, &prepared),
+            Err(RestoreError::SchemaInvalid(_))
+        ));
+        assert_eq!(doc.clone().save(), before);
+        assert_eq!(doc.pending_ops(), 0);
+        assert_eq!(object(&doc, &ROOT, "profile"), profile);
+        assert_eq!(object(&doc, &profile, "presence"), presence);
+        assert_eq!(string_at(&doc, &profile, "a").as_deref(), Some("live-a"));
+        assert!(doc.get(&profile, "b").unwrap().is_none());
+        assert_eq!(string_at(&doc, &profile, "c").as_deref(), Some("live-c"));
+    }
+
+    phase complement_preserves_conflicted_excluded_alternatives_absence_and_rich_text;
+    {
+        let mut doc = at_sheets_version();
+        let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
+        doc.put(&profile, "name", "target").unwrap();
+        let runtime_text = doc
+            .put_object(&profile, "runtime_text", ObjType::Text)
+            .unwrap();
+        doc.splice_text(&runtime_text, 0, 0, "runtime").unwrap();
+        doc.mark(
+            &runtime_text,
+            Mark::new("bold".into(), true, 0, 7),
+            ExpandMark::Both,
+        )
+        .unwrap();
+        let block = doc.split_block(&runtime_text, 0).unwrap();
+        doc.put(&block, "kind", "paragraph").unwrap();
+        doc.commit();
+        let mut historic_peer = doc.fork();
+        doc.put(&profile, "historic_missing", "historical-left")
+            .unwrap();
+        historic_peer
+            .put(&profile, "historic_missing", "historical-right")
+            .unwrap();
+        doc.merge(&mut historic_peer).unwrap();
+        let target = doc.get_heads();
+        doc.delete(&profile, "historic_missing").unwrap();
+        doc.commit();
+        let mut peer = doc.fork();
+        doc.put(&profile, "last_used", 1_i64).unwrap();
+        peer.put(&profile, "last_used", 2_i64).unwrap();
+        let left_presence = doc.put_object(&profile, "presence", ObjType::Map).unwrap();
+        doc.put(&left_presence, "status", "left").unwrap();
+        let right_presence = peer.put_object(&profile, "presence", ObjType::Map).unwrap();
+        peer.put(&right_presence, "status", "right").unwrap();
+        doc.merge(&mut peer).unwrap();
+        doc.put(&profile, "name", "live").unwrap();
+        tilo_resource::evolution::write_version(&mut doc, CONTENT_EXCEPT.version).unwrap();
+        let live = doc.get_heads();
+        let last_used: Vec<_> = doc
+            .get_all(&profile, "last_used")
             .unwrap()
+            .into_iter()
+            .map(|(value, id)| (value.into_owned(), id))
+            .collect();
+        let presence: Vec<_> = doc
+            .get_all(&profile, "presence")
             .unwrap()
-            .0
-            .as_str(),
-        Some("long-key")
-    );
-    assert!(doc.get(&profile, "current-only").unwrap().is_none());
+            .into_iter()
+            .map(|(value, id)| (value.into_owned(), id))
+            .collect();
+        let left_status: Vec<_> = doc
+            .get_all(&left_presence, "status")
+            .unwrap()
+            .into_iter()
+            .map(|(value, id)| (value.into_owned(), id))
+            .collect();
+        let right_status: Vec<_> = doc
+            .get_all(&right_presence, "status")
+            .unwrap()
+            .into_iter()
+            .map(|(value, id)| (value.into_owned(), id))
+            .collect();
+        let text_marks = doc.marks(&runtime_text).unwrap();
+        let prepared = prepare_content_restore(&doc, &CONTENT_EXCEPT, &live, &target).unwrap();
+        apply_prepared_content_restore(&mut doc, &prepared).unwrap();
+        assert_eq!(doc.get_all(&profile, "last_used").unwrap(), last_used);
+        assert_eq!(doc.get_all(&profile, "presence").unwrap(), presence);
+        assert_eq!(doc.get_all(&left_presence, "status").unwrap(), left_status);
+        assert_eq!(
+            doc.get_all(&right_presence, "status").unwrap(),
+            right_status
+        );
+        assert!(doc.get(&profile, "historic_missing").unwrap().is_none());
+        assert_eq!(object(&doc, &profile, "runtime_text"), runtime_text);
+        assert_eq!(doc.get(&runtime_text, 0).unwrap().unwrap().1, block);
+        assert_eq!(doc.marks(&runtime_text).unwrap(), text_marks);
+        assert_eq!(string_at(&doc, &profile, "name").as_deref(), Some("target"));
+    }
+
+    phase complement_heterogeneous_authored_content_is_exact_and_unbounded_by_registration;
+    {
+        let mut doc = at_sheets_version();
+        let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
+        let nested_map = doc.put_object(&profile, "map", ObjType::Map).unwrap();
+        doc.put(&nested_map, "value", "map").unwrap();
+        let list = doc.put_object(&profile, "list", ObjType::List).unwrap();
+        doc.insert(&list, 0, "first").unwrap();
+        doc.insert(&list, 1, "second").unwrap();
+        let text = doc.put_object(&profile, "text", ObjType::Text).unwrap();
+        doc.splice_text(&text, 0, 0, "text").unwrap();
+        let values = [
+            ScalarValue::Bytes(vec![0, 255]),
+            ScalarValue::Str("string".into()),
+            ScalarValue::Int(-8),
+            ScalarValue::Uint(8),
+            ScalarValue::F64(-0.0),
+            ScalarValue::Counter(4.into()),
+            ScalarValue::Timestamp(9),
+            ScalarValue::Boolean(true),
+            ScalarValue::Null,
+            ScalarValue::Unknown {
+                type_code: 15,
+                bytes: vec![5],
+            },
+            ScalarValue::F64(f64::from_bits(0x7ff8_0000_0000_0123)),
+        ];
+        for (index, value) in values.iter().enumerate() {
+            doc.put(&profile, format!("scalar-{index}"), value.clone())
+                .unwrap();
+        }
+        let long_key = "k".repeat(1025);
+        doc.put(&profile, long_key.as_str(), "long-key").unwrap();
+        doc.put(&profile, "odd/\nname", "literal").unwrap();
+        doc.put(&profile, "target-only", "target").unwrap();
+        let target = doc.get_heads();
+        doc.put(&nested_map, "value", "live").unwrap();
+        doc.put(&list, 0, "live").unwrap();
+        doc.splice_text(&text, 0, 4, "live").unwrap();
+        doc.delete(&profile, "target-only").unwrap();
+        doc.put(&profile, "current-only", "current").unwrap();
+        tilo_resource::evolution::write_version(&mut doc, CONTENT_EXCEPT.version).unwrap();
+        let live = doc.get_heads();
+        let prepared = prepare_content_restore(&doc, &CONTENT_EXCEPT, &live, &target).unwrap();
+        let target_projection = prepared.target_projection().clone();
+        apply_prepared_content_restore(&mut doc, &prepared).unwrap();
+        assert_eq!(
+            selection::content(&doc, &CONTENT_EXCEPT).unwrap(),
+            target_projection
+        );
+        assert_eq!(object(&doc, &profile, "map"), nested_map);
+        assert_eq!(
+            doc.get(&profile, long_key.as_str())
+                .unwrap()
+                .unwrap()
+                .0
+                .as_str(),
+            Some("long-key")
+        );
+        assert!(doc.get(&profile, "current-only").unwrap().is_none());
+    }
+
+    phase complement_registration_enforces_only_declared_count_name_and_byte_bounds;
+    {
+        let mut doc = at_sheets_version();
+        let heads = doc.get_heads();
+        let long_1024: &'static str = Box::leak("é".repeat(512).into_boxed_str());
+        let long_1025: &'static str = Box::leak(format!("{}a", "é".repeat(512)).into_boxed_str());
+        let one_1024: &'static [&'static str] = Box::leak(vec![long_1024].into_boxed_slice());
+        let one_1025: &'static [&'static str] = Box::leak(vec![long_1025].into_boxed_slice());
+        let names: Vec<&'static str> = (0..64)
+            .map(|index| Box::leak(format!("field-{index}").into_boxed_str()) as &'static str)
+            .collect();
+        let sixty_four = Box::leak(names.into_boxed_slice());
+        for accepted in [
+            &["x"][..],
+            &["A", "a", "literal/name"][..],
+            one_1024,
+            &sixty_four[..],
+        ] {
+            assert!(prepare_content_restore(&doc, complement_schema(accepted), &heads, &heads).is_ok());
+        }
+        let sixty_five: Vec<&'static str> = (0..65)
+            .map(|index| Box::leak(format!("field65-{index}").into_boxed_str()) as &'static str)
+            .collect();
+        let sixty_five = Box::leak(sixty_five.into_boxed_slice());
+        for rejected in [
+            &[][..],
+            &["same", "same"][..],
+            &[""][..],
+            one_1025,
+            &sixty_five[..],
+        ] {
+            assert!(matches!(
+                prepare_content_restore(&doc, complement_schema(rejected), &heads, &heads),
+                Err(RestoreError::InvalidSchema(_))
+            ));
+        }
+
+        let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
+        let authored = "z".repeat(1025);
+        doc.put(&profile, authored, "allowed").unwrap();
+        doc.put(&profile, "literal/name", "protected").unwrap();
+        let heads = doc.get_heads();
+        assert!(
+            prepare_content_restore(&doc, complement_schema(&["literal/name"]), &heads, &heads).is_ok()
+        );
+    }
+
+    phase complement_codec_depth_and_exact_map_shape_are_enforced;
+    {
+        on_deep_stack(
+            "complement-depth-boundary",
+            complement_codec_depth_and_exact_map_shape_are_enforced_inner,
+        );
+    }
+
+    phase complement_normalized_absence_noop_and_private_excluded_key_refusal_are_exact;
+    {
+        let optional = complement_schema(&["presence"]);
+        let mut doc = at_sheets_version();
+        tilo_resource::evolution::write_version(&mut doc, optional.version).unwrap();
+        let target = doc.get_heads();
+        let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
+        let presence = doc.put_object(&profile, "presence", ObjType::Map).unwrap();
+        doc.put(&presence, "status", "current").unwrap();
+        let live = doc.get_heads();
+        let before = doc.clone().save();
+        let prepared = prepare_content_restore(&doc, optional, &live, &target).unwrap();
+        assert_eq!(
+            apply_prepared_content_restore(&mut doc, &prepared).unwrap(),
+            RestoreOutcome::Unchanged
+        );
+        assert_eq!(doc.clone().save(), before);
+        assert_eq!(doc.pending_ops(), 0);
+        assert_eq!(object(&doc, &ROOT, "profile"), profile);
+        assert_eq!(object(&doc, &profile, "presence"), presence);
+
+        doc.put(&profile, "name", "target").unwrap();
+        let target = doc.get_heads();
+        doc.put(&profile, "name", "live").unwrap();
+        let live = doc.get_heads();
+        let prepared = prepare_content_restore(&doc, optional, &live, &target).unwrap();
+        let mut corrupted = prepared.clone();
+        corrupted.protected.0.clear();
+        let before = doc.clone().save();
+        assert_eq!(
+            apply_prepared_content_restore(&mut doc, &corrupted).unwrap_err(),
+            RestoreError::ProtectedStateChanged
+        );
+        assert_eq!(doc.clone().save(), before);
+
+        let mut prepared = prepared;
+        let injected = prepared
+            .target
+            .push_test_node(Node::Scalar(ExactScalar(ScalarValue::Boolean(false))));
+        let [profile_node] = prepared.target.0.get("profile").unwrap().as_slice() else {
+            panic!("expected projected profile")
+        };
+        let profile_node = *profile_node;
+        let Node::Map(_, fields) = &mut prepared.target.1[profile_node] else {
+            panic!("expected projected profile map")
+        };
+        fields.insert("presence".into(), vec![injected]);
+        let before = doc.clone().save();
+        assert_eq!(
+            apply_prepared_content_restore(&mut doc, &prepared).unwrap_err(),
+            RestoreError::ContentPostconditionMismatch
+        );
+        assert_eq!(doc.clone().save(), before);
+        assert_eq!(object(&doc, &profile, "presence"), presence);
+    }
+
+    phase complement_freshness_checks_excluded_changes_before_writing;
+    {
+        let mut doc = at_sheets_version();
+        let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
+        doc.put(&profile, "name", "target").unwrap();
+        doc.put(&profile, "last_used", 1_i64).unwrap();
+        let target = doc.get_heads();
+        doc.put(&profile, "name", "live").unwrap();
+        tilo_resource::evolution::write_version(&mut doc, CONTENT_EXCEPT.version).unwrap();
+        let live = doc.get_heads();
+        let prepared = prepare_content_restore(&doc, &CONTENT_EXCEPT, &live, &target).unwrap();
+        doc.put(&profile, "last_used", 2_i64).unwrap();
+        doc.commit();
+        let before = doc.clone().save();
+        assert_eq!(
+            apply_prepared_content_restore(&mut doc, &prepared).unwrap_err(),
+            RestoreError::StaleReview
+        );
+        assert_eq!(doc.clone().save(), before);
+        assert_eq!(string_at(&doc, &profile, "name").as_deref(), Some("live"));
+    }
 }
 
 fn complement_schema(fields: &'static [&'static str]) -> &'static HistoryRestoreSchema {
@@ -1311,53 +1476,6 @@ fn complement_schema(fields: &'static [&'static str]) -> &'static HistoryRestore
             preserved_fields: fields,
         },
     }])
-}
-
-#[test]
-fn complement_registration_enforces_only_declared_count_name_and_byte_bounds() {
-    let mut doc = at_sheets_version();
-    let heads = doc.get_heads();
-    let long_1024: &'static str = Box::leak("é".repeat(512).into_boxed_str());
-    let long_1025: &'static str = Box::leak(format!("{}a", "é".repeat(512)).into_boxed_str());
-    let one_1024: &'static [&'static str] = Box::leak(vec![long_1024].into_boxed_slice());
-    let one_1025: &'static [&'static str] = Box::leak(vec![long_1025].into_boxed_slice());
-    let names: Vec<&'static str> = (0..64)
-        .map(|index| Box::leak(format!("field-{index}").into_boxed_str()) as &'static str)
-        .collect();
-    let sixty_four = Box::leak(names.into_boxed_slice());
-    for accepted in [
-        &["x"][..],
-        &["A", "a", "literal/name"][..],
-        one_1024,
-        &sixty_four[..],
-    ] {
-        assert!(prepare_content_restore(&doc, complement_schema(accepted), &heads, &heads).is_ok());
-    }
-    let sixty_five: Vec<&'static str> = (0..65)
-        .map(|index| Box::leak(format!("field65-{index}").into_boxed_str()) as &'static str)
-        .collect();
-    let sixty_five = Box::leak(sixty_five.into_boxed_slice());
-    for rejected in [
-        &[][..],
-        &["same", "same"][..],
-        &[""][..],
-        one_1025,
-        &sixty_five[..],
-    ] {
-        assert!(matches!(
-            prepare_content_restore(&doc, complement_schema(rejected), &heads, &heads),
-            Err(RestoreError::InvalidSchema(_))
-        ));
-    }
-
-    let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
-    let authored = "z".repeat(1025);
-    doc.put(&profile, authored, "allowed").unwrap();
-    doc.put(&profile, "literal/name", "protected").unwrap();
-    let heads = doc.get_heads();
-    assert!(
-        prepare_content_restore(&doc, complement_schema(&["literal/name"]), &heads, &heads).is_ok()
-    );
 }
 
 fn nested_map_chain(doc: &mut AutoCommit, root: &ObjId, count: usize) {
@@ -1377,14 +1495,6 @@ fn nested_map_chain_ids(doc: &mut AutoCommit, root: &ObjId, count: usize) -> Vec
         ids.push(parent.clone());
     }
     ids
-}
-
-#[test]
-fn complement_codec_depth_and_exact_map_shape_are_enforced() {
-    on_deep_stack(
-        "complement-depth-boundary",
-        complement_codec_depth_and_exact_map_shape_are_enforced_inner,
-    );
 }
 
 fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
@@ -1630,14 +1740,6 @@ fn deepest_entry_schema() -> &'static HistoryRestoreSchema {
     }])
 }
 
-#[test]
-fn accepted_selector_and_protected_codec_boundaries() {
-    on_deep_stack(
-        "accepted-selector-protected-boundaries",
-        accepted_selector_and_protected_codec_boundaries_inner,
-    );
-}
-
 fn accepted_selector_and_protected_codec_boundaries_inner() {
     let deep_schema = deepest_entry_schema();
     let mut selected = at_sheets_version();
@@ -1801,14 +1903,6 @@ fn accepted_selector_and_protected_codec_boundaries_inner() {
     drop(doc);
 }
 
-#[test]
-fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action() {
-    on_deep_stack(
-        "deep-owned-state-restore",
-        deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner,
-    );
-}
-
 fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner() {
     use crate::permissions::{PermissionContext, UserId};
     use crate::state::{State, owned_restore::OwnedRestoreError};
@@ -1932,84 +2026,6 @@ fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner(
     assert_eq!(state.doc.pending_ops(), 0);
     drop(stale);
     drop(state);
-}
-
-#[test]
-fn complement_normalized_absence_noop_and_private_excluded_key_refusal_are_exact() {
-    let optional = complement_schema(&["presence"]);
-    let mut doc = at_sheets_version();
-    tilo_resource::evolution::write_version(&mut doc, optional.version).unwrap();
-    let target = doc.get_heads();
-    let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
-    let presence = doc.put_object(&profile, "presence", ObjType::Map).unwrap();
-    doc.put(&presence, "status", "current").unwrap();
-    let live = doc.get_heads();
-    let before = doc.clone().save();
-    let prepared = prepare_content_restore(&doc, optional, &live, &target).unwrap();
-    assert_eq!(
-        apply_prepared_content_restore(&mut doc, &prepared).unwrap(),
-        RestoreOutcome::Unchanged
-    );
-    assert_eq!(doc.clone().save(), before);
-    assert_eq!(doc.pending_ops(), 0);
-    assert_eq!(object(&doc, &ROOT, "profile"), profile);
-    assert_eq!(object(&doc, &profile, "presence"), presence);
-
-    doc.put(&profile, "name", "target").unwrap();
-    let target = doc.get_heads();
-    doc.put(&profile, "name", "live").unwrap();
-    let live = doc.get_heads();
-    let prepared = prepare_content_restore(&doc, optional, &live, &target).unwrap();
-    let mut corrupted = prepared.clone();
-    corrupted.protected.0.clear();
-    let before = doc.clone().save();
-    assert_eq!(
-        apply_prepared_content_restore(&mut doc, &corrupted).unwrap_err(),
-        RestoreError::ProtectedStateChanged
-    );
-    assert_eq!(doc.clone().save(), before);
-
-    let mut prepared = prepared;
-    let injected = prepared
-        .target
-        .push_test_node(Node::Scalar(ExactScalar(ScalarValue::Boolean(false))));
-    let [profile_node] = prepared.target.0.get("profile").unwrap().as_slice() else {
-        panic!("expected projected profile")
-    };
-    let profile_node = *profile_node;
-    let Node::Map(_, fields) = &mut prepared.target.1[profile_node] else {
-        panic!("expected projected profile map")
-    };
-    fields.insert("presence".into(), vec![injected]);
-    let before = doc.clone().save();
-    assert_eq!(
-        apply_prepared_content_restore(&mut doc, &prepared).unwrap_err(),
-        RestoreError::ContentPostconditionMismatch
-    );
-    assert_eq!(doc.clone().save(), before);
-    assert_eq!(object(&doc, &profile, "presence"), presence);
-}
-
-#[test]
-fn complement_freshness_checks_excluded_changes_before_writing() {
-    let mut doc = at_sheets_version();
-    let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
-    doc.put(&profile, "name", "target").unwrap();
-    doc.put(&profile, "last_used", 1_i64).unwrap();
-    let target = doc.get_heads();
-    doc.put(&profile, "name", "live").unwrap();
-    tilo_resource::evolution::write_version(&mut doc, CONTENT_EXCEPT.version).unwrap();
-    let live = doc.get_heads();
-    let prepared = prepare_content_restore(&doc, &CONTENT_EXCEPT, &live, &target).unwrap();
-    doc.put(&profile, "last_used", 2_i64).unwrap();
-    doc.commit();
-    let before = doc.clone().save();
-    assert_eq!(
-        apply_prepared_content_restore(&mut doc, &prepared).unwrap_err(),
-        RestoreError::StaleReview
-    );
-    assert_eq!(doc.clone().save(), before);
-    assert_eq!(string_at(&doc, &profile, "name").as_deref(), Some("live"));
 }
 
 #[test]

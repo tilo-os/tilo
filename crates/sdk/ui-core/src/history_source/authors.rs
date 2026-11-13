@@ -614,34 +614,92 @@ pub fn author_for_identity(name: impl Into<String>, identity: &str) -> HistoryAu
 mod tests {
     use super::*;
 
-    /// An agent's change is painted in the colour presence paints that agent in — the agent its
-    /// admission named, never the run that carried it — and never in its person's.
-    #[test]
-    fn an_agents_change_wears_the_agents_presence_colour() {
-        let of = |run: &str, name: &str| {
-            let invoker = tilo_actions::ActionInvoker::actor(run)
-                .with_kind(tilo_actions::ActorKind::Agent)
-                .acting_for("ada")
-                .named(Some(name.into()));
-            let entry = tilo_actions::ActionContext::default().with_invoker(invoker);
-            AuthorDirectory::new().resolve_entry("00", Some(&entry))
-        };
-        let first = of("agent:task-947ea551c632", "agent:helper@box#1");
-        assert_eq!(first.name, "agent:helper@box#1");
-        assert_eq!(
-            first.rgb(),
-            crate::presence::participant_color("agent:helper@box#1", true, Some("ada"))
-        );
-        // The agent's second run is another principal, and one colour with its first.
-        let second = of("agent:task-58d1f0aa7711", "agent:helper@box#2");
-        assert_eq!(second.rgb(), first.rgb(), "one agent, one colour");
-        // And it is not the colour of the person it acted for.
-        assert_ne!(first.rgb(), crate::presence::user_color("ada"));
+    tilo_test_env::scenario! {
+        fn an_identity_wears_one_colour_wherever_it_is_shown;
+
+        phase an_agents_change_wears_the_agents_presence_colour;
+        // An agent's change is painted in the colour presence paints that agent in — the agent its
+        // admission named, never the run that carried it — and never in its person's.
+        {
+            let of = |run: &str, name: &str| {
+                let invoker = tilo_actions::ActionInvoker::actor(run)
+                    .with_kind(tilo_actions::ActorKind::Agent)
+                    .acting_for("ada")
+                    .named(Some(name.into()));
+                let entry = tilo_actions::ActionContext::default().with_invoker(invoker);
+                AuthorDirectory::new().resolve_entry("00", Some(&entry))
+            };
+            let first = of("agent:task-947ea551c632", "agent:helper@box#1");
+            assert_eq!(first.name, "agent:helper@box#1");
+            assert_eq!(
+                first.rgb(),
+                crate::presence::participant_color("agent:helper@box#1", true, Some("ada"))
+            );
+            // The agent's second run is another principal, and one colour with its first.
+            let second = of("agent:task-58d1f0aa7711", "agent:helper@box#2");
+            assert_eq!(second.rgb(), first.rgb(), "one agent, one colour");
+            // And it is not the colour of the person it acted for.
+            assert_ne!(first.rgb(), crate::presence::user_color("ada"));
+        }
+
+        phase history_and_presence_pick_the_same_colour_for_the_same_identity;
+        {
+            use crate::permissions::UserId;
+            use crate::presence::{PresenceCtx, user_color};
+
+            for id in [
+                "alice",
+                "bob",
+                "carol",
+                "agent:scribe",
+                "unknown-person-xyz",
+            ] {
+                let hex = automerge::ActorId::from(id.as_bytes()).to_hex_string();
+                let history = AuthorDirectory::new().resolve(&hex);
+                let presence = PresenceCtx::default().color_for(&UserId(id.to_string()));
+                assert_eq!(
+                    history.rgb(),
+                    presence,
+                    "history and presence diverged for {id}"
+                );
+                assert_eq!(
+                    history.rgb(),
+                    user_color(id),
+                    "unoverridden identity must land on the shared palette slot for {id}"
+                );
+            }
+
+            let unknown = "ff00ff00ff00ff00";
+            let history = AuthorDirectory::new().resolve(unknown);
+            assert_eq!(
+                history.rgb(),
+                PresenceCtx::default().color_for(&UserId(unknown.into())),
+                "unknown people share the palette slot keyed by that identity"
+            );
+
+            let mut ctx = PresenceCtx::default();
+            ctx.set_color_override(UserId("carol".into()), "#112233");
+            let mut dir = AuthorDirectory::new();
+            dir.set_color_override("carol", (0x11, 0x22, 0x33));
+            let hex = automerge::ActorId::from("carol".as_bytes()).to_hex_string();
+            assert_eq!(
+                dir.resolve(&hex).rgb(),
+                ctx.color_for(&UserId("carol".into())),
+                "a person's own colour must win on history and presence together"
+            );
+            assert_eq!(dir.resolve(&hex).rgb(), (0x11, 0x22, 0x33));
+            assert_ne!(
+                user_color("carol"),
+                (0x11, 0x22, 0x33),
+                "the override must differ from the palette or the win is invisible"
+            );
+        }
     }
 
-    #[test]
-    fn actors_are_named_by_registration_handle_or_agent_and_never_misread() {
-        // phase: handle_round_trips_the_app_id_an_app_set
+    tilo_test_env::scenario! {
+        fn actors_are_named_by_registration_handle_or_agent_and_never_misread;
+
+        phase handle_round_trips_the_app_id_an_app_set;
         // Apps set their actor to the UTF-8 of `QUICK_APP_ID`; that has to come
         // back out, since it's the same key presence colours and author marks use.
         {
@@ -652,7 +710,8 @@ mod tests {
             let dir = AuthorDirectory::new();
             assert_eq!(dir.resolve(&hex).name, "alice");
         }
-        // phase: agent_principals_are_presented_as_named_agents_not_wire_ids
+
+        phase agent_principals_are_presented_as_named_agents_not_wire_ids;
         {
             assert_eq!(participant_display_label("agent:scribe"), "scribe · Agent");
             assert_eq!(
@@ -674,7 +733,8 @@ mod tests {
             );
             assert_eq!(registered.resolve("aabbccdd").name, "reviewer · Agent");
         }
-        // phase: an_apps_change_reads_as_the_app_never_as_its_id
+
+        phase an_apps_change_reads_as_the_app_never_as_its_id;
         // An app changing another app's record is named by its own name, and no fragment of its
         // actor id stands beside it: a person reads "Notes changed one note", not "app:so.t".
         {
@@ -691,7 +751,8 @@ mod tests {
                 "an app's row shows no fragment of its actor id"
             );
         }
-        // phase: a_public_key_actor_is_not_mistaken_for_a_handle
+
+        phase a_public_key_actor_is_not_mistaken_for_a_handle;
         // A 32-byte public key is not a handle. It must not be rendered as
         // mojibake in the name slot.
         {
@@ -713,7 +774,8 @@ mod tests {
                 "short id prefixes the actor"
             );
         }
-        // phase: registration_wins_over_the_decoded_handle
+
+        phase registration_wins_over_the_decoded_handle;
         // An explicit registration beats the decoded handle — the collaboration
         // layer knows the peer's registered name; the handle is self-declared.
         {
@@ -729,7 +791,8 @@ mod tests {
             assert_eq!(a.identity_short, "abcdef01");
             assert!(dir.is_registered(&hex));
         }
-        // phase: lookup_is_case_insensitive
+
+        phase lookup_is_case_insensitive;
         // Case-insensitive: `to_hex_string` is lowercase but callers that got the
         // id from somewhere else must still hit the same entry.
         {
@@ -738,7 +801,8 @@ mod tests {
             assert_eq!(dir.resolve("abcdef01").name, "Bob");
             assert_eq!(dir.resolve("AbCdEf01").name, "Bob");
         }
-        // phase: malformed_actor_ids_fall_through_to_unknown
+
+        phase malformed_actor_ids_fall_through_to_unknown;
         // Garbage in the actor slot must not produce a garbage name.
         {
             let dir = AuthorDirectory::new();
@@ -752,7 +816,8 @@ mod tests {
             // A NUL-containing "handle" is not a handle.
             assert_eq!(actor_handle("610062"), None, "control bytes are rejected");
         }
-        // phase: a_missing_identity_file_is_not_an_author
+
+        phase a_missing_identity_file_is_not_an_author;
         // With no identity anywhere, the chrome gets `None` and falls through to
         // the handle/unknown ladder — an app run outside a Tilo session is not an
         // error.
@@ -763,9 +828,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn unknown_actors_get_stable_distinct_hues_in_the_right_sextants() {
-        // phase: unknown_actors_get_stable_distinct_hues
+    tilo_test_env::scenario! {
+        fn unknown_actors_get_stable_distinct_hues_in_the_right_sextants;
+
+        phase unknown_actors_get_stable_distinct_hues;
         // An unknown actor gets a stable colour, so the same stranger is
         // recognisable across rows even with no name.
         {
@@ -780,7 +846,8 @@ mod tests {
             assert!((0.0..360.0).contains(&stable_hue(a)));
             assert!((0.0..360.0).contains(&stable_hue(b)));
         }
-        // phase: rgb_maps_onto_the_expected_hue_sextants
+
+        phase rgb_maps_onto_the_expected_hue_sextants;
         // The identity file's avatar colour drives the dot, so the timeline
         // agrees with the colour the user picked at first boot.
         {
@@ -901,58 +968,5 @@ mod tests {
             assert_eq!(author.avatar_hue, 0.0, "neutral grey has no hue");
             assert_eq!(author.identity_short, short_id(&hex::encode(public_key)));
         }
-    }
-
-    #[test]
-    fn history_and_presence_pick_the_same_colour_for_the_same_identity() {
-        use crate::permissions::UserId;
-        use crate::presence::{PresenceCtx, user_color};
-
-        for id in [
-            "alice",
-            "bob",
-            "carol",
-            "agent:scribe",
-            "unknown-person-xyz",
-        ] {
-            let hex = automerge::ActorId::from(id.as_bytes()).to_hex_string();
-            let history = AuthorDirectory::new().resolve(&hex);
-            let presence = PresenceCtx::default().color_for(&UserId(id.to_string()));
-            assert_eq!(
-                history.rgb(),
-                presence,
-                "history and presence diverged for {id}"
-            );
-            assert_eq!(
-                history.rgb(),
-                user_color(id),
-                "unoverridden identity must land on the shared palette slot for {id}"
-            );
-        }
-
-        let unknown = "ff00ff00ff00ff00";
-        let history = AuthorDirectory::new().resolve(unknown);
-        assert_eq!(
-            history.rgb(),
-            PresenceCtx::default().color_for(&UserId(unknown.into())),
-            "unknown people share the palette slot keyed by that identity"
-        );
-
-        let mut ctx = PresenceCtx::default();
-        ctx.set_color_override(UserId("carol".into()), "#112233");
-        let mut dir = AuthorDirectory::new();
-        dir.set_color_override("carol", (0x11, 0x22, 0x33));
-        let hex = automerge::ActorId::from("carol".as_bytes()).to_hex_string();
-        assert_eq!(
-            dir.resolve(&hex).rgb(),
-            ctx.color_for(&UserId("carol".into())),
-            "a person's own colour must win on history and presence together"
-        );
-        assert_eq!(dir.resolve(&hex).rgb(), (0x11, 0x22, 0x33));
-        assert_ne!(
-            user_color("carol"),
-            (0x11, 0x22, 0x33),
-            "the override must differ from the palette or the win is invisible"
-        );
     }
 }
