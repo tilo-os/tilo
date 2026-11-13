@@ -419,6 +419,12 @@ if [[ $hosted == 1 ]]; then
         'ls -la --time-style=full-iso /var/lib/tilo-hosted/member/profile/identity/device-private /var/lib/tilo-hosted/member/profile/identity/device' >&2 2>/dev/null || true
       echo '--- the member, from its start:' >&2
       sudo -n podman logs tilo-sh-vm-host-0 2>&1 | grep -v 'net_report' | head -60 >&2 || true
+      # What the Browser session in the workspace's VM wrote, which the host
+      # keeps beside the VM's state.
+      echo '--- the Browser session in the VM said:' >&2
+      sudo -n podman exec tilo-sh-vm-host-0 sh -c \
+        'find /var/lib/tilo-hosted -name browser.log -exec sh -c "echo \"== \$1\"; tail -n 80 \"\$1\"" _ {} \;' \
+        >&2 2>/dev/null || true
       echo '--- the relay said:' >&2
       bash "$here/stack.sh" logs relay 2>/dev/null | tail -40 >&2 || true
       # What the host's container was given to trust, and what it mounted: a
