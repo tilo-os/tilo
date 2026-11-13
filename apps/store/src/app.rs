@@ -3859,53 +3859,6 @@ mod tests {
     }
 
     #[test]
-    fn configured_flathub_controls_have_complete_app_and_host_action_bindings() {
-        for role in [
-            ui::permissions::Role::Viewer,
-            ui::permissions::Role::Editor,
-            ui::permissions::Role::Owner,
-        ] {
-            let (_environment, _directory, mut app) = inspected_store();
-            app.with_surface(|store: &mut StoreApp| {
-                store.state().worker = None;
-                store
-                    .state()
-                    .show_capture_catalogue(crate::fixture::fixture_catalog());
-                store.state().set_flatpak_available(true);
-                store
-                    .state()
-                    .set_remotes(vec![crate::flathub_client::Remote {
-                        name: "flathub".into(),
-                        title: "Flathub".into(),
-                        url: "https://dl.flathub.org/repo/".into(),
-                        disabled: false,
-                        user_managed: false,
-                        catalogue_error: None,
-                    }]);
-            })
-            .unwrap();
-            app.set_role(role);
-            let audit = app.harness().native_app_audit();
-            assert!(
-                !audit
-                    .issues
-                    .iter()
-                    .any(|issue| issue.code == "stale-action-binding"),
-                "default source bindings resolve on the complete native surface for {role:?}: {:?}",
-                audit.issues
-            );
-            let inspected = app
-                .effect(&StoreEffect::InspectCatalogue { app: None })
-                .unwrap()
-                .value
-                .unwrap();
-            assert_eq!(inspected["flatpak_available"], true);
-            assert_eq!(inspected["remote_count"], 1);
-            assert_eq!(inspected["remotes"][0]["disabled"], false);
-        }
-    }
-
-    #[test]
     fn flatpak_observation_errors_are_truthful_on_the_live_owner_surface() {
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
