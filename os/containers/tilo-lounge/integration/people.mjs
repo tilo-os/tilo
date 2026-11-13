@@ -1582,8 +1582,21 @@ try {
     if (!await press(a.tab, 'Invite')) await failed("the bar's invite button could not be pressed", a.tab);
     await waitFor(a.tab, 'Commenter', "the invite sheet's Commenter part");
     if (!await press(a.tab, 'Commenter')) await failed('the invite sheet offers no Commenter part', a.tab);
-    await until(a.tab, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('add comments, but cannot edit it')`,
-      "the sheet's chosen role under the choice", stepLimit(2));
+    // The line under the choice follows the pick. Where it does not, what the
+    // sheet stood as is kept: the parts it published, where they were drawn,
+    // and the line each one brings, so a press that landed elsewhere and a
+    // line that never followed its press read apart.
+    const rolePicked = `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('add comments, but cannot edit it')`;
+    let pickedIn = false;
+    for (const deadline = Date.now() + stepLimit(2); !pickedIn && Date.now() < deadline;) {
+      pickedIn = Boolean(await a.tab.evaluate(rolePicked).catch(() => false));
+      if (!pickedIn) await sleep(250);
+    }
+    if (!pickedIn) {
+      report.sheet = await dump(a.tab, '8-a-invite-sheet-after-pressing-commenter').catch(() => null);
+      await failed(`"add comments, but cannot edit it" never showed under the role choice: ${JSON.stringify(report.sheet?.names ?? null)}`,
+        a.tab);
+    }
     if (!await press(a.tab, 'Create link')) await failed('the invite sheet offers no Create link', a.tab);
     const made = await (async () => {
       const deadline = Date.now() + stepLimit(3);
