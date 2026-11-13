@@ -461,8 +461,10 @@ def lan_of(run: Run, name: str) -> str:
             "ip -o link show dev tilolan0; ip -o -4 addr show dev tilolan0; "
             "systemctl show tilo-vm-lan.service -p ActiveState -p Result --value | paste -sd, -",
             timeout=120, check=False)
-    said = wait_until(lambda: (text := read()) if " 198.18." in text else None, 90,
-                      interval=3.0) or read()
+    def addressed() -> str | None:
+        text = read()
+        return text if " 198.18." in text else None
+    said = wait_until(addressed, 90, interval=3.0) or read()
     run.write(f"lan-{name}.txt", said)
     expect(" 198.18." in said, f"{name} has no 198.18 address on tilolan0: {said.strip()[-400:]!r}")
     return said.strip()[-300:]
