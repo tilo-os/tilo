@@ -2035,7 +2035,10 @@ fn unread_activity_paints_nothing_on_the_people_control() {
     };
     tree.active = tree.workspaces[0].slot;
     let theme = Theme::default();
-    let paint = |unread: usize| {
+    // One renderer draws every bar, as the bar's window draws its frames: one made for each bar
+    // compiled its pipelines again for each.
+    let mut renderer = ui::offscreen::OffscreenRenderer::new(1600, 48);
+    let mut paint = |unread: usize| {
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         chrome.borrow_mut().can_invite = true;
         chrome
@@ -2075,24 +2078,27 @@ fn unread_activity_paints_nothing_on_the_people_control() {
             &PresenceCtx::default(),
         );
         assert_eq!(bar.activity_unread, unread, "nothing else reset it");
-        let rgba = ui::offscreen::OffscreenRenderer::new(1600, 48).render(&scene, Color::BLACK);
+        let rgba = renderer.render(&scene, Color::BLACK);
         (rgba, bar.invite_rect())
     };
     let (quiet, people) = paint(0);
-    let (unread, _) = paint(3);
     assert!(
         people.area() > 0.0,
         "the empty workspace shows its Invite seat"
     );
     let around = people.inflate(12.0, 12.0);
     let px = ui::num::u32_of_f64;
-    for y in px(around.y0)..px(around.y1.min(48.0)) {
-        for x in px(around.x0)..px(around.x1.min(1600.0)) {
-            assert_eq!(
-                ui::offscreen::OffscreenRenderer::sample(&quiet, 1600, x, y),
-                ui::offscreen::OffscreenRenderer::sample(&unread, 1600, x, y),
-                "unread activity painted on the people control at ({x}, {y})"
-            );
+    // The first unread thing, a few, and a count too wide for a badge to hold.
+    for count in [1, 3, 1_000] {
+        let (unread, _) = paint(count);
+        for y in px(around.y0)..px(around.y1.min(48.0)) {
+            for x in px(around.x0)..px(around.x1.min(1600.0)) {
+                assert_eq!(
+                    ui::offscreen::OffscreenRenderer::sample(&quiet, 1600, x, y),
+                    ui::offscreen::OffscreenRenderer::sample(&unread, 1600, x, y),
+                    "{count} unread: activity painted on the people control at ({x}, {y})"
+                );
+            }
         }
     }
 }
