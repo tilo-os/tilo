@@ -218,6 +218,13 @@ fn operation_of(operation: &Operation) -> Value {
         })
         .collect();
     parameters.extend(operation.query.iter().map(|(name, description)| {
+        if *name == super::LABEL_QUERY {
+            // Labels, each its own parameter: `label[customer_id]=cus_8121`.
+            return json!({"name": name, "in": "query", "required": false,
+                          "style": "deepObject", "explode": true,
+                          "schema": {"type": "object", "additionalProperties": {"type": "string"}},
+                          "description": description});
+        }
         json!({"name": name, "in": "query", "required": false, "schema": {"type": "string"},
                "description": description})
     }));

@@ -4,7 +4,8 @@
 //!
 //! It is addressed like any resource, by path, through the same tools:
 //!
-//! - `account/workspaces#list`, `#create {name, host?}`, `#delete {workspace}`;
+//! - `account/workspaces#list {labels?}`, `#create {name, labels?, host?}`,
+//!   `#delete {workspace}`;
 //! - `account/keys#list`, `#create {name, workspace?, expires_in?}`,
 //!   `#mint {workspace, name?, expires_in?}`, `#revoke {grant}`.
 //!
@@ -32,6 +33,7 @@ use crate::store::{Grant, GrantKind, Scope};
 use crate::{Server, now_ms};
 use serde_json::{Value, json};
 use std::fmt::Write as _;
+use tilo_relay_session::workspaces::WorkspaceLabels;
 use tilo_user_identity::AgentScope;
 
 /// The account's root path.
@@ -201,16 +203,20 @@ const ACTIONS: [(&str, &str, &str, &str, &[Param]); 7] = [
     (
         "workspaces",
         "list",
-        "Your workspaces, and the hosts you can create on",
+        "Your workspaces, and the hosts you can create on; with labels, those labelled so",
         "read",
-        &[],
+        &[param("labels", false, "Object")],
     ),
     (
         "workspaces",
         "create",
         "Create a workspace; the host may refuse (quota, payment)",
         "outside",
-        &[param("name", true, "Text"), param("host", false, "Text")],
+        &[
+            param("name", true, "Text"),
+            param("labels", false, "Object"),
+            param("host", false, "Text"),
+        ],
     ),
     (
         "workspaces",
@@ -535,7 +541,10 @@ impl Server {
                 .filter(|value| !value.is_empty())
         };
         match path {
-            "account/workspaces#list" => self.account_workspaces(key).await,
+            "account/workspaces#list" => match labels_of(args) {
+                Ok(labels) => self.account_workspaces_labelled(key, &labels).await,
+                Err(refused) => refused,
+            },
             "account/workspaces#create" => self.create_workspace(key, args).await,
             "account/workspaces#delete" => {
                 let Some(workspace) = field("workspace") else {
@@ -633,7 +642,11 @@ impl Server {
             Ok(id) => id,
             Err(refused) => return refused,
         };
-        match self.relay.create(key, name, id).await {
+        let labels = match labels_of(args) {
+            Ok(labels) => labels,
+            Err(refused) => return refused,
+        };
+        match self.relay.create(key, name, &labels, id).await {
             Ok(created) => Outcome::Ok(json!({"workspace": created})),
             Err(error) => refused(&error),
         }
@@ -659,11 +672,25 @@ impl Server {
     }
 
     async fn account_workspaces(&self, key: &Connection) -> Outcome {
+        self.account_workspaces_labelled(key, &WorkspaceLabels::new())
+            .await
+    }
+
+    /// The workspaces `key` reaches that are labelled with every one of
+    /// `labels`: all of them for none.
+    async fn account_workspaces_labelled(
+        &self,
+        key: &Connection,
+        labels: &WorkspaceLabels,
+    ) -> Outcome {
         match self.relay.workspaces(key).await {
-            Ok(workspaces) => Outcome::Ok(json!({
-                "workspaces": workspaces,
-                "hosts": [{"name": self.relay.name(), "default": true}],
-            })),
+            Ok(mut workspaces) => Outcome::Ok({
+                workspaces.retain(|workspace| labelled(workspace, labels));
+                json!({
+                    "workspaces": workspaces,
+                    "hosts": [{"name": self.relay.name(), "default": true}],
+                })
+            }),
             Err(error) => refused(&error),
         }
     }
@@ -790,6 +817,33 @@ impl Server {
             ),
         }
     }
+}
+
+/// Whether `workspace` is labelled with every one of `labels`.
+pub(crate) fn labelled(workspace: &crate::relay::Workspace, labels: &WorkspaceLabels) -> bool {
+    labels
+        .iter()
+        .all(|(name, value)| workspace.labels.get(name) == Some(value))
+}
+
+/// The labels `args` names (`labels`, names to text values): none when it
+/// names none.
+fn labels_of(args: &Value) -> Result<WorkspaceLabels, Outcome> {
+    let labels = match args.get("labels") {
+        None | Some(Value::Null) => return Ok(WorkspaceLabels::new()),
+        Some(labels) => {
+            serde_json::from_value::<WorkspaceLabels>(labels.clone()).map_err(|_| {
+                failed(
+                    "invalid_arguments",
+                    "`labels` names text values: {\"customer_id\": \"cus_8121\"}",
+                    "pass labels as an object of names to text",
+                )
+            })?
+        }
+    };
+    tilo_relay_session::workspaces::check_labels(&labels)
+        .map_err(|why| failed("invalid_arguments", why, "fix the label and ask again"))?;
+    Ok(labels)
 }
 
 /// The id a caller chose for a workspace it makes (`id`), so that a retry

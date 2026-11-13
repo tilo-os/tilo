@@ -151,6 +151,20 @@
         ],
         "parameters": [
           {
+            "name": "label",
+            "in": "query",
+            "required": false,
+            "style": "deepObject",
+            "explode": true,
+            "schema": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "description": "Only the workspaces labelled so: `label[customer_id]=cus_8121`; several must all match"
+          },
+          {
             "$ref": "#/components/parameters/Run"
           },
           {
@@ -265,6 +279,54 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DeletedWorkspace"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace}/export": {
+      "get": {
+        "operationId": "exportWorkspace",
+        "summary": "Everything the workspace holds: every resource of every app, read in full",
+        "tags": [
+          "Resources"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "$ref": "#/components/parameters/Run"
+          },
+          {
+            "$ref": "#/components/parameters/RunTitle"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Everything the workspace holds: every resource of every app, read in full",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceExport"
                 }
               }
             }
@@ -2153,6 +2215,13 @@
               "null"
             ],
             "description": "`owner` for one of the person's own, else the role they hold there."
+          },
+          "labels": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "What the person labelled it with when they made it (`customer_id` →\n`cus_8121`), read by their own keys alone."
           }
         },
         "required": [
@@ -2179,6 +2248,13 @@
         "properties": {
           "name": {
             "type": "string"
+          },
+          "labels": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Labels for your programs to find it by, `customer_id` → `cus_8121`:\nat most 16, each name 1 to 63 of a-z, 0-9, `_`, `-` and `.`, each value\n1 to 256 printable characters. Only keys of yours read them; nobody\ninvited in does."
           }
         },
         "required": [
@@ -2203,6 +2279,139 @@
         "required": [
           "deleted"
         ]
+      },
+      "WorkspaceExport": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "$ref": "#/components/schemas/Workspace"
+          },
+          "exported_at_ms": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Resource"
+            }
+          },
+          "unread": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Unread"
+            },
+            "description": "What it holds that did not read, each with why.",
+            "default": []
+          }
+        },
+        "required": [
+          "workspace",
+          "exported_at_ms",
+          "resources"
+        ],
+        "description": "Everything a workspace holds, as its key reads it: every resource of\nevery app, read in full, in the order a walk from its apps finds them.\nThe files they name (`tilo.content:` references) are fetched with\n`getContent`."
+      },
+      "Resource": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "The app's own fields, with its own types.",
+            "default": {}
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Child"
+            },
+            "default": []
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The app's cursor for the next page."
+          },
+          "app": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For an app: its id."
+          },
+          "surface": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For an app: its surface (`surface.toml`), what types are generated from."
+          },
+          "surface_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For an app: its surface's version, `<app>@<digest>`."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "Child": {
+        "type": "object",
+        "properties": {
+          "list": {
+            "type": "string",
+            "description": "The list it is in."
+          },
+          "name": {
+            "type": "string"
+          },
+          "item": {
+            "type": "string",
+            "description": "The key a read takes it by."
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "list",
+          "name",
+          "item",
+          "path"
+        ],
+        "description": "A list of what a resource holds, one entry of it."
+      },
+      "Unread": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "error"
+        ],
+        "description": "One resource an export could not read, and why."
       },
       "KeyList": {
         "type": "object",
@@ -2376,90 +2585,6 @@
           "kind"
         ],
         "description": "One row of a listing: a resource under the path listed, or an app."
-      },
-      "Resource": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string"
-          },
-          "kind": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "fields": {
-            "type": "object",
-            "additionalProperties": true,
-            "description": "The app's own fields, with its own types.",
-            "default": {}
-          },
-          "children": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Child"
-            },
-            "default": []
-          },
-          "cursor": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The app's cursor for the next page."
-          },
-          "app": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "For an app: its id."
-          },
-          "surface": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "For an app: its surface (`surface.toml`), what types are generated from."
-          },
-          "surface_version": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "For an app: its surface's version, `<app>@<digest>`."
-          }
-        },
-        "required": [
-          "path"
-        ]
-      },
-      "Child": {
-        "type": "object",
-        "properties": {
-          "list": {
-            "type": "string",
-            "description": "The list it is in."
-          },
-          "name": {
-            "type": "string"
-          },
-          "item": {
-            "type": "string",
-            "description": "The key a read takes it by."
-          },
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "list",
-          "name",
-          "item",
-          "path"
-        ],
-        "description": "A list of what a resource holds, one entry of it."
       },
       "ActionAnswer": {
         "type": "object",

@@ -850,6 +850,7 @@ impl Personal {
                     host,
                     role: meta.governor.is_none().then(|| "owner".to_owned()),
                     workspace: workspace.to_string(),
+                    labels: tilo_relay_session::workspaces::WorkspaceLabels::new(),
                 }
             })
             .collect();

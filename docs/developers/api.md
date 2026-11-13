@@ -80,8 +80,9 @@ same id is one run, one undo step per app (`POST …/runs/{run}/undo` takes it b
 |---|---|
 | `GET /v1` | `{"api_version": "1", "server": "…", "key": {…}}`: the API and, with a key, what it reaches |
 | `GET /v1/account` | the person's plan and per workspace what it keeps and the VM time it ran |
-| `GET /v1/workspaces` | `{"workspaces": [{"id", "name", "host", "role"}]}`: every workspace the key reaches, wherever it is hosted |
-| `POST /v1/workspaces` `{name}` | `201` the workspace made: `{"id", "name", "host", "role": "owner"}` |
+| `GET /v1/workspaces?label[name]=value` | `{"workspaces": [{"id", "name", "host", "role", "labels"}]}`: every workspace the key reaches, wherever it is hosted; with `label[…]`, those labelled with every one given |
+| `POST /v1/workspaces` `{name, labels?}` | `201` the workspace made: `{"id", "name", "host", "role": "owner", "labels"}`; the same `Idempotency-Key` answers the one it made |
+| `GET /v1/workspaces/{workspace}/export` | `{"workspace", "exported_at_ms", "resources": [...], "unread": [...]}`: every resource of every app, read whole |
 | `DELETE /v1/workspaces/{workspace}` | `{"deleted": "…", "revoked_keys": [...]}`: final, with everything in it and every key minted for it |
 | `GET /v1/keys` | `{"keys": [{"grant", "name", "scope", "expires_at_ms", "last_used_at_ms", "created_by"}]}` |
 | `POST /v1/keys` `{workspace, name?, expires_in?}` | `201` a key for one workspace, minted from this one: `{"grant", "token", "mcp_url", "expires_at_ms"}`; the person is not asked |

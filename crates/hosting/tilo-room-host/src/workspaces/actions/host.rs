@@ -25,7 +25,8 @@ use tilo_relay_session::workspaces::{
     ATTACH_HOST, ActionInvitation, CREATE_OWN_ROOM, CREATE_ROOM, CreatedWorkspace, DELETE_ROOM,
     DETACH_HOST, ENTER_ROOM, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOM,
     HOST_ROOMS_RESOURCE, HostedWorkspace, KEEP_PERSONAL, LIST_PERSONAL, LIST_REVOCATIONS,
-    LIST_ROOMS, NOT_YOUR_OWN, PersonalList, UNHOST_ROOM, WorkspaceListing,
+    LIST_ROOMS, NOT_YOUR_OWN, PersonalList, UNHOST_ROOM, WorkspaceLabels, WorkspaceListing,
+    check_labels,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -315,6 +316,11 @@ fn create_own_params() -> Vec<ActionParam> {
             "The workspace it is, when one of yours moves here (a UUID). A new workspace when omitted.",
         ),
         ActionParam::optional(
+            "labels",
+            ParamType::Object,
+            "What you label it with, for your programs to find it by: names (a-z, 0-9, `_`, `-`, `.`) to values, at most 16, which only you read. Given for one of yours, in place of its labels.",
+        ),
+        ActionParam::optional(
             "expires_in_seconds",
             ParamType::Integer,
             "How long the invitation your devices redeem to hold the workspace stays redeemable: 600 seconds when omitted.",
@@ -345,6 +351,7 @@ fn listing(summary: &WorkspaceSummary) -> WorkspaceListing {
         name: summary.name.clone(),
         generation: summary.generation,
         role: None,
+        labels: tilo_relay_session::workspaces::WorkspaceLabels::new(),
     }
 }
 
@@ -591,6 +598,9 @@ impl Workspaces {
                 }
                 if let Ok(mut one) = self.listing_of(workspace).await {
                     one.role = Some(OWNER_ROLE.to_owned());
+                    if let Some(own) = self.own() {
+                        one.labels = own.labels_of(workspace);
+                    }
                     listed.push(one);
                 }
             }
@@ -639,6 +649,10 @@ impl Workspaces {
         let name = args.text("name")?;
         let language = args.text("language")?;
         let moving = args.text("room")?;
+        let labels: Option<WorkspaceLabels> = args.object("labels")?;
+        if let Some(labels) = &labels {
+            check_labels(labels).map_err(invalid)?;
+        }
         let seconds = args
             .integer("expires_in_seconds")?
             .unwrap_or(OWN_INVITATION_SECONDS);
@@ -652,8 +666,10 @@ impl Workspaces {
             .capabilities
             .agent
             .is_none_or(|scope| scope.makes_workspaces());
+        // Nor does it label one: labels are its person's, for their programs.
         if !makes
             && (name.is_some()
+                || labels.is_some()
                 || !moving.is_some_and(|room| {
                     device
                         .capabilities
@@ -714,6 +730,10 @@ impl Workspaces {
                 .map_err(|error| refused(&error))?;
             summary
         };
+        if let Some(labels) = labels {
+            own.label(&summary.workspace, labels)
+                .map_err(|error| refused(&error))?;
+        }
         drop(making);
         // A person admitted before (another of their devices joined) is
         // made its administrator now; one joining with the invitation is
@@ -798,8 +818,14 @@ impl Workspaces {
             .issue(&summary.workspace, &self.inner.host.cert, terms)
             .await
             .map_err(|error| refused(&error))?;
+        let mut workspace = listing(&summary);
+        if let Some(own) = self.own()
+            && own.is_of(&person, &summary.workspace)
+        {
+            workspace.labels = own.labels_of(&summary.workspace);
+        }
         answer(&CreatedWorkspace {
-            workspace: listing(&summary),
+            workspace,
             invitation: Some(ActionInvitation::of(&issued)),
         })
     }

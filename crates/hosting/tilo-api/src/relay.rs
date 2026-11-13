@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tilo_relay_client::CertifyError;
 use tilo_relay_client::https::{self, Origin};
+use tilo_relay_session::workspaces::WorkspaceLabels;
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::{Device, HostRefusal};
 
@@ -43,6 +44,10 @@ pub struct Workspace {
     /// `moderator`). `None` when the answer did not say.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// What its owner labelled it with (`customer_id` → `cus_8121`): only a
+    /// key of its owner's reads them.
+    #[serde(skip_serializing_if = "WorkspaceLabels::is_empty")]
+    pub labels: WorkspaceLabels,
     /// Where its host is reached, as the person's list says.
     #[serde(skip)]
     pub address: Option<tilo_relay_session::workspaces::WorkspaceHostAddress>,
@@ -180,6 +185,7 @@ impl Relay {
                 name: listed.name,
                 host: listed.host.as_ref().map(|host| host.name.clone()),
                 role: listed.role,
+                labels: listed.labels,
                 address: listed.host,
             })
             .collect())
@@ -205,8 +211,8 @@ impl Relay {
             .map_err(RelayError::from)
     }
 
-    /// Make the person's workspace called `name` as `connection`, under `id`
-    /// when the caller chose one. A person has any number of workspaces of
+    /// Make the person's workspace called `name` as `connection`, labelled
+    /// `labels`, under `id` when the caller chose one. A person has any number of workspaces of
     /// their own, sharing what the host keeps for them.
     ///
     /// The grant enters it only once a run acts there ([`Relay::enter`]): a
@@ -219,6 +225,7 @@ impl Relay {
         &self,
         connection: &Connection,
         name: &str,
+        labels: &WorkspaceLabels,
         id: Option<uuid::Uuid>,
     ) -> Result<Workspace, RelayError> {
         // The relay makes the workspace under this id, or answers the one it
@@ -228,6 +235,9 @@ impl Relay {
         let mut arguments = Map::new();
         arguments.insert("name".into(), json!(name));
         arguments.insert("room".into(), json!(fresh));
+        if !labels.is_empty() {
+            arguments.insert("labels".into(), json!(labels));
+        }
         let (listing, _invitation) = connection
             .device
             .own_workspace(arguments, "tilo api")
@@ -374,6 +384,7 @@ impl Connection {
             name: listing.name.clone(),
             host: Some(self.host.clone()),
             role: listing.role.clone(),
+            labels: listing.labels.clone(),
             address: None,
         }
     }

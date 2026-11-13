@@ -14,7 +14,9 @@ import {
   memberOf,
   type MintedKey,
   type ProgramAnswer,
+  type WorkspaceExport,
   type WorkspaceInfo,
+  workspaceOf,
 } from "./models.ts";
 import { ProtocolError, refusalOf } from "./errors.ts";
 import { resourceProxy, type Resource, type Surface } from "./resource.ts";
@@ -292,6 +294,32 @@ export class Workspace {
       throw new ProtocolError(`the workspace answered no link for ${path}`);
     }
     return answer.link;
+  }
+
+  /**
+   * Everything the workspace holds, read whole: its listing (with its
+   * labels) and every resource of every app, as a walk from its apps finds
+   * them; the ones that did not read are in `unread`, with why. The files
+   * the resources name (`tilo.content:` references) download with
+   * `files.download`. Take one before deleting a customer's workspace.
+   */
+  async export(): Promise<WorkspaceExport> {
+    const endpoint = await this.endpoint();
+    const answer = await endpoint.answer("GET", routes.export(endpoint.id), { idempotent: false });
+    const workspace =
+      answer.workspace !== null && typeof answer.workspace === "object"
+        ? workspaceOf(answer.workspace as Record<string, unknown>)
+        : await this.info();
+    return {
+      workspace,
+      exportedAtMs: Number(answer.exported_at_ms ?? 0),
+      resources: Array.isArray(answer.resources)
+        ? (answer.resources as Record<string, unknown>[])
+        : [],
+      unread: Array.isArray(answer.unread)
+        ? (answer.unread as { path: string; error: string }[])
+        : [],
+    };
   }
 
   /**

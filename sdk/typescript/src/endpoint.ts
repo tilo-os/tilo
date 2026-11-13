@@ -135,6 +135,8 @@ export interface RequestOptions {
   stream?: boolean;
   /** Send an `Idempotency-Key`; on for POST, PUT, PATCH and DELETE. */
   idempotent?: boolean;
+  /** The `Idempotency-Key` to send, in place of a fresh one per call. */
+  idempotencyKey?: string;
   signal?: AbortSignal;
 }
 
@@ -189,9 +191,9 @@ export class Endpoint {
     if (group !== undefined && this.workspace !== null && group.workspace === this.workspace) {
       Object.assign(headers, group.headers());
     }
-    const idempotencyKey = (options.idempotent ?? MUTATING.has(method))
-      ? crypto.randomUUID()
-      : null;
+    const idempotencyKey =
+      options.idempotencyKey ??
+      ((options.idempotent ?? MUTATING.has(method)) ? crypto.randomUUID() : null);
     if (idempotencyKey !== null) {
       headers["idempotency-key"] = idempotencyKey;
     }

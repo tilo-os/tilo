@@ -9,6 +9,19 @@ export interface WorkspaceInfo {
   /** The part the person takes in it: `owner` for one of their own, else the
    * role they hold there (`viewer`, `commenter`, `editor`, `moderator`). */
   role: string;
+  /** What the person labelled it with when they made it (`customer_id` →
+   * `cus_8121`): read by their own keys alone, empty for none. */
+  labels: Record<string, string>;
+}
+
+/** Everything a workspace holds, as `workspace.export()` reads it. */
+export interface WorkspaceExport {
+  workspace: WorkspaceInfo;
+  exportedAtMs: number;
+  /** Every resource of every app, each as a read answers it. */
+  resources: Record<string, unknown>[];
+  /** What did not read, each with why. */
+  unread: { path: string; error: string }[];
 }
 
 /** The account's workspaces. */
@@ -47,7 +60,20 @@ export function workspaceOf(raw: Record<string, unknown>): WorkspaceInfo {
     name: String(raw.name ?? ""),
     host: String(raw.host ?? ""),
     role: String(raw.role ?? "owner"),
+    labels: labelsOf(raw.labels),
   };
+}
+
+function labelsOf(raw: unknown): Record<string, string> {
+  const labels: Record<string, string> = {};
+  if (raw !== null && typeof raw === "object") {
+    for (const [name, value] of Object.entries(raw)) {
+      if (typeof value === "string") {
+        labels[name] = value;
+      }
+    }
+  }
+  return labels;
 }
 
 /**

@@ -23,13 +23,36 @@ class Workspaces:
     def __init__(self, client: AsyncTilo) -> None:
         self.client = client
 
-    def list(self) -> Any:
-        """Every workspace this key reaches, wherever it is hosted."""
+    def list(self, *, labels: Mapping[str, str] | None = None) -> Any:
+        """Every workspace this key reaches, wherever it is hosted; with
+        `labels`, only those labelled with every one of them."""
+        if labels:
+            return self.client.handoff(self.client._labelled_workspaces(labels))
         return self.client.handoff(self.client._workspace_list())
 
-    def create(self, name: str) -> Any:
-        """Make a workspace of the person's own, named `name`."""
-        return self.client.handoff(self.client._create_workspace(name))
+    def create(
+        self,
+        name: str,
+        *,
+        labels: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
+    ) -> Any:
+        """Make a workspace of the person's own, named `name`.
+
+        `labels` (`{"customer_id": "cus_8121"}`: at most 16, read by the
+        person's keys alone) are for your programs to find it by. The same
+        `idempotency_key` (your customer's id, say) answers the workspace the
+        first create with it made, so a backend that crashed mid-create never
+        makes two.
+        """
+        return self.client.handoff(
+            self.client._create_workspace(name, labels or {}, idempotency_key)
+        )
+
+    def find(self, labels: Mapping[str, str]) -> Any:
+        """The one workspace labelled with every one of `labels`, or `None`;
+        `Refused("conflict")` when more than one is."""
+        return self.client.handoff(self.client._find_workspace(labels))
 
     def delete(self, workspace: Any) -> Any:
         """Delete a workspace of the person's own, and everything in it: final.
@@ -268,11 +291,39 @@ class AsyncTilo:
             )
         return found
 
-    async def _create_workspace(self, name: str) -> WorkspaceInfo:
+    async def _create_workspace(
+        self,
+        name: str,
+        labels: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
+    ) -> WorkspaceInfo:
         endpoint = self._endpoint()
-        answer = await endpoint.json("POST", endpoint.path("workspaces"), json={"name": name})
+        body: dict[str, Any] = {"name": name}
+        if labels:
+            body["labels"] = dict(labels)
+        headers = {} if idempotency_key is None else {"idempotency-key": idempotency_key}
+        answer = await endpoint.json(
+            "POST", endpoint.path("workspaces"), json=body, headers=headers
+        )
         self.catalog = None
         return WorkspaceInfo.of(answer)
+
+    async def _labelled_workspaces(self, labels: Mapping[str, str]) -> WorkspaceList:
+        endpoint = self._endpoint()
+        query = {f"label[{name}]": value for name, value in labels.items()}
+        return WorkspaceList.of(
+            await endpoint.json("GET", endpoint.path("workspaces"), query=query)
+        )
+
+    async def _find_workspace(self, labels: Mapping[str, str]) -> WorkspaceInfo | None:
+        found = list((await self._labelled_workspaces(labels)).workspaces)
+        if len(found) > 1:
+            raise Refused(
+                "conflict",
+                f"{len(found)} workspaces are labelled so",
+                ["tilo.workspaces.list(labels=...) names them"],
+            )
+        return found[0] if found else None
 
     async def _workspace_id(self, workspace: Any) -> str:
         """The id of a workspace named by it, by its name, or as a `Workspace`."""

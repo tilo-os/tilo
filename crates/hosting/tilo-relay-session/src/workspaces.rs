@@ -293,6 +293,10 @@ pub struct PersonalWorkspace {
     /// `owner` for one of their own, else the role they hold.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// What its owner labelled it with ([`WorkspaceLabels`]), when the host
+    /// that answers keeps it for them.
+    #[serde(default, skip_serializing_if = "WorkspaceLabels::is_empty")]
+    pub labels: WorkspaceLabels,
 }
 
 /// Where a workspace is hosted, as a device dials it.
@@ -415,6 +419,65 @@ pub struct WorkspaceListing {
     /// they hold (`viewer`, `commenter`, `editor`, `moderator`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// What its owner labelled it with, answered to the owner alone: a
+    /// member invited in reads none.
+    #[serde(default, skip_serializing_if = "WorkspaceLabels::is_empty")]
+    pub labels: WorkspaceLabels,
+}
+
+/// What a person labels a workspace of their own with, for their own
+/// programs to find it by: `customer_id` → `cus_8121`. A backend that keeps
+/// a workspace per customer names each with its own id for that customer,
+/// and lists, finds and deletes them by it. Only the workspace's owner sets
+/// or reads them; they are kept by the host beside whose workspace it is,
+/// not in the workspace, so nobody invited into it sees them.
+pub type WorkspaceLabels = std::collections::BTreeMap<String, String>;
+
+/// The most labels one workspace keeps.
+pub const MAX_WORKSPACE_LABELS: usize = 16;
+/// The longest a label's name is, in bytes.
+pub const MAX_LABEL_NAME_BYTES: usize = 63;
+/// The longest a label's value is, in characters.
+pub const MAX_LABEL_VALUE_CHARS: usize = 256;
+
+/// `labels`, if every one is a label a workspace keeps: at most
+/// [`MAX_WORKSPACE_LABELS`], each name 1 to [`MAX_LABEL_NAME_BYTES`] of
+/// `a-z`, `0-9`, `_`, `-` and `.`, starting with a letter or digit, each value
+/// 1 to [`MAX_LABEL_VALUE_CHARS`] characters with no control characters.
+///
+/// # Errors
+///
+/// Why one is not, said so a caller can fix it.
+pub fn check_labels(labels: &WorkspaceLabels) -> Result<(), String> {
+    if labels.len() > MAX_WORKSPACE_LABELS {
+        return Err(format!(
+            "a workspace keeps at most {MAX_WORKSPACE_LABELS} labels, not {}",
+            labels.len()
+        ));
+    }
+    for (name, value) in labels {
+        let named = !name.is_empty()
+            && name.len() <= MAX_LABEL_NAME_BYTES
+            && name
+                .bytes()
+                .next()
+                .is_some_and(|first| first.is_ascii_lowercase() || first.is_ascii_digit())
+            && name.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-.".contains(&byte)
+            });
+        if !named {
+            return Err(format!(
+                "the label name `{name}` is not 1 to {MAX_LABEL_NAME_BYTES} of a-z, 0-9, `_`, `-` and `.`, starting with a letter or digit"
+            ));
+        }
+        let count = value.chars().count();
+        if count == 0 || count > MAX_LABEL_VALUE_CHARS || value.chars().any(char::is_control) {
+            return Err(format!(
+                "the label `{name}` has no value of 1 to {MAX_LABEL_VALUE_CHARS} printable characters"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// An invitation a relay's workspace action issued, as it answers it.

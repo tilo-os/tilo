@@ -797,6 +797,7 @@ impl GovernedWorkspace {
             name: self.record.name.clone(),
             generation: self.record.generation,
             role: None,
+            labels: tilo_relay_session::workspaces::WorkspaceLabels::new(),
         }
     }
 }

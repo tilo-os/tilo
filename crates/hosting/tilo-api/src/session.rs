@@ -681,7 +681,9 @@ Paths under `account` manage them and need no `workspace`: `tilo_ls account` lis
 `tilo_do {path: \"account/workspaces#list\"}` names the workspaces, \
 each with the part the person takes in it (`owner` for one of their own, else the role they were \
 invited with), \
-`account/workspaces#create {name}` makes one and `account/workspaces#delete {workspace}` deletes one \
+`account/workspaces#create {name, labels?}` makes one, labelled for your programs to find it by \
+(`labels: {customer_id: \"cus_8121\"}`, which only the person's keys read), \
+`account/workspaces#list {labels?}` lists those labelled so, and `account/workspaces#delete {workspace}` deletes one \
 of the person's own for good, with everything in it and every key minted for it (no undo; the call \
 is the confirmation, so delete only what you were asked to). Every other call acts in one workspace, \
 named by id in its `workspace` argument. To give another agent one workspace and nothing else \

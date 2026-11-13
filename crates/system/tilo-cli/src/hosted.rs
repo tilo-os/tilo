@@ -130,11 +130,19 @@ pub enum AccountCmd {
 #[derive(Subcommand)]
 pub enum WorkspacesCmd {
     /// The workspaces this key reaches.
-    Ls,
+    Ls {
+        /// Only those labelled so, `NAME=VALUE`; several must all match.
+        #[arg(long = "label", value_name = "NAME=VALUE", value_parser = label_of)]
+        labels: Vec<(String, String)>,
+    },
     /// Create a workspace; the host may refuse (quota, payment).
     Create {
         /// What to call it, as your workspaces list will name it.
         name: String,
+        /// A label for your programs to find it by, `NAME=VALUE`
+        /// (`customer_id=cus_8121`); repeat it for more. Only your keys read them.
+        #[arg(long = "label", value_name = "NAME=VALUE", value_parser = label_of)]
+        labels: Vec<(String, String)>,
     },
     /// Delete a workspace of yours with everything in it, and revoke its
     /// minted keys: final, there is no undo.
@@ -252,6 +260,14 @@ pub(crate) async fn workspace_id(client: &Client, named: &str) -> Result<String>
         })
 }
 
+/// A label as `--label` takes it: `NAME=VALUE`.
+fn label_of(label: &str) -> Result<(String, String), String> {
+    label
+        .split_once('=')
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        .ok_or_else(|| format!("`{label}` is no label: write NAME=VALUE, as customer_id=cus_8121"))
+}
+
 fn workspace_line(row: &Value) -> String {
     let mut line = format!("{} (id {}", text(row, "name"), text(row, "id"));
     if let Some(host) = row.get("host").and_then(Value::as_str) {
@@ -259,6 +275,14 @@ fn workspace_line(row: &Value) -> String {
     }
     if let Some(role) = row.get("role").and_then(Value::as_str) {
         let _ = write!(line, ", {role}");
+    }
+    for (name, value) in row
+        .get("labels")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        let _ = write!(line, ", {name}={}", value.as_str().unwrap_or_default());
     }
     line.push(')');
     line
@@ -431,8 +455,26 @@ pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
         let client = Client::open(reach)?;
         let AccountCmd::Workspaces(cmd) = cmd;
         match cmd {
-            WorkspacesCmd::Ls => {
-                let listed = client.get("/v1/workspaces").await?;
+            WorkspacesCmd::Ls { labels } => {
+                let query: Vec<String> = labels
+                    .iter()
+                    .map(|(name, value)| {
+                        let encode = |text: &str| {
+                            percent_encoding::utf8_percent_encode(
+                                text,
+                                percent_encoding::NON_ALPHANUMERIC,
+                            )
+                            .to_string()
+                        };
+                        format!("label%5B{}%5D={}", encode(name), encode(value))
+                    })
+                    .collect();
+                let path = if query.is_empty() {
+                    "/v1/workspaces".to_owned()
+                } else {
+                    format!("/v1/workspaces?{}", query.join("&"))
+                };
+                let listed = client.get(&path).await?;
                 let rows = listed
                     .get("workspaces")
                     .and_then(Value::as_array)
@@ -447,9 +489,16 @@ pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
                 };
                 Ok(show(reach.json, &listed, &said))
             }
-            WorkspacesCmd::Create { name } => {
+            WorkspacesCmd::Create { name, labels } => {
+                let labels: serde_json::Map<String, Value> = labels
+                    .into_iter()
+                    .map(|(name, value)| (name, Value::String(value)))
+                    .collect();
                 let made = client
-                    .post("/v1/workspaces", &serde_json::json!({"name": name}))
+                    .post(
+                        "/v1/workspaces",
+                        &serde_json::json!({"name": name, "labels": labels}),
+                    )
                     .await?;
                 Ok(show(reach.json, &made, &workspace_line(&made)))
             }
@@ -1225,6 +1274,7 @@ mod tests {
                 reach,
                 AccountCmd::Workspaces(WorkspacesCmd::Create {
                     name: "Applicant: Jane Doe".into(),
+                    labels: vec![("customer_id".into(), "cus_8121".into())],
                 }),
             );
             let made = api_server.drain_requests();
@@ -1238,7 +1288,19 @@ mod tests {
             );
             assert_eq!(
                 serde_json::from_slice::<Value>(&made[0].body).unwrap(),
-                json!({"name": "Applicant: Jane Doe"})
+                json!({"name": "Applicant: Jane Doe", "labels": {"customer_id": "cus_8121"}})
+            );
+            // Listing by a label is `GET /v1/workspaces?label[name]=value`.
+            account(
+                reach,
+                AccountCmd::Workspaces(WorkspacesCmd::Ls {
+                    labels: vec![("customer_id".into(), "cus_8121".into())],
+                }),
+            );
+            let listed = api_server.drain_requests();
+            assert_eq!(
+                listed.last().map(|request| request.target.as_str()),
+                Some("/v1/workspaces?label%5Bcustomer%5Fid%5D=cus%5F8121")
             );
 
             // A file goes in as one upload, and the reference it answers is what

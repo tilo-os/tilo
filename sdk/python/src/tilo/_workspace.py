@@ -19,6 +19,7 @@ from ._models import (
     MintedKey,
     ProgramAnswer,
     Row,
+    WorkspaceExport,
     WorkspaceInfo,
 )
 from ._resource import Resource
@@ -305,6 +306,20 @@ class Workspace:
         if not isinstance(link, str) or not link:
             raise ProtocolError(f"the workspace answered no link for {path}")
         return link
+
+    def export(self) -> Any:
+        """Everything the workspace holds, read whole: a `WorkspaceExport`.
+
+        Its listing (with its labels) and every resource of every app, as a
+        walk from its apps finds them; the ones that did not read are in
+        `unread`, with why. The files the resources name download with
+        `files.download`. Take one before deleting a customer's workspace.
+        """
+        return self.client.handoff(self._export())
+
+    async def _export(self) -> WorkspaceExport:
+        endpoint = await self._endpoint()
+        return WorkspaceExport.of(await endpoint.json("GET", endpoint.path("export")))
 
     def run(self, title: str) -> RunOpening:
         """Group the calls inside into one run: one undo step per app."""

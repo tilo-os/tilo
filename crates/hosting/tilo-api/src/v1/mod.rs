@@ -411,19 +411,35 @@ impl<'a> Caller<'a> {
             }
             "listWorkspaces" => {
                 // The person's list, as the key reaches it: one workspace for a
-                // key for one, every one wherever it is hosted for the rest.
-                let listed = self
+                // key for one, every one wherever it is hosted for the rest;
+                // with `label.<name>=<value>`, those labelled so.
+                let labels: tilo_relay_session::workspaces::WorkspaceLabels = self
+                    .query
+                    .iter()
+                    .filter_map(|(name, value)| {
+                        let label = name.strip_prefix(LABEL_QUERY)?.strip_prefix('[')?;
+                        Some((label.strip_suffix(']')?.to_owned(), value.clone()))
+                    })
+                    .collect();
+                tilo_relay_session::workspaces::check_labels(&labels)
+                    .map_err(|why| ApiError::new("invalid_arguments", why))?;
+                let mut listed = self
                     .server
                     .relay
                     .workspaces(self.session.connection())
                     .await
                     .map_err(ApiError::from)?;
+                listed.retain(|workspace| crate::account::labelled(workspace, &labels));
                 shaped::<answers::WorkspaceList>(json!({"workspaces": listed})).map(Answer::ok)
             }
             "createWorkspace" => {
                 let new: answers::NewWorkspace = self.json_body()?;
                 // A retry asks the host for the workspace the first try made.
-                let args = with(json!({"name": new.name}), "id", self.invocation.as_ref());
+                let args = with(
+                    json!({"name": new.name, "labels": new.labels}),
+                    "id",
+                    self.invocation.as_ref(),
+                );
                 let made = self.account("account/workspaces#create", args).await?;
                 shaped::<answers::Workspace>(made.get("workspace").cloned().unwrap_or_default())
                     .map(Answer::created)
@@ -528,6 +544,95 @@ impl<'a> Caller<'a> {
         }
     }
 
+    /// Everything the workspace holds, read by walking it from its apps as
+    /// an agent would: each listing page by page, each resource read whole.
+    /// A resource that does not read is named with why, and the walk goes on.
+    async fn export(&self) -> Result<Answer, ApiError> {
+        let ws = self.workspace();
+        let workspace = self
+            .server
+            .relay
+            .workspaces(self.session.connection())
+            .await
+            .map_err(ApiError::from)?
+            .into_iter()
+            .find(|listed| listed.id == ws)
+            .ok_or_else(|| ApiError::new("not_found", "no such workspace"))?;
+        let mut resources = Vec::new();
+        let mut unread = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut pending: std::collections::VecDeque<Option<String>> =
+            std::collections::VecDeque::from([None]);
+        while let Some(path) = pending.pop_front() {
+            let mut cursor: Option<String> = None;
+            loop {
+                let args = with(
+                    with(json!({}), "path", path.as_ref()),
+                    "cursor",
+                    cursor.as_ref(),
+                );
+                let listing = match self.call("tilo_ls", args).await {
+                    Ok(listed) => parsed::<answers::Listing>(listed)?,
+                    Err(refused) => {
+                        unread.push(answers::Unread {
+                            path: path.clone().unwrap_or_default(),
+                            error: refused.body.message.clone(),
+                        });
+                        break;
+                    }
+                };
+                for row in listing.rows {
+                    if !seen.insert(row.path.clone()) {
+                        continue;
+                    }
+                    match self.read_whole(&row.path).await {
+                        Ok(read) => resources.push(read),
+                        Err(refused) => unread.push(answers::Unread {
+                            path: row.path.clone(),
+                            error: refused.body.message.clone(),
+                        }),
+                    }
+                    if row.has_children {
+                        pending.push_back(Some(row.path));
+                    }
+                }
+                match listing.next_cursor {
+                    Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
+                    _ => break,
+                }
+            }
+        }
+        shaped::<answers::WorkspaceExport>(json!({
+            "workspace": workspace,
+            "exported_at_ms": crate::now_ms(),
+            "resources": resources,
+            "unread": unread,
+        }))
+        .map(Answer::ok)
+    }
+
+    /// `path` read with every page of what it holds.
+    async fn read_whole(&self, path: &str) -> Result<answers::Resource, ApiError> {
+        let mut whole: Option<answers::Resource> = None;
+        let mut cursor: Option<String> = None;
+        loop {
+            let args = with(json!({"path": path}), "cursor", cursor.as_ref());
+            let page = parsed::<answers::Resource>(self.call("tilo_read", args).await?)?;
+            let next = page.cursor.clone();
+            match &mut whole {
+                None => whole = Some(page),
+                Some(whole) => whole.children.extend(page.children),
+            }
+            match next {
+                Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
+                _ => break,
+            }
+        }
+        let mut whole = whole.ok_or_else(|| ApiError::new("not_found", "nothing to read"))?;
+        whole.cursor = None;
+        Ok(whole)
+    }
+
     /// The workspace's people, programs, files and events.
     #[expect(
         clippy::too_many_lines,
@@ -536,6 +641,7 @@ impl<'a> Caller<'a> {
     async fn workspace_operation(&self, id: &str) -> Result<Answer, ApiError> {
         let ws = self.workspace();
         match id {
+            "exportWorkspace" => self.export().await,
             "listMembers" => {
                 let listed = self
                     .call("tilo_do", json!({"path": "workspace/members#list"}))
@@ -927,6 +1033,10 @@ fn webhook_row(hook: &crate::store::Webhook, with_secret: bool) -> Value {
 }
 
 /// `object` with `name` set to `value` when there is one.
+/// The query parameter a listing of workspaces is filtered by, one per
+/// label, as `OpenAPI`'s deep objects are written: `label[customer_id]=cus_8121`.
+pub const LABEL_QUERY: &str = "label";
+
 fn with(mut object: Value, name: &str, value: Option<impl serde::Serialize>) -> Value {
     if let (Some(fields), Some(value)) = (object.as_object_mut(), value) {
         fields.insert(name.to_owned(), json!(value));
@@ -948,6 +1058,16 @@ fn typed_answer(answer: &Value) -> Result<Value, ApiError> {
         return Err(ApiError::new("failed", text));
     }
     serde_json::from_str(text).map_err(|_| ApiError::malformed("an answer", text))
+}
+
+/// `value` as a `T`, or the refusal saying what the workspace answered
+/// instead: its words, when it said why in words ([`said_instead`]).
+fn parsed<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, ApiError> {
+    let said = said_instead(&value);
+    serde_json::from_value(value).map_err(|why| match said {
+        Some((failed, text)) => ApiError::new(if failed { "failed" } else { "not_found" }, text),
+        None => ApiError::malformed(std::any::type_name::<T>(), &why.to_string()),
+    })
 }
 
 /// `value` as `T`, or the refusal that it was not.

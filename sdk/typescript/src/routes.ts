@@ -49,7 +49,10 @@ export const routes = {
   info: () => PREFIX,
   account: () => `${PREFIX}/account`,
 
-  workspaces: () => `${PREFIX}/workspaces`,
+  workspaces: (labels: Record<string, string> = {}) =>
+    `${PREFIX}/workspaces${query(
+      Object.fromEntries(Object.entries(labels).map(([name, value]) => [`label[${name}]`, value])),
+    )}`,
   workspace: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}`,
 
   keys: () => `${PREFIX}/keys`,
@@ -72,6 +75,7 @@ export const routes = {
     `${PREFIX}/workspaces/${segment(workspace)}/runs/${segment(run)}/output`,
 
   search: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/search`,
+  export: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/export`,
   links: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/links`,
   members: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/members`,
   invitations: (workspace: string) =>

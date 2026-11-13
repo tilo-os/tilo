@@ -58,6 +58,7 @@ export {
   type WorkspaceInfo,
   type WorkspaceUsage,
   WorkspaceList,
+  type WorkspaceExport,
 } from "./models.ts";
 export {
   HttpTransport,

@@ -24,20 +24,55 @@ class WorkspaceInfo:
     `host` is the host that keeps it, when one said. `role` is the part they
     take in it: `owner` for one of their own, else the role they were invited
     with (`viewer`, `commenter`, `editor`). It is `""` when the API did not say.
+    `labels` are what the person labelled it with when they made it
+    (`{"customer_id": "cus_8121"}`), read by their own keys alone.
     """
 
     id: str
     name: str
     host: str
     role: str = ""
+    labels: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
     def of(cls, raw: Mapping[str, Any]) -> WorkspaceInfo:
+        labels = raw.get("labels")
         return cls(
             id=str(raw.get("id") or ""),
             name=str(raw.get("name") or ""),
             host=str(raw.get("host") or ""),
             role=str(raw.get("role") or ""),
+            labels={
+                str(name): value
+                for name, value in (labels.items() if isinstance(labels, Mapping) else ())
+                if isinstance(value, str)
+            },
+        )
+
+
+@dataclass(frozen=True)
+class WorkspaceExport:
+    """Everything a workspace holds, as `workspace.export()` reads it.
+
+    `resources` are every resource of every app, each as a read answers it;
+    `unread` names what did not read, each with why.
+    """
+
+    workspace: WorkspaceInfo
+    exported_at_ms: int
+    resources: Sequence[Mapping[str, Any]]
+    unread: Sequence[Mapping[str, Any]]
+
+    @classmethod
+    def of(cls, raw: Mapping[str, Any]) -> WorkspaceExport:
+        workspace = raw.get("workspace")
+        resources = raw.get("resources")
+        unread = raw.get("unread")
+        return cls(
+            workspace=WorkspaceInfo.of(workspace if isinstance(workspace, Mapping) else {}),
+            exported_at_ms=int(raw.get("exported_at_ms") or 0),
+            resources=[r for r in resources or [] if isinstance(r, Mapping)],
+            unread=[u for u in unread or [] if isinstance(u, Mapping)],
         )
 
 

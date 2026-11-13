@@ -70,7 +70,7 @@ class Api:
         sent = dict(headers or {})
         changes = (method in MUTATING) if mutating is None else mutating
         if changes:
-            sent[IDEMPOTENCY_HEADER] = uuid.uuid4().hex
+            sent.setdefault(IDEMPOTENCY_HEADER, uuid.uuid4().hex)
         url = _with_query(path, query)
         deadline = time.monotonic() + self.retry_deadline
         attempt = 0

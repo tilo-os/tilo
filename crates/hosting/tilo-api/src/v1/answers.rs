@@ -6,6 +6,8 @@
 //! JSON as the app gives them; their types are the app's surface, which the
 //! description carries per app ([`super::openapi`]).
 
+use std::collections::BTreeMap;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
@@ -77,6 +79,10 @@ pub struct Workspace {
     /// `owner` for one of the person's own, else the role they hold there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// What the person labelled it with when they made it (`customer_id` →
+    /// `cus_8121`), read by their own keys alone.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -87,6 +93,33 @@ pub struct WorkspaceList {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct NewWorkspace {
     pub name: String,
+    /// Labels for your programs to find it by, `customer_id` → `cus_8121`:
+    /// at most 16, each name 1 to 63 of a-z, 0-9, `_`, `-` and `.`, each value
+    /// 1 to 256 printable characters. Only keys of yours read them; nobody
+    /// invited in does.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
+}
+
+/// One resource an export could not read, and why.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct Unread {
+    pub path: String,
+    pub error: String,
+}
+
+/// Everything a workspace holds, as its key reads it: every resource of
+/// every app, read in full, in the order a walk from its apps finds them.
+/// The files they name (`tilo.content:` references) are fetched with
+/// `getContent`.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WorkspaceExport {
+    pub workspace: Workspace,
+    pub exported_at_ms: u64,
+    pub resources: Vec<Resource>,
+    /// What it holds that did not read, each with why.
+    #[serde(default)]
+    pub unread: Vec<Unread>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -476,6 +509,7 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         WorkspaceList,
         NewWorkspace,
         DeletedWorkspace,
+        WorkspaceExport,
         KeyRow,
         KeyList,
         NewKey,

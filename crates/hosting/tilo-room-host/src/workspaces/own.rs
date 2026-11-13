@@ -18,7 +18,10 @@
 //! Which workspaces are whose is kept beside the workspaces' records, in
 //! `own-workspaces.json`, so asking again after a restart answers the same
 //! ones, and a person's listing is found by their ids rather than by reading
-//! every workspace this host governs.
+//! every workspace this host governs. What each owner labelled theirs with
+//! (`customer_id` → `cus_8121`, [`WorkspaceLabels`]) is kept beside it, in
+//! `own-workspace-labels.json`: the host's, for the owner's programs to find
+//! a workspace by, and in no workspace, so nobody invited in reads them.
 //!
 //! [`HostOperation::CreateOwnWorkspace`]: crate::host_authority::HostOperation::CreateOwnWorkspace
 
@@ -34,10 +37,14 @@ use tilo_lock::MutexRecover as _;
 
 use super::Workspaces;
 use tilo_relay_protocol::WorkspaceId;
+use tilo_relay_session::workspaces::WorkspaceLabels;
 
 /// The file beside the workspaces' records that says whose each own
 /// workspace is.
 const INDEX: &str = "own-workspaces.json";
+/// The file beside it that keeps what each own workspace's owner labelled
+/// it with, by the workspace's UUID.
+const LABELS: &str = "own-workspace-labels.json";
 /// How long a workspace's measured size is trusted before it is measured
 /// again: walking its files on every write would cost more than the write.
 const MEASURED_FOR: Duration = Duration::from_secs(30);
@@ -81,6 +88,10 @@ pub(super) struct OwnWorkspaces {
     /// other way, so a change to a workspace finds its person without
     /// looking through every person's workspaces.
     owners: std::sync::Mutex<HashMap<String, String>>,
+    /// What each own workspace (its UUID) is labelled with, for those that
+    /// are: written to [`LABELS`] under the lock, before it is answered.
+    labels: std::sync::Mutex<BTreeMap<String, WorkspaceLabels>>,
+    labels_path: PathBuf,
     /// The plan each person is on here, by their hex root, when the host's
     /// account knows theirs: what they may keep rather than what the offer
     /// gives everyone.
@@ -114,11 +125,20 @@ impl OwnWorkspaces {
             Err(error) => return Err(error.to_string()),
         };
         let owners = owners_of(&by_person);
+        let labels_path = dir.join(LABELS);
+        let labels = match std::fs::read(&labels_path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|error| format!("{}: {error}", labels_path.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(error) => return Err(error.to_string()),
+        };
         Ok(Self {
             offer,
             path,
             by_person: std::sync::Mutex::new(by_person),
             owners: std::sync::Mutex::new(owners),
+            labels: std::sync::Mutex::new(labels),
+            labels_path,
             plans: std::sync::Mutex::default(),
             measured: std::sync::Mutex::default(),
             making: tokio::sync::Mutex::new(()),
@@ -176,9 +196,40 @@ impl OwnWorkspaces {
         Ok(())
     }
 
+    /// What `workspace`'s owner labelled it with: none for one they did not.
+    pub(super) fn labels_of(&self, workspace: &str) -> WorkspaceLabels {
+        self.labels
+            .lock_recover()
+            .get(workspace)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Label `workspace` with `labels`, in place of what it was labelled with
+    /// before (none takes them all off), durably.
+    pub(super) fn label(&self, workspace: &str, labels: WorkspaceLabels) -> Result<(), String> {
+        let mut kept = self.labels.lock_recover();
+        let mut next = kept.clone();
+        if labels.is_empty() {
+            next.remove(workspace);
+        } else {
+            next.insert(workspace.to_owned(), labels);
+        }
+        if next == *kept {
+            return Ok(());
+        }
+        let bytes = serde_json::to_vec(&next).map_err(|error| error.to_string())?;
+        tilo_files::native::atomic::write(&self.labels_path, &bytes)
+            .map_err(|error| error.to_string())?;
+        *kept = next;
+        drop(kept);
+        Ok(())
+    }
+
     /// Forget `workspace`, deleted: it is nobody's any more, and what it
     /// took no longer counts against its person. Durably.
     pub(super) fn forget(&self, workspace: &str) -> Result<(), String> {
+        self.label(workspace, WorkspaceLabels::new())?;
         let mut index = self.by_person.lock_recover();
         let mut next = index.clone();
         for mine in next.values_mut() {

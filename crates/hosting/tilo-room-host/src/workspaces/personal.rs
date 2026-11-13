@@ -364,6 +364,7 @@ impl Workspaces {
                 name: listed.name.clone(),
                 host,
                 role: listed.role.clone(),
+                labels: listed.labels.clone(),
             });
         }
         let reaches = |workspace: &str| {

@@ -123,6 +123,10 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
             "/v1/workspaces",
             "Every workspace the key reaches, wherever it is hosted",
         )
+        .query(&[(
+            super::LABEL_QUERY,
+            "Only the workspaces labelled so: `label[customer_id]=cus_8121`; several must all match",
+        )])
         .json(200, "WorkspaceList"),
         op(
             "createWorkspace",
@@ -140,6 +144,13 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         )
         .mutating()
         .json(200, "DeletedWorkspace"),
+        op(
+            "exportWorkspace",
+            Method::GET,
+            "/v1/workspaces/{workspace}/export",
+            "Everything the workspace holds: every resource of every app, read in full",
+        )
+        .json(200, "WorkspaceExport"),
         op(
             "listKeys",
             Method::GET,

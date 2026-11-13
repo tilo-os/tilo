@@ -653,6 +653,7 @@ async fn a_key_of_the_persons_reads_their_workspace_list_from_a_device_and_no_on
             hint: Some("00".into()),
         }),
         role: Some("owner".into()),
+        labels: tilo_relay_session::workspaces::WorkspaceLabels::new(),
     };
     let held = PersonalList {
         workspaces: vec![entry(DESK, "Build box"), entry(ON_RELAY, "eu1.tilo.sh")],

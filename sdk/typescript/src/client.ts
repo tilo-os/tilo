@@ -106,14 +106,47 @@ export class Workspaces {
     this.client = client;
   }
 
-  /** Every workspace this key reaches, wherever it is hosted. */
-  list(): Promise<WorkspaceList> {
-    return this.client.workspaceList(true);
+  /**
+   * Every workspace this key reaches, wherever it is hosted; with `labels`,
+   * only those labelled with every one of them.
+   *
+   * ```ts
+   * const theirs = await tilo.workspaces.list({ labels: { customer_id: "cus_8121" } });
+   * ```
+   */
+  list(options: { labels?: Record<string, string> } = {}): Promise<WorkspaceList> {
+    const labels = options.labels ?? {};
+    return Object.keys(labels).length === 0
+      ? this.client.workspaceList(true)
+      : this.client.labelledWorkspaces(labels);
   }
 
-  /** Create a workspace by name. */
-  create(name: string): Promise<WorkspaceInfo> {
-    return this.client.createWorkspace(name);
+  /**
+   * Create a workspace by name, labelled for your programs to find it by
+   * (`{ customer_id: "cus_8121" }`: at most 16, read by your keys alone).
+   * The same `idempotencyKey` (your customer's id, say) answers the
+   * workspace the first create with it made, however often it is asked
+   * again, so a backend that crashed mid-create never makes two.
+   */
+  create(
+    name: string,
+    options: { labels?: Record<string, string>; idempotencyKey?: string } = {},
+  ): Promise<WorkspaceInfo> {
+    return this.client.createWorkspace(name, options.labels ?? {}, options.idempotencyKey ?? null);
+  }
+
+  /**
+   * The one workspace labelled with every one of `labels`, or `undefined`
+   * when none is; `Refused("conflict")` when more than one is.
+   */
+  async find(labels: Record<string, string>): Promise<WorkspaceInfo | undefined> {
+    const found = (await this.client.labelledWorkspaces(labels)).workspaces;
+    if (found.length > 1) {
+      throw new Refused("conflict", `${found.length} workspaces are labelled so`, [
+        "await tilo.workspaces.list({ labels }) names them",
+      ]);
+    }
+    return found[0];
   }
 
   /**
@@ -309,7 +342,7 @@ export class Tilo {
       listing = await this.workspaceList();
     } catch (error) {
       if ((error instanceof Refused || error instanceof ProtocolError) && UUID.test(ref)) {
-        return { id: ref, name: "", host: "", role: "" };
+        return { id: ref, name: "", host: "", role: "", labels: {} };
       }
       throw error;
     }
@@ -317,7 +350,7 @@ export class Tilo {
     // A workspace the listing does not name still answers to its id, as the
     // host decides.
     if (found === undefined && UUID.test(ref)) {
-      return { id: ref, name: "", host: "", role: "" };
+      return { id: ref, name: "", host: "", role: "", labels: {} };
     }
     if (found === undefined) {
       throw new Refused("not_found", `no workspace ${ref}`, [
@@ -335,11 +368,29 @@ export class Tilo {
     return workspace.id();
   }
 
+  /** @internal The workspaces labelled with every one of `labels`. */
+  async labelledWorkspaces(labels: Record<string, string>): Promise<WorkspaceList> {
+    return new WorkspaceList(
+      await this.account().answer("GET", routes.workspaces(labels), { idempotent: false }),
+    );
+  }
+
   /** @internal */
-  async createWorkspace(name: string): Promise<WorkspaceInfo> {
+  async createWorkspace(
+    name: string,
+    labels: Record<string, string> = {},
+    idempotencyKey: string | null = null,
+  ): Promise<WorkspaceInfo> {
     this.catalog = null;
+    const json: Record<string, unknown> = { name };
+    if (Object.keys(labels).length > 0) {
+      json.labels = labels;
+    }
     return workspaceOf(
-      await this.account().answer("POST", routes.workspaces(), { json: { name } }),
+      await this.account().answer("POST", routes.workspaces(), {
+        json,
+        ...(idempotencyKey === null ? {} : { idempotencyKey }),
+      }),
     );
   }
 

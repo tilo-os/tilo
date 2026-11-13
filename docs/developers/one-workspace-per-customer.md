@@ -155,6 +155,111 @@ link=$(curl -sS --fail-with-body "$api/workspaces/$jane/links?path=word-processo
 echo "the letter is $bytes bytes; a person opens it at $link"
 ```
 
+## Hundreds of customers: label, find, export
+
+A backend serving many customers keeps its own id for each one on their workspace as a **label**, and finds
+the workspace again by it: no table of workspace ids to keep beside your own database. Labels are names
+(1 to 63 of `a-z`, `0-9`, `_`, `-` and `.`) to text values, at most 16 per workspace. Only your own keys
+read them: nobody you invite into the workspace sees them, and a key minted for it never sets them.
+
+Passing your customer's id as the create's idempotency key makes the create safe to repeat: asked again,
+after a timeout or a crash, it answers the workspace the first one made instead of making a second.
+
+```python example=customer-labels
+from tilo import Tilo
+
+tilo = Tilo()                                              # your backend's key
+for customer in ["cus_8121", "cus_8122", "cus_8123"]:     # your own ids for them
+    tilo.workspaces.create(
+        f"Applicant {customer}",
+        labels={"customer_id": customer, "plan": "visa"},
+        idempotency_key=f"workspace-for-{customer}",       # a retry makes no second one
+    )
+
+jane = tilo.workspaces.find({"customer_id": "cus_8121"})  # None when there is none
+print("cus_8121 is", jane.id, jane.labels)
+print("visa customers:", len(tilo.workspaces.list(labels={"plan": "visa"})))
+
+# Before a customer leaves: everything their workspace holds, then delete it.
+workspace = tilo.workspace(jane.id)
+export = workspace.export()
+print("exported", len(export.resources), "resources of", export.workspace.labels["customer_id"])
+for gone in tilo.workspaces.list(labels={"plan": "visa"}):
+    tilo.workspaces.delete(gone.id)
+```
+
+```typescript example=customer-labels
+import { Tilo } from "tilo-sdk";
+
+const tilo = new Tilo();                                     // your backend's key
+await Promise.all(                                           // all at once: hundreds is fine
+  ["cus_8121", "cus_8122", "cus_8123"].map((customer) =>    // your own ids for them
+    tilo.workspaces.create(`Applicant ${customer}`, {
+      labels: { customer_id: customer, plan: "visa" },
+      idempotencyKey: `workspace-for-${customer}`,           // a retry makes no second one
+    }),
+  ),
+);
+
+const jane = (await tilo.workspaces.find({ customer_id: "cus_8121" }))!; // undefined when none
+console.log("cus_8121 is", jane.id, jane.labels);
+console.log("visa customers:", (await tilo.workspaces.list({ labels: { plan: "visa" } })).length);
+
+// Before a customer leaves: everything their workspace holds, then delete it.
+const exported = await tilo.workspace(jane.id).export();
+console.log("exported", exported.resources.length, "resources of", exported.workspace.labels.customer_id);
+for (const gone of await tilo.workspaces.list({ labels: { plan: "visa" } })) {
+  await tilo.workspaces.delete(gone.id);
+}
+```
+
+```curl example=customer-labels
+api=$TILO_API_URL/v1
+auth="Authorization: Bearer $TILO_API_KEY"                 # your backend's key
+json="Content-Type: application/json"
+
+for customer in cus_8121 cus_8122 cus_8123; do              # your own ids for them
+  curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "$json" \
+    -H "Idempotency-Key: workspace-for-$customer" \
+    -d "{\"name\": \"Applicant $customer\", \"labels\": {\"customer_id\": \"$customer\", \"plan\": \"visa\"}}" \
+    > /dev/null
+done
+
+jane=$(curl -sS --fail-with-body -G "$api/workspaces" -H "$auth" \
+  --data-urlencode "label[customer_id]=cus_8121" | jq -r '.workspaces[0].id')
+echo "cus_8121 is $jane"
+curl -sS --fail-with-body -G "$api/workspaces" -H "$auth" --data-urlencode "label[plan]=visa" \
+  | jq -r '"visa customers: \(.workspaces | length)"'
+
+# Before a customer leaves: everything their workspace holds, then delete it.
+curl -sS --fail-with-body "$api/workspaces/$jane/export" -H "$auth" \
+  | jq -r '"exported \(.resources | length) resources of \(.workspace.labels.customer_id)"'
+for gone in $(curl -sS --fail-with-body -G "$api/workspaces" -H "$auth" \
+    --data-urlencode "label[plan]=visa" | jq -r '.workspaces[].id'); do
+  curl -sS --fail-with-body -X DELETE "$api/workspaces/$gone" -H "$auth" > /dev/null
+done
+```
+
+An export is every resource of every app in the workspace, each read whole as `tilo_read` reads it, with the
+workspace's listing and labels; a resource that does not read is named in `unread` with why. The files the
+resources name are `tilo.content:` references: download each with `files.download` (`GET
+/v1/workspaces/<workspace>/content/<content>`) while the workspace still exists. From a shell,
+`tilo account workspaces create "Applicant cus_8121" --label customer_id=cus_8121` and
+`tilo account workspaces ls --label customer_id=cus_8121` do the same.
+
+[`sdk/typescript/examples/workspace_per_customer.ts`](../../sdk/typescript/examples/workspace_per_customer.ts)
+is all of this at a backend's scale: it makes 300 labelled workspaces at once, mints a key for each, has
+300 agents work over MCP at once, each with its own token, checks that no token reaches its neighbour's
+workspace, revokes a third of the keys, exports and deletes everything, and prints the timings and the
+host's memory and CPU:
+
+```sh
+eval "$(os/containers/tilo-sh/stack.sh env)"          # a local tilo.sh: TILO_API_URL, TILO_API_KEY
+CUSTOMERS=300 bun sdk/typescript/examples/workspace_per_customer.ts
+```
+
+## What the agent's key reaches
+
 Hand the agent its MCP URL and token. Any MCP client connects with them. For example, with Claude Code:
 
 ```sh
@@ -165,7 +270,12 @@ claude mcp add --transport http jane https://mcp.tilo.sh/w/<workspace>/mcp \
 The agent sees that one workspace's apps through the same tools a person's agent gets: `tilo_ls`,
 `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link`, `tilo_status` and `tilo`. It fills the PDF's form fields
 (`pdf-viewer/application.pdf#field-edit`) and writes a cover letter in Writer (`word-processor#append-paragraph`,
-then `#export-content` as docx). It cannot list, read or act in any other workspace. Every call that
+then `#export-content` as docx). It cannot list, read or act in any other workspace: another workspace's
+MCP URL answers its token `403`, every `/v1/workspaces/<other>/...` route answers `403 beyond_scope`, a
+tool call naming another workspace reaches nothing, and the account's paths (`account/...`, `GET
+/v1/account`, making, deleting, minting) are refused. Listing workspaces with it names its own alone. Revoking
+the key ends its open MCP sessions at once: their next call is refused, and the token opens no new one
+(`401 key_revoked`). Every call that
 changed a record answers that record's `link`, and `tilo_link {path}` answers the link to anything a path
 names, so the agent can end its work by handing a person the link to what it did.
 
