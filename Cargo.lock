@@ -21063,6 +21063,7 @@ dependencies = [
  "proptest",
  "rustix 1.1.6",
  "serde",
+ "serde_bytes",
  "thiserror 2.0.21",
  "tilo-actions",
  "tilo-font-catalog",

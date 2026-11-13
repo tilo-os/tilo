@@ -522,11 +522,12 @@ pub struct Form {
 /// carries, one array per message.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ActionCatalogue {
-    /// Every action the app offers the window, in the order it offers them.
-    All(Vec<u8>),
+    /// Every action the app offers the window, in the order it offers them. Carried as bytes,
+    /// not a byte at a time: a catalogue is large, and goes out with every change of it.
+    All(#[serde(with = "serde_bytes")] Vec<u8>),
     /// The actions of the resources whose labels moved: they replace those resources' actions
     /// in the window, at the cost of what changed rather than of the whole surface.
-    Relabeled(Vec<u8>),
+    Relabeled(#[serde(with = "serde_bytes")] Vec<u8>),
 }
 
 /// What an app sends its window.
@@ -788,6 +789,17 @@ mod tests {
         let mut node = Node::empty("ui.Text", key);
         node.props.insert("value".to_owned(), Value::text(value));
         node
+    }
+
+    /// A catalogue's bytes travel as a length and the bytes, as a list of bytes did: a window
+    /// and an app of different builds read each other's catalogues.
+    #[test]
+    fn a_catalogue_travels_as_its_length_and_bytes() {
+        let sent =
+            postcard::to_allocvec(&ActionCatalogue::Relabeled(vec![7, 8, 9])).expect("encodes");
+        assert_eq!(sent, [1, 3, 7, 8, 9]);
+        let read: ActionCatalogue = postcard::from_bytes(&sent).expect("decodes");
+        assert_eq!(read, ActionCatalogue::Relabeled(vec![7, 8, 9]));
     }
 
     #[test]
