@@ -39,6 +39,9 @@ const FAST: PasswordParams = PasswordParams {
     p_cost: 1,
 };
 
+/// A TCTI no TPM answers on: nothing listens on the discard port.
+const NO_TPM: &str = "swtpm:host=127.0.0.1,port=9";
+
 struct Fixture {
     tpm: Swtpm,
     scratch: tempfile::TempDir,
@@ -78,38 +81,8 @@ impl Fixture {
         self.luks_image_named("disk.img")
     }
 
-    /// The keyslots area has room for eight keyslots, of which these tests
-    /// use two: luksFormat fills the whole area with random bytes, and the
-    /// default is 16 MiB of them.
     fn luks_image_named(&self, name: &str) -> PathBuf {
-        let img = self.scratch.path().join(name);
-        let f = std::fs::File::create(&img).expect("create image");
-        f.set_len(48 << 20).expect("size image");
-        drop(f);
-        let pass = self.scratch.path().join("format.key");
-        std::fs::write(&pass, DISK_PASSPHRASE).unwrap();
-        let ok = Command::new("cryptsetup")
-            .args([
-                "luksFormat",
-                "--type",
-                "luks2",
-                "--batch-mode",
-                "--luks2-keyslots-size",
-                "2M",
-                "--pbkdf",
-                "pbkdf2",
-                "--pbkdf-force-iterations",
-                "1000",
-                "--key-file",
-            ])
-            .arg(&pass)
-            .arg(&img)
-            .status_locked()
-            .expect("cryptsetup luksFormat")
-            .success();
-        assert!(ok, "luksFormat failed");
-        std::fs::remove_file(&pass).unwrap();
-        img
+        luks_image_in(self.scratch.path(), name)
     }
 
     /// A person who signs in with `secret` through the TPM and opens the
@@ -136,6 +109,48 @@ impl Fixture {
         )
         .expect("write the sign-in token");
         (record, key)
+    }
+}
+
+/// A LUKS2 volume in `dir` that the disk passphrase opens. Its keyslots area
+/// has room for eight keyslots, of which these tests use two: luksFormat
+/// fills the whole area with random bytes, and the default is 16 MiB of them.
+fn luks_image_in(dir: &Path, name: &str) -> PathBuf {
+    let img = dir.join(name);
+    let f = std::fs::File::create(&img).expect("create image");
+    f.set_len(48 << 20).expect("size image");
+    drop(f);
+    let pass = dir.join("format.key");
+    std::fs::write(&pass, DISK_PASSPHRASE).unwrap();
+    let ok = Command::new("cryptsetup")
+        .args([
+            "luksFormat",
+            "--type",
+            "luks2",
+            "--batch-mode",
+            "--luks2-keyslots-size",
+            "2M",
+            "--pbkdf",
+            "pbkdf2",
+            "--pbkdf-force-iterations",
+            "1000",
+            "--key-file",
+        ])
+        .arg(&pass)
+        .arg(&img)
+        .status_locked()
+        .expect("cryptsetup luksFormat")
+        .success();
+    assert!(ok, "luksFormat failed");
+    std::fs::remove_file(&pass).unwrap();
+    img
+}
+
+fn cryptsetup_installed() -> Result<(), String> {
+    match Command::new("cryptsetup").arg("--version").output_locked() {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => Err(format!("cryptsetup --version exited with {}", out.status)),
+        Err(e) => Err(format!("cryptsetup could not be run: {e}")),
     }
 }
 
@@ -515,13 +530,23 @@ fn the_sign_in_keyslot_and_token_join_the_header_without_touching_the_rest() {
     );
 }
 
+/// Only cryptsetup works on the header here, so no TPM is started for it.
 #[test]
 fn a_keyslot_can_be_added_with_the_volume_key_alone() {
-    let f = fixture!();
-    let device = f.luks_image();
-    let pass = f.scratch.path().join("pass.key");
+    require_capability!(
+        Swtpm,
+        cryptsetup_installed(),
+        "the header is written with cryptsetup"
+    );
+    let scratch = tempfile::tempdir().unwrap();
+    let work = scratch.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let runner = Real::new().with_tcti(Some(NO_TPM)).with_cwd(&work);
+    let ws = Workspace::new(&work);
+    let device = luks_image_in(scratch.path(), "disk.img");
+    let pass = scratch.path().join("pass.key");
     std::fs::write(&pass, DISK_PASSPHRASE).unwrap();
-    let vk_file = f.scratch.path().join("vk");
+    let vk_file = scratch.path().join("vk");
     let dumped = Command::new("cryptsetup")
         .args([
             "luksDump",
@@ -544,8 +569,8 @@ fn a_keyslot_can_be_added_with_the_volume_key_alone() {
 
     let key = UserKey::generate().unwrap();
     let slot = luks::add_slot(
-        &f.runner,
-        &f.ws,
+        &runner,
+        &ws,
         &device,
         &Authority::VolumeKey(&vk),
         key.system_volume_passphrase().as_bytes(),
@@ -553,15 +578,15 @@ fn a_keyslot_can_be_added_with_the_volume_key_alone() {
     .unwrap();
     assert!(
         luks::opens(
-            &f.runner,
-            &f.ws,
+            &runner,
+            &ws,
             &device,
             key.system_volume_passphrase().as_bytes(),
             slot
         )
         .unwrap()
     );
-    assert!(opens_any_slot(&device, DISK_PASSPHRASE, f.scratch.path()));
+    assert!(opens_any_slot(&device, DISK_PASSPHRASE, scratch.path()));
 }
 
 #[test]
