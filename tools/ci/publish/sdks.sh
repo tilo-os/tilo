@@ -13,11 +13,13 @@
 #                    nothing: the version written into a copy's manifests, `bun pm pack
 #                    --dry-run` for the TypeScript package, `uv build` and `uv publish --dry-run`
 #                    for the Python one, then the name, the version and the module the built
-#                    artifacts carry. This is what runs on main, and it runs again before a
-#                    tag's publish, so a broken manifest shows up long before a tag does.
-#   sdks.sh publish  Publish both at the tag's version. A version already on the registry is
-#                    skipped, so re-running a tag whose run failed halfway finishes the release
-#                    instead of failing on what is already published.
+#                    artifacts carry. This is what runs on main, on a stand-in version, so a
+#                    broken manifest shows up long before a tag does; it checks no credentials
+#                    and reaches no registry.
+#   sdks.sh publish  Build and check both at the tag's version, then publish them. A version
+#                    already on the registry is skipped, and a file already on PyPI is skipped,
+#                    so re-running a tag whose run failed halfway finishes the release instead
+#                    of failing on what is already published.
 #
 # The suites are not run here: sdk-python and sdk-typescript are this check's `needs`, so a
 # release publishes only what they passed. The registry tokens come from t
@@ -148,7 +150,10 @@ if not [path for path in files if path.suffix == ".gz" and plain(path.name).star
     raise SystemExit(f"{dist}: the build left no {name} {version} sdist")
 PY
   cd "$work/python"
-  uv publish --dry-run dist/*
+  # Nothing here holds an identity a trusted publisher could trust (PyPI knows no Forgejo), so
+  # the dry run must not go looking for one: without this it tries trusted publishing first and
+  # prints an error that reads like the build's, in a check that is meant to hold no credentials.
+  uv publish --dry-run --trusted-publishing never dist/*
 }
 
 # Whether URL answers, i.e. that version is already on the registry: registries take a version
@@ -176,9 +181,10 @@ publish_typescript() {
   cd "$work/typescript"
   # The build above is the one that packs: a `prepack` script here would run tsc a second time,
   # and bun runs a lifecycle script in a sandbox where tsc may not be found, which a publish
-  # must not die of after everything it sends is ready.
+  # must not die of after everything it sends is ready. Unscoped packages are public, so there
+  # is no access level to set; one under a scope would publish with `--access public`.
   NPM_CONFIG_TOKEN=${NPM_TOKEN:?the check needs secrets = ["NPM_TOKEN"]} \
-    bun publish --ignore-scripts --access public --tag "$(npm_tag "$v")"
+    bun publish --ignore-scripts --tag "$(npm_tag "$v")"
 }
 
 publish_python() {
@@ -188,7 +194,11 @@ publish_python() {
     return
   fi
   cd "$work/python"
-  UV_PUBLISH_TOKEN=${PYPI_TOKEN:?the check needs secrets = ["PYPI_TOKEN"]} uv publish dist/*
+  # --check-url is what makes a re-run finish a release: PyPI takes a file once, so a run that
+  # stopped between the wheel and the sdist would otherwise fail on the file it already sent.
+  # Earlier files of this version are skipped by name, and the rest go up as the first run meant.
+  UV_PUBLISH_TOKEN=${PYPI_TOKEN:?the check needs secrets = ["PYPI_TOKEN"]} \
+    uv publish --trusted-publishing never --check-url "https://pypi.org/simple/$name/" dist/*
 }
 
 if [[ $mode == check ]]; then
