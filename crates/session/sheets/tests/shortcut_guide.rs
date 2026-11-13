@@ -81,14 +81,6 @@ fn every_input_has_its_guide() {
 }
 
 #[test]
-fn the_guide_paints_a_sheet_and_leaves_the_rest_to_the_desktop_scrim() {
-    let mut app = staged("keyboard");
-    let pixels = app.harness().render_rgba_transparent();
-    let alpha = |x: u32, y: u32| pixels[usize::try_from((y * VIEWPORT.0 + x) * 4 + 3).unwrap()];
-    assert!(alpha(640, 400) > 0, "the sheet is painted");
-}
-
-#[test]
 fn pressing_a_key_asks_the_shell_for_its_new_chord() {
     let (mut app, seat) = seated(guide());
     app.harness()

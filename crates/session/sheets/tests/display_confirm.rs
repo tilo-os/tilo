@@ -55,8 +55,10 @@ fn seated(question: Question) -> (HeadlessApp<DisplayConfirmApp>, ConfirmSeat) {
     (app, seat)
 }
 
+/// A card stands on every display (their pixels are read in `painted.rs`),
+/// and the question is still one question.
 #[test]
-fn every_display_shows_the_question_in_its_middle() {
+fn a_question_on_every_display_is_met_once_by_the_keyboard_and_a_reader() {
     let mut app = staged("two-displays");
     let keeps: Vec<Rect> = buttons(&mut app)
         .into_iter()
@@ -69,10 +71,6 @@ fn every_display_shows_the_question_in_its_middle() {
         "the keyboard and a reader meet it once: {keeps:?}"
     );
     assert!(keeps[0].center().x < 640.0);
-    let pixels = app.harness().render_rgba_transparent();
-    let alpha = |x: u32, y: u32| pixels[usize::try_from((y * VIEWPORT.0 + x) * 4 + 3).unwrap()];
-    assert!(alpha(320, 400) > 0, "a card on the first display");
-    assert!(alpha(960, 400) > 0, "and one on the second");
 }
 
 #[test]
@@ -92,15 +90,6 @@ fn only_a_known_tool_can_be_trusted() {
         .map(|(label, _)| label)
         .collect();
     assert_eq!(labels.len(), 2, "Keep and Revert only: {labels:?}");
-}
-
-#[test]
-fn the_question_paints_only_its_cards_over_the_desktop() {
-    let mut app = staged("known-tool");
-    let pixels = app.harness().render_rgba_transparent();
-    let alpha = |x: u32, y: u32| pixels[usize::try_from((y * VIEWPORT.0 + x) * 4 + 3).unwrap()];
-    assert_eq!(alpha(10, 10), 0, "the desktop shows around the card");
-    assert!(alpha(640, 400) > 0, "the card is painted in the middle");
 }
 
 #[test]

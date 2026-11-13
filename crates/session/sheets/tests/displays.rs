@@ -76,6 +76,7 @@ fn highlighted(app: &mut HeadlessApp<DisplaysApp>) -> Option<String> {
         .and_then(|(_, node)| node.label().map(str::to_owned))
 }
 
+/// What each of them draws is read from its pixels in `painted.rs`.
 #[test]
 fn every_scenario_renders_a_modal_display_dialog() {
     use ui::framework::ResourceApp as _;
@@ -94,11 +95,6 @@ fn every_scenario_renders_a_modal_display_dialog() {
                 .description()
                 .is_some_and(|text| text.contains("Super+P")),
             "{scenario}: the keys are said"
-        );
-        let pixels = app.harness().render_rgba_transparent();
-        assert!(
-            pixels.chunks(4).any(|pixel| pixel[3] > 0),
-            "{scenario} draws"
         );
     }
 }

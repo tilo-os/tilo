@@ -69,6 +69,7 @@ fn asked_text(asked: &[PortalEffect]) -> String {
     format!("{asked:?}")
 }
 
+/// What each of them draws is read from its pixels in `painted.rs`.
 #[test]
 fn every_scenario_is_one_modal_dialog_named_by_its_question() {
     use ui::framework::ResourceApp as _;
@@ -84,11 +85,6 @@ fn every_scenario_is_one_modal_dialog_named_by_its_question() {
         assert!(
             dialog.label().is_some_and(|label| !label.is_empty()),
             "{scenario}: named by its title"
-        );
-        let pixels = app.harness().render_rgba_transparent();
-        assert!(
-            pixels.chunks(4).any(|pixel| pixel[3] > 0),
-            "{scenario} draws"
         );
     }
 }

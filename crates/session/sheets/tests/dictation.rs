@@ -396,15 +396,6 @@ fn a_screen_reader_meets_a_modal_dialog_naming_the_stage() {
 }
 
 #[test]
-fn the_card_paints_only_itself_over_the_field() {
-    let mut app = staged("asking");
-    let pixels = app.harness().render_rgba_transparent();
-    let alpha = |x: u32, y: u32| pixels[usize::try_from((y * VIEWPORT.0 + x) * 4 + 3).unwrap()];
-    assert_eq!(alpha(10, 10), 0, "the field shows around the card");
-    assert!(alpha(640, 400) > 0, "the card is painted in the middle");
-}
-
-#[test]
 fn an_assistive_press_is_the_persons_own_answer() {
     let (mut app, seat) = seated(asking(7));
     app.harness()

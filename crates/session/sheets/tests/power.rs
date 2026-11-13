@@ -91,28 +91,6 @@ fn the_menu_hangs_under_the_bar_against_the_trailing_edge() {
 }
 
 #[test]
-fn the_menu_paints_only_its_panel_over_the_desktop() {
-    let mut app = staged("open");
-    let pixels = app.harness().render_rgba_transparent();
-    let (width, _) = VIEWPORT;
-    let alpha = |x: u32, y: u32| pixels[usize::try_from((y * width + x) * 4 + 3).unwrap()];
-    assert_eq!(
-        alpha(20, 400),
-        0,
-        "the desktop under the sheet shows through"
-    );
-    assert_eq!(alpha(20, 20), 0);
-    let lock = rows(&mut app)[0].1;
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a pixel inside the viewport"
-    )]
-    let (x, y) = (lock.center().x as u32, lock.center().y as u32);
-    assert!(alpha(x, y) > 0, "the panel itself is painted");
-}
-
-#[test]
 fn a_session_that_does_not_own_the_machine_offers_a_shut_down_that_ends_it() {
     let mut app = staged("detached");
     let names: Vec<String> = rows(&mut app).into_iter().map(|(name, _)| name).collect();

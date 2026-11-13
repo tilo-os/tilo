@@ -24,6 +24,8 @@ mod file_picker;
 mod invite;
 #[path = "lock.rs"]
 mod lock;
+#[path = "painted.rs"]
+mod painted;
 #[path = "portal.rs"]
 mod portal;
 #[path = "power.rs"]

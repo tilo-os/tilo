@@ -96,19 +96,6 @@ fn path(seat: &FilePickerSeat, name: &str) -> String {
 }
 
 #[test]
-fn every_scenario_draws_the_chooser_named_by_its_title() {
-    use ui::framework::ResourceApp as _;
-    for scenario in FilePickerApp::scenarios() {
-        let mut app = HeadlessApp::<FilePickerApp>::capture_at(Some(scenario), VIEWPORT).unwrap();
-        let pixels = app.harness().render_rgba_transparent();
-        assert!(
-            pixels.chunks(4).any(|pixel| pixel[3] > 0),
-            "{scenario} draws"
-        );
-    }
-}
-
-#[test]
 fn opening_a_file_lists_the_folder_and_answers_with_the_choice() {
     let home = home();
     let (mut app, seat) = seated(request(home.path(), FileMode::Open));
