@@ -246,14 +246,15 @@ pub fn run_of(context: &tilo_actions::ActionContext) -> Option<Run> {
 /// change: who, when, by which action, in which run, and what it did to each.
 #[must_use]
 pub fn versions_of(change: &automerge::Change) -> Vec<Version> {
-    let Some((stamp, action, run)) = read(change) else {
+    let Some((stamp, action, run)) = read_change(change) else {
         return Vec::new();
     };
     versions_of_action(&stamp, &action, run.as_ref())
 }
 
-/// [`versions_of`] of a change [`read`] once: what a reader of a chunk's whole log does for each
-/// of its changes, which an action's change is read for once rather than once a question.
+/// [`versions_of`] of a change [`read_change`] once: what a reader of a chunk's whole log does
+/// for each of its changes, which an action's change is read for once rather than once a
+/// question.
 #[must_use]
 pub fn versions_of_action(stamp: &Stamp, action: &DynAction, run: Option<&Run>) -> Vec<Version> {
     let run = run.cloned();
@@ -303,13 +304,7 @@ fn items_inserted_into(inserted: &[(String, String)], holder: &str) -> Vec<Strin
 /// ([`DynAction::placed`]).
 #[must_use]
 pub fn placed_of(change: &automerge::Change) -> Vec<(String, String, String, Option<String>)> {
-    read(change).map_or_else(Vec::new, |(_, action, _)| action.placed())
-}
-
-/// [`placed_of`] of a change [`read_change`] once: where the items its action placed are.
-#[must_use]
-pub fn placed_of_action(action: &DynAction) -> Vec<(String, String, String, Option<String>)> {
-    action.placed()
+    read_change(change).map_or_else(Vec::new, |(_, action, _)| action.placed())
 }
 
 /// What a change says of itself beside its operations: its hash, when it was made, its first
@@ -400,18 +395,18 @@ impl<C: ChangeHead + ?Sized> ChangeHead for &C {
 }
 
 /// What a change of a package action says, read once: its version, its action, and the run it
-/// was made in. `None` for a change that is no action of a package (an undo, a merge), which
-/// [`step_stamp`] answers for.
+/// was made in. `None` for a change that is no action of a package (an undo, a merge), or one
+/// whose edits are kept as content, which [`written_stamp`] answers for.
 #[must_use]
 pub fn read_change(change: &(impl ChangeHead + ?Sized)) -> Option<(Stamp, DynAction, Option<Run>)> {
-    read(change)
+    parsed(change).read.clone()
 }
 
 /// The edits `change` records, when it is a tilolang action's change: what a write the store
 /// made is the record's when the record's change holds the very edit it made.
 #[must_use]
 pub fn edits_of(change: &automerge::Change) -> Vec<DynEdit> {
-    read(change).map_or_else(Vec::new, |(_, action, _)| action.edits)
+    read_change(change).map_or_else(Vec::new, |(_, action, _)| action.edits)
 }
 
 /// Where each item the `changes` placed is: the record holding its collection, the field and
@@ -441,21 +436,19 @@ pub fn at_lit(value: &FieldValue) -> Lit {
 /// it is a tilolang action's change.
 #[must_use]
 pub fn stamp_of(change: &automerge::Change) -> Option<(Stamp, Vec<String>)> {
-    let (stamp, action, _) = read(change)?;
+    let (stamp, action, _) = read_change(change)?;
     Some((stamp, action.changed()))
 }
 
-/// The version `change` made, its action and its run, when it is a tilolang action's
-/// change.
-fn read(change: &(impl ChangeHead + ?Sized)) -> Option<(Stamp, DynAction, Option<Run>)> {
-    parsed(change).read.clone()
-}
-
 /// What a change's message says: the context it records and, for a package action's change,
-/// [`read`]'s version, action and run.
+/// [`read_change`]'s version, action and run.
 struct Parsed {
     context: Option<tilo_actions::ActionContext>,
     read: Option<(Stamp, DynAction, Option<Run>)>,
+    /// The version a package action's change made whose edits its entry keeps as content
+    /// ([`tilo_actions::CONTENT_PART_THRESHOLD`]): what the action says of itself beside them.
+    /// What it changed is read off what it wrote ([`stepped`]).
+    apart: Option<Stamp>,
 }
 
 /// How many changes' messages [`parsed`] keeps: those of the changes one sync takes in.
@@ -484,10 +477,7 @@ fn parsed(change: &(impl ChangeHead + ?Sized)) -> std::rc::Rc<Parsed> {
     let context = change
         .message()
         .and_then(tilo_actions::ActionContext::from_change_message);
-    let read = context
-        .as_ref()
-        .and_then(|context| read_context(change, context));
-    let parsed = std::rc::Rc::new(Parsed { context, read });
+    let parsed = std::rc::Rc::new(Parsed::of(change, context));
     PARSED.with(|kept| {
         let mut kept = kept.borrow_mut();
         if kept.len() >= PARSED_KEPT {
@@ -505,28 +495,76 @@ pub(crate) fn maker_of(change: &automerge::Change) -> Option<String> {
     Some(invoker.actor.clone())
 }
 
-/// [`read`] of the context `context` that `change` records.
-fn read_context(
+impl Parsed {
+    /// What `change`, whose message records `context`, says of the action it ran: its version,
+    /// action and run, or, for an action whose edits are kept as content, its version alone.
+    fn of(
+        change: &(impl ChangeHead + ?Sized),
+        context: Option<tilo_actions::ActionContext>,
+    ) -> Self {
+        let mut parsed = Self {
+            context,
+            read: None,
+            apart: None,
+        };
+        let Some(context) = parsed.context.as_ref() else {
+            return parsed;
+        };
+        let Some(encoded) = context
+            .action
+            .as_ref()
+            .filter(|encoded| encoded.type_id == ACTION_TYPE)
+        else {
+            return parsed;
+        };
+        match serde_json::from_slice::<DynAction>(&encoded.payload) {
+            Ok(action) => {
+                let (stamp, run) = stamp_of_action(change, context, &action);
+                parsed.read = Some((stamp, action, run));
+            }
+            Err(error) => match without_parts(encoded, error) {
+                Ok(action) => parsed.apart = Some(stamp_of_action(change, context, &action).0),
+                Err(error) => {
+                    // A tilolang action's change whose action does not read: the change is
+                    // still the record's, but no version stamps it.
+                    tracing::warn!(
+                        change = %change.hash(),
+                        %error,
+                        "a tilolang action's change carries an action that does not decode"
+                    );
+                }
+            },
+        }
+        parsed
+    }
+}
+
+/// The action `encoded` records with its edits and arguments kept as content, read without
+/// them: who invoked it, when, and which action it was stay in the entry. Its edits read back
+/// only once the content travelled here, apart from the change; what the change wrote says
+/// what it changed meanwhile. `error` is why it did not read whole, answered when no part of it
+/// is kept as content.
+fn without_parts(
+    encoded: &tilo_actions::EncodedAction,
+    error: serde_json::Error,
+) -> Result<DynAction, serde_json::Error> {
+    if encoded.content_parts().is_empty() {
+        return Err(error);
+    }
+    let mut value: Json = serde_json::from_slice(&encoded.payload)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("edits".to_owned(), Json::Array(Vec::new()));
+        object.insert("args".to_owned(), Json::Null);
+    }
+    serde_json::from_value(value)
+}
+
+/// The version `action`, recorded by `context`, made in `change`, and the run it was made in.
+fn stamp_of_action(
     change: &(impl ChangeHead + ?Sized),
     context: &tilo_actions::ActionContext,
-) -> Option<(Stamp, DynAction, Option<Run>)> {
-    let encoded = context.action.as_ref()?;
-    if encoded.type_id != ACTION_TYPE {
-        return None;
-    }
-    let action = match serde_json::from_slice::<DynAction>(&encoded.payload) {
-        Ok(action) => action,
-        Err(error) => {
-            // A tilolang action's change whose action does not read: the change is still the
-            // record's, but no version stamps it.
-            tracing::warn!(
-                change = %change.hash(),
-                %error,
-                "a tilolang action's change carries an action that does not decode"
-            );
-            return None;
-        }
-    };
+    action: &DynAction,
+) -> (Stamp, Option<Run>) {
     let at = action
         .authorship
         .at
@@ -551,7 +589,7 @@ fn read_context(
             ..Version::default()
         },
     };
-    Some((stamp, action, run))
+    (stamp, run)
 }
 
 /// The versions a resource's log holds that a view reads of it without reading the log: the
@@ -689,13 +727,12 @@ fn versions_of_changes<'c>(
         let (stamp, wrote) = if let Some((stamp, _)) = stamp_of(change) {
             (stamp, made_of(change))
         } else {
-            let Some(stamp) = step_stamp(change) else {
+            let Some(stamp) = written_stamp(change) else {
                 continue;
             };
-            // A package action whose recorded action does not read here (its large parts kept
-            // as content) changed the fields it wrote, as its version names them; a step takes
-            // a change back rather than changing a field.
-            let action = is_package_action(change);
+            // A package action whose edits are kept as content changed the fields it wrote, as
+            // its version names them; a step takes a change back rather than changing a field.
+            let action = parsed(change).apart.is_some();
             let written = stepped(change, mirror, resources)
                 .into_iter()
                 .map(|version| {
@@ -837,30 +874,19 @@ pub fn ends_of<'c>(
     out
 }
 
-/// Whether `change` records a package's action, read or not: one whose action does not decode
-/// here is still a package action that changed fields, never a step that took one back.
-fn is_package_action(change: &(impl ChangeHead + ?Sized)) -> bool {
-    parsed(change)
-        .context
-        .as_ref()
-        .and_then(|context| context.action.as_ref())
-        .is_some_and(|action| action.type_id == ACTION_TYPE)
-}
-
-/// The version a step on the record that is no readable action of a package was made by (an
-/// undo, a revert from History; [`STEP_ACTION`]), when `change` is one: who took it, when, and
-/// which step. `None` for a change whose recorded action reads, and for one that is nobody's
-/// step (an outside effect settling).
-///
-/// A change whose entry names a package action this device cannot decode is read as a step is:
-/// its resources' versions come from what it wrote ([`stepped`]), so history still names the
-/// change. An action keeps its large parts as content ([`tilo_actions::CONTENT_PART_THRESHOLD`]),
-/// which this device has not held yet, or the package version that wrote it is not installed.
+/// The version a step on the record that is no action of a package was made by (an undo, a
+/// revert from History; [`STEP_ACTION`]), when `change` is one: who took it, when, and which
+/// step. `None` for a package action's change, and for one that is nobody's step (an outside
+/// effect settling).
 #[must_use]
 pub fn step_stamp(change: &(impl ChangeHead + ?Sized)) -> Option<Stamp> {
     let parsed = parsed(change);
     let context = parsed.context.as_ref()?;
-    if parsed.read.is_some() {
+    if context
+        .action
+        .as_ref()
+        .is_some_and(|action| action.type_id == ACTION_TYPE)
+    {
         return None;
     }
     let invoker = context.invoker.as_ref()?;
@@ -869,12 +895,7 @@ pub fn step_stamp(change: &(impl ChangeHead + ?Sized)) -> Option<Stamp> {
         version: Version {
             who: invoker.actor.clone(),
             at: tilolang::calendar::time_text(change.timestamp()),
-            // The entry names the action its change ran, which a change whose action does not
-            // read has no other way to say: a verb's own, and a step's [`STEP_ACTION`].
-            action: match context.what.as_ref() {
-                Some(tilo_actions::Did::Verb(verb)) => verb.action.action.clone(),
-                _ => STEP_ACTION.to_owned(),
-            },
+            action: STEP_ACTION.to_owned(),
             run: run_of(context),
             change: hash,
             op: change.start_op(),
@@ -884,22 +905,39 @@ pub fn step_stamp(change: &(impl ChangeHead + ?Sized)) -> Option<Stamp> {
     })
 }
 
-/// The versions a step on the record that is no action of a package made (an undo, a revert):
-/// one per resource it wrote, by whoever took it, naming the fields it wrote.
+/// The version `change` made when what it changed is read off what it wrote ([`stepped`]): a
+/// step's ([`step_stamp`]), or a package action's whose edits its entry keeps as content
+/// ([`Parsed::apart`]), which is who invoked it, when and which action, as the entry says.
+#[must_use]
+pub fn written_stamp(change: &(impl ChangeHead + ?Sized)) -> Option<Stamp> {
+    parsed(change).apart.clone().or_else(|| step_stamp(change))
+}
+
+/// The versions a change made whose stamp is [`written_stamp`]'s, read off what it wrote: one
+/// per resource it wrote, naming the fields it wrote. A step (an undo, a revert) changed each,
+/// whatever it wrote; a package action created the items it made.
 #[must_use]
 pub fn stepped(
     change: &(impl ChangeHead + ?Sized),
     mirror: &Doc,
     resources: &BTreeMap<DocId, (AppId, TypeId)>,
 ) -> Vec<Version> {
-    let Some(stamp) = step_stamp(change) else {
+    let Some(stamp) = written_stamp(change) else {
         return Vec::new();
     };
+    let action = parsed(change).apart.is_some();
     // What a step wrote is read off its operations, fetched for the steps alone.
     let Some(whole) = change.whole(mirror) else {
         return Vec::new();
     };
     let changed = crate::reads::changed_by(std::slice::from_ref(whole.as_ref()), mirror, resources);
+    // A package action created the items whose maps it made; a step changed them.
+    let made = |resource: &str| {
+        action
+            && resource.split_once('/').is_some_and(|(doc, item)| {
+                changed.placed.get(doc).and_then(|items| items.get(item)) == Some(&true)
+            })
+    };
     let mut by_resource: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for key in changed.docs.into_values().flatten() {
         let fields = by_resource.entry(key.resource).or_default();
@@ -909,11 +947,19 @@ pub fn stepped(
     }
     by_resource
         .into_iter()
-        .map(|(resource, fields)| Version {
-            kind: VersionKind::Changed,
-            fields,
-            resource,
-            ..stamp.version.clone()
+        .map(|(resource, fields)| {
+            // A version that made a resource names no fields.
+            let (kind, fields) = if made(&resource) {
+                (VersionKind::Created, Vec::new())
+            } else {
+                (VersionKind::Changed, fields)
+            };
+            Version {
+                kind,
+                fields,
+                resource,
+                ..stamp.version.clone()
+            }
         })
         .collect()
 }

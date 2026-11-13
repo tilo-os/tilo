@@ -512,3 +512,70 @@ fn exporting_a_notebook_costs_its_notes() {
     }
     assert!(misses.is_empty(), "{}", misses.join("\n"));
 }
+
+/// One action that adds every item of a workspace at once, as an import of ten thousand tasks
+/// does: past a few hundred items it is more than a change records whole, and keeps its large
+/// parts as content. Opening such a workspace builds its index in what its items cost, and an
+/// item's history says the import created it, when the import says it did.
+#[test]
+fn an_import_of_ten_thousand_items_reads_as_what_it_made() {
+    use tilolang_runtime::store::{Store as _, VersionKind};
+    const TASKS: &str = "so.tilo.lang.tasks";
+    let packages = compile(&apps().join("tasks")).unwrap_or_else(|e| panic!("tasks: {e}"));
+    let open = |n: usize, doc: tilo_resource::Doc| {
+        let start = std::time::Instant::now();
+        let host = Host::new(&doc, Principal::new("ada"), || None)
+            .unwrap_or_else(|e| panic!("a host over {n} tasks: {e}"));
+        for compiled in &packages {
+            host.load_wasm(&compiled.wasm)
+                .unwrap_or_else(|e| panic!("{} loads: {e}", compiled.meta.app));
+        }
+        host.wait_index();
+        assert!(host.index_ready(), "the index of {n} tasks is built");
+        let built = start.elapsed();
+        let root = host
+            .root_of(TASKS)
+            .unwrap_or_else(|e| panic!("the root: {e}"));
+        let items = match host.runtime().read(&root, "items") {
+            Ok(Value::List(items)) => items,
+            other => panic!("the tasks are a list: {other:?}"),
+        };
+        assert_eq!(items.len(), n, "every task is there");
+        let item = match items.get(n / 2) {
+            Some(Value::Ref(item)) => item.target.clone(),
+            other => panic!("a task is a reference: {other:?}"),
+        };
+        let versions = host
+            .store()
+            .versions(&item)
+            .unwrap_or_else(|e| panic!("the versions of a task: {e}"));
+        (built, versions)
+    };
+    let imported = |n: usize| {
+        let doc = tilolang_tilo::bench::seeded_record_in_one_action(&packages, n)
+            .unwrap_or_else(|e| panic!("{n} tasks: {e}"));
+        open(n, doc)
+    };
+    let (small, at_small) = imported(SMALL);
+    let (large, at_large) = imported(LARGE);
+    for (n, versions) in [(SMALL, &at_small), (LARGE, &at_large)] {
+        let first = versions
+            .first()
+            .unwrap_or_else(|| panic!("at {n}, the task has a version: the import made it"));
+        assert_eq!(
+            (first.kind, first.action.as_str(), first.at.as_str()),
+            (VersionKind::Created, "add", "2026-06-29T09:00:00Z"),
+            "at {n}, the task was created by the import, when it says: {versions:?}"
+        );
+        assert_eq!(
+            versions.len(),
+            1,
+            "at {n}, the import is all it holds: {versions:?}"
+        );
+    }
+    // Ten times the items cost about ten times as much, never their square.
+    assert!(
+        large < small.saturating_mul(20),
+        "the index of {LARGE} imported tasks took {large:?}, of {SMALL} {small:?}"
+    );
+}

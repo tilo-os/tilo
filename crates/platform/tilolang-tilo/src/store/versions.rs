@@ -43,12 +43,12 @@ pub(super) fn note_versions<C: idx::reflect::ChangeHead>(
         let stamp = read
             .as_ref()
             .map(|(stamp, _, _)| stamp.clone())
-            .or_else(|| idx::reflect::step_stamp(&change));
+            .or_else(|| idx::reflect::written_stamp(&change));
         // A change a step took back is no version of what the record holds.
         let counts = !undone.contains(&change.hash().to_string());
         let placed: BTreeMap<String, Left> = read
             .as_ref()
-            .map(|(_, action, _)| idx::reflect::placed_of_action(action))
+            .map(|(_, action, _)| action.placed())
             .unwrap_or_default()
             .into_iter()
             .map(|(item, holder, field, ty)| (item, Left { holder, field, ty }))
