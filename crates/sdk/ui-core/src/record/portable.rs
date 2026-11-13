@@ -323,261 +323,269 @@ pub(super) fn save_status(
 mod tests {
     use super::super::RecordKind;
     use super::*;
-    #[test]
-    fn cached_heads_save_status_tracks_current_document_and_durability() {
-        let cache = PortableStorage::new("profile", "device").unwrap();
-        let id = RecordId::minted();
-        let storage_key = key("test", "workspace", &id);
-        let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "value", 1).unwrap();
-        cache.put(storage_key.clone(), doc.save(), None).unwrap();
-        let older = cache.pending_writes().remove(0);
-        assert_eq!(
-            save_status(&cache, "test", "workspace", &id, &doc),
-            RecordSaveStatus::Saving
-        );
-        cache.acknowledge(&older, Ok(())).unwrap();
-        assert_eq!(
-            save_status(&cache, "test", "workspace", &id, &doc),
-            RecordSaveStatus::Saved
-        );
-        doc.put(automerge::ROOT, "value", 2).unwrap();
-        let pending = doc.pending_ops();
-        assert_eq!(
-            save_status(&cache, "test", "workspace", &id, &doc),
-            RecordSaveStatus::Saving
-        );
-        assert_eq!(doc.pending_ops(), pending, "status must not commit typing");
-        cache.put(storage_key.clone(), doc.save(), None).unwrap();
-        cache.acknowledge(&older, Ok(())).unwrap();
-        assert_eq!(
-            save_status(&cache, "test", "workspace", &id, &doc),
-            RecordSaveStatus::Saving
-        );
-        let newer = cache.pending_writes().remove(0);
-        cache.acknowledge(&newer, Err("quota".into())).unwrap();
-        assert_eq!(
-            save_status(&cache, "test", "workspace", &id, &doc),
-            RecordSaveStatus::Failed("quota".into())
-        );
-        cache.acknowledge(&newer, Ok(())).unwrap();
-        assert_eq!(
-            save_status(&cache, "test", "workspace", &id, &doc),
-            RecordSaveStatus::Saved
-        );
-        cache.put(storage_key, vec![1, 2, 3], None).unwrap();
-        assert_eq!(
-            save_status(&cache, "test", "workspace", &id, &doc),
-            RecordSaveStatus::Failed("cached document is corrupt".into())
-        );
-    }
-    #[test]
-    fn separate_registries_share_one_cache_owner() {
-        let cache = PortableStorage::new("profile", "device").unwrap();
-        let a = RecordOwners::portable(cache.clone())
-            .open("so.tilo.test", "workspace")
+    tilo_test_env::scenario! {
+        fn portable_records_are_cached_owned_once_and_written_in_sequence;
+
+        phase cached_heads_save_status_tracks_current_document_and_durability;
+        {
+            let cache = PortableStorage::new("profile", "device").unwrap();
+            let id = RecordId::minted();
+            let storage_key = key("test", "workspace", &id);
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "value", 1).unwrap();
+            cache.put(storage_key.clone(), doc.save(), None).unwrap();
+            let older = cache.pending_writes().remove(0);
+            assert_eq!(
+                save_status(&cache, "test", "workspace", &id, &doc),
+                RecordSaveStatus::Saving
+            );
+            cache.acknowledge(&older, Ok(())).unwrap();
+            assert_eq!(
+                save_status(&cache, "test", "workspace", &id, &doc),
+                RecordSaveStatus::Saved
+            );
+            doc.put(automerge::ROOT, "value", 2).unwrap();
+            let pending = doc.pending_ops();
+            assert_eq!(
+                save_status(&cache, "test", "workspace", &id, &doc),
+                RecordSaveStatus::Saving
+            );
+            assert_eq!(doc.pending_ops(), pending, "status must not commit typing");
+            cache.put(storage_key.clone(), doc.save(), None).unwrap();
+            cache.acknowledge(&older, Ok(())).unwrap();
+            assert_eq!(
+                save_status(&cache, "test", "workspace", &id, &doc),
+                RecordSaveStatus::Saving
+            );
+            let newer = cache.pending_writes().remove(0);
+            cache.acknowledge(&newer, Err("quota".into())).unwrap();
+            assert_eq!(
+                save_status(&cache, "test", "workspace", &id, &doc),
+                RecordSaveStatus::Failed("quota".into())
+            );
+            cache.acknowledge(&newer, Ok(())).unwrap();
+            assert_eq!(
+                save_status(&cache, "test", "workspace", &id, &doc),
+                RecordSaveStatus::Saved
+            );
+            cache.put(storage_key, vec![1, 2, 3], None).unwrap();
+            assert_eq!(
+                save_status(&cache, "test", "workspace", &id, &doc),
+                RecordSaveStatus::Failed("cached document is corrupt".into())
+            );
+        }
+
+        phase separate_registries_share_one_cache_owner;
+        {
+            let cache = PortableStorage::new("profile", "device").unwrap();
+            let a = RecordOwners::portable(cache.clone())
+                .open("so.tilo.test", "workspace")
+                .unwrap();
+            let b = RecordOwners::portable(cache)
+                .open("so.tilo.test", "workspace")
+                .unwrap();
+            assert!(a.same_owner(&b));
+        }
+
+        phase portable_convenience_admission_never_seeds_existing_or_uses_filesystem;
+        {
+            let cache = PortableStorage::new("profile", "device").unwrap();
+            let store = RecordOwners::portable(cache.clone())
+                .open("so.tilo.test", "workspace")
+                .unwrap();
+            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            assert!(matches!(
+                store.open_existing_record_checked(&checkout),
+                Err(RecordOpenError::MissingRecord)
+            ));
+            assert!(!store.open_record(&checkout));
+            assert!(cache.pending_writes().is_empty());
+            store.create_record(&checkout).unwrap();
+            assert!(matches!(
+                store.create_record(&checkout),
+                Err(RecordOpenError::AlreadyExists)
+            ));
+            store.open_existing_record_checked(&checkout).unwrap();
+            assert_eq!(cache.pending_writes().len(), 1);
+            let storage = store.history_namespace(&checkout.id).unwrap().0.unwrap();
+            assert!(storage.starts_with("portable:"));
+            drop(store);
+            let restored = RecordOwners::portable(cache)
+                .open("so.tilo.test", "workspace")
+                .unwrap();
+            restored.open_existing_record_checked(&checkout).unwrap();
+            assert!(restored.is_ready(&checkout.id));
+        }
+
+        phase corrupt_hydrated_record_is_retained_and_cannot_be_recreated;
+        {
+            let cache = PortableStorage::new("profile", "device").unwrap();
+            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let key = key("so.tilo.test", "workspace", &checkout.id);
+            cache
+                .hydrate(key.clone(), vec![1, 2, 3], Some(vec![42]))
+                .unwrap();
+            let store = RecordOwners::portable(cache.clone())
+                .open("so.tilo.test", "workspace")
+                .unwrap();
+            assert!(store.open_existing_record_checked(&checkout).is_err());
+            assert!(store.create_record(&checkout).is_err());
+            assert_eq!(cache.get(&key).unwrap().bytes, vec![1, 2, 3]);
+            assert!(cache.pending_writes().is_empty());
+        }
+
+        phase a_second_page_writing_a_record_never_writes_a_sequence_twice;
+        {
+            let cache = PortableStorage::new("profile", "device").unwrap();
+            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let key = key("so.tilo.test", "workspace", &checkout.id);
+            let page = RecordOwners::portable(cache.clone())
+                .open("so.tilo.test", "workspace")
+                .unwrap();
+            page.create_record(&checkout).unwrap();
+            let saved = cache.get(&key).unwrap();
+            // Another page of the same profile opens what the first one saved, and
+            // both write: both carry the change the first one saved, and each
+            // writes its own next one.
+            let other = PortableStorage::new("profile", "device").unwrap();
+            other
+                .hydrate(key.clone(), saved.bytes.clone(), saved.actor.clone())
+                .unwrap();
+            let second = RecordOwners::portable(other.clone())
+                .open("so.tilo.test", "workspace")
+                .unwrap();
+            second.open_existing_record_checked(&checkout).unwrap();
+            let mut written = Vec::new();
+            for store in [&page, &second] {
+                written.push(
+                    store
+                        .with_action_state(&checkout.id, |doc, _, _| {
+                            let heads = doc.get_heads();
+                            doc.put(automerge::ROOT, "value", "written").unwrap();
+                            doc.commit();
+                            doc.save_after(&heads)
+                        })
+                        .unwrap(),
+                );
+            }
+            let mut merged = AutoCommit::load(&saved.bytes).unwrap();
+            for change in &written {
+                crate::history_mode::routes::load_incremental(&mut merged, change).unwrap();
+            }
+            let changes = merged.get_changes(&[]);
+            let sequences: std::collections::HashSet<_> = changes
+                .iter()
+                .map(|change| (change.actor_id().to_bytes(), change.seq()))
+                .collect();
+            assert_eq!(
+                sequences.len(),
+                changes.len(),
+                "one change per writer and sequence, whichever page wrote it"
+            );
+        }
+
+        phase a_change_after_a_refused_one_never_reuses_its_sequence;
+        // A page sends what a person writes in a record as soon as it is made.
+        // When the workspace refuses one of those changes, the page takes it
+        // back, but the relay already holds it: the person's next change from
+        // that page must not carry the refused change's writer and sequence,
+        // or the record would hold two changes under one number and read whole
+        // nowhere.
+        {
+            let cache = PortableStorage::new("profile", "device").unwrap();
+            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let store = RecordOwners::portable(cache.clone())
+                .open("so.tilo.test", "workspace")
+                .unwrap();
+            store.create_record(&checkout).unwrap();
+            let mut relay = AutoCommit::load(
+                &cache
+                    .get(&key("so.tilo.test", "workspace", &checkout.id))
+                    .unwrap()
+                    .bytes,
+            )
             .unwrap();
-        let b = RecordOwners::portable(cache)
-            .open("so.tilo.test", "workspace")
-            .unwrap();
-        assert!(a.same_owner(&b));
-    }
-    #[test]
-    fn portable_convenience_admission_never_seeds_existing_or_uses_filesystem() {
-        let cache = PortableStorage::new("profile", "device").unwrap();
-        let store = RecordOwners::portable(cache.clone())
-            .open("so.tilo.test", "workspace")
-            .unwrap();
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
-        assert!(matches!(
-            store.open_existing_record_checked(&checkout),
-            Err(RecordOpenError::MissingRecord)
-        ));
-        assert!(!store.open_record(&checkout));
-        assert!(cache.pending_writes().is_empty());
-        store.create_record(&checkout).unwrap();
-        assert!(matches!(
-            store.create_record(&checkout),
-            Err(RecordOpenError::AlreadyExists)
-        ));
-        store.open_existing_record_checked(&checkout).unwrap();
-        assert_eq!(cache.pending_writes().len(), 1);
-        let storage = store.history_namespace(&checkout.id).unwrap().0.unwrap();
-        assert!(storage.starts_with("portable:"));
-        drop(store);
-        let restored = RecordOwners::portable(cache)
-            .open("so.tilo.test", "workspace")
-            .unwrap();
-        restored.open_existing_record_checked(&checkout).unwrap();
-        assert!(restored.is_ready(&checkout.id));
-    }
-    #[test]
-    fn corrupt_hydrated_record_is_retained_and_cannot_be_recreated() {
-        let cache = PortableStorage::new("profile", "device").unwrap();
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
-        let key = key("so.tilo.test", "workspace", &checkout.id);
-        cache
-            .hydrate(key.clone(), vec![1, 2, 3], Some(vec![42]))
-            .unwrap();
-        let store = RecordOwners::portable(cache.clone())
-            .open("so.tilo.test", "workspace")
-            .unwrap();
-        assert!(store.open_existing_record_checked(&checkout).is_err());
-        assert!(store.create_record(&checkout).is_err());
-        assert_eq!(cache.get(&key).unwrap().bytes, vec![1, 2, 3]);
-        assert!(cache.pending_writes().is_empty());
-    }
-    #[test]
-    fn a_second_page_writing_a_record_never_writes_a_sequence_twice() {
-        let cache = PortableStorage::new("profile", "device").unwrap();
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
-        let key = key("so.tilo.test", "workspace", &checkout.id);
-        let page = RecordOwners::portable(cache.clone())
-            .open("so.tilo.test", "workspace")
-            .unwrap();
-        page.create_record(&checkout).unwrap();
-        let saved = cache.get(&key).unwrap();
-        // Another page of the same profile opens what the first one saved, and
-        // both write: both carry the change the first one saved, and each
-        // writes its own next one.
-        let other = PortableStorage::new("profile", "device").unwrap();
-        other
-            .hydrate(key.clone(), saved.bytes.clone(), saved.actor.clone())
-            .unwrap();
-        let second = RecordOwners::portable(other.clone())
-            .open("so.tilo.test", "workspace")
-            .unwrap();
-        second.open_existing_record_checked(&checkout).unwrap();
-        let mut written = Vec::new();
-        for store in [&page, &second] {
-            written.push(
-                store
+            // What a person's action writes: a change under their writer on
+            // this copy, sent to the relay at once.
+            let mut send = |value: &str| {
+                let (hash, sent) = store
                     .with_action_state(&checkout.id, |doc, _, _| {
                         let heads = doc.get_heads();
-                        doc.put(automerge::ROOT, "value", "written").unwrap();
-                        doc.commit();
-                        doc.save_after(&heads)
+                        let copy = doc.get_actor().clone();
+                        doc.set_actor(automerge::ActorId::from(
+                            crate::bound_dispatch::document_writer("alice", doc),
+                        ));
+                        doc.put(automerge::ROOT, "message", value).unwrap();
+                        let hash = doc.commit().unwrap();
+                        doc.set_actor(copy);
+                        (hash, doc.save_after(&heads))
                     })
-                    .unwrap(),
-            );
-        }
-        let mut merged = AutoCommit::load(&saved.bytes).unwrap();
-        for change in &written {
-            crate::history_mode::routes::load_incremental(&mut merged, change).unwrap();
-        }
-        let changes = merged.get_changes(&[]);
-        let sequences: std::collections::HashSet<_> = changes
-            .iter()
-            .map(|change| (change.actor_id().to_bytes(), change.seq()))
-            .collect();
-        assert_eq!(
-            sequences.len(),
-            changes.len(),
-            "one change per writer and sequence, whichever page wrote it"
-        );
-    }
-
-    /// A page sends what a person writes in a record as soon as it is made.
-    /// When the workspace refuses one of those changes, the page takes it
-    /// back, but the relay already holds it: the person's next change from
-    /// that page must not carry the refused change's writer and sequence,
-    /// or the record would hold two changes under one number and read whole
-    /// nowhere.
-    #[test]
-    fn a_change_after_a_refused_one_never_reuses_its_sequence() {
-        let cache = PortableStorage::new("profile", "device").unwrap();
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
-        let store = RecordOwners::portable(cache.clone())
-            .open("so.tilo.test", "workspace")
-            .unwrap();
-        store.create_record(&checkout).unwrap();
-        let mut relay = AutoCommit::load(
-            &cache
-                .get(&key("so.tilo.test", "workspace", &checkout.id))
+                    .unwrap();
+                crate::history_mode::routes::load_incremental(&mut relay, &sent).unwrap();
+                hash
+            };
+            send("hello");
+            let refused = send("not allowed here");
+            store
+                .withdraw_refused(
+                    &checkout.id,
+                    &[refused],
+                    "This workspace doesn't allow that.",
+                )
                 .unwrap()
-                .bytes,
-        )
-        .unwrap();
-        // What a person's action writes: a change under their writer on
-        // this copy, sent to the relay at once.
-        let mut send = |value: &str| {
-            let (hash, sent) = store
-                .with_action_state(&checkout.id, |doc, _, _| {
-                    let heads = doc.get_heads();
-                    let copy = doc.get_actor().clone();
-                    doc.set_actor(automerge::ActorId::from(
-                        crate::bound_dispatch::document_writer("alice", doc),
-                    ));
-                    doc.put(automerge::ROOT, "message", value).unwrap();
-                    let hash = doc.commit().unwrap();
-                    doc.set_actor(copy);
-                    (hash, doc.save_after(&heads))
-                })
-                .unwrap();
-            crate::history_mode::routes::load_incremental(&mut relay, &sent).unwrap();
-            hash
-        };
-        send("hello");
-        let refused = send("not allowed here");
-        store
-            .withdraw_refused(
-                &checkout.id,
-                &[refused],
-                "This workspace doesn't allow that.",
-            )
-            .unwrap()
-            .expect("withdrawn");
-        let next = send("hello again");
+                .expect("withdrawn");
+            let next = send("hello again");
 
-        let changes = relay.get_changes(&[]);
-        let sequences: std::collections::HashSet<_> = changes
-            .iter()
-            .map(|change| (change.actor_id().to_bytes(), change.seq()))
-            .collect();
-        assert_eq!(
-            sequences.len(),
-            changes.len(),
-            "one change per writer and sequence, a refused one among them"
-        );
-        let author = relay
-            .get_change_by_hash(&next)
-            .unwrap()
-            .actor_id()
-            .to_hex_string();
-        assert_eq!(
-            crate::history_source::authors::actor_handle(&author).as_deref(),
-            Some("alice"),
-            "the change after a refusal is still the person's"
-        );
-        // The page keeps saving the record under the writer it moved to.
-        store.try_flush().unwrap_or_else(|error| {
-            assert!(
-                error.contains(crate::portable_storage::PENDING_ACKNOWLEDGEMENT),
-                "{error}"
+            let changes = relay.get_changes(&[]);
+            let sequences: std::collections::HashSet<_> = changes
+                .iter()
+                .map(|change| (change.actor_id().to_bytes(), change.seq()))
+                .collect();
+            assert_eq!(
+                sequences.len(),
+                changes.len(),
+                "one change per writer and sequence, a refused one among them"
             );
-        });
-        for write in cache.pending_writes() {
-            cache.acknowledge(&write, Ok(())).unwrap();
+            let author = relay
+                .get_change_by_hash(&next)
+                .unwrap()
+                .actor_id()
+                .to_hex_string();
+            assert_eq!(
+                crate::history_source::authors::actor_handle(&author).as_deref(),
+                Some("alice"),
+                "the change after a refusal is still the person's"
+            );
+            // The page keeps saving the record under the writer it moved to.
+            store.try_flush().unwrap_or_else(|error| {
+                assert!(
+                    error.contains(crate::portable_storage::PENDING_ACKNOWLEDGEMENT),
+                    "{error}"
+                );
+            });
+            for write in cache.pending_writes() {
+                cache.acknowledge(&write, Ok(())).unwrap();
+            }
+            store.try_flush().unwrap();
         }
-        store.try_flush().unwrap();
-    }
 
-    #[test]
-    fn initializer_cannot_replace_the_reserved_actor() {
-        let cache = PortableStorage::new("profile", "device").unwrap();
-        let store = RecordOwners::portable(cache)
-            .open("so.tilo.test", "workspace")
-            .unwrap();
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
-        let mut reservation = store.reserve_record(&checkout).unwrap();
-        assert!(
-            reservation
-                .initialize(|doc| {
-                    doc.set_actor(automerge::ActorId::from(vec![42]));
-                    Ok(())
-                })
-                .is_err()
-        );
-        assert!(!store.is_ready(&checkout.id));
+        phase initializer_cannot_replace_the_reserved_actor;
+        {
+            let cache = PortableStorage::new("profile", "device").unwrap();
+            let store = RecordOwners::portable(cache)
+                .open("so.tilo.test", "workspace")
+                .unwrap();
+            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let mut reservation = store.reserve_record(&checkout).unwrap();
+            assert!(
+                reservation
+                    .initialize(|doc| {
+                        doc.set_actor(automerge::ActorId::from(vec![42]));
+                        Ok(())
+                    })
+                    .is_err()
+            );
+            assert!(!store.is_ready(&checkout.id));
+        }
     }
 }

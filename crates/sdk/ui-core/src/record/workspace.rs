@@ -219,112 +219,116 @@ mod tests {
             .map_err(|error| error.to_string())
     }
 
-    #[test]
-    fn a_workspace_record_is_its_owners_route_in_the_workspace() {
-        let store = Rc::new(durable_store::MemoryStore::new());
-        let record = records(&store, "alice")
-            .open_record("so.tilo.chat", "tilo.workspace.emoji", &|_| Ok(()))
-            .unwrap();
-        let route = record.route().expect("a workspace's record syncs");
-        assert_eq!(route.app_id, "so.tilo.chat");
-        assert_eq!(
-            route.record.as_deref(),
-            Some(collab_types::workspace_record_id("tilo.workspace.emoji").as_str())
-        );
-        assert!(
-            records(&store, "alice")
-                .open_record("so.tilo.notes", "tilo.workspace.emoji", &|_| Ok(()))
-                .is_err(),
-            "only the owner named keeps it"
-        );
-        assert!(
-            records(&store, "alice")
-                .open_record("so.tilo.chat", "chat.workspace", &|_| Ok(()))
-                .is_err(),
-            "the owner's other records are not the workspace's"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_workspace_holds_one_record_for_every_window_and_app;
 
-    #[test]
-    fn a_conversations_record_syncs_on_the_app_that_holds_it() {
-        let store = Rc::new(durable_store::MemoryStore::new());
-        let workspace = "00000000-0000-4000-8000-0000000000aa";
-        let pair =
-            collab_types::direct_pair_id(workspace, &"11".repeat(32), &"22".repeat(32)).unwrap();
-        let id = collab_types::direct_record(&pair);
-        let record = records(&store, "alice")
-            .open_record_at("so.tilo.chat", &id, "so.tilo.chat", &|_| Ok(()))
-            .unwrap();
-        let route = record.route().expect("a conversation's record syncs");
-        assert_eq!(route.app_id, "so.tilo.chat");
-        assert_eq!(route.record.as_deref(), Some(id.as_str()));
-        assert!(
-            records(&store, "alice")
-                .open_record_at("so.tilo.chat", "direct_nope", "so.tilo.chat", &|_| Ok(()))
-                .is_err(),
-            "an id that names no record opens none"
-        );
-    }
+        phase a_workspace_record_is_its_owners_route_in_the_workspace;
+        {
+            let store = Rc::new(durable_store::MemoryStore::new());
+            let record = records(&store, "alice")
+                .open_record("so.tilo.chat", "tilo.workspace.emoji", &|_| Ok(()))
+                .unwrap();
+            let route = record.route().expect("a workspace's record syncs");
+            assert_eq!(route.app_id, "so.tilo.chat");
+            assert_eq!(
+                route.record.as_deref(),
+                Some(collab_types::workspace_record_id("tilo.workspace.emoji").as_str())
+            );
+            assert!(
+                records(&store, "alice")
+                    .open_record("so.tilo.notes", "tilo.workspace.emoji", &|_| Ok(()))
+                    .is_err(),
+                "only the owner named keeps it"
+            );
+            assert!(
+                records(&store, "alice")
+                    .open_record("so.tilo.chat", "chat.workspace", &|_| Ok(()))
+                    .is_err(),
+                "the owner's other records are not the workspace's"
+            );
+        }
 
-    /// Two windows of different apps in one process hold the one record:
-    /// what one writes the other reads.
-    #[test]
-    fn every_window_of_the_workspace_holds_the_one_record() {
-        let store = Rc::new(durable_store::MemoryStore::new());
-        let owners =
-            RecordOwners::with_store(Rc::clone(&store) as Rc<dyn durable_store::DurableStore>);
-        let workspace = "00000000-0000-4000-8000-0000000000aa".to_owned();
-        let notes =
-            WorkspaceRecords::in_workspace(owners.clone(), workspace.clone(), UserId("a".into()));
-        let chat = WorkspaceRecords::in_workspace(owners, workspace, UserId("a".into()));
-        let written = notes
-            .open_record("so.tilo.chat", "tilo.workspace.emoji", &|_| Ok(()))
-            .unwrap();
-        written.edit(true, |doc| put(doc, "from notes")).unwrap();
-        let read = chat
-            .open_record("so.tilo.chat", "tilo.workspace.emoji", &|_| Ok(()))
-            .unwrap();
-        let value = read.read(|doc| {
-            use automerge::ReadDoc as _;
-            doc.get(automerge::ROOT, "value")
-                .ok()
-                .flatten()
-                .map(|(value, _)| value.to_string())
-        });
-        assert_eq!(value.flatten().as_deref(), Some("\"from notes\""));
-    }
+        phase a_conversations_record_syncs_on_the_app_that_holds_it;
+        {
+            let store = Rc::new(durable_store::MemoryStore::new());
+            let workspace = "00000000-0000-4000-8000-0000000000aa";
+            let pair =
+                collab_types::direct_pair_id(workspace, &"11".repeat(32), &"22".repeat(32)).unwrap();
+            let id = collab_types::direct_record(&pair);
+            let record = records(&store, "alice")
+                .open_record_at("so.tilo.chat", &id, "so.tilo.chat", &|_| Ok(()))
+                .unwrap();
+            let route = record.route().expect("a conversation's record syncs");
+            assert_eq!(route.app_id, "so.tilo.chat");
+            assert_eq!(route.record.as_deref(), Some(id.as_str()));
+            assert!(
+                records(&store, "alice")
+                    .open_record_at("so.tilo.chat", "direct_nope", "so.tilo.chat", &|_| Ok(()))
+                    .is_err(),
+                "an id that names no record opens none"
+            );
+        }
 
-    /// A package's own record (Chat's chat) is kept under the primary sentinel no route names,
-    /// so asking whether the workspace holds it must not parse the sentinel as a record id: a
-    /// session that asked did, got "no such record" for the identity it had just written, and
-    /// read its conversations as gone for one pass — which the broker took as the turn ending
-    /// while a step it had started was still launching ("task stopped while waiting for its
-    /// application").
-    #[test]
-    fn a_primary_record_the_workspace_holds_is_found_by_its_sentinel_id() {
-        let store = Rc::new(durable_store::MemoryStore::new());
-        let records = records(&store, "alice");
-        let primary = RecordId::package_primary();
-        assert!(
-            !records
-                .holds_record("so.tilo.chat", primary.as_str(), "chat.workspace")
-                .unwrap(),
-            "nothing holds it before it is opened"
-        );
-        records
-            .open_primary("so.tilo.chat", "chat.workspace", &|_| Ok(()))
-            .unwrap();
-        assert!(
+        phase every_window_of_the_workspace_holds_the_one_record;
+        // Two windows of different apps in one process hold the one record:
+        // what one writes the other reads.
+        {
+            let store = Rc::new(durable_store::MemoryStore::new());
+            let owners =
+                RecordOwners::with_store(Rc::clone(&store) as Rc<dyn durable_store::DurableStore>);
+            let workspace = "00000000-0000-4000-8000-0000000000aa".to_owned();
+            let notes =
+                WorkspaceRecords::in_workspace(owners.clone(), workspace.clone(), UserId("a".into()));
+            let chat = WorkspaceRecords::in_workspace(owners, workspace, UserId("a".into()));
+            let written = notes
+                .open_record("so.tilo.chat", "tilo.workspace.emoji", &|_| Ok(()))
+                .unwrap();
+            written.edit(true, |doc| put(doc, "from notes")).unwrap();
+            let read = chat
+                .open_record("so.tilo.chat", "tilo.workspace.emoji", &|_| Ok(()))
+                .unwrap();
+            let value = read.read(|doc| {
+                use automerge::ReadDoc as _;
+                doc.get(automerge::ROOT, "value")
+                    .ok()
+                    .flatten()
+                    .map(|(value, _)| value.to_string())
+            });
+            assert_eq!(value.flatten().as_deref(), Some("\"from notes\""));
+        }
+
+        phase a_primary_record_the_workspace_holds_is_found_by_its_sentinel_id;
+        // A package's own record (Chat's chat) is kept under the primary sentinel no route names,
+        // so asking whether the workspace holds it must not parse the sentinel as a record id: a
+        // session that asked did, got "no such record" for the identity it had just written, and
+        // read its conversations as gone for one pass — which the broker took as the turn ending
+        // while a step it had started was still launching ("task stopped while waiting for its
+        // application").
+        {
+            let store = Rc::new(durable_store::MemoryStore::new());
+            let records = records(&store, "alice");
+            let primary = RecordId::package_primary();
+            assert!(
+                !records
+                    .holds_record("so.tilo.chat", primary.as_str(), "chat.workspace")
+                    .unwrap(),
+                "nothing holds it before it is opened"
+            );
             records
-                .holds_record("so.tilo.chat", primary.as_str(), "chat.workspace")
-                .unwrap(),
-            "the record Chat keeps as itself is the one the sentinel names"
-        );
-        assert!(
-            !records
-                .holds_record("so.tilo.notes", primary.as_str(), "chat.workspace")
-                .unwrap(),
-            "only its owner keeps it"
-        );
+                .open_primary("so.tilo.chat", "chat.workspace", &|_| Ok(()))
+                .unwrap();
+            assert!(
+                records
+                    .holds_record("so.tilo.chat", primary.as_str(), "chat.workspace")
+                    .unwrap(),
+                "the record Chat keeps as itself is the one the sentinel names"
+            );
+            assert!(
+                !records
+                    .holds_record("so.tilo.notes", primary.as_str(), "chat.workspace")
+                    .unwrap(),
+                "only its owner keeps it"
+            );
+        }
     }
 }

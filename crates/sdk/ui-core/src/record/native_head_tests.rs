@@ -38,54 +38,58 @@ fn head() -> RecordCheckout {
     )
 }
 
-/// Opening a chain's head asks the workspace for whichever part is its newest and
-/// opens nothing here: a document founded under the head's name would be a record
-/// of the app's own beside the chain's parts, published to everyone.
-#[test]
-fn a_native_apps_store_asks_for_a_chains_head_and_never_founds_one() {
-    let workspace = uuid::Uuid::new_v4();
-    let (broker, _joins) = CollaborationManager::native_initial_fixture_for_test(
-        PACKAGE,
-        workspace,
-        automerge::AutoCommit::new().save(),
-    );
-    let (construction, store) = native_store(workspace, broker);
-    let head = head();
-    assert!(
-        matches!(store.try_open_record(&head), Err(RecordOpenError::Arriving)),
-        "a chain's head is on its way, never a record made here"
-    );
-    assert!(!store.is_ready(&head.id), "no document lives under a head");
-    assert!(
-        matches!(store.try_open_record(&head), Err(RecordOpenError::Arriving)),
-        "and still on its way while the workspace has not answered"
-    );
-    drop(construction);
-}
+tilo_test_env::scenario! {
+    fn a_chains_head_is_asked_of_the_workspace_and_never_guessed;
 
-/// The answer that a chain has no part at all is the workspace's word, not this
-/// device's guess: until it comes, the head is on its way, and then it is missing —
-/// which is what starts the chain's first part.
-#[test]
-fn a_chains_head_is_missing_only_once_the_workspace_answered_it_has_no_part() {
-    let workspace = uuid::Uuid::new_v4();
-    let (broker, _joins) = CollaborationManager::native_initial_fixture_for_test(
-        PACKAGE,
-        workspace,
-        automerge::AutoCommit::new().save(),
-    );
-    let (construction, store) = native_store(workspace, broker);
-    let head = head();
-    assert!(matches!(
-        store.try_open_record(&head),
-        Err(RecordOpenError::Arriving)
-    ));
-    assert!(!store.workspace_answered(&head.id));
-    store.note_workspace_answered(head.id.clone());
-    assert!(store.workspace_answered(&head.id));
-    assert!(
-        !store.is_ready(&head.id),
-        "the workspace has no part at all"
-    );
-    drop(construction);
+    phase a_native_apps_store_asks_for_a_chains_head_and_never_founds_one;
+    // Opening a chain's head asks the workspace for whichever part is its newest and
+    // opens nothing here: a document founded under the head's name would be a record
+    // of the app's own beside the chain's parts, published to everyone.
+    {
+        let workspace = uuid::Uuid::new_v4();
+        let (broker, _joins) = CollaborationManager::native_initial_fixture_for_test(
+            PACKAGE,
+            workspace,
+            automerge::AutoCommit::new().save(),
+        );
+        let (construction, store) = native_store(workspace, broker);
+        let head = head();
+        assert!(
+            matches!(store.try_open_record(&head), Err(RecordOpenError::Arriving)),
+            "a chain's head is on its way, never a record made here"
+        );
+        assert!(!store.is_ready(&head.id), "no document lives under a head");
+        assert!(
+            matches!(store.try_open_record(&head), Err(RecordOpenError::Arriving)),
+            "and still on its way while the workspace has not answered"
+        );
+        drop(construction);
+    }
+
+    phase a_chains_head_is_missing_only_once_the_workspace_answered_it_has_no_part;
+    // The answer that a chain has no part at all is the workspace's word, not this
+    // device's guess: until it comes, the head is on its way, and then it is missing —
+    // which is what starts the chain's first part.
+    {
+        let workspace = uuid::Uuid::new_v4();
+        let (broker, _joins) = CollaborationManager::native_initial_fixture_for_test(
+            PACKAGE,
+            workspace,
+            automerge::AutoCommit::new().save(),
+        );
+        let (construction, store) = native_store(workspace, broker);
+        let head = head();
+        assert!(matches!(
+            store.try_open_record(&head),
+            Err(RecordOpenError::Arriving)
+        ));
+        assert!(!store.workspace_answered(&head.id));
+        store.note_workspace_answered(head.id.clone());
+        assert!(store.workspace_answered(&head.id));
+        assert!(
+            !store.is_ready(&head.id),
+            "the workspace has no part at all"
+        );
+        drop(construction);
+    }
 }

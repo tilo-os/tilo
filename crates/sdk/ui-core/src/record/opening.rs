@@ -291,86 +291,90 @@ mod tests {
             .unwrap_or_default()
     }
 
-    #[test]
-    fn a_record_opening_off_the_frame_is_read_by_nothing_until_it_is_taken_in() {
-        let temp = tempfile::tempdir().unwrap();
-        let records = kept(temp.path(), "kept");
-        let want = primary();
-        assert!(records.begin_opening(&want).unwrap());
-        assert!(records.is_opening(&want.id));
-        assert!(
-            matches!(
-                records.read_checked(&want.id, |_| ()),
+    tilo_test_env::scenario! {
+        fn a_record_opens_off_the_frame_and_is_taken_in_whole;
+
+        phase a_record_opening_off_the_frame_is_read_by_nothing_until_it_is_taken_in;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let records = kept(temp.path(), "kept");
+            let want = primary();
+            assert!(records.begin_opening(&want).unwrap());
+            assert!(records.is_opening(&want.id));
+            assert!(
+                matches!(
+                    records.read_checked(&want.id, |_| ()),
+                    Err(RecordOpenError::MissingRecord)
+                ),
+                "nothing reads the record before it is taken in"
+            );
+            let opening = records.opening(&want);
+            let doc = opening.document().expect("the record, once taken in");
+            assert_eq!(body(&doc), "kept");
+            assert!(!records.is_opening(&want.id));
+            // Taken in, it is the open record every write lands on.
+            records
+                .with(&want.id, |doc| {
+                    doc.put(ROOT, "body", "written").unwrap();
+                })
+                .unwrap();
+            assert_eq!(records.read_checked(&want.id, body).unwrap(), "written");
+        }
+
+        phase opening_a_record_that_is_still_opening_waits_for_it;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let records = kept(temp.path(), "kept");
+            let want = primary();
+            assert!(records.begin_opening(&want).unwrap());
+            records.try_open_record(&want).unwrap();
+            assert!(!records.is_opening(&want.id));
+            assert_eq!(records.read_checked(&want.id, body).unwrap(), "kept");
+            // Opened, it is not opened off the frame again.
+            assert!(!records.begin_opening(&want).unwrap());
+        }
+
+        phase committed_history_arriving_while_the_record_opens_lands_on_it;
+        // The workspace's join can answer before the window takes the record in: the route's
+        // committed history takes the record in and lands on it.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let (records, kept) = kept_document(temp.path(), "kept");
+            let want = primary();
+            assert!(records.begin_opening(&want).unwrap());
+            let mut committed = kept.with_actor(automerge::ActorId::random());
+            committed
+                .put(ROOT, "from_workspace", "another device")
+                .unwrap();
+            records
+                .merge_replica(
+                    &want,
+                    collab_types::DocumentMutation::Snapshot(committed.save()),
+                )
+                .unwrap();
+            assert!(!records.is_opening(&want.id));
+            let from_workspace = records
+                .read_checked(&want.id, |doc| {
+                    doc.get(ROOT, "from_workspace")
+                        .unwrap()
+                        .and_then(|(value, _)| value.into_string().ok())
+                })
+                .unwrap();
+            assert_eq!(from_workspace.as_deref(), Some("another device"));
+            assert_eq!(records.read_checked(&want.id, body).unwrap(), "kept");
+        }
+
+        phase a_record_this_device_does_not_hold_opens_as_before;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let records = RecordOwners::new(temp.path().to_path_buf())
+                .open(PACKAGE, WORKSPACE)
+                .unwrap();
+            assert!(!records.begin_opening(&primary()).unwrap());
+            assert!(matches!(
+                records.try_open_record(&primary()),
                 Err(RecordOpenError::MissingRecord)
-            ),
-            "nothing reads the record before it is taken in"
-        );
-        let opening = records.opening(&want);
-        let doc = opening.document().expect("the record, once taken in");
-        assert_eq!(body(&doc), "kept");
-        assert!(!records.is_opening(&want.id));
-        // Taken in, it is the open record every write lands on.
-        records
-            .with(&want.id, |doc| {
-                doc.put(ROOT, "body", "written").unwrap();
-            })
-            .unwrap();
-        assert_eq!(records.read_checked(&want.id, body).unwrap(), "written");
-    }
-
-    #[test]
-    fn opening_a_record_that_is_still_opening_waits_for_it() {
-        let temp = tempfile::tempdir().unwrap();
-        let records = kept(temp.path(), "kept");
-        let want = primary();
-        assert!(records.begin_opening(&want).unwrap());
-        records.try_open_record(&want).unwrap();
-        assert!(!records.is_opening(&want.id));
-        assert_eq!(records.read_checked(&want.id, body).unwrap(), "kept");
-        // Opened, it is not opened off the frame again.
-        assert!(!records.begin_opening(&want).unwrap());
-    }
-
-    /// The workspace's join can answer before the window takes the record in: the route's
-    /// committed history takes the record in and lands on it.
-    #[test]
-    fn committed_history_arriving_while_the_record_opens_lands_on_it() {
-        let temp = tempfile::tempdir().unwrap();
-        let (records, kept) = kept_document(temp.path(), "kept");
-        let want = primary();
-        assert!(records.begin_opening(&want).unwrap());
-        let mut committed = kept.with_actor(automerge::ActorId::random());
-        committed
-            .put(ROOT, "from_workspace", "another device")
-            .unwrap();
-        records
-            .merge_replica(
-                &want,
-                collab_types::DocumentMutation::Snapshot(committed.save()),
-            )
-            .unwrap();
-        assert!(!records.is_opening(&want.id));
-        let from_workspace = records
-            .read_checked(&want.id, |doc| {
-                doc.get(ROOT, "from_workspace")
-                    .unwrap()
-                    .and_then(|(value, _)| value.into_string().ok())
-            })
-            .unwrap();
-        assert_eq!(from_workspace.as_deref(), Some("another device"));
-        assert_eq!(records.read_checked(&want.id, body).unwrap(), "kept");
-    }
-
-    #[test]
-    fn a_record_this_device_does_not_hold_opens_as_before() {
-        let temp = tempfile::tempdir().unwrap();
-        let records = RecordOwners::new(temp.path().to_path_buf())
-            .open(PACKAGE, WORKSPACE)
-            .unwrap();
-        assert!(!records.begin_opening(&primary()).unwrap());
-        assert!(matches!(
-            records.try_open_record(&primary()),
-            Err(RecordOpenError::MissingRecord)
-        ));
+            ));
+        }
     }
 }

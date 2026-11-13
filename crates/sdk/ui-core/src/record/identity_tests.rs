@@ -160,13 +160,10 @@ fn stored_bytes(root: &Path, package: &str, workspace: &str, id: &RecordId) -> V
         .bytes
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn former_records_are_validated_and_adopted_exactly_once() {
-    // phase: formerly_is_validated
+tilo_test_env::scenario! {
+    fn former_records_are_validated_and_adopted_exactly_once;
+
+    phase formerly_is_validated;
     {
         let id = RecordId::minted();
         let checkout = RecordCheckout::new(id.clone(), RecordKind::new("note")).formerly(id);
@@ -180,7 +177,8 @@ fn former_records_are_validated_and_adopted_exactly_once() {
         }
         assert!(!many.is_valid());
     }
-    // phase: a_path_record_is_adopted_once_by_its_file_record
+
+    phase a_path_record_is_adopted_once_by_its_file_record;
     {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
@@ -256,7 +254,8 @@ fn former_records_are_validated_and_adopted_exactly_once() {
             Err(RecordOpenError::MissingRecord)
         ));
     }
-    // phase: checkout_adopts_a_former_record_once
+
+    phase checkout_adopts_a_former_record_once;
     {
         let temp = tempfile::tempdir().unwrap();
         let documents = native(temp.path());
@@ -307,7 +306,8 @@ fn former_records_are_validated_and_adopted_exactly_once() {
             Err(RecordOpenError::MissingRecord)
         ));
     }
-    // phase: existing_only_admission_adopts_a_former_record
+
+    phase existing_only_admission_adopts_a_former_record;
     {
         let temp = tempfile::tempdir().unwrap();
         let documents = native(temp.path());

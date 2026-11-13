@@ -837,45 +837,49 @@ mod tests {
         }))
     }
 
-    #[test]
-    fn a_retirement_travels_as_one_change_and_is_read_back_whole() {
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, "body", "draft").unwrap();
-        doc.commit();
-        let before = doc.get_heads();
-        stamp_retired(&mut doc, &moved()).unwrap();
-        assert_eq!(retirement(&doc), Some(moved()));
-        assert_eq!(doc.get_changes(&before).len(), 1);
-        let mut peer = doc.fork_at(&before).unwrap();
-        assert!(!is_retired(&peer));
-        peer.merge_incoming(&mut doc).unwrap();
-        assert_eq!(
-            retirement(&peer),
-            Some(moved()),
-            "a peer holding it learns it moved"
-        );
-        stamp_retired(&mut doc, &Retirement::Abandoned).unwrap();
-        assert_eq!(
-            retirement(&doc),
-            Some(moved()),
-            "the first retirement stands"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_retirement_is_one_change_that_names_its_successor;
 
-    /// The successor goes into the stamp under the workspace key and reads back.
-    #[test]
-    fn a_retirement_names_its_successor_under_the_stored_key() {
-        let mut doc = AutoCommit::new();
-        stamp_retired(&mut doc, &moved()).unwrap();
-        let meta = meta_ro(&doc).expect("a stamped record has meta");
-        let Some((Value::Object(ObjType::Map), retired)) = doc.get(&meta, RETIRED).unwrap() else {
-            panic!("the retirement is a map");
-        };
-        assert!(
-            doc.get(&retired, "workspace").unwrap().is_some(),
-            "stored key"
-        );
-        assert_eq!(retirement(&doc), Some(moved()));
+        phase a_retirement_travels_as_one_change_and_is_read_back_whole;
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, "body", "draft").unwrap();
+            doc.commit();
+            let before = doc.get_heads();
+            stamp_retired(&mut doc, &moved()).unwrap();
+            assert_eq!(retirement(&doc), Some(moved()));
+            assert_eq!(doc.get_changes(&before).len(), 1);
+            let mut peer = doc.fork_at(&before).unwrap();
+            assert!(!is_retired(&peer));
+            peer.merge_incoming(&mut doc).unwrap();
+            assert_eq!(
+                retirement(&peer),
+                Some(moved()),
+                "a peer holding it learns it moved"
+            );
+            stamp_retired(&mut doc, &Retirement::Abandoned).unwrap();
+            assert_eq!(
+                retirement(&doc),
+                Some(moved()),
+                "the first retirement stands"
+            );
+        }
+
+        phase a_retirement_names_its_successor_under_the_stored_key;
+        // The successor goes into the stamp under the workspace key and reads back.
+        {
+            let mut doc = AutoCommit::new();
+            stamp_retired(&mut doc, &moved()).unwrap();
+            let meta = meta_ro(&doc).expect("a stamped record has meta");
+            let Some((Value::Object(ObjType::Map), retired)) = doc.get(&meta, RETIRED).unwrap() else {
+                panic!("the retirement is a map");
+            };
+            assert!(
+                doc.get(&retired, "workspace").unwrap().is_some(),
+                "stored key"
+            );
+            assert_eq!(retirement(&doc), Some(moved()));
+        }
     }
 
     fn seeded(root: &std::path::Path) -> (RecordCheckout, RecordStore) {
@@ -896,492 +900,504 @@ mod tests {
         (checkout, records)
     }
 
-    #[test]
-    fn a_moved_record_keeps_its_history_and_later_edits_and_leaves_its_workspace() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = store(temp.path());
-        let (checkout, old_writer) = seeded(temp.path());
-        let origin = Origin::Record(checkout.clone());
+    tilo_test_env::scenario! {
+        fn a_moved_record_keeps_its_history_and_names_its_new_workspace;
 
-        // The old app still holds the record: reading it needs no writer.
-        let snapshot = read(&store, PACKAGE, FROM, &origin).unwrap();
-        let known = snapshot.clone().get_heads();
-        let target = RecordId::minted();
-        let mut arrived = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
-        let (installed, _) = install(&store, PACKAGE, TO, &mut arrived).unwrap();
-        assert_eq!(installed.id, target);
-        assert_eq!(provenance(&arrived), std::slice::from_ref(&checkout.id));
-        assert!(
-            arrived.get_change_by_hash(&known[0]).is_some(),
-            "the source history travels"
-        );
-
-        // It edits once more after the read, then exits.
-        old_writer
-            .with(&checkout.id, |doc| {
-                doc.put(ROOT, "body", "first draft, last words").unwrap();
-            })
-            .unwrap();
-        old_writer.try_flush().unwrap();
-        assert!(matches!(
-            retire(&store, PACKAGE, FROM, &origin, &moved()),
-            Err(TransferError::Busy)
-        ));
-        drop(old_writer);
-
-        let last = read(&store, PACKAGE, FROM, &origin).unwrap();
-        assert_eq!(changes_since(&last, &known), 1);
-        assert_eq!(
-            catch_up(&store, PACKAGE, TO, &installed, &last).unwrap().0,
-            1
-        );
-        assert_eq!(
-            catch_up(&store, PACKAGE, TO, &installed, &last).unwrap(),
-            (0, None),
-            "nothing more to write"
-        );
-        let _ = retire(&store, PACKAGE, FROM, &origin, &moved()).unwrap();
-
-        let destination = read(&store, PACKAGE, TO, &Origin::Record(installed)).unwrap();
-        assert_eq!(
-            body(&destination).as_deref(),
-            Some("first draft, last words")
-        );
-        assert_eq!(workspace_scope(&destination).as_deref(), Some(TO));
-        assert!(matches!(
-            read(&store, PACKAGE, FROM, &origin),
-            Err(TransferError::Open(RecordOpenError::Retired))
-        ));
-        let source_workspace = RecordOwners::new(temp.path().to_path_buf())
-            .open(PACKAGE, FROM)
-            .unwrap();
-        assert!(matches!(
-            source_workspace.try_open_record(&checkout),
-            Err(RecordOpenError::Retired)
-        ));
-        let retired = decode(&store, &key(PACKAGE, FROM, &checkout.id).unwrap()).unwrap();
-        assert_eq!(retirement(&retired), Some(moved()));
-        assert_eq!(
-            body(&retired).as_deref(),
-            Some("first draft, last words"),
-            "the retirement is one more change, not an erasure"
-        );
-    }
-
-    #[test]
-    fn a_document_joins_another_workspace_only_as_exactly_the_minted_record_it_claims() {
-        let dir = tempfile::tempdir().unwrap();
-        let (checkout, writer) = seeded(dir.path());
-        drop(writer);
-        let source = read(
-            &store(dir.path()),
-            PACKAGE,
-            FROM,
-            &Origin::Record(checkout.clone()),
-        )
-        .unwrap();
-        let target = RecordId::minted();
-        let arriving = |doc: &AutoCommit| doc.clone().save();
-        let mut rehomed = rehome(
-            &source,
-            &Origin::Record(checkout.clone()),
-            FROM,
-            TO,
-            &target,
-        )
-        .unwrap();
-        let bytes = arriving(&rehomed);
-        let (kept, identity) = validate_import(&bytes, TO, &target, bytes.len()).unwrap();
-        assert_eq!(identity.id, target);
-        assert_eq!(body(&kept).as_deref(), Some("first draft"));
-        assert_eq!(provenance(&kept), std::slice::from_ref(&checkout.id));
-
-        assert!(
-            validate_import(&bytes, TO, &target, bytes.len() - 1).is_err(),
-            "size is bounded"
-        );
-        assert!(
-            validate_import(&bytes, FROM, &target, bytes.len()).is_err(),
-            "scoped to the workspace it joins"
-        );
-        assert!(
-            validate_import(&bytes, TO, &RecordId::minted(), bytes.len()).is_err(),
-            "it is only the record it claims"
-        );
-        let derived = RecordId::derived("notes", &target);
-        let under_derived = rehome(
-            &source,
-            &Origin::Record(checkout.clone()),
-            FROM,
-            TO,
-            &derived,
-        )
-        .unwrap();
-        let derived_bytes = arriving(&under_derived);
-        assert!(
-            validate_import(&derived_bytes, TO, &derived, derived_bytes.len()).is_err(),
-            "only a freshly minted id joins a workspace"
-        );
-
-        let mut referring = rehomed.clone();
-        assert!(crate::record::add_reference(
-            &mut referring,
-            &crate::record::RecordRef {
-                target: RecordId::minted(),
-                relation: "cites".into(),
-            }
-        ));
-        let referring = arriving(&referring);
-        assert!(
-            validate_import(&referring, TO, &target, referring.len()).is_err(),
-            "no identities of other records ride along"
-        );
-        let mut indexing = rehomed.clone();
-        indexing
-            .put_object(ROOT, crate::record::INDEX, ObjType::Map)
-            .unwrap();
-        let indexing = arriving(&indexing);
-        assert!(validate_import(&indexing, TO, &target, indexing.len()).is_err());
-        let meta = meta_obj(&mut rehomed).unwrap();
-        rehomed.put(&meta, "alias", "uuid:other").unwrap();
-        let aliased = arriving(&rehomed);
-        assert!(validate_import(&aliased, TO, &target, aliased.len()).is_err());
-        let mut retired = read(
-            &store(dir.path()),
-            PACKAGE,
-            FROM,
-            &Origin::Record(checkout.clone()),
-        )
-        .unwrap();
-        let mut retired = rehome(
-            &retired.fork(),
-            &Origin::Record(checkout),
-            FROM,
-            TO,
-            &target,
-        )
-        .unwrap();
-        stamp_retired(&mut retired, &moved()).unwrap();
-        let retired = arriving(&retired);
-        assert!(validate_import(&retired, TO, &target, retired.len()).is_err());
-    }
-
-    /// A record's workspace is imported as the document names it. A key the import does not know
-    /// is refused.
-    #[test]
-    fn a_document_imports_with_its_workspace() {
-        let kind = RecordKind::new("transfer.test");
+        phase a_moved_record_keeps_its_history_and_later_edits_and_leaves_its_workspace;
         {
-            let key = crate::record::WORKSPACE;
+            let temp = tempfile::tempdir().unwrap();
+            let store = store(temp.path());
+            let (checkout, old_writer) = seeded(temp.path());
+            let origin = Origin::Record(checkout.clone());
+
+            // The old app still holds the record: reading it needs no writer.
+            let snapshot = read(&store, PACKAGE, FROM, &origin).unwrap();
+            let known = snapshot.clone().get_heads();
             let target = RecordId::minted();
-            let mut doc = AutoCommit::new();
-            doc.put(ROOT, "body", "a draft").unwrap();
-            assert!(crate::record::init_scoped(
-                &mut doc, &target, &kind, FROM, None
-            ));
-            let meta = meta_obj(&mut doc).unwrap();
-            doc.put(&meta, key, FROM).unwrap();
-            doc.commit();
-            let bytes = doc.save();
-            let (mut kept, identity) = validate_import(&bytes, FROM, &target, bytes.len()).unwrap();
-            assert_eq!(identity.id, target, "{key}");
-            assert_eq!(workspace_scope(&kept).as_deref(), Some(FROM), "{key}");
-            let kept_meta = meta_obj(&mut kept).unwrap();
-            assert_eq!(
-                str_at(&kept, &kept_meta, key).as_deref(),
-                Some(FROM),
-                "the document keeps the key it named its workspace under"
-            );
-            kept.put(&kept_meta, "alias", "uuid:other").unwrap();
-            let aliased = kept.save();
+            let mut arrived = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
+            let (installed, _) = install(&store, PACKAGE, TO, &mut arrived).unwrap();
+            assert_eq!(installed.id, target);
+            assert_eq!(provenance(&arrived), std::slice::from_ref(&checkout.id));
             assert!(
-                validate_import(&aliased, FROM, &target, aliased.len()).is_err(),
-                "a meta key it does not know is refused"
+                arrived.get_change_by_hash(&known[0]).is_some(),
+                "the source history travels"
             );
-        }
-    }
 
-    #[test]
-    fn a_record_from_another_device_is_kept_only_as_the_live_record_it_claims_to_be() {
-        let holder_dir = tempfile::tempdir().unwrap();
-        let holder = store(holder_dir.path());
-        let (checkout, writer) = seeded(holder_dir.path());
-        drop(writer);
-        let bytes = read_by_id(&holder, PACKAGE, FROM, &checkout.id)
-            .unwrap()
-            .save();
-
-        let here_dir = tempfile::tempdir().unwrap();
-        let here = store(here_dir.path());
-        assert!(
-            adopt_fetched(&here, PACKAGE, FROM, &RecordId::minted(), &bytes).is_err(),
-            "bytes offered as another record are refused"
-        );
-        assert!(
-            adopt_fetched(&here, PACKAGE, TO, &checkout.id, &bytes).is_err(),
-            "a record of one workspace is never kept as another workspace's"
-        );
-        assert!(adopt_fetched(&here, PACKAGE, FROM, &checkout.id, b"not a document").is_err());
-        let (kept, _) = adopt_fetched(&here, PACKAGE, FROM, &checkout.id, &bytes).unwrap();
-        assert_eq!(kept, checkout);
-        assert_eq!(
-            adopt_fetched(&here, PACKAGE, FROM, &checkout.id, &bytes)
-                .unwrap()
-                .0,
-            checkout,
-            "holding it already merges rather than refuses"
-        );
-        let doc = read_by_id(&here, PACKAGE, FROM, &checkout.id).unwrap();
-        assert_eq!(body(&doc).as_deref(), Some("first draft"));
-
-        let mut retired = doc.clone();
-        stamp_retired(&mut retired, &moved()).unwrap();
-        let elsewhere = tempfile::tempdir().unwrap();
-        assert!(
-            adopt_fetched(
-                &store(elsewhere.path()),
-                PACKAGE,
-                FROM,
-                &checkout.id,
-                &retired.save()
-            )
-            .is_err(),
-            "a record that left its workspace is never brought back to life"
-        );
-    }
-
-    /// On the frame loop a transfer neither reads the disk nor waits for a
-    /// commit: it is told to come back while the store's own thread opens
-    /// the document, and then only starts its write. Until the write lands
-    /// the document stays the store's, so no other process takes it or
-    /// reads it half-written, and the landing says when the next one may.
-    #[test]
-    fn a_transfer_on_the_frame_loop_starts_its_write_and_reports_when_it_lands() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = store(temp.path());
-        let (checkout, writer) = seeded(temp.path());
-        drop(writer);
-        let origin = Origin::Record(checkout.clone());
-        let snapshot = read(&store, PACKAGE, FROM, &origin).unwrap();
-        let mut arrived = rehome(&snapshot, &origin, FROM, TO, &RecordId::minted()).unwrap();
-        let (installed, landing) = {
-            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
-            tilo_test_env::wait_for("the store's thread to open the record", || {
-                match install(&store, PACKAGE, TO, &mut arrived) {
-                    Ok(installed) => Some(installed),
-                    Err(error) if error.is_opening() => None,
-                    Err(error) => panic!("installing on the frame loop: {error}"),
-                }
-            })
-        };
-        let key = key(PACKAGE, TO, &installed.id).unwrap();
-        let other_process = app_state::FsStore::new(temp.path());
-        if other_process.lease(&key).is_ok() {
-            assert_eq!(
-                landing.durability(store.as_ref()),
-                Durability::Durable,
-                "the document is free only once the write is on the disk"
-            );
-        }
-        store.flush(Some(&key)).unwrap();
-        assert_eq!(landing.durability(store.as_ref()), Durability::Durable);
-        assert_eq!(
-            Landing::all(store.as_ref(), std::slice::from_ref(&landing)),
-            Durability::Durable
-        );
-        let other_process: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(temp.path()));
-        let there = read(&other_process, PACKAGE, TO, &Origin::Record(installed)).unwrap();
-        assert_eq!(body(&there).as_deref(), Some("first draft"));
-    }
-
-    #[test]
-    fn a_transfer_never_overwrites_or_crosses_into_its_own_workspace() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = store(temp.path());
-        let (checkout, writer) = seeded(temp.path());
-        drop(writer);
-        let origin = Origin::Record(checkout.clone());
-        let snapshot = read(&store, PACKAGE, FROM, &origin).unwrap();
-        assert!(matches!(
-            rehome(&snapshot, &origin, FROM, FROM, &RecordId::minted()),
-            Err(TransferError::NotTransferable(_))
-        ));
-        assert!(
-            rehome(&snapshot, &origin, TO, FROM, &RecordId::minted()).is_err(),
-            "a record is only read from the workspace it is scoped to"
-        );
-        let target = RecordId::minted();
-        let mut first = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
-        let _ = install(&store, PACKAGE, TO, &mut first).unwrap();
-        let mut again = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
-        assert!(matches!(
-            install(&store, PACKAGE, TO, &mut again),
-            Err(TransferError::Open(RecordOpenError::AlreadyExists))
-        ));
-        let foreign = Origin::Record(RecordCheckout::new(target, checkout.kind.clone()));
-        assert!(
-            read(&store, PACKAGE, FROM, &foreign).is_err(),
-            "a destination id means nothing in the source workspace"
-        );
-    }
-
-    #[test]
-    fn an_app_document_arrives_as_a_record_and_its_workspace_keeps_a_retired_one() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = store(temp.path());
-        let mut app =
-            app_state::DocStore::shared(Rc::clone(&store), StorageKey::app(PACKAGE)).unwrap();
-        let mut doc = app.load_or_new();
-        doc.put(ROOT, "body", "kept in the app document").unwrap();
-        app.save(&mut doc).unwrap();
-
-        let origin = Origin::AppDocument(RecordKind::new("tilo.app-document"));
-        let snapshot = read(&store, PACKAGE, FROM, &origin).unwrap();
-        let target = RecordId::minted();
-        let mut arrived = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
-        let (installed, _) = install(&store, PACKAGE, TO, &mut arrived).unwrap();
-        assert_eq!(installed.kind.as_str(), "tilo.app-document");
-        let destination = read(&store, PACKAGE, TO, &Origin::Record(installed)).unwrap();
-        assert_eq!(
-            body(&destination).as_deref(),
-            Some("kept in the app document")
-        );
-        assert_eq!(crate::record::home(&destination).as_deref(), Some(FROM));
-
-        assert!(
-            matches!(
+            // It edits once more after the read, then exits.
+            old_writer
+                .with(&checkout.id, |doc| {
+                    doc.put(ROOT, "body", "first draft, last words").unwrap();
+                })
+                .unwrap();
+            old_writer.try_flush().unwrap();
+            assert!(matches!(
                 retire(&store, PACKAGE, FROM, &origin, &moved()),
                 Err(TransferError::Busy)
-            ),
-            "not while the app still writes it"
-        );
-        drop(app);
-        let _ = retire(&store, PACKAGE, FROM, &origin, &moved()).unwrap();
-        assert!(matches!(
-            read(&store, PACKAGE, FROM, &origin),
-            Err(TransferError::Open(RecordOpenError::Retired))
-        ));
-    }
-    /// A branch's copy keeps the record's id, where it was minted and its whole history, names the
-    /// branch as its workspace, and writes as a writer of its own: the source and the copy go on
-    /// apart.
-    #[test]
-    fn a_branch_keeps_the_record_and_its_history_and_names_the_branch() {
-        let id = RecordId::minted();
-        let mut source = AutoCommit::new();
-        assert!(crate::record::init_scoped(
-            &mut source,
-            &id,
-            &RecordKind::new("transfer.test"),
-            FROM,
-            Some(FROM),
-        ));
-        source.put(ROOT, "body", "plan").unwrap();
-        source.commit();
-        let before = source.get_heads();
-        let mut copy = branch(&source, TO).unwrap();
-        assert_eq!(workspace_scope(&copy).as_deref(), Some(TO));
-        assert_eq!(
-            workspace_scope(&source).as_deref(),
-            Some(FROM),
-            "the source stays"
-        );
-        assert_eq!(identity(&copy).map(|checkout| checkout.id), Some(id));
-        assert_eq!(crate::record::home(&copy).as_deref(), Some(FROM));
-        assert_eq!(body(&copy).as_deref(), Some("plan"));
-        assert!(
-            copy.get_changes(&[]).len() > source.get_changes(&[]).len(),
-            "the copy holds the source's history and the change that names the branch"
-        );
-        assert!(copy.get_change_by_hash(&before[0]).is_some());
-        assert_ne!(copy.get_actor(), source.get_actor(), "a writer of its own");
-        copy.put(ROOT, "body", "branch").unwrap();
-        copy.commit();
-        source.put(ROOT, "body", "source").unwrap();
-        source.commit();
-        assert_eq!(body(&copy).as_deref(), Some("branch"));
-        assert_eq!(body(&source).as_deref(), Some("source"));
-        // A document no workspace scopes is forked as it is.
-        let mut plain = AutoCommit::new();
-        plain.put(ROOT, "body", "loose").unwrap();
-        plain.commit();
-        let mut forked = branch(&plain, TO).unwrap();
-        assert_eq!(forked.get_heads(), plain.get_heads());
-        assert!(branch(&plain, "").is_err());
-    }
+            ));
+            drop(old_writer);
 
-    /// A record of the workspace's own that any app makes from its kind alone where it holds none
-    /// (the workspace's emoji) is, in a branch, the very record an app of the branch makes when it
-    /// first opens it there: the two meet as one document, scoped to the branch, holding what the
-    /// source held. Before, the branch's copy kept the source's genesis, the app's was the
-    /// branch's, and the two met as a record of no identity, its history blocked.
-    #[test]
-    fn a_workspace_record_branched_is_the_one_an_app_of_the_branch_makes() {
-        use crate::record::workspace::WorkspaceRecords;
-        const CHAT: &str = "so.tilo.chat";
-        const EMOJI: &str = "tilo.workspace.emoji";
-        let initialize = |doc: &mut AutoCommit| {
-            doc.put_object(ROOT, "emoji", ObjType::Map)
-                .map(drop)
-                .map_err(|error| error.to_string())
-        };
-        let records = |workspace: &str| {
-            WorkspaceRecords::in_workspace(
-                RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new())),
-                workspace.into(),
-                crate::permissions::UserId("ada".into()),
-            )
-        };
-        let emoji = |doc: &AutoCommit| {
-            let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(ROOT, "emoji") else {
-                return None;
-            };
-            match doc.get(&map, "parrot") {
-                Ok(Some((Value::Scalar(value), _))) => value.as_str().map(str::to_owned),
-                _ => None,
-            }
-        };
-        let source = records(FROM).open_record(CHAT, EMOJI, &initialize).unwrap();
-        source
-            .edit(true, |doc| {
-                let Ok(Some((_, map))) = doc.get(ROOT, "emoji") else {
-                    return Err("no emoji".to_owned());
-                };
-                doc.put(&map, "parrot", "parrot.png")
-                    .map_err(|error| error.to_string())
-            })
-            .unwrap();
-        let held = source.read(AutoCommit::clone).unwrap();
-        let want = identity(&held).unwrap();
-
-        let copy = branch(&held, TO).unwrap();
-        assert_eq!(workspace_scope(&copy).as_deref(), Some(TO));
-        assert_eq!(
-            crate::record::home(&copy).as_deref(),
-            Some(TO),
-            "minted again"
-        );
-        assert_eq!(emoji(&copy).as_deref(), Some("parrot.png"));
-        let made = records(TO)
-            .open_record(CHAT, EMOJI, &initialize)
-            .unwrap()
-            .read(AutoCommit::clone)
-            .unwrap();
-        for (mut one, mut other) in [(made.clone(), copy.clone()), (copy.clone(), made.clone())] {
-            one.merge_incoming(&mut other).unwrap();
-            assert!(
-                validate_identity(&one, &want, TO).is_ok(),
-                "one record of the branch: {:?} in {:?}",
-                identity(&one),
-                workspace_scope(&one)
+            let last = read(&store, PACKAGE, FROM, &origin).unwrap();
+            assert_eq!(changes_since(&last, &known), 1);
+            assert_eq!(
+                catch_up(&store, PACKAGE, TO, &installed, &last).unwrap().0,
+                1
             );
-            assert_eq!(emoji(&one).as_deref(), Some("parrot.png"));
+            assert_eq!(
+                catch_up(&store, PACKAGE, TO, &installed, &last).unwrap(),
+                (0, None),
+                "nothing more to write"
+            );
+            let _ = retire(&store, PACKAGE, FROM, &origin, &moved()).unwrap();
+
+            let destination = read(&store, PACKAGE, TO, &Origin::Record(installed)).unwrap();
+            assert_eq!(
+                body(&destination).as_deref(),
+                Some("first draft, last words")
+            );
+            assert_eq!(workspace_scope(&destination).as_deref(), Some(TO));
+            assert!(matches!(
+                read(&store, PACKAGE, FROM, &origin),
+                Err(TransferError::Open(RecordOpenError::Retired))
+            ));
+            let source_workspace = RecordOwners::new(temp.path().to_path_buf())
+                .open(PACKAGE, FROM)
+                .unwrap();
+            assert!(matches!(
+                source_workspace.try_open_record(&checkout),
+                Err(RecordOpenError::Retired)
+            ));
+            let retired = decode(&store, &key(PACKAGE, FROM, &checkout.id).unwrap()).unwrap();
+            assert_eq!(retirement(&retired), Some(moved()));
+            assert_eq!(
+                body(&retired).as_deref(),
+                Some("first draft, last words"),
+                "the retirement is one more change, not an erasure"
+            );
         }
-        assert_eq!(
-            emoji(&held).as_deref(),
-            Some("parrot.png"),
-            "the source keeps its own"
-        );
-        assert_eq!(workspace_scope(&held).as_deref(), Some(FROM));
+    }
+
+    tilo_test_env::scenario! {
+        fn an_arriving_document_is_kept_only_as_the_record_it_claims;
+
+        phase a_document_joins_another_workspace_only_as_exactly_the_minted_record_it_claims;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let (checkout, writer) = seeded(dir.path());
+            drop(writer);
+            let source = read(
+                &store(dir.path()),
+                PACKAGE,
+                FROM,
+                &Origin::Record(checkout.clone()),
+            )
+            .unwrap();
+            let target = RecordId::minted();
+            let arriving = |doc: &AutoCommit| doc.clone().save();
+            let mut rehomed = rehome(
+                &source,
+                &Origin::Record(checkout.clone()),
+                FROM,
+                TO,
+                &target,
+            )
+            .unwrap();
+            let bytes = arriving(&rehomed);
+            let (kept, identity) = validate_import(&bytes, TO, &target, bytes.len()).unwrap();
+            assert_eq!(identity.id, target);
+            assert_eq!(body(&kept).as_deref(), Some("first draft"));
+            assert_eq!(provenance(&kept), std::slice::from_ref(&checkout.id));
+
+            assert!(
+                validate_import(&bytes, TO, &target, bytes.len() - 1).is_err(),
+                "size is bounded"
+            );
+            assert!(
+                validate_import(&bytes, FROM, &target, bytes.len()).is_err(),
+                "scoped to the workspace it joins"
+            );
+            assert!(
+                validate_import(&bytes, TO, &RecordId::minted(), bytes.len()).is_err(),
+                "it is only the record it claims"
+            );
+            let derived = RecordId::derived("notes", &target);
+            let under_derived = rehome(
+                &source,
+                &Origin::Record(checkout.clone()),
+                FROM,
+                TO,
+                &derived,
+            )
+            .unwrap();
+            let derived_bytes = arriving(&under_derived);
+            assert!(
+                validate_import(&derived_bytes, TO, &derived, derived_bytes.len()).is_err(),
+                "only a freshly minted id joins a workspace"
+            );
+
+            let mut referring = rehomed.clone();
+            assert!(crate::record::add_reference(
+                &mut referring,
+                &crate::record::RecordRef {
+                    target: RecordId::minted(),
+                    relation: "cites".into(),
+                }
+            ));
+            let referring = arriving(&referring);
+            assert!(
+                validate_import(&referring, TO, &target, referring.len()).is_err(),
+                "no identities of other records ride along"
+            );
+            let mut indexing = rehomed.clone();
+            indexing
+                .put_object(ROOT, crate::record::INDEX, ObjType::Map)
+                .unwrap();
+            let indexing = arriving(&indexing);
+            assert!(validate_import(&indexing, TO, &target, indexing.len()).is_err());
+            let meta = meta_obj(&mut rehomed).unwrap();
+            rehomed.put(&meta, "alias", "uuid:other").unwrap();
+            let aliased = arriving(&rehomed);
+            assert!(validate_import(&aliased, TO, &target, aliased.len()).is_err());
+            let mut retired = read(
+                &store(dir.path()),
+                PACKAGE,
+                FROM,
+                &Origin::Record(checkout.clone()),
+            )
+            .unwrap();
+            let mut retired = rehome(
+                &retired.fork(),
+                &Origin::Record(checkout),
+                FROM,
+                TO,
+                &target,
+            )
+            .unwrap();
+            stamp_retired(&mut retired, &moved()).unwrap();
+            let retired = arriving(&retired);
+            assert!(validate_import(&retired, TO, &target, retired.len()).is_err());
+        }
+
+        phase a_document_imports_with_its_workspace;
+        // A record's workspace is imported as the document names it. A key the import does not know
+        // is refused.
+        {
+            let kind = RecordKind::new("transfer.test");
+            {
+                let key = crate::record::WORKSPACE;
+                let target = RecordId::minted();
+                let mut doc = AutoCommit::new();
+                doc.put(ROOT, "body", "a draft").unwrap();
+                assert!(crate::record::init_scoped(
+                    &mut doc, &target, &kind, FROM, None
+                ));
+                let meta = meta_obj(&mut doc).unwrap();
+                doc.put(&meta, key, FROM).unwrap();
+                doc.commit();
+                let bytes = doc.save();
+                let (mut kept, identity) = validate_import(&bytes, FROM, &target, bytes.len()).unwrap();
+                assert_eq!(identity.id, target, "{key}");
+                assert_eq!(workspace_scope(&kept).as_deref(), Some(FROM), "{key}");
+                let kept_meta = meta_obj(&mut kept).unwrap();
+                assert_eq!(
+                    str_at(&kept, &kept_meta, key).as_deref(),
+                    Some(FROM),
+                    "the document keeps the key it named its workspace under"
+                );
+                kept.put(&kept_meta, "alias", "uuid:other").unwrap();
+                let aliased = kept.save();
+                assert!(
+                    validate_import(&aliased, FROM, &target, aliased.len()).is_err(),
+                    "a meta key it does not know is refused"
+                );
+            }
+        }
+
+        phase a_record_from_another_device_is_kept_only_as_the_live_record_it_claims_to_be;
+        {
+            let holder_dir = tempfile::tempdir().unwrap();
+            let holder = store(holder_dir.path());
+            let (checkout, writer) = seeded(holder_dir.path());
+            drop(writer);
+            let bytes = read_by_id(&holder, PACKAGE, FROM, &checkout.id)
+                .unwrap()
+                .save();
+
+            let here_dir = tempfile::tempdir().unwrap();
+            let here = store(here_dir.path());
+            assert!(
+                adopt_fetched(&here, PACKAGE, FROM, &RecordId::minted(), &bytes).is_err(),
+                "bytes offered as another record are refused"
+            );
+            assert!(
+                adopt_fetched(&here, PACKAGE, TO, &checkout.id, &bytes).is_err(),
+                "a record of one workspace is never kept as another workspace's"
+            );
+            assert!(adopt_fetched(&here, PACKAGE, FROM, &checkout.id, b"not a document").is_err());
+            let (kept, _) = adopt_fetched(&here, PACKAGE, FROM, &checkout.id, &bytes).unwrap();
+            assert_eq!(kept, checkout);
+            assert_eq!(
+                adopt_fetched(&here, PACKAGE, FROM, &checkout.id, &bytes)
+                    .unwrap()
+                    .0,
+                checkout,
+                "holding it already merges rather than refuses"
+            );
+            let doc = read_by_id(&here, PACKAGE, FROM, &checkout.id).unwrap();
+            assert_eq!(body(&doc).as_deref(), Some("first draft"));
+
+            let mut retired = doc.clone();
+            stamp_retired(&mut retired, &moved()).unwrap();
+            let elsewhere = tempfile::tempdir().unwrap();
+            assert!(
+                adopt_fetched(
+                    &store(elsewhere.path()),
+                    PACKAGE,
+                    FROM,
+                    &checkout.id,
+                    &retired.save()
+                )
+                .is_err(),
+                "a record that left its workspace is never brought back to life"
+            );
+        }
+
+        phase a_transfer_on_the_frame_loop_starts_its_write_and_reports_when_it_lands;
+        // On the frame loop a transfer neither reads the disk nor waits for a
+        // commit: it is told to come back while the store's own thread opens
+        // the document, and then only starts its write. Until the write lands
+        // the document stays the store's, so no other process takes it or
+        // reads it half-written, and the landing says when the next one may.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let store = store(temp.path());
+            let (checkout, writer) = seeded(temp.path());
+            drop(writer);
+            let origin = Origin::Record(checkout.clone());
+            let snapshot = read(&store, PACKAGE, FROM, &origin).unwrap();
+            let mut arrived = rehome(&snapshot, &origin, FROM, TO, &RecordId::minted()).unwrap();
+            let (installed, landing) = {
+                let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+                tilo_test_env::wait_for("the store's thread to open the record", || {
+                    match install(&store, PACKAGE, TO, &mut arrived) {
+                        Ok(installed) => Some(installed),
+                        Err(error) if error.is_opening() => None,
+                        Err(error) => panic!("installing on the frame loop: {error}"),
+                    }
+                })
+            };
+            let key = key(PACKAGE, TO, &installed.id).unwrap();
+            let other_process = app_state::FsStore::new(temp.path());
+            if other_process.lease(&key).is_ok() {
+                assert_eq!(
+                    landing.durability(store.as_ref()),
+                    Durability::Durable,
+                    "the document is free only once the write is on the disk"
+                );
+            }
+            store.flush(Some(&key)).unwrap();
+            assert_eq!(landing.durability(store.as_ref()), Durability::Durable);
+            assert_eq!(
+                Landing::all(store.as_ref(), std::slice::from_ref(&landing)),
+                Durability::Durable
+            );
+            let other_process: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(temp.path()));
+            let there = read(&other_process, PACKAGE, TO, &Origin::Record(installed)).unwrap();
+            assert_eq!(body(&there).as_deref(), Some("first draft"));
+        }
+
+        phase a_transfer_never_overwrites_or_crosses_into_its_own_workspace;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let store = store(temp.path());
+            let (checkout, writer) = seeded(temp.path());
+            drop(writer);
+            let origin = Origin::Record(checkout.clone());
+            let snapshot = read(&store, PACKAGE, FROM, &origin).unwrap();
+            assert!(matches!(
+                rehome(&snapshot, &origin, FROM, FROM, &RecordId::minted()),
+                Err(TransferError::NotTransferable(_))
+            ));
+            assert!(
+                rehome(&snapshot, &origin, TO, FROM, &RecordId::minted()).is_err(),
+                "a record is only read from the workspace it is scoped to"
+            );
+            let target = RecordId::minted();
+            let mut first = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
+            let _ = install(&store, PACKAGE, TO, &mut first).unwrap();
+            let mut again = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
+            assert!(matches!(
+                install(&store, PACKAGE, TO, &mut again),
+                Err(TransferError::Open(RecordOpenError::AlreadyExists))
+            ));
+            let foreign = Origin::Record(RecordCheckout::new(target, checkout.kind.clone()));
+            assert!(
+                read(&store, PACKAGE, FROM, &foreign).is_err(),
+                "a destination id means nothing in the source workspace"
+            );
+        }
+
+        phase an_app_document_arrives_as_a_record_and_its_workspace_keeps_a_retired_one;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let store = store(temp.path());
+            let mut app =
+                app_state::DocStore::shared(Rc::clone(&store), StorageKey::app(PACKAGE)).unwrap();
+            let mut doc = app.load_or_new();
+            doc.put(ROOT, "body", "kept in the app document").unwrap();
+            app.save(&mut doc).unwrap();
+
+            let origin = Origin::AppDocument(RecordKind::new("tilo.app-document"));
+            let snapshot = read(&store, PACKAGE, FROM, &origin).unwrap();
+            let target = RecordId::minted();
+            let mut arrived = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
+            let (installed, _) = install(&store, PACKAGE, TO, &mut arrived).unwrap();
+            assert_eq!(installed.kind.as_str(), "tilo.app-document");
+            let destination = read(&store, PACKAGE, TO, &Origin::Record(installed)).unwrap();
+            assert_eq!(
+                body(&destination).as_deref(),
+                Some("kept in the app document")
+            );
+            assert_eq!(crate::record::home(&destination).as_deref(), Some(FROM));
+
+            assert!(
+                matches!(
+                    retire(&store, PACKAGE, FROM, &origin, &moved()),
+                    Err(TransferError::Busy)
+                ),
+                "not while the app still writes it"
+            );
+            drop(app);
+            let _ = retire(&store, PACKAGE, FROM, &origin, &moved()).unwrap();
+            assert!(matches!(
+                read(&store, PACKAGE, FROM, &origin),
+                Err(TransferError::Open(RecordOpenError::Retired))
+            ));
+        }
+    }
+    tilo_test_env::scenario! {
+        fn a_branch_keeps_the_record_under_the_branchs_name;
+
+        phase a_branch_keeps_the_record_and_its_history_and_names_the_branch;
+        // A branch's copy keeps the record's id, where it was minted and its whole history, names the
+        // branch as its workspace, and writes as a writer of its own: the source and the copy go on
+        // apart.
+        {
+            let id = RecordId::minted();
+            let mut source = AutoCommit::new();
+            assert!(crate::record::init_scoped(
+                &mut source,
+                &id,
+                &RecordKind::new("transfer.test"),
+                FROM,
+                Some(FROM),
+            ));
+            source.put(ROOT, "body", "plan").unwrap();
+            source.commit();
+            let before = source.get_heads();
+            let mut copy = branch(&source, TO).unwrap();
+            assert_eq!(workspace_scope(&copy).as_deref(), Some(TO));
+            assert_eq!(
+                workspace_scope(&source).as_deref(),
+                Some(FROM),
+                "the source stays"
+            );
+            assert_eq!(identity(&copy).map(|checkout| checkout.id), Some(id));
+            assert_eq!(crate::record::home(&copy).as_deref(), Some(FROM));
+            assert_eq!(body(&copy).as_deref(), Some("plan"));
+            assert!(
+                copy.get_changes(&[]).len() > source.get_changes(&[]).len(),
+                "the copy holds the source's history and the change that names the branch"
+            );
+            assert!(copy.get_change_by_hash(&before[0]).is_some());
+            assert_ne!(copy.get_actor(), source.get_actor(), "a writer of its own");
+            copy.put(ROOT, "body", "branch").unwrap();
+            copy.commit();
+            source.put(ROOT, "body", "source").unwrap();
+            source.commit();
+            assert_eq!(body(&copy).as_deref(), Some("branch"));
+            assert_eq!(body(&source).as_deref(), Some("source"));
+            // A document no workspace scopes is forked as it is.
+            let mut plain = AutoCommit::new();
+            plain.put(ROOT, "body", "loose").unwrap();
+            plain.commit();
+            let mut forked = branch(&plain, TO).unwrap();
+            assert_eq!(forked.get_heads(), plain.get_heads());
+            assert!(branch(&plain, "").is_err());
+        }
+
+        phase a_workspace_record_branched_is_the_one_an_app_of_the_branch_makes;
+        // A record of the workspace's own that any app makes from its kind alone where it holds none
+        // (the workspace's emoji) is, in a branch, the very record an app of the branch makes when it
+        // first opens it there: the two meet as one document, scoped to the branch, holding what the
+        // source held. Before, the branch's copy kept the source's genesis, the app's was the
+        // branch's, and the two met as a record of no identity, its history blocked.
+        {
+            use crate::record::workspace::WorkspaceRecords;
+            const CHAT: &str = "so.tilo.chat";
+            const EMOJI: &str = "tilo.workspace.emoji";
+            let initialize = |doc: &mut AutoCommit| {
+                doc.put_object(ROOT, "emoji", ObjType::Map)
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            };
+            let records = |workspace: &str| {
+                WorkspaceRecords::in_workspace(
+                    RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new())),
+                    workspace.into(),
+                    crate::permissions::UserId("ada".into()),
+                )
+            };
+            let emoji = |doc: &AutoCommit| {
+                let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(ROOT, "emoji") else {
+                    return None;
+                };
+                match doc.get(&map, "parrot") {
+                    Ok(Some((Value::Scalar(value), _))) => value.as_str().map(str::to_owned),
+                    _ => None,
+                }
+            };
+            let source = records(FROM).open_record(CHAT, EMOJI, &initialize).unwrap();
+            source
+                .edit(true, |doc| {
+                    let Ok(Some((_, map))) = doc.get(ROOT, "emoji") else {
+                        return Err("no emoji".to_owned());
+                    };
+                    doc.put(&map, "parrot", "parrot.png")
+                        .map_err(|error| error.to_string())
+                })
+                .unwrap();
+            let held = source.read(AutoCommit::clone).unwrap();
+            let want = identity(&held).unwrap();
+
+            let copy = branch(&held, TO).unwrap();
+            assert_eq!(workspace_scope(&copy).as_deref(), Some(TO));
+            assert_eq!(
+                crate::record::home(&copy).as_deref(),
+                Some(TO),
+                "minted again"
+            );
+            assert_eq!(emoji(&copy).as_deref(), Some("parrot.png"));
+            let made = records(TO)
+                .open_record(CHAT, EMOJI, &initialize)
+                .unwrap()
+                .read(AutoCommit::clone)
+                .unwrap();
+            for (mut one, mut other) in [(made.clone(), copy.clone()), (copy.clone(), made.clone())] {
+                one.merge_incoming(&mut other).unwrap();
+                assert!(
+                    validate_identity(&one, &want, TO).is_ok(),
+                    "one record of the branch: {:?} in {:?}",
+                    identity(&one),
+                    workspace_scope(&one)
+                );
+                assert_eq!(emoji(&one).as_deref(), Some("parrot.png"));
+            }
+            assert_eq!(
+                emoji(&held).as_deref(),
+                Some("parrot.png"),
+                "the source keeps its own"
+            );
+            assert_eq!(workspace_scope(&held).as_deref(), Some(FROM));
+        }
     }
 }

@@ -51,98 +51,102 @@ fn page() -> (Rc<MemoryStore>, RecordStore) {
     (memory, store)
 }
 
-/// A record opened before the host answered is on its way, never missing:
-/// nothing that opens it (a window's launch, an app's "open or create")
-/// starts a fresh one, and it opens with the workspace's content once it is
-/// here.
-#[test]
-fn an_existing_record_opened_before_the_host_answered_is_never_founded_anew() {
-    let (memory, store) = page();
-    let want = RecordCheckout::new(RecordId::workspace_default(), RecordKind::new("note"));
-    let theirs = written_elsewhere(&want, "the workspace's");
+tilo_test_env::scenario! {
+    fn a_record_is_new_only_by_the_hosts_answer;
 
-    // What a list checks for every record it could name asks for nothing.
-    assert!(matches!(
-        store.open_if_held(&want),
-        Err(RecordOpenError::MissingRecord)
-    ));
-    assert!(store.wanted_records().is_empty());
-    assert!(matches!(
-        store.try_open_record(&want),
-        Err(RecordOpenError::Arriving)
-    ));
-    assert_eq!(
-        store.wanted_records(),
-        std::slice::from_ref(&want.id),
-        "asked for"
-    );
-    // The "open it, or create it where nothing holds it" every stored
-    // record goes through waits too.
-    assert!(matches!(
-        super::person::open_in(&store, &want, &|doc| {
-            put_text(doc, "body", "a fresh one");
+    phase an_existing_record_opened_before_the_host_answered_is_never_founded_anew;
+    // A record opened before the host answered is on its way, never missing:
+    // nothing that opens it (a window's launch, an app's "open or create")
+    // starts a fresh one, and it opens with the workspace's content once it is
+    // here.
+    {
+        let (memory, store) = page();
+        let want = RecordCheckout::new(RecordId::workspace_default(), RecordKind::new("note"));
+        let theirs = written_elsewhere(&want, "the workspace's");
+
+        // What a list checks for every record it could name asks for nothing.
+        assert!(matches!(
+            store.open_if_held(&want),
+            Err(RecordOpenError::MissingRecord)
+        ));
+        assert!(store.wanted_records().is_empty());
+        assert!(matches!(
+            store.try_open_record(&want),
+            Err(RecordOpenError::Arriving)
+        ));
+        assert_eq!(
+            store.wanted_records(),
+            std::slice::from_ref(&want.id),
+            "asked for"
+        );
+        // The "open it, or create it where nothing holds it" every stored
+        // record goes through waits too.
+        assert!(matches!(
+            super::person::open_in(&store, &want, &|doc| {
+                put_text(doc, "body", "a fresh one");
+                Ok(())
+            }),
+            Err(RecordOpenError::Arriving)
+        ));
+        assert!(!store.is_ready(&want.id), "nothing was founded");
+
+        arrives(&memory, &store, &want, theirs);
+        assert!(store.try_open_record(&want).is_ok());
+        assert_eq!(
+            store.read(&want.id, |doc| text(doc, "body")).unwrap(),
+            Some("the workspace's".to_owned())
+        );
+        assert!(store.wanted_records().is_empty());
+    }
+
+    phase a_record_is_new_only_once_the_host_said_it_holds_none_of_it;
+    // Only the host's answer that it holds none of a record makes it new; the
+    // answer for one record says nothing of another.
+    {
+        let (_memory, store) = page();
+        let new = RecordCheckout::new(RecordId::window_default(7), RecordKind::new("note"));
+        let other = RecordCheckout::new(RecordId::window_default(8), RecordKind::new("note"));
+        assert!(matches!(
+            store.try_open_record(&new),
+            Err(RecordOpenError::Arriving)
+        ));
+        assert!(matches!(
+            store.try_open_record(&other),
+            Err(RecordOpenError::Arriving)
+        ));
+
+        store.note_workspace_answered(new.id.clone());
+        assert!(matches!(
+            store.try_open_record(&new),
+            Err(RecordOpenError::MissingRecord)
+        ));
+        assert!(matches!(
+            store.try_open_record(&other),
+            Err(RecordOpenError::Arriving)
+        ));
+        assert_eq!(store.wanted_records(), std::slice::from_ref(&other.id));
+        super::person::open_in(&store, &new, &|doc| {
+            put_text(doc, "body", "mine");
             Ok(())
-        }),
-        Err(RecordOpenError::Arriving)
-    ));
-    assert!(!store.is_ready(&want.id), "nothing was founded");
+        })
+        .unwrap();
+        assert_eq!(
+            store.read(&new.id, |doc| text(doc, "body")).unwrap(),
+            Some("mine".to_owned())
+        );
+    }
 
-    arrives(&memory, &store, &want, theirs);
-    assert!(store.try_open_record(&want).is_ok());
-    assert_eq!(
-        store.read(&want.id, |doc| text(doc, "body")).unwrap(),
-        Some("the workspace's".to_owned())
-    );
-    assert!(store.wanted_records().is_empty());
-}
-
-/// Only the host's answer that it holds none of a record makes it new; the
-/// answer for one record says nothing of another.
-#[test]
-fn a_record_is_new_only_once_the_host_said_it_holds_none_of_it() {
-    let (_memory, store) = page();
-    let new = RecordCheckout::new(RecordId::window_default(7), RecordKind::new("note"));
-    let other = RecordCheckout::new(RecordId::window_default(8), RecordKind::new("note"));
-    assert!(matches!(
-        store.try_open_record(&new),
-        Err(RecordOpenError::Arriving)
-    ));
-    assert!(matches!(
-        store.try_open_record(&other),
-        Err(RecordOpenError::Arriving)
-    ));
-
-    store.note_workspace_answered(new.id.clone());
-    assert!(matches!(
-        store.try_open_record(&new),
-        Err(RecordOpenError::MissingRecord)
-    ));
-    assert!(matches!(
-        store.try_open_record(&other),
-        Err(RecordOpenError::Arriving)
-    ));
-    assert_eq!(store.wanted_records(), std::slice::from_ref(&other.id));
-    super::person::open_in(&store, &new, &|doc| {
-        put_text(doc, "body", "mine");
-        Ok(())
-    })
-    .unwrap();
-    assert_eq!(
-        store.read(&new.id, |doc| text(doc, "body")).unwrap(),
-        Some("mine".to_owned())
-    );
-}
-
-/// A store whose records are its own (no workspace sends them) creates a
-/// missing record as before.
-#[test]
-fn a_store_of_its_own_takes_a_missing_record_as_new() {
-    let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
-    let store = owners.open(PACKAGE, WORKSPACE).unwrap();
-    let want = RecordCheckout::new(RecordId::workspace_default(), RecordKind::new("note"));
-    assert!(matches!(
-        store.try_open_record(&want),
-        Err(RecordOpenError::MissingRecord)
-    ));
-    assert!(store.wanted_records().is_empty());
+    phase a_store_of_its_own_takes_a_missing_record_as_new;
+    // A store whose records are its own (no workspace sends them) creates a
+    // missing record as before.
+    {
+        let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
+        let store = owners.open(PACKAGE, WORKSPACE).unwrap();
+        let want = RecordCheckout::new(RecordId::workspace_default(), RecordKind::new("note"));
+        assert!(matches!(
+            store.try_open_record(&want),
+            Err(RecordOpenError::MissingRecord)
+        ));
+        assert!(store.wanted_records().is_empty());
+    }
 }

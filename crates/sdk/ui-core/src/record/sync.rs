@@ -224,156 +224,160 @@ mod tests {
         DocumentMutation::Incremental(peer.save_after(&heads))
     }
 
-    #[test]
-    fn the_first_publication_is_the_record_whole_and_the_rest_are_its_changes() {
-        let (store, want) = opened("first");
-        let mut sync = RecordSync::new();
-        let first = sync
-            .take_outbound(&store, &want.id)
-            .unwrap()
-            .expect("a snapshot");
-        assert!(matches!(first.mutation, DocumentMutation::Snapshot(_)));
-        assert!(!sync.snapshotted(), "the frontier advances once accepted");
-        sync.advance(first.heads);
-        assert!(sync.take_outbound(&store, &want.id).unwrap().is_none());
-        store.with(&want.id, |doc| {
-            put_text(doc, "second");
-            doc.commit();
-        });
-        let next = sync
-            .take_outbound(&store, &want.id)
-            .unwrap()
-            .expect("a delta");
-        let DocumentMutation::Incremental(bytes) = &next.mutation else {
-            panic!("the record goes whole only the first time");
-        };
-        assert!(!bytes.is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn a_record_publishes_itself_whole_once_and_then_its_own_changes;
 
-    #[test]
-    fn a_delivered_record_is_not_sent_whole_again() {
-        let (store, want) = opened("what the workspace delivered");
-        let heads = store.replication_snapshot(&want.id).unwrap().1;
-        let mut sync = RecordSync::delivered(heads);
-        assert!(sync.snapshotted());
-        assert!(sync.take_outbound(&store, &want.id).unwrap().is_none());
-    }
-
-    #[test]
-    fn a_peers_changes_are_not_this_replicas_to_publish_and_its_own_still_go() {
-        let (store, want) = opened("ours");
-        let mut sync = RecordSync::new();
-        let first = sync
-            .take_outbound(&store, &want.id)
-            .unwrap()
-            .expect("a snapshot");
-        sync.advance(first.heads);
-        let theirs = peer_change(&store, &want, "theirs");
-        assert!(sync.merge(&store, &want, theirs).unwrap());
-        assert!(
-            sync.take_own(&store, &want.id).unwrap().is_none(),
-            "another replica's change is not published as this one's"
-        );
-        store.with(&want.id, |doc| {
-            put_text(doc, "mine");
-            doc.commit();
-        });
-        let own = sync
-            .take_own(&store, &want.id)
-            .unwrap()
-            .expect("the local change");
-        assert!(matches!(own.mutation, DocumentMutation::Incremental(_)));
-        sync.advance(own.heads);
-        assert!(sync.take_own(&store, &want.id).unwrap().is_none());
-    }
-
-    #[test]
-    fn what_a_caller_could_not_send_is_put_back_to_go_again_first() {
-        let (store, want) = opened("ours");
-        let mut sync = RecordSync::new();
-        let first = sync
-            .take_outbound(&store, &want.id)
-            .unwrap()
-            .expect("a snapshot");
-        sync.advance(first.heads);
-        sync.put_back(first.mutation);
-        assert!(!sync.snapshotted(), "the record whole goes whole again");
-        let again = sync
-            .take_outbound(&store, &want.id)
-            .unwrap()
-            .expect("the snapshot again");
-        assert!(matches!(again.mutation, DocumentMutation::Snapshot(_)));
-        sync.advance(again.heads);
-
-        let mine = |text: &str| {
+        phase the_first_publication_is_the_record_whole_and_the_rest_are_its_changes;
+        {
+            let (store, want) = opened("first");
+            let mut sync = RecordSync::new();
+            let first = sync
+                .take_outbound(&store, &want.id)
+                .unwrap()
+                .expect("a snapshot");
+            assert!(matches!(first.mutation, DocumentMutation::Snapshot(_)));
+            assert!(!sync.snapshotted(), "the frontier advances once accepted");
+            sync.advance(first.heads);
+            assert!(sync.take_outbound(&store, &want.id).unwrap().is_none());
             store.with(&want.id, |doc| {
-                put_text(doc, text);
+                put_text(doc, "second");
                 doc.commit();
             });
-        };
-        mine("mine");
-        sync.set_aside(&store, &want.id).unwrap();
-        let Some(DocumentMutation::Incremental(earlier)) = sync.take_set_aside() else {
-            panic!("the change was set aside");
-        };
-        mine("later");
-        sync.set_aside(&store, &want.id).unwrap();
-        sync.put_back(DocumentMutation::Incremental(earlier.clone()));
-        let Some(DocumentMutation::Incremental(all)) = sync.take_set_aside() else {
-            panic!("both changes go");
-        };
-        assert!(all.len() > earlier.len());
-        assert_eq!(
-            &all[..earlier.len()],
-            &earlier[..],
-            "what was put back goes first"
-        );
-    }
-
-    #[test]
-    fn own_changes_are_set_aside_until_taken_and_a_peers_never_are() {
-        let (store, want) = opened("ours");
-        let mut sync = RecordSync::new();
-        let first = sync
-            .take_outbound(&store, &want.id)
-            .unwrap()
-            .expect("a snapshot");
-        sync.advance(first.heads);
-        store.with(&want.id, |doc| {
-            put_text(doc, "mine");
-            doc.commit();
-        });
-        sync.set_aside(&store, &want.id).unwrap();
-        assert!(
-            matches!(
-                sync.take_set_aside(),
-                Some(DocumentMutation::Incremental(bytes)) if !bytes.is_empty()
-            ),
-            "what this replica made goes as one run"
-        );
-        assert!(sync.take_set_aside().is_none(), "taken once");
-        let theirs = peer_change(&store, &want, "theirs");
-        assert!(sync.merge(&store, &want, theirs).unwrap());
-        sync.set_aside(&store, &want.id).unwrap();
-        assert!(
-            sync.take_set_aside().is_none(),
-            "another replica's change is not set aside as this one's"
-        );
-    }
-
-    #[test]
-    fn changes_that_build_on_nothing_here_are_left_alone() {
-        let (store, want) = opened("shared");
-        let delta = match peer_change(&store, &want, "theirs") {
-            DocumentMutation::Incremental(bytes) => bytes,
-            DocumentMutation::Snapshot(_) => panic!("a device sends it changes"),
-        };
-        assert!(
-            store
-                .with(&want.id, |doc| RecordSync::builds_on(doc, &delta))
+            let next = sync
+                .take_outbound(&store, &want.id)
                 .unwrap()
-        );
-        let mut empty = AutoCommit::new();
-        assert!(!RecordSync::builds_on(&mut empty, &delta));
+                .expect("a delta");
+            let DocumentMutation::Incremental(bytes) = &next.mutation else {
+                panic!("the record goes whole only the first time");
+            };
+            assert!(!bytes.is_empty());
+        }
+
+        phase a_delivered_record_is_not_sent_whole_again;
+        {
+            let (store, want) = opened("what the workspace delivered");
+            let heads = store.replication_snapshot(&want.id).unwrap().1;
+            let mut sync = RecordSync::delivered(heads);
+            assert!(sync.snapshotted());
+            assert!(sync.take_outbound(&store, &want.id).unwrap().is_none());
+        }
+
+        phase a_peers_changes_are_not_this_replicas_to_publish_and_its_own_still_go;
+        {
+            let (store, want) = opened("ours");
+            let mut sync = RecordSync::new();
+            let first = sync
+                .take_outbound(&store, &want.id)
+                .unwrap()
+                .expect("a snapshot");
+            sync.advance(first.heads);
+            let theirs = peer_change(&store, &want, "theirs");
+            assert!(sync.merge(&store, &want, theirs).unwrap());
+            assert!(
+                sync.take_own(&store, &want.id).unwrap().is_none(),
+                "another replica's change is not published as this one's"
+            );
+            store.with(&want.id, |doc| {
+                put_text(doc, "mine");
+                doc.commit();
+            });
+            let own = sync
+                .take_own(&store, &want.id)
+                .unwrap()
+                .expect("the local change");
+            assert!(matches!(own.mutation, DocumentMutation::Incremental(_)));
+            sync.advance(own.heads);
+            assert!(sync.take_own(&store, &want.id).unwrap().is_none());
+        }
+
+        phase what_a_caller_could_not_send_is_put_back_to_go_again_first;
+        {
+            let (store, want) = opened("ours");
+            let mut sync = RecordSync::new();
+            let first = sync
+                .take_outbound(&store, &want.id)
+                .unwrap()
+                .expect("a snapshot");
+            sync.advance(first.heads);
+            sync.put_back(first.mutation);
+            assert!(!sync.snapshotted(), "the record whole goes whole again");
+            let again = sync
+                .take_outbound(&store, &want.id)
+                .unwrap()
+                .expect("the snapshot again");
+            assert!(matches!(again.mutation, DocumentMutation::Snapshot(_)));
+            sync.advance(again.heads);
+
+            let mine = |text: &str| {
+                store.with(&want.id, |doc| {
+                    put_text(doc, text);
+                    doc.commit();
+                });
+            };
+            mine("mine");
+            sync.set_aside(&store, &want.id).unwrap();
+            let Some(DocumentMutation::Incremental(earlier)) = sync.take_set_aside() else {
+                panic!("the change was set aside");
+            };
+            mine("later");
+            sync.set_aside(&store, &want.id).unwrap();
+            sync.put_back(DocumentMutation::Incremental(earlier.clone()));
+            let Some(DocumentMutation::Incremental(all)) = sync.take_set_aside() else {
+                panic!("both changes go");
+            };
+            assert!(all.len() > earlier.len());
+            assert_eq!(
+                &all[..earlier.len()],
+                &earlier[..],
+                "what was put back goes first"
+            );
+        }
+
+        phase own_changes_are_set_aside_until_taken_and_a_peers_never_are;
+        {
+            let (store, want) = opened("ours");
+            let mut sync = RecordSync::new();
+            let first = sync
+                .take_outbound(&store, &want.id)
+                .unwrap()
+                .expect("a snapshot");
+            sync.advance(first.heads);
+            store.with(&want.id, |doc| {
+                put_text(doc, "mine");
+                doc.commit();
+            });
+            sync.set_aside(&store, &want.id).unwrap();
+            assert!(
+                matches!(
+                    sync.take_set_aside(),
+                    Some(DocumentMutation::Incremental(bytes)) if !bytes.is_empty()
+                ),
+                "what this replica made goes as one run"
+            );
+            assert!(sync.take_set_aside().is_none(), "taken once");
+            let theirs = peer_change(&store, &want, "theirs");
+            assert!(sync.merge(&store, &want, theirs).unwrap());
+            sync.set_aside(&store, &want.id).unwrap();
+            assert!(
+                sync.take_set_aside().is_none(),
+                "another replica's change is not set aside as this one's"
+            );
+        }
+
+        phase changes_that_build_on_nothing_here_are_left_alone;
+        {
+            let (store, want) = opened("shared");
+            let delta = match peer_change(&store, &want, "theirs") {
+                DocumentMutation::Incremental(bytes) => bytes,
+                DocumentMutation::Snapshot(_) => panic!("a device sends it changes"),
+            };
+            assert!(
+                store
+                    .with(&want.id, |doc| RecordSync::builds_on(doc, &delta))
+                    .unwrap()
+            );
+            let mut empty = AutoCommit::new();
+            assert!(!RecordSync::builds_on(&mut empty, &delta));
+        }
     }
 }
