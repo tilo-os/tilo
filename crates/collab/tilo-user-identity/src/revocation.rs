@@ -22,12 +22,14 @@
 
 use std::collections::HashMap;
 
-use ed25519_dalek::{Signer, Verifier};
+use collab_types::signer::SignError;
+use ed25519_dalek::Verifier;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::canonical::{CanonicalError, signing_digest};
 use crate::cert::DeviceCert;
+use crate::sign::StatementSigner;
 
 /// Signing-domain tag for `RevocationEntry`. Frozen wire ABI:
 /// `tilo-revocation-v1` + NUL.
@@ -104,6 +106,9 @@ pub enum RevocationError {
     /// Canonical-encoding failure.
     #[error("canonicalisation failed: {0}")]
     Canonical(#[from] CanonicalError),
+    /// The key that was asked to sign refused or failed.
+    #[error("the key did not sign: {0}")]
+    Signer(#[from] SignError),
 }
 
 /// Canonical digest a user identity signs to authorise this revocation.
@@ -116,26 +121,42 @@ pub fn revocation_signing_digest(entry: &RevocationEntry) -> Result<[u8; 32], Re
     signing_digest(REVOCATION_PREIMAGE_TAG, &entry.view()).map_err(Into::into)
 }
 
-/// Sign a revocation entry with the user root signing key. Fills
+/// Sign a revocation entry with the user's root. Fills
 /// `signature` in place.
 ///
 /// # Errors
 ///
 /// Returns [`RevocationError::BadSignature`] if `entry.user_public_key`
-/// does not match the public key derived from `root_signing_key`, or
-/// [`RevocationError::Canonical`] if the entry cannot be canonically
-/// encoded (effectively unreachable).
+/// does not match `root`'s public key, [`RevocationError::Signer`] when the
+/// key refuses, or [`RevocationError::Canonical`] if the entry cannot be
+/// canonically encoded (effectively unreachable).
 pub fn sign_revocation_entry(
     entry: &mut RevocationEntry,
-    root_signing_key: &ed25519_dalek::SigningKey,
+    root: &dyn StatementSigner,
 ) -> Result<(), RevocationError> {
-    let derived = root_signing_key.verifying_key().to_bytes();
-    if entry.user_public_key != derived {
+    if entry.user_public_key != root.public_key() {
         return Err(RevocationError::BadSignature);
     }
     let digest = revocation_signing_digest(entry)?;
-    let sig = root_signing_key.sign(&digest);
-    entry.signature = sig.to_bytes();
+    entry.signature = root.sign_digest(&digest)?;
+    Ok(())
+}
+
+/// [`sign_revocation_entry`] with a key that answers only later: a page's root
+/// lives in `WebCrypto` custody and signs through a promise.
+///
+/// # Errors
+///
+/// As [`sign_revocation_entry`].
+pub async fn sign_revocation_entry_async(
+    entry: &mut RevocationEntry,
+    root: &dyn collab_types::signer::DeviceSigner,
+) -> Result<(), RevocationError> {
+    if entry.user_public_key != root.device_public_key() {
+        return Err(RevocationError::BadSignature);
+    }
+    let digest = revocation_signing_digest(entry)?;
+    entry.signature = root.sign(digest.to_vec()).await?;
     Ok(())
 }
 

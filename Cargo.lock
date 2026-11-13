@@ -14354,6 +14354,7 @@ dependencies = [
  "tilo-seal",
  "tilo-secrets",
  "tilo-test-env",
+ "tilo-user-identity",
  "tokio",
  "workspace-hack",
  "zeroize",

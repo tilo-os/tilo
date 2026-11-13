@@ -876,7 +876,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     let host = enrol(
         &operator,
         "lounge",
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     );
     let page_device = enrol(&guest, "browser", DeviceCapabilities::member());
     let computer = enrol(

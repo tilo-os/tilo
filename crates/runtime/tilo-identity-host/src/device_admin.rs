@@ -234,7 +234,7 @@ pub fn proposed_certificate(
             user_public_key: person,
             device_public_key: key(&candidate.device_node_id)?,
             device_label: candidate.label.clone(),
-            capabilities: crate::enrollment::EnrollmentRole::PersonalDevice.preset(),
+            capabilities: tilo_user_identity::DeviceRole::Personal.capabilities(),
             // As a certificate issued here: a minute back, for a new device
             // whose clock trails.
             issued_at_ns: now_ns.saturating_sub(60 * 1_000_000_000),

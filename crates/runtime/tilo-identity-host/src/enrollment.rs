@@ -8,7 +8,7 @@
 //! [`redeem`], so every one of them applies the same rules:
 //!
 //! * the token is genuine, unexpired and grants the shape of its
-//!   [`EnrollmentRole`];
+//!   [`DeviceRole`];
 //! * its issuer is this identity's device, was certified both when the token
 //!   was minted and now, and is not revoked; it must be allowed to admit
 //!   devices unless the person's devices that hold the identity's key
@@ -28,7 +28,7 @@ use tilo_user_identity::{
 };
 
 use crate::device_fleet::DeviceFleetStore;
-pub use crate::roles::EnrollmentRole;
+pub use tilo_user_identity::DeviceRole;
 
 fn refused(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message.into())
@@ -229,7 +229,7 @@ impl NonceStore {
 pub struct Redemption<'a> {
     pub token: &'a EnrollmentToken,
     /// What the approving person admits the device as.
-    pub role: EnrollmentRole,
+    pub role: DeviceRole,
     /// The key of the device being admitted.
     pub device_public_key: [u8; 32],
     pub label: &'a str,
@@ -291,7 +291,7 @@ pub fn redeem(
     if !request.role.admits(&token.capabilities) {
         return Err(refused(format!(
             "enrollment token does not grant the {} role",
-            request.role.as_str()
+            request.role.name()
         )));
     }
     if request.valid_from_ns > request.now_ns {
@@ -338,9 +338,9 @@ pub(crate) fn certify(
     };
     match certifier {
         Certifier::Root(sign) => {
-            let digest = tilo_user_identity::device_cert_signing_digest(&cert)
+            let signer = tilo_user_identity::CallbackSigner::new(cert.user_public_key, sign);
+            tilo_user_identity::sign_device_cert(&mut cert, &signer)
                 .map_err(|error| io::Error::other(error.to_string()))?;
-            cert.signature = sign(&digest)?;
         }
         Certifier::Approved(approved) => {
             if approved.user_public_key != cert.user_public_key
@@ -427,13 +427,13 @@ mod tests {
 
     #[test]
     fn roles_have_one_preset_and_refuse_the_other_shape() {
-        for role in [EnrollmentRole::PersonalDevice, EnrollmentRole::HomePeer] {
-            assert!(role.admits(&role.preset()));
-            assert_eq!(EnrollmentRole::parse(role.as_str()), Some(role));
+        for role in [DeviceRole::Personal, DeviceRole::Host] {
+            assert!(role.admits(&role.capabilities()));
+            assert_eq!(DeviceRole::parse(role.name()), Some(role));
         }
-        assert!(!EnrollmentRole::HomePeer.admits(&DeviceCapabilities::member()));
-        assert!(!EnrollmentRole::PersonalDevice.admits(&DeviceCapabilities::host()));
-        assert_eq!(EnrollmentRole::parse("administrator"), None);
+        assert!(!DeviceRole::Host.admits(&DeviceCapabilities::member()));
+        assert!(!DeviceRole::Personal.admits(&DeviceCapabilities::host()));
+        assert_eq!(DeviceRole::parse("administrator"), None);
     }
 
     /// One nonce store: a token the nearby-pairing broker redeemed through
@@ -456,7 +456,7 @@ mod tests {
             &store.nonces(),
             &Redemption {
                 token: &token,
-                role: EnrollmentRole::PersonalDevice,
+                role: DeviceRole::Personal,
                 device_public_key: device(41),
                 label: "Laptop",
                 now_ns: now,
@@ -471,7 +471,7 @@ mod tests {
         let replay = store.complete_enrollment(
             &fixture.identity_id,
             &encoded,
-            EnrollmentRole::PersonalDevice,
+            DeviceRole::Personal,
             device(42),
             "Replay",
             now + 1,
@@ -488,7 +488,7 @@ mod tests {
             .complete_enrollment(
                 &fixture.identity_id,
                 &encoded,
-                EnrollmentRole::PersonalDevice,
+                DeviceRole::Personal,
                 device(43),
                 "Phone",
                 now,
@@ -499,7 +499,7 @@ mod tests {
             &store.nonces(),
             &Redemption {
                 token: &token,
-                role: EnrollmentRole::PersonalDevice,
+                role: DeviceRole::Personal,
                 device_public_key: device(44),
                 label: "Replay",
                 now_ns: now + 1,
@@ -570,7 +570,7 @@ mod tests {
             &store.nonces(),
             &Redemption {
                 token: &token,
-                role: EnrollmentRole::PersonalDevice,
+                role: DeviceRole::Personal,
                 device_public_key: device(51),
                 label: "Phone",
                 now_ns: now + 20,
@@ -641,7 +641,7 @@ mod tests {
         });
         let redemption = |device_public_key, label| Redemption {
             token: &token,
-            role: EnrollmentRole::PersonalDevice,
+            role: DeviceRole::Personal,
             device_public_key,
             label,
             now_ns: now,
@@ -698,7 +698,7 @@ mod tests {
             .complete_enrollment(
                 &fixture.identity_id,
                 &encoded,
-                EnrollmentRole::PersonalDevice,
+                DeviceRole::Personal,
                 device(71),
                 "Lost phone",
                 now,
@@ -717,7 +717,7 @@ mod tests {
             .complete_enrollment(
                 &fixture.identity_id,
                 &encoded,
-                EnrollmentRole::PersonalDevice,
+                DeviceRole::Personal,
                 device(71),
                 "Found phone",
                 now + 2,
@@ -743,7 +743,7 @@ mod tests {
             .complete_enrollment(
                 &fixture.identity_id,
                 &encoded,
-                EnrollmentRole::PersonalDevice,
+                DeviceRole::Personal,
                 device(61),
                 "Server",
                 now,
@@ -756,7 +756,7 @@ mod tests {
             .complete_enrollment(
                 &fixture.identity_id,
                 &encoded,
-                EnrollmentRole::HomePeer,
+                DeviceRole::Host,
                 device(61),
                 "Server",
                 now,

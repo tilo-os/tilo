@@ -69,6 +69,13 @@
 //!   token and validates it, but does not send it.
 
 #![deny(rust_2018_idioms)]
+#![cfg_attr(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    allow(
+        clippy::future_not_send,
+        reason = "a page's key answers through a JavaScript promise, so the futures that await it stay on the page's one thread"
+    )
+)]
 pub mod approval;
 // A branched machine re-keys its identity files on the machine itself.
 #[cfg(all(unix, not(target_arch = "wasm32")))]
@@ -77,7 +84,6 @@ pub mod canonical;
 pub mod cert;
 pub mod certification;
 pub mod clock;
-pub mod cloud_enrollment;
 pub mod directory;
 pub mod endpoint_delegation;
 pub mod enrollment;
@@ -93,8 +99,10 @@ pub mod nofollow;
 pub mod persist;
 pub mod projection;
 pub mod revocation;
+pub mod role;
 pub mod root_envelope;
 pub mod root_statement;
+pub mod sign;
 pub mod sign_in;
 #[cfg(unix)]
 pub mod update_lock;
@@ -109,15 +117,16 @@ pub use cert::{
     AgentScope, DEVCERT_PREIMAGE_TAG, DEVCERT_V2_PREIMAGE_TAG, DEVCERT_V4_PREIMAGE_TAG,
     DEVCERT_V5_PREIMAGE_TAG, DEVCERT_V6_PREIMAGE_TAG, DeviceCapabilities, DeviceCert,
     DeviceCertError, MAX_AGENT_GRANT_LIFETIME_NS, RememberedRefusal, STAND_IN_LIFETIME_NS,
-    UNNAMED_PRIMARY_DEVICE, UNNAMED_SHARED_DEVICE, device_cert_signing_digest, device_name,
-    prepare_minted_grant, prepare_stand_in_cert, sign_device_cert, take_signature_checks,
-    verify_device_cert, verify_device_cert_at, verify_remembered, verify_stand_in_cert,
-    verify_stand_in_cert_at,
+    UNNAMED_PRIMARY_DEVICE, UNNAMED_SHARED_DEVICE, check_agent_grant, device_cert_signing_digest,
+    device_name, prepare_minted_grant, prepare_stand_in_cert, sign_device_cert,
+    sign_device_cert_async, take_signature_checks, verify_device_cert, verify_device_cert_at,
+    verify_remembered, verify_stand_in_cert, verify_stand_in_cert_at,
 };
 pub use certification::{
     CERTIFICATION_REQUEST_TAG, CERTIFICATION_SCHEMA_VERSION, CertificationError,
     CertificationPolicy, CertificationRequest, MAX_CERTIFICATION_REQUEST_LIFETIME_NS,
-    issue_device_cert, issue_device_cert_as_stand_in, prepare_device_cert, verify_issued_cert,
+    issue_device_cert, issue_device_cert_as_stand_in, issue_device_cert_async, prepare_device_cert,
+    verify_issued_cert,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use clock::wait_for_wall_clock;
@@ -160,8 +169,11 @@ pub use projection::{
 };
 pub use revocation::{
     REVOCATION_PREIMAGE_TAG, RevocationEntry, RevocationError, RevocationList, RevocationReason,
-    revocation_signing_digest, sign_revocation_entry, verify_revocation_entry,
+    revocation_signing_digest, sign_revocation_entry, sign_revocation_entry_async,
+    verify_revocation_entry,
 };
+pub use role::DeviceRole;
+pub use sign::{CallbackSigner, SignError, StatementSigner};
 pub use sign_in::{SIGN_IN_TAG, SignInError, SignInProof, agent_endpoint_audience, sign_in_digest};
 pub use witness::{Answered, HOST_WITNESS_PREIMAGE_TAG, HostWitness, HostWitnessError, Parties};
 

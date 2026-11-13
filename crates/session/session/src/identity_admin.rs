@@ -886,7 +886,7 @@ mod tests {
             .complete_enrollment(
                 &identity.id,
                 &token,
-                tilo_identity_host::enrollment::EnrollmentRole::PersonalDevice,
+                tilo_identity_host::enrollment::DeviceRole::PersonalDevice,
                 phone.verifying_key().to_bytes(),
                 "Phone",
                 issued_at_ns,

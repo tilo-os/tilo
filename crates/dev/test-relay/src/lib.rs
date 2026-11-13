@@ -156,7 +156,7 @@ impl Running {
             name,
             DeviceCapabilities {
                 can_own_workspaces: false,
-                ..tilo_user_identity::cloud_enrollment::host_capabilities()
+                ..tilo_user_identity::DeviceCapabilities::host()
             },
         );
         let (ready, started) = mpsc::channel();

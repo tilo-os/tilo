@@ -93,7 +93,7 @@ fn person() -> Person {
         .complete_enrollment(
             &profile.id,
             &token,
-            tilo_identity_host::enrollment::EnrollmentRole::HomePeer,
+            tilo_identity_host::enrollment::DeviceRole::HomePeer,
             host_key.verifying_key().to_bytes(),
             "The home server",
             now,

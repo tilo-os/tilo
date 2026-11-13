@@ -1094,7 +1094,7 @@ fn host_cert(root: &SigningKey, host: &SigningKey, name: &str) -> anyhow::Result
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: host.verifying_key().to_bytes(),
         device_label: format!("{name} workspace host"),
-        capabilities: tilo_user_identity::cloud_enrollment::host_capabilities(),
+        capabilities: tilo_user_identity::DeviceCapabilities::host(),
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],

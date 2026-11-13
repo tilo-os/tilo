@@ -1331,7 +1331,7 @@ pub(crate) async fn run(
         &root,
         &host,
         &format!("{name} workspace host"),
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     )?;
     let config = tilo_relay::RelayConfig {
         state_root: tilo_relay_protocol::metrics::room_relay_root(&state),
@@ -2097,11 +2097,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_fresh_workspace_seeds_its_apps_and_keeps_them() {
         let dir = tempfile::tempdir().unwrap();
-        let (relay, workspaces, host_cert) = host_with(
-            dir.path(),
-            tilo_user_identity::cloud_enrollment::host_capabilities(),
-        )
-        .await;
+        let (relay, workspaces, host_cert) =
+            host_with(dir.path(), tilo_user_identity::DeviceCapabilities::host()).await;
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
         let apps = ["so.tilo.notes", "so.tilo.chat"];
         let first = seeded(dir.path(), &host_cert, &workspaces, &workspace, &apps).await;

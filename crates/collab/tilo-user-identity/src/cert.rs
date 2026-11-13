@@ -37,11 +37,13 @@
 //! issues is refused ([`crate::RevocationList::refuses`]); every device it
 //! certified before stays valid, as a revocation takes effect from its time.
 
-use ed25519_dalek::{Signer, Verifier};
+use collab_types::signer::SignError;
+use ed25519_dalek::Verifier;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::canonical::{CanonicalError, signing_digest};
+use crate::sign::StatementSigner;
 
 /// Signing-domain tag for `DeviceCert`. Frozen wire ABI:
 /// `tilo-devcert-v1` + NUL. Any change breaks in-field
@@ -236,12 +238,14 @@ impl<'de> Deserialize<'de> for AgentScope {
 
 /// What a device may do on behalf of its user.
 ///
-/// The four booleans map directly to enforceable policy checks in
-/// `crates/session/session/` and `crates/system/fs/`. Currently a user's *primary* device (the one
+/// The flags map directly to enforceable policy checks in
+/// `crates/session/session/` and `crates/system/fs/`. A user's *primary* device (the one
 /// that holds the root private key) gets `can_own_workspaces:
-/// true, can_admit_devices: true`, phones/tablets get
+/// true, can_admit_devices: true`, their other devices get
 /// `can_own_workspaces: true` but `can_admit_devices: false`, and
-/// dedicated home-server hosts get `can_act_as_host: true`.
+/// dedicated home-server and hosting hosts own and read every workspace
+/// (`can_own_workspaces`, `can_read_all_workspaces`) and `can_act_as_host`.
+/// [`crate::DeviceRole`] is where those sets are written.
 ///
 /// Capabilities are baked into the cert at issue time — they do not
 /// change over the cert's lifetime. To upgrade a device from
@@ -720,12 +724,14 @@ impl DeviceCapabilities {
         }
     }
 
-    /// Capability set for an always-on host (home server / cloud
-    /// tenant). Reads everything so it can pin all workspaces; does
-    /// not own or admit — those stay with the human's primary
-    /// devices.
+    /// Capability set for an always-on host (home server / cloud tenant): it
+    /// owns the person's workspaces and reads them all, so it can keep and pin
+    /// every one; it admits no devices and administers none. A host governs the
+    /// workspaces it hosts, and a workspace whose governor may own workspaces
+    /// keeps its records in sealed channels ([`Self::takes_part_in_workspace_channels`]).
     pub fn host() -> Self {
         Self {
+            can_own_workspaces: true,
             can_act_as_host: true,
             can_read_all_workspaces: true,
             ..Self::nothing()
@@ -1125,20 +1131,41 @@ pub enum DeviceCertError {
     /// propagated for hygiene.
     #[error("canonicalisation failed: {0}")]
     Canonical(#[from] CanonicalError),
+
+    /// The key that was asked to sign refused or failed.
+    #[error("the key did not sign: {0}")]
+    Signer(#[from] SignError),
 }
 
-/// Whether `cert`'s shape holds: an agent's grant grants only its scope and
-/// expires within [`MAX_AGENT_GRANT_LIFETIME_NS`] of its issue, unless it is
-/// a server key, which lasts as long as the person chose.
-fn check_agent_grant(cert: &DeviceCert) -> Result<(), DeviceCertError> {
-    if cert.capabilities.agent.is_none() && !cert.capabilities.server_key {
+/// Whether `capabilities` a key is certified with at `issued_at_ns` until
+/// `expires_at_ns` are an agent's grant that holds: a grant reaches its
+/// workspaces and nothing else, and ends within
+/// [`MAX_AGENT_GRANT_LIFETIME_NS`] of its issue, unless it is a server key,
+/// which lasts as long as the person chose. Capabilities that are no grant at
+/// all hold by this rule.
+///
+/// Every path that certifies a key as an agent's grant asks this before it
+/// signs, and every verifier asks it again, so a grant one of them takes is a
+/// grant all of them take.
+///
+/// # Errors
+///
+/// [`DeviceCertError::InvalidAgentGrant`] for a grant that grants more than its
+/// scope, or that outlives an agent's grant without being a server key.
+pub fn check_agent_grant(
+    capabilities: &DeviceCapabilities,
+    issued_at_ns: u64,
+    expires_at_ns: Option<u64>,
+) -> Result<(), DeviceCertError> {
+    if capabilities.agent.is_none() && !capabilities.server_key {
         return Ok(());
     }
-    let bounded = cert.capabilities.server_key
-        || cert.expires_at_ns.is_some_and(|expiry| {
-            expiry.saturating_sub(cert.issued_at_ns) <= MAX_AGENT_GRANT_LIFETIME_NS
+    let bounded = capabilities.server_key
+        || expires_at_ns.is_some_and(|expiry| {
+            expiry > issued_at_ns
+                && expiry.saturating_sub(issued_at_ns) <= MAX_AGENT_GRANT_LIFETIME_NS
         });
-    if bounded && cert.capabilities.agent_grant_holds() {
+    if bounded && capabilities.agent_grant_holds() {
         Ok(())
     } else {
         Err(DeviceCertError::InvalidAgentGrant)
@@ -1237,7 +1264,11 @@ fn check_minted(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCert
         && cert.device_public_key != issuer.device_public_key
         && cert.device_public_key != cert.user_public_key
     {
-        check_agent_grant(issuer)
+        check_agent_grant(
+            &issuer.capabilities,
+            issuer.issued_at_ns,
+            issuer.expires_at_ns,
+        )
     } else {
         Err(DeviceCertError::InvalidIssuer)
     }
@@ -1246,7 +1277,7 @@ fn check_minted(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCert
 /// Every shape rule a certificate's signer is held to before it signs and a
 /// verifier before it checks the signature.
 fn check_shape(cert: &DeviceCert) -> Result<(), DeviceCertError> {
-    check_agent_grant(cert)?;
+    check_agent_grant(&cert.capabilities, cert.issued_at_ns, cert.expires_at_ns)?;
     check_stand_in(cert)?;
     match &cert.issuer {
         Some(issuer) => check_issued(cert, issuer),
@@ -1316,21 +1347,50 @@ pub fn prepare_minted_grant(
 ///
 /// # Errors
 ///
-/// Returns [`DeviceCertError::BadSignature`] if `signing_key` is not the
+/// Returns [`DeviceCertError::BadSignature`] when `signer` is not the
 /// cert's signer, or the issuer's certificate does not verify;
 /// [`DeviceCertError::InvalidValidity`], [`DeviceCertError::InvalidAgentGrant`],
 /// [`DeviceCertError::InvalidStandIn`] or [`DeviceCertError::InvalidIssuer`]
-/// for a certificate no verifier would take; or
+/// for a certificate no verifier would take;
+/// [`DeviceCertError::Signer`] when the key refuses; or
 /// [`DeviceCertError::Canonical`] if the cert cannot be canonically
 /// encoded (effectively unreachable).
 pub fn sign_device_cert(
     cert: &mut DeviceCert,
-    signing_key: &ed25519_dalek::SigningKey,
+    signer: &dyn StatementSigner,
 ) -> Result<(), DeviceCertError> {
+    let digest = prepare_cert_signature(cert, signer.public_key())?;
+    cert.signature = signer.sign_digest(&digest)?;
+    Ok(())
+}
+
+/// [`sign_device_cert`] with a key that answers only later: a page's device key
+/// lives in `WebCrypto` custody and signs through a promise, the same bytes
+/// under the same checks.
+///
+/// # Errors
+///
+/// As [`sign_device_cert`].
+pub async fn sign_device_cert_async(
+    cert: &mut DeviceCert,
+    signer: &dyn collab_types::signer::DeviceSigner,
+) -> Result<(), DeviceCertError> {
+    let digest = prepare_cert_signature(cert, signer.device_public_key())?;
+    cert.signature = signer.sign(digest.to_vec()).await?;
+    Ok(())
+}
+
+/// The digest `cert`'s signer of `signer_public_key` signs, every check applied
+/// first: what [`sign_device_cert`] signs, and what a signer that answers only
+/// later is asked for the same bytes.
+fn prepare_cert_signature(
+    cert: &DeviceCert,
+    signer_public_key: [u8; 32],
+) -> Result<[u8; 32], DeviceCertError> {
     // Guard: refuse to sign a cert whose signer is not the signing key.
     // Mis-signing this would produce a syntactically valid but
     // unverifiable cert.
-    if cert.signer_public_key() != signing_key.verifying_key().to_bytes() {
+    if cert.signer_public_key() != signer_public_key {
         return Err(DeviceCertError::BadSignature);
     }
     if cert
@@ -1343,11 +1403,7 @@ pub fn sign_device_cert(
     if let Some(issuer) = &cert.issuer {
         verify_signed(issuer)?;
     }
-
-    let digest = device_cert_signing_digest(cert)?;
-    let sig = signing_key.sign(&digest);
-    cert.signature = sig.to_bytes();
-    Ok(())
+    device_cert_signing_digest(cert)
 }
 
 /// Return the domain-separated digest an external signer must sign for this
@@ -1594,6 +1650,7 @@ fn check_validity_at(cert: &DeviceCert, now_ns: u64) -> Result<(), DeviceCertErr
 mod tests {
     use super::*;
     use crate::UserIdentity;
+    use ed25519_dalek::Signer as _;
 
     fn fresh_cert(caps: DeviceCapabilities) -> (ed25519_dalek::SigningKey, DeviceCert) {
         let (root_sk, user) = UserIdentity::generate("Alice", 1_720_000_000_000_000_000);

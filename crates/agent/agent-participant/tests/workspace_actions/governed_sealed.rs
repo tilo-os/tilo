@@ -116,7 +116,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
     let host = enrol(
         &owner,
         "node",
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     );
     let page_device = enrol(&owner, "page", DeviceCapabilities::member());
     let member_device = enrol(&other, "member", DeviceCapabilities::member());

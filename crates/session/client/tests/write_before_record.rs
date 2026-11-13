@@ -89,7 +89,7 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
     let host_device = enrol(
         &owner,
         "lounge-host",
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     );
     let state = super::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;

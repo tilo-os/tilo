@@ -1546,8 +1546,8 @@ fn pairing_exchange_is_private_single_use_and_resumable() {
     }
 }
 
-const KAT_RESPONSE_SIGNATURE: &str = "a645d9aa10752fbf8b19d1ccca48b9cf5405d6ec88eb69fea45df36466edda10\
-    e8b1bf1f0d85e9f224b21f75a7251771b1482ce6ceed2ce018d43895124e6f0c";
+const KAT_RESPONSE_SIGNATURE: &str = "a10e30bfc5486e83c35b82713afc162cee21d0bdfee8d97d8280fafddbe6cb1a\
+    fcef16c2117e145687f7327c3daf37ed1825b36f0e65046a3aed7e78a9398407";
 const KAT_ACK: &str = "0404040404040404040404040404040417cb79fb2b4120f2b1ec65e4198d6e08\
     b28e813feb01e4a400839b85e18080ce0aa39056fd697d25fd6d7afbe84dbb81\
     f52d9e543b4aa167cf6472c602c8079a40440274b6b4d4b42e7fd529bbbdf4f0\

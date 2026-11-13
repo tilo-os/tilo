@@ -1043,6 +1043,17 @@ impl std::fmt::Debug for SigningIdentity {
     }
 }
 
+impl tilo_user_identity::StatementSigner for SigningIdentity {
+    fn public_key(&self) -> [u8; 32] {
+        self.group_public_key()
+    }
+
+    fn sign_digest(&self, digest: &[u8; 32]) -> Result<[u8; 64], tilo_user_identity::SignError> {
+        self.sign(digest)
+            .map_err(|error| tilo_user_identity::SignError(error.to_string()))
+    }
+}
+
 impl SigningIdentity {
     /// Start one host-coordinated FROST signing round without exporting this
     /// device's share. This succeeds only for a threshold identity loaded by

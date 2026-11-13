@@ -21,8 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::{io, os::unix::fs::PermissionsExt as _, path::Path, sync::Arc};
 use tilo_seal::Label;
 use tilo_user_identity::{
-    CertificationRequest, DeviceCapabilities, DeviceCert, IdentityPaths,
-    device_cert_signing_digest, verify_device_cert_at,
+    CertificationRequest, DeviceCapabilities, DeviceCert, IdentityPaths, verify_device_cert_at,
 };
 
 const PROJECTION_SCHEMA: u32 = 1;
@@ -304,9 +303,10 @@ pub(crate) fn issue(
         signature: [0; 64],
         issuer: None,
     };
-    let digest = device_cert_signing_digest(&cert)
+    let signer =
+        tilo_user_identity::CallbackSigner::new(source.identity_public_key, &*source.signer);
+    tilo_user_identity::sign_device_cert(&mut cert, &signer)
         .map_err(|_| invalid("The device certificate is invalid"))?;
-    cert.signature = (source.signer)(&digest)?;
     verify_device_cert_at(&cert, now_ns)
         .map_err(|_| invalid("The device certificate did not verify"))?;
     let mut certificates = source.certificates.clone();

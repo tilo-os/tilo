@@ -15,7 +15,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use tilo_clock::try_unix_now_ns;
 use tilo_identity_host::certification_ceremony::pairing_code;
 use tilo_identity_host::device_fleet::{DeviceFleet, DeviceFleetStore};
-use tilo_identity_host::enrollment::{Certifier, EnrollmentRole, NonceStore, Redemption};
+use tilo_identity_host::enrollment::{Certifier, DeviceRole, NonceStore, Redemption};
 use tilo_relay::HomePeerRegistration;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, decode_enrollment_token, verify_device_cert,
@@ -246,12 +246,12 @@ enum EnrollmentKind {
 }
 
 impl EnrollmentKind {
-    /// The role a token for this kind admits, with its one capability preset
-    /// and shape check.
-    const fn role(self) -> EnrollmentRole {
+    /// The role a token for this kind admits, with its one capability set and
+    /// shape check.
+    const fn role(self) -> DeviceRole {
         match self {
-            Self::HomePeer => EnrollmentRole::HomePeer,
-            Self::PersonalDevice => EnrollmentRole::PersonalDevice,
+            Self::HomePeer => DeviceRole::Host,
+            Self::PersonalDevice => DeviceRole::Personal,
         }
     }
 }
@@ -2179,7 +2179,7 @@ fn handle_solicitation(
         let expires_at_ns = now.saturating_add(5 * 60 * 1_000_000_000);
         let token_text = tilo_identity_host::enrollment::mint_token(
             identity.user_public_key,
-            kind.role().preset(),
+            kind.role().capabilities(),
             issued_at_ns,
             expires_at_ns,
             &identity.device,

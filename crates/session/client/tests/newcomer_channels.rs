@@ -91,7 +91,7 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
     let host_device = enrol(
         &owner,
         "lounge-host",
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     );
     let state = crate::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;

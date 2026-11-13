@@ -455,7 +455,7 @@ pub fn install_joined_device(
     display_name: &str,
     device_label: &str,
     now_ns: u64,
-    sign: impl FnOnce(&[u8]) -> Result<[u8; 64], String>,
+    sign: impl Fn(&[u8]) -> Result<[u8; 64], String>,
 ) -> Result<DeviceCert, io::Error> {
     install_joined_device_presented(
         layout,
@@ -483,7 +483,7 @@ fn install_joined_device_presented(
     presentation: JoinedPresentation<'_>,
     device_label: &str,
     now_ns: u64,
-    sign: impl FnOnce(&[u8]) -> Result<[u8; 64], String>,
+    sign: impl Fn(&[u8]) -> Result<[u8; 64], String>,
 ) -> Result<DeviceCert, io::Error> {
     if !safe_account_name(layout.username) {
         return Err(io::Error::new(
@@ -1400,10 +1400,7 @@ fn issue_device_certificate_at(
         signature: [0; 64],
         issuer: None,
     };
-    let digest = tilo_user_identity::device_cert_signing_digest(&cert)
-        .map_err(|e| io::Error::other(e.to_string()))?;
-    cert.signature = identity
-        .sign(&digest)
+    tilo_user_identity::sign_device_cert(&mut cert, identity)
         .map_err(|e| io::Error::other(e.to_string()))?;
     tilo_user_identity::verify_device_cert(&cert).map_err(|e| io::Error::other(e.to_string()))?;
     Ok(cert)

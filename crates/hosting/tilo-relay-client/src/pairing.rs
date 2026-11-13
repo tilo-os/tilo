@@ -11,9 +11,10 @@ use tilo_relay_protocol::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, MemberApproval,
 };
 use tilo_user_identity::{
-    CertificationPolicy, DeviceCapabilities, DeviceCert, MAX_AGENT_GRANT_LIFETIME_NS,
-    RevocationEntry, RevocationReason, STAND_IN_LIFETIME_NS,
-    certification::MAX_CERTIFICATION_LABEL_BYTES, verify_device_cert_at,
+    CertificationPolicy, DeviceCapabilities, DeviceCert, DeviceRole, RevocationEntry,
+    RevocationList, RevocationReason, STAND_IN_LIFETIME_NS,
+    certification::MAX_CERTIFICATION_LABEL_BYTES, check_agent_grant, issue_device_cert_async,
+    sign_device_cert_async, sign_revocation_entry_async, verify_device_cert_at,
 };
 
 #[cfg(feature = "dial")]
@@ -39,13 +40,13 @@ pub enum IssuedRole {
 }
 
 impl IssuedRole {
-    /// The capabilities granted.
+    /// The capabilities granted: a page's browser and the session beside a node
+    /// are one of the person's own devices, a node is a host.
     #[must_use]
     pub fn capabilities(self) -> DeviceCapabilities {
         match self {
-            Self::Browser => CertificationPolicy::browser().ceiling,
-            Self::Node => tilo_user_identity::cloud_enrollment::host_capabilities(),
-            Self::Session => DeviceCapabilities::member(),
+            Self::Browser | Self::Session => DeviceRole::Personal.capabilities(),
+            Self::Node => DeviceRole::Host.capabilities(),
         }
     }
 
@@ -92,14 +93,11 @@ pub async fn issue_device_cert(
     Ok(cert)
 }
 
-/// `cert` as `root` signs it, its digest checked first.
+/// `cert` as `root` signs it, every check the crate applies first.
 async fn signed(root: &dyn DeviceSigner, mut cert: DeviceCert) -> Result<DeviceCert, CertifyError> {
-    let digest = tilo_user_identity::device_cert_signing_digest(&cert)
-        .map_err(|error| CertifyError::Request(error.to_string()))?;
-    cert.signature = root
-        .sign(digest.to_vec())
+    sign_device_cert_async(&mut cert, root)
         .await
-        .map_err(|error| CertifyError::Request(error.0))?;
+        .map_err(|error| CertifyError::Request(error.to_string()))?;
     Ok(cert)
 }
 
@@ -142,15 +140,9 @@ pub async fn issue_agent_grant(
     if capabilities.agent.is_none() {
         return Err(CertifyError::Request("a grant reaches workspaces".into()));
     }
-    let bounded = expires_at_ns.is_some_and(|expiry| {
-        expiry > now && expiry.saturating_sub(now) <= MAX_AGENT_GRANT_LIFETIME_NS
-    });
-    let chosen = capabilities.server_key && expires_at_ns.is_none_or(|expiry| expiry > now);
-    if !(bounded || chosen) {
-        return Err(CertifyError::Request(
-            "a grant expires after now, and within 90 days unless it is a server key".into(),
-        ));
-    }
+    // The rule every verifier applies to a grant, from the one place it is written.
+    check_agent_grant(&capabilities, now, expires_at_ns)
+        .map_err(|error| CertifyError::Request(error.to_string()))?;
     let cert = DeviceCert {
         user_public_key,
         device_public_key,
@@ -246,11 +238,9 @@ pub async fn revoke_device(
         reason,
         signature: [0; 64],
     };
-    let digest = tilo_user_identity::revocation_signing_digest(&entry).map_err(|e| request(&e))?;
-    entry.signature = root
-        .sign(digest.to_vec())
+    sign_revocation_entry_async(&mut entry, root)
         .await
-        .map_err(|error| CertifyError::Request(error.0))?;
+        .map_err(|e| request(&e))?;
     tilo_user_identity::verify_revocation_entry(&entry).map_err(|e| request(&e))?;
     Ok(entry)
 }
@@ -332,16 +322,19 @@ pub async fn answer_pairing(
         else {
             return Err(CertifyError::Denied("that device no longer waits".into()));
         };
+        // The request the page shows is the request the root answers: its own
+        // signature, its window and the revocations decide what the device is
+        // granted, within what a browser may be granted.
         let request = &found.request;
-        ApproverDecision::Issue(
-            issue_device_cert(
-                root,
-                request.device_public_key,
-                &request.device_label,
-                IssuedRole::Browser,
-            )
-            .await?,
-        )
+        let policy = CertificationPolicy::browser();
+        let revocations = RevocationList::new();
+        let now = tilo_clock::unix_now_ns();
+        let cert = issue_device_cert_async(request, root, &policy, &revocations, now)
+            .await
+            .map_err(|error| CertifyError::Request(error.to_string()))?;
+        tilo_user_identity::verify_issued_cert(request, &cert, &policy, &revocations, now)
+            .map_err(|error| CertifyError::Request(error.to_string()))?;
+        ApproverDecision::Issue(cert)
     } else {
         ApproverDecision::Deny
     };
@@ -421,8 +414,8 @@ mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
     use tilo_user_identity::{
-        AgentScope, CERTIFICATION_SCHEMA_VERSION, CertificationRequest, RevocationList,
-        verify_device_cert, verify_issued_cert,
+        AgentScope, CERTIFICATION_SCHEMA_VERSION, CertificationRequest,
+        MAX_AGENT_GRANT_LIFETIME_NS, verify_device_cert, verify_issued_cert,
     };
 
     #[tokio::test]
@@ -566,6 +559,61 @@ mod tests {
             .await,
             Err(CertifyError::Request(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn a_page_root_signs_the_same_certificate_and_revocation_as_a_held_key() {
+        // A page's root answers only later; a held root answers at once. The
+        // bytes either signs are the same, so a certificate a browser's root
+        // made and one a machine's root made verify alike.
+        let root = SigningKey::from_bytes(&[11; 32]);
+        let device = SigningKey::from_bytes(&[12; 32]).verifying_key().to_bytes();
+        let now = 1_700_000_000_000_000_000;
+        let request = CertificationRequest {
+            version: CERTIFICATION_SCHEMA_VERSION,
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device,
+            device_label: "Browser".into(),
+            requested: DeviceCapabilities::member(),
+            nonce: [9; 16],
+            invite: [0; 16],
+            issued_at_ns: now,
+            expires_at_ns: now + 60_000_000_000,
+            signature: [0; 64],
+        }
+        .sign(&SigningKey::from_bytes(&[12; 32]))
+        .unwrap();
+        let policy = CertificationPolicy::browser();
+        let awaited =
+            issue_device_cert_async(&request, &root, &policy, &RevocationList::new(), now)
+                .await
+                .unwrap();
+        let at_once = tilo_user_identity::issue_device_cert(
+            &request,
+            &root,
+            &policy,
+            &RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        assert_eq!(awaited, at_once);
+        assert_eq!(verify_device_cert(&awaited), Ok(()));
+
+        let mut later = RevocationEntry {
+            user_public_key: root.verifying_key().to_bytes(),
+            revoked_device_public_key: device,
+            revoked_at_ns: now,
+            reason: RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        sign_revocation_entry_async(&mut later, &root)
+            .await
+            .unwrap();
+        let mut held = later.clone();
+        held.signature = [0; 64];
+        tilo_user_identity::sign_revocation_entry(&mut held, &root).unwrap();
+        assert_eq!(later, held);
+        assert_eq!(tilo_user_identity::verify_revocation_entry(&later), Ok(()));
     }
 
     #[tokio::test]

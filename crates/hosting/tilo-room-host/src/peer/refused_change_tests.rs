@@ -46,7 +46,7 @@ struct Lounge {
 
 async fn lounge() -> Lounge {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();

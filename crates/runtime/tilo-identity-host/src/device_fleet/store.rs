@@ -10,8 +10,8 @@ use std::time::{Duration, SystemTime};
 
 use tilo_user_identity::{
     AgentScope, DeviceCapabilities, DeviceCert, IdentityPaths, RevocationEntry, RevocationReason,
-    decode_enrollment_token, device_cert_signing_digest, revocation_signing_digest,
-    verify_device_cert, verify_device_cert_at, verify_revocation_entry,
+    decode_enrollment_token, sign_device_cert, sign_revocation_entry, verify_device_cert,
+    verify_device_cert_at, verify_revocation_entry,
 };
 
 use super::{DeviceFleet, FLEET_SCHEMA_VERSION};
@@ -217,7 +217,7 @@ impl DeviceFleetStore {
         &self,
         identity_id: &str,
         encoded_token: &str,
-        role: crate::enrollment::EnrollmentRole,
+        role: crate::enrollment::DeviceRole,
         new_device_public_key: [u8; 32],
         device_label: &str,
         now_ns: u64,
@@ -349,10 +349,7 @@ impl DeviceFleetStore {
             reason,
             signature: [0; 64],
         };
-        let digest = revocation_signing_digest(&entry)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        entry.signature = root
-            .sign(&digest)
+        sign_revocation_entry(&mut entry, &root)
             .map_err(|error| io::Error::other(error.to_string()))?;
         self.record_revocation(identity_id, &entry)?;
         Ok(entry)
@@ -448,11 +445,7 @@ impl DeviceFleetStore {
             signature: [0; 64],
             issuer: None,
         };
-        let digest = device_cert_signing_digest(&cert)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        cert.signature = root
-            .sign(&digest)
-            .map_err(|error| io::Error::other(error.to_string()))?;
+        sign_device_cert(&mut cert, &root).map_err(|error| io::Error::other(error.to_string()))?;
         verify_device_cert_at(&cert, issued_at_ns)
             .map_err(|error| io::Error::other(error.to_string()))?;
         self.insert_certificate(identity_id, cert.clone())?;
@@ -974,7 +967,7 @@ mod tests {
                 .complete_enrollment(
                     &identity_id,
                     &token,
-                    crate::enrollment::EnrollmentRole::PersonalDevice,
+                    tilo_user_identity::DeviceRole::Personal,
                     phone.verifying_key().to_bytes(),
                     "Phone",
                     issued_at_ns,
@@ -990,7 +983,7 @@ mod tests {
             let replay = store.complete_enrollment(
                 &identity_id,
                 &token,
-                crate::enrollment::EnrollmentRole::PersonalDevice,
+                tilo_user_identity::DeviceRole::Personal,
                 replay_device.verifying_key().to_bytes(),
                 "Replay",
                 issued_at_ns + 1,
@@ -1030,7 +1023,7 @@ mod tests {
             let after_issuer_expiry = store.complete_enrollment(
                 &identity_id,
                 &expires_with_issuer,
-                crate::enrollment::EnrollmentRole::PersonalDevice,
+                tilo_user_identity::DeviceRole::Personal,
                 replay_device.verifying_key().to_bytes(),
                 "Expired issuer",
                 issued_at_ns + 3,
@@ -1088,7 +1081,7 @@ mod tests {
                 .complete_enrollment(
                     &identity_id,
                     &first_token,
-                    crate::enrollment::EnrollmentRole::PersonalDevice,
+                    tilo_user_identity::DeviceRole::Personal,
                     first_device.verifying_key().to_bytes(),
                     "First device",
                     issued_at_ns,
@@ -1109,7 +1102,7 @@ mod tests {
                 .complete_enrollment(
                     &identity_id,
                     &second_token,
-                    crate::enrollment::EnrollmentRole::PersonalDevice,
+                    tilo_user_identity::DeviceRole::Personal,
                     second_device.verifying_key().to_bytes(),
                     "Second device",
                     after_first_expiry,
@@ -1120,7 +1113,7 @@ mod tests {
             let replay = store.complete_enrollment(
                 &identity_id,
                 &first_token,
-                crate::enrollment::EnrollmentRole::PersonalDevice,
+                tilo_user_identity::DeviceRole::Personal,
                 replay_device.verifying_key().to_bytes(),
                 "Rollback replay",
                 issued_at_ns + 1,
@@ -1180,7 +1173,7 @@ mod tests {
                     store.complete_enrollment(
                         &identity_id,
                         &token,
-                        crate::enrollment::EnrollmentRole::PersonalDevice,
+                        tilo_user_identity::DeviceRole::Personal,
                         device.verifying_key().to_bytes(),
                         &format!("Device {seed}"),
                         issued_at_ns,
@@ -1251,7 +1244,7 @@ mod tests {
         let replay = store.complete_enrollment(
             &identity_id,
             &spent_earlier,
-            crate::enrollment::EnrollmentRole::PersonalDevice,
+            tilo_user_identity::DeviceRole::Personal,
             [71; 32],
             "Replay",
             issued_at_ns,
@@ -1267,7 +1260,7 @@ mod tests {
             .complete_enrollment(
                 &identity_id,
                 &mint(),
-                crate::enrollment::EnrollmentRole::PersonalDevice,
+                tilo_user_identity::DeviceRole::Personal,
                 phone.verifying_key().to_bytes(),
                 "Phone",
                 issued_at_ns,
