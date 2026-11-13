@@ -192,188 +192,192 @@ mod tests {
         ui::Theme::configured_from(settings)
     }
 
-    #[test]
-    fn what_the_browser_was_asked_for_reaches_the_theme() {
-        let asked = accessibility(|query| [REDUCED_MOTION, MORE_CONTRAST].contains(&query));
-        assert!(asked.reduce_motion && asked.high_contrast);
-        let theme = themed(ui::Theme::dark(), asked);
-        assert!(theme.reduce_motion, "less motion");
-        assert_ne!(
-            theme.text_primary,
-            ui::Theme::dark().text_primary,
-            "more contrast"
-        );
-        let plain = themed(ui::Theme::dark(), accessibility(|_| false));
-        assert!(!plain.reduce_motion);
-        assert_eq!(plain.text_primary, ui::Theme::dark().text_primary);
-        let before = generation();
-        changed();
-        assert_ne!(generation(), before, "a change draws the mounts again");
-    }
+    tilo_test_env::scenario! {
+        fn the_page_draws_the_theme_its_settings_and_browser_name;
 
-    /// On a fresh page Settings shows Automatic chosen, and the page draws what Automatic means
-    /// there: the system's light or dark. A Dark tile ringed over a light page told the person a
-    /// choice the page did not draw.
-    #[test]
-    fn what_settings_shows_chosen_on_a_page_is_what_the_page_draws() {
-        use ui::storage::{DeviceClass, SettingsSchema as _};
-        let fresh = settings_sections::prefs::AppearancePrefs::defaults_on(DeviceClass::Web);
-        assert_eq!(fresh.theme_choice(), "Automatic");
-        let mut chosen = settings_sections::prefs::AppearancePrefs::defaults_on(DeviceClass::Web);
-        chosen.choose_theme("Automatic");
-        let chosen = serde_json::json!({"appearance": {"mode": chosen.mode}});
-        for dark in [false, true] {
-            let untouched = from_settings(&serde_json::Map::new(), Some(dark));
-            assert_eq!(untouched.document.is_dark(), dark, "it follows the system");
-            let automatic = from_settings(chosen.as_object().unwrap(), Some(dark));
-            assert_eq!(automatic.document.is_dark(), dark, "so does choosing it");
+        phase what_the_browser_was_asked_for_reaches_the_theme;
+        {
+            let asked = accessibility(|query| [REDUCED_MOTION, MORE_CONTRAST].contains(&query));
+            assert!(asked.reduce_motion && asked.high_contrast);
+            let theme = themed(ui::Theme::dark(), asked);
+            assert!(theme.reduce_motion, "less motion");
+            assert_ne!(
+                theme.text_primary,
+                ui::Theme::dark().text_primary,
+                "more contrast"
+            );
+            let plain = themed(ui::Theme::dark(), accessibility(|_| false));
+            assert!(!plain.reduce_motion);
+            assert_eq!(plain.text_primary, ui::Theme::dark().text_primary);
+            let before = generation();
+            changed();
+            assert_ne!(generation(), before, "a change draws the mounts again");
         }
-        let dark_theme = serde_json::json!({"appearance": {"mode": "dark"}});
-        assert!(
-            from_settings(dark_theme.as_object().unwrap(), Some(false))
-                .document
-                .is_dark(),
-            "Dark, chosen, is dark on a light system"
-        );
-        assert_eq!(
-            settings_sections::prefs::AppearancePrefs::defaults_on(DeviceClass::Native)
-                .theme_choice(),
-            "Dark",
-            "the person's own computer starts dark, and says so"
-        );
-    }
 
-    #[test]
-    fn the_browser_scheme_decides_only_what_the_person_left_open() {
-        // What a page draws for `settings` with the browser answering `dark`, and what every
-        // surface would call in use, side by side: one reading.
-        let page = |settings: serde_json::Value, dark| {
-            let settings = settings.as_object().cloned().unwrap_or_default();
-            let mode = settings
-                .get("appearance")
-                .and_then(|appearance| appearance.get("mode"))
-                .and_then(serde_json::Value::as_str);
-            let theme = from_settings(&settings, Some(dark));
-            (theme.document.is_dark(), ui::theme::drawn(mode, Some(dark)))
-        };
-        let drew = |settings, dark| page(settings, dark).0;
-        assert!(
-            drew(serde_json::json!({}), true),
-            "nothing chosen, dark browser"
-        );
-        assert!(
-            !drew(serde_json::json!({}), false),
-            "nothing chosen, light browser"
-        );
-        assert!(
-            !drew(
-                serde_json::json!({"appearance": {"accent": "violet"}}),
-                false
-            ),
-            "an accent is not a light or dark"
-        );
-        assert!(
-            drew(serde_json::json!({"appearance": {"mode": "dark"}}), false),
-            "the person's own choice stands"
-        );
-        assert!(
-            !drew(
-                serde_json::json!({"appearance": {"mode": "automatic"}}),
-                false
-            ),
-            "Automatic follows the system"
-        );
-        assert!(
-            !drew(
-                serde_json::json!({"appearance": {"light_theme": "glass-light"}}),
-                false
-            ),
-            "a theme chosen for one mode shows when the system is in that mode"
-        );
-        assert!(
-            drew(
-                serde_json::json!({"appearance": {"light_theme": "glass-light"}}),
-                true
-            ),
-            "and the other mode's theme while the system is in it"
-        );
-        for (settings, dark) in [
-            (serde_json::json!({}), true),
-            (serde_json::json!({}), false),
-            (serde_json::json!({"appearance": {"mode": "dark"}}), false),
-            (serde_json::json!({"appearance": {"mode": "light"}}), true),
-            (
-                serde_json::json!({"appearance": {"mode": "automatic"}}),
-                true,
-            ),
-            (
-                serde_json::json!({"appearance": {"mode": "automatic"}}),
-                false,
-            ),
-        ] {
-            let (drawn_dark, polarity) = page(settings.clone(), dark);
+        phase what_settings_shows_chosen_on_a_page_is_what_the_page_draws;
+        // On a fresh page Settings shows Automatic chosen, and the page draws what Automatic means
+        // there: the system's light or dark. A Dark tile ringed over a light page told the person a
+        // choice the page did not draw.
+        {
+            use ui::storage::{DeviceClass, SettingsSchema as _};
+            let fresh = settings_sections::prefs::AppearancePrefs::defaults_on(DeviceClass::Web);
+            assert_eq!(fresh.theme_choice(), "Automatic");
+            let mut chosen = settings_sections::prefs::AppearancePrefs::defaults_on(DeviceClass::Web);
+            chosen.choose_theme("Automatic");
+            let chosen = serde_json::json!({"appearance": {"mode": chosen.mode}});
+            for dark in [false, true] {
+                let untouched = from_settings(&serde_json::Map::new(), Some(dark));
+                assert_eq!(untouched.document.is_dark(), dark, "it follows the system");
+                let automatic = from_settings(chosen.as_object().unwrap(), Some(dark));
+                assert_eq!(automatic.document.is_dark(), dark, "so does choosing it");
+            }
+            let dark_theme = serde_json::json!({"appearance": {"mode": "dark"}});
+            assert!(
+                from_settings(dark_theme.as_object().unwrap(), Some(false))
+                    .document
+                    .is_dark(),
+                "Dark, chosen, is dark on a light system"
+            );
             assert_eq!(
-                polarity,
-                ui::theme::Drawn::of(drawn_dark),
-                "{settings} in a {dark} browser: in use is what is drawn"
+                settings_sections::prefs::AppearancePrefs::defaults_on(DeviceClass::Native)
+                    .theme_choice(),
+                "Dark",
+                "the person's own computer starts dark, and says so"
             );
         }
-        let light = from_settings(&serde_json::Map::new(), Some(false));
-        assert!(!light.document.is_dark());
-        let variables = css_variables(&light);
-        assert!(variables.contains(&("color-scheme", "light".to_owned())));
-        assert!(
-            variables
-                .iter()
-                .any(|(name, value)| *name == "--tilo-text" && value.starts_with("rgba("))
-        );
-    }
 
-    #[test]
-    fn a_first_visit_draws_the_browser_scheme() {
-        // Nothing chosen: the browser's light or dark is the page's.
-        let none = serde_json::Map::new();
-        assert!(
-            !from_settings(&none, Some(false)).document.is_dark(),
-            "settings with no appearance in a light browser are light"
-        );
-        assert!(
-            from_settings(&none, Some(true)).document.is_dark(),
-            "and dark in a dark one"
-        );
-        // The person's own choice is what the page draws, whatever the
-        // browser answers.
-        let chosen = serde_json::json!({"appearance": {"mode": "dark"}});
-        assert!(
-            from_settings(
-                &chosen.as_object().cloned().unwrap_or_default(),
-                Some(false)
-            )
-            .document
-            .is_dark(),
-            "an explicit dark wins over a light browser"
-        );
-        // A caller that does not follow (a native window) keeps the
-        // settings' own default.
-        assert!(from_settings(&none, None).document.is_dark());
-    }
+        phase the_browser_scheme_decides_only_what_the_person_left_open;
+        {
+            // What a page draws for `settings` with the browser answering `dark`, and what every
+            // surface would call in use, side by side: one reading.
+            let page = |settings: serde_json::Value, dark| {
+                let settings = settings.as_object().cloned().unwrap_or_default();
+                let mode = settings
+                    .get("appearance")
+                    .and_then(|appearance| appearance.get("mode"))
+                    .and_then(serde_json::Value::as_str);
+                let theme = from_settings(&settings, Some(dark));
+                (theme.document.is_dark(), ui::theme::drawn(mode, Some(dark)))
+            };
+            let drew = |settings, dark| page(settings, dark).0;
+            assert!(
+                drew(serde_json::json!({}), true),
+                "nothing chosen, dark browser"
+            );
+            assert!(
+                !drew(serde_json::json!({}), false),
+                "nothing chosen, light browser"
+            );
+            assert!(
+                !drew(
+                    serde_json::json!({"appearance": {"accent": "violet"}}),
+                    false
+                ),
+                "an accent is not a light or dark"
+            );
+            assert!(
+                drew(serde_json::json!({"appearance": {"mode": "dark"}}), false),
+                "the person's own choice stands"
+            );
+            assert!(
+                !drew(
+                    serde_json::json!({"appearance": {"mode": "automatic"}}),
+                    false
+                ),
+                "Automatic follows the system"
+            );
+            assert!(
+                !drew(
+                    serde_json::json!({"appearance": {"light_theme": "glass-light"}}),
+                    false
+                ),
+                "a theme chosen for one mode shows when the system is in that mode"
+            );
+            assert!(
+                drew(
+                    serde_json::json!({"appearance": {"light_theme": "glass-light"}}),
+                    true
+                ),
+                "and the other mode's theme while the system is in it"
+            );
+            for (settings, dark) in [
+                (serde_json::json!({}), true),
+                (serde_json::json!({}), false),
+                (serde_json::json!({"appearance": {"mode": "dark"}}), false),
+                (serde_json::json!({"appearance": {"mode": "light"}}), true),
+                (
+                    serde_json::json!({"appearance": {"mode": "automatic"}}),
+                    true,
+                ),
+                (
+                    serde_json::json!({"appearance": {"mode": "automatic"}}),
+                    false,
+                ),
+            ] {
+                let (drawn_dark, polarity) = page(settings.clone(), dark);
+                assert_eq!(
+                    polarity,
+                    ui::theme::Drawn::of(drawn_dark),
+                    "{settings} in a {dark} browser: in use is what is drawn"
+                );
+            }
+            let light = from_settings(&serde_json::Map::new(), Some(false));
+            assert!(!light.document.is_dark());
+            let variables = css_variables(&light);
+            assert!(variables.contains(&("color-scheme", "light".to_owned())));
+            assert!(
+                variables
+                    .iter()
+                    .any(|(name, value)| *name == "--tilo-text" && value.starts_with("rgba("))
+            );
+        }
 
-    #[test]
-    fn a_scheme_change_while_following_redraws() {
-        // A page installs the browser's answer before anything mounts.
-        let _light = ui::theme::scoped_host_scheme(Some(false));
-        let none = serde_json::Map::new();
-        let drawn = generation();
-        assert!(
-            !ui::Theme::configured_from(&none).document.is_dark(),
-            "the first frame in a light browser is light"
-        );
-        // The person's system flips to dark: the browser answers the other
-        // way, the page installs it, and every mount draws the scheme that is
-        // now set.
-        changed();
-        ui::theme::install_host_scheme(Some(true));
-        assert!(ui::Theme::configured_from(&none).document.is_dark());
-        assert_ne!(generation(), drawn, "the mounts draw the new scheme");
+        phase a_first_visit_draws_the_browser_scheme;
+        {
+            // Nothing chosen: the browser's light or dark is the page's.
+            let none = serde_json::Map::new();
+            assert!(
+                !from_settings(&none, Some(false)).document.is_dark(),
+                "settings with no appearance in a light browser are light"
+            );
+            assert!(
+                from_settings(&none, Some(true)).document.is_dark(),
+                "and dark in a dark one"
+            );
+            // The person's own choice is what the page draws, whatever the
+            // browser answers.
+            let chosen = serde_json::json!({"appearance": {"mode": "dark"}});
+            assert!(
+                from_settings(
+                    &chosen.as_object().cloned().unwrap_or_default(),
+                    Some(false)
+                )
+                .document
+                .is_dark(),
+                "an explicit dark wins over a light browser"
+            );
+            // A caller that does not follow (a native window) keeps the
+            // settings' own default.
+            assert!(from_settings(&none, None).document.is_dark());
+        }
+
+        phase a_scheme_change_while_following_redraws;
+        {
+            // A page installs the browser's answer before anything mounts.
+            let _light = ui::theme::scoped_host_scheme(Some(false));
+            let none = serde_json::Map::new();
+            let drawn = generation();
+            assert!(
+                !ui::Theme::configured_from(&none).document.is_dark(),
+                "the first frame in a light browser is light"
+            );
+            // The person's system flips to dark: the browser answers the other
+            // way, the page installs it, and every mount draws the scheme that is
+            // now set.
+            changed();
+            ui::theme::install_host_scheme(Some(true));
+            assert!(ui::Theme::configured_from(&none).document.is_dark());
+            assert_ne!(generation(), drawn, "the mounts draw the new scheme");
+        }
     }
 }

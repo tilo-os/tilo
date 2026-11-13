@@ -238,127 +238,131 @@ mod tests {
         }
     }
 
-    /// The arrangement publishes the desk's places, rows and record, so the page's palette, a
-    /// script and an agent can arrange it by action.
-    #[test]
-    fn the_page_publishes_the_desks_places_as_arranging_resources() {
-        let page = Page::new();
-        let resources = page.arrangement.resources();
-        let arrangement = resources
-            .iter()
-            .find(|resource| resource.id.as_str() == RESOURCE)
-            .expect("the arrangement is published");
-        let place = Item::Place.resource(&page.window().to_string());
-        assert!(
-            arrangement
-                .children
+    tilo_test_env::scenario! {
+        fn the_pages_desk_is_arranged_by_action;
+
+        phase the_page_publishes_the_desks_places_as_arranging_resources;
+        // The arrangement publishes the desk's places, rows and record, so the page's palette, a
+        // script and an agent can arrange it by action.
+        {
+            let page = Page::new();
+            let resources = page.arrangement.resources();
+            let arrangement = resources
                 .iter()
-                .any(|child| child.id.as_str() == place),
-            "the window in front is a place of it: {:?}",
-            arrangement
-                .children
-                .iter()
-                .map(|child| child.id.as_str())
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            page.arrangement.holds(&place),
-            "an action on that place reaches the arrangement"
-        );
-        assert!(
-            page.arrangement.holds(RECORD_RESOURCE),
-            "the desk's record is the person's to step back"
-        );
-        assert!(
-            !page.arrangement.holds("so.tilo.notes:record"),
-            "an app's resource is not the arrangement's"
-        );
-    }
+                .find(|resource| resource.id.as_str() == RESOURCE)
+                .expect("the arrangement is published");
+            let place = Item::Place.resource(&page.window().to_string());
+            assert!(
+                arrangement
+                    .children
+                    .iter()
+                    .any(|child| child.id.as_str() == place),
+                "the window in front is a place of it: {:?}",
+                arrangement
+                    .children
+                    .iter()
+                    .map(|child| child.id.as_str())
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                page.arrangement.holds(&place),
+                "an action on that place reaches the arrangement"
+            );
+            assert!(
+                page.arrangement.holds(RECORD_RESOURCE),
+                "the desk's record is the person's to step back"
+            );
+            assert!(
+                !page.arrangement.holds("so.tilo.notes:record"),
+                "an app's resource is not the arrangement's"
+            );
+        }
 
-    /// A float invoked through the door floats the page's window as one step of the desk's history,
-    /// and the person's undo puts it back.
-    #[test]
-    fn a_float_through_the_door_is_one_step_the_person_takes_back() {
-        let page = Page::new();
-        let place = page.window();
-        assert!(!page.floating(place), "it stands among the desk's windows");
+        phase a_float_through_the_door_is_one_step_the_person_takes_back;
+        // A float invoked through the door floats the page's window as one step of the desk's history,
+        // and the person's undo puts it back.
+        {
+            let page = Page::new();
+            let place = page.window();
+            assert!(!page.floating(place), "it stands among the desk's windows");
 
-        page.invoke(
-            &Item::Place.resource(&place.to_string()),
-            "float",
-            &serde_json::Map::from_iter([
-                ("corner".to_owned(), serde_json::json!("bottom-right")),
-                ("dx".to_owned(), serde_json::json!(40)),
-                ("dy".to_owned(), serde_json::json!(24)),
-            ]),
-        );
-        assert!(page.floating(place), "the window floats");
-        assert_eq!(
-            page.desk.last_step("ada"),
-            Some(("ada".to_owned(), "float".to_owned())),
-            "floating is the person's own step of the desk's history"
-        );
+            page.invoke(
+                &Item::Place.resource(&place.to_string()),
+                "float",
+                &serde_json::Map::from_iter([
+                    ("corner".to_owned(), serde_json::json!("bottom-right")),
+                    ("dx".to_owned(), serde_json::json!(40)),
+                    ("dy".to_owned(), serde_json::json!(24)),
+                ]),
+            );
+            assert!(page.floating(place), "the window floats");
+            assert_eq!(
+                page.desk.last_step("ada"),
+                Some(("ada".to_owned(), "float".to_owned())),
+                "floating is the person's own step of the desk's history"
+            );
 
-        page.invoke(RECORD_RESOURCE, "undo", &serde_json::Map::new());
-        assert!(!page.floating(place), "the person's undo puts it back");
-    }
+            page.invoke(RECORD_RESOURCE, "undo", &serde_json::Map::new());
+            assert!(!page.floating(place), "the person's undo puts it back");
+        }
 
-    /// A move invoked through the door puts the page's window into the other row, as one step of
-    /// the desk's history.
-    #[test]
-    fn a_move_through_the_door_changes_the_pages_desk() {
-        let page = Page::new();
-        let place = page.window();
-        let before = page.row_of(place).expect("the window stands in a row");
-        let second = page.add_row("Second");
-        assert_ne!(before, second);
+        phase a_move_through_the_door_changes_the_pages_desk;
+        // A move invoked through the door puts the page's window into the other row, as one step of
+        // the desk's history.
+        {
+            let page = Page::new();
+            let place = page.window();
+            let before = page.row_of(place).expect("the window stands in a row");
+            let second = page.add_row("Second");
+            assert_ne!(before, second);
 
-        page.invoke(
-            &Item::Place.resource(&place.to_string()),
-            "move",
-            &serde_json::Map::from_iter([(
-                "row".to_owned(),
-                serde_json::json!(Item::Row.resource(&second.to_string())),
-            )]),
-        );
-        assert_eq!(
-            page.row_of(place),
-            Some(second),
-            "the window stands in the row it was moved to"
-        );
-        assert_eq!(
-            page.desk.last_step("ada"),
-            Some(("ada".to_owned(), "move".to_owned())),
-            "the move is the person's step of the desk's history"
-        );
-    }
+            page.invoke(
+                &Item::Place.resource(&place.to_string()),
+                "move",
+                &serde_json::Map::from_iter([(
+                    "row".to_owned(),
+                    serde_json::json!(Item::Row.resource(&second.to_string())),
+                )]),
+            );
+            assert_eq!(
+                page.row_of(place),
+                Some(second),
+                "the window stands in the row it was moved to"
+            );
+            assert_eq!(
+                page.desk.last_step("ada"),
+                Some(("ada".to_owned(), "move".to_owned())),
+                "the move is the person's step of the desk's history"
+            );
+        }
 
-    /// What an action did is what the page's desk document holds: a reload of it reads the arranged
-    /// desk, not the one before.
-    #[test]
-    fn the_action_is_what_the_pages_desk_document_holds() {
-        let page = Page::new();
-        let place = page.window();
-        page.invoke(
-            &Item::Place.resource(&place.to_string()),
-            "pin",
-            &serde_json::Map::from_iter([("pinned".to_owned(), serde_json::json!(true))]),
-        );
-        let reloaded = Desk::new(page.desk.document(), "ada", None);
-        let pinned = reloaded
-            .tree()
-            .and_then(|tree| {
-                tree.active_workspace().and_then(|workspace| {
-                    workspace
-                        .strips
-                        .iter()
-                        .flat_map(|row| &row.window_groups)
-                        .flat_map(|group| &group.tabs)
-                        .find(|tab| tab.id == place)
-                        .map(|tab| tab.pinned)
+        phase the_action_is_what_the_pages_desk_document_holds;
+        // What an action did is what the page's desk document holds: a reload of it reads the arranged
+        // desk, not the one before.
+        {
+            let page = Page::new();
+            let place = page.window();
+            page.invoke(
+                &Item::Place.resource(&place.to_string()),
+                "pin",
+                &serde_json::Map::from_iter([("pinned".to_owned(), serde_json::json!(true))]),
+            );
+            let reloaded = Desk::new(page.desk.document(), "ada", None);
+            let pinned = reloaded
+                .tree()
+                .and_then(|tree| {
+                    tree.active_workspace().and_then(|workspace| {
+                        workspace
+                            .strips
+                            .iter()
+                            .flat_map(|row| &row.window_groups)
+                            .flat_map(|group| &group.tabs)
+                            .find(|tab| tab.id == place)
+                            .map(|tab| tab.pinned)
+                    })
                 })
-            })
-            .unwrap_or(false);
-        assert!(pinned, "the desk document holds the place as pinned");
+                .unwrap_or(false);
+            assert!(pinned, "the desk document holds the place as pinned");
+        }
     }
 }

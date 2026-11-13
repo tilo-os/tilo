@@ -584,174 +584,182 @@ mod tests {
         window.image.as_ref().map(|image| image.data.data()[0])
     }
 
-    #[test]
-    fn pictures_from_a_keyframe_on_are_drawn_in_order() {
-        OPENED.with_borrow_mut(Vec::clear);
-        let mut window = Window::new();
-        // A reader that joins mid-group waits for the keyframe.
-        assert_eq!(
-            window.heard(&object(4, false, &[4]), counted),
-            Heard::Nothing
-        );
-        assert!(!window.pictured());
-        assert_eq!(window.heard(&object(5, true, &[5]), counted), Heard::Tile);
-        assert_eq!(window.size, (1280, 720));
-        assert_eq!(
-            window.heard(&object(6, false, &[6]), counted),
-            Heard::Picture
-        );
-        assert_eq!(first_byte(&window), Some(6));
-        // One decoder serves the whole stream.
-        assert_eq!(OPENED.with_borrow(Vec::len), 1);
+    tilo_test_env::scenario! {
+        fn a_windows_pictures_are_decoded_from_a_keyframe_on;
+
+        phase pictures_from_a_keyframe_on_are_drawn_in_order;
+        {
+            OPENED.with_borrow_mut(Vec::clear);
+            let mut window = Window::new();
+            // A reader that joins mid-group waits for the keyframe.
+            assert_eq!(
+                window.heard(&object(4, false, &[4]), counted),
+                Heard::Nothing
+            );
+            assert!(!window.pictured());
+            assert_eq!(window.heard(&object(5, true, &[5]), counted), Heard::Tile);
+            assert_eq!(window.size, (1280, 720));
+            assert_eq!(
+                window.heard(&object(6, false, &[6]), counted),
+                Heard::Picture
+            );
+            assert_eq!(first_byte(&window), Some(6));
+            // One decoder serves the whole stream.
+            assert_eq!(OPENED.with_borrow(Vec::len), 1);
+        }
+
+        phase a_lost_picture_waits_for_the_next_keyframe;
+        {
+            let mut window = Window::new();
+            window.heard(&object(1, true, &[1]), counted);
+            // 2 was lost: 3 cannot be decoded, nor anything after it until a keyframe.
+            assert_eq!(
+                window.heard(&object(3, false, &[3]), counted),
+                Heard::Nothing
+            );
+            assert_eq!(
+                window.heard(&object(4, false, &[4]), counted),
+                Heard::Nothing
+            );
+            assert_eq!(first_byte(&window), Some(1));
+            assert_eq!(
+                window.heard(&object(9, true, &[9]), counted),
+                Heard::Picture
+            );
+            assert_eq!(
+                window.heard(&object(10, false, &[10]), counted),
+                Heard::Picture
+            );
+            assert_eq!(first_byte(&window), Some(10));
+        }
+
+        phase a_broken_decoder_is_replaced_at_the_next_keyframe;
+        {
+            OPENED.with_borrow_mut(Vec::clear);
+            let mut window = Window::new();
+            window.heard(&object(1, true, &[1]), counted);
+            assert_eq!(
+                window.heard(&object(2, false, b"broken"), counted),
+                Heard::Nothing
+            );
+            assert_eq!(
+                window.heard(&object(3, false, &[3]), counted),
+                Heard::Nothing
+            );
+            assert_eq!(
+                window.heard(&object(4, true, &[4]), counted),
+                Heard::Picture
+            );
+            assert_eq!(OPENED.with_borrow(Vec::len), 2);
+        }
+
+        phase a_window_this_page_cannot_decode_says_so_and_bytes_that_are_no_picture_are_dropped;
+        {
+            let mut window = Window::new();
+            assert_eq!(window.heard(b"not a picture", counted), Heard::Nothing);
+            assert_eq!(
+                window.heard(&object(1, true, &[1]), unsupported),
+                Heard::Tile
+            );
+            assert_eq!(
+                window.failed.as_deref(),
+                Some("This browser cannot decode the window's pictures")
+            );
+            assert_eq!(
+                window.heard(&object(2, true, &[2]), counted),
+                Heard::Nothing
+            );
+        }
     }
 
-    #[test]
-    fn a_lost_picture_waits_for_the_next_keyframe() {
-        let mut window = Window::new();
-        window.heard(&object(1, true, &[1]), counted);
-        // 2 was lost: 3 cannot be decoded, nor anything after it until a keyframe.
-        assert_eq!(
-            window.heard(&object(3, false, &[3]), counted),
-            Heard::Nothing
-        );
-        assert_eq!(
-            window.heard(&object(4, false, &[4]), counted),
-            Heard::Nothing
-        );
-        assert_eq!(first_byte(&window), Some(1));
-        assert_eq!(
-            window.heard(&object(9, true, &[9]), counted),
-            Heard::Picture
-        );
-        assert_eq!(
-            window.heard(&object(10, false, &[10]), counted),
-            Heard::Picture
-        );
-        assert_eq!(first_byte(&window), Some(10));
-    }
+    tilo_test_env::scenario! {
+        fn a_pictured_window_is_a_tile_that_takes_the_persons_input;
 
-    #[test]
-    fn a_broken_decoder_is_replaced_at_the_next_keyframe() {
-        OPENED.with_borrow_mut(Vec::clear);
-        let mut window = Window::new();
-        window.heard(&object(1, true, &[1]), counted);
-        assert_eq!(
-            window.heard(&object(2, false, b"broken"), counted),
-            Heard::Nothing
-        );
-        assert_eq!(
-            window.heard(&object(3, false, &[3]), counted),
-            Heard::Nothing
-        );
-        assert_eq!(
-            window.heard(&object(4, true, &[4]), counted),
-            Heard::Picture
-        );
-        assert_eq!(OPENED.with_borrow(Vec::len), 2);
-    }
+        phase a_click_and_a_key_on_the_picture_go_to_the_host_in_the_windows_pixels;
+        {
+            use neighbour_wire::input::InputEvent;
+            use ui::synthetic_input::{cursor_moved, key_event, keyboard_input, mouse_input};
+            use ui::winit::event::MouseButton;
+            use ui::winit::keyboard::{Key, KeyCode, PhysicalKey};
+            const TAB: u64 = 0x1e7;
+            const HOST: [u8; 32] = [7; 32];
+            let window = Rc::new(RefCell::new(Window::new()));
+            window.borrow_mut().heard(&object(1, true, &[1]), counted);
+            window.borrow_mut().host = Some((WorkspaceId::from_u128(3), HOST));
+            WINDOWS.with_borrow_mut(|windows| windows.insert(TAB, Rc::clone(&window)));
+            let mut view = WindowView::new(window, "Calculator", "org.gnome.Calculator");
+            // The 1280 x 720 window drawn at half size in a 640 x 400 tile, 20 points above and below.
+            view.rect = Rect::new(0.0, 0.0, 640.0, 400.0);
+            let none = ModifiersState::empty();
+            assert!(view.input(&cursor_moved(320.0, 200.0), 1.0, none));
+            assert!(view.input(
+                &mouse_input(ElementState::Pressed, MouseButton::Left),
+                1.0,
+                none
+            ));
+            let mut key = key_event(Key::Character("X".into()), None, ElementState::Pressed);
+            key.physical_key = PhysicalKey::Code(KeyCode::KeyX);
+            assert!(view.input(&keyboard_input(key), 1.0, ModifiersState::SHIFT));
+            assert!(
+                !view.input(&cursor_moved(320.0, 5.0), 1.0, none),
+                "the band above the picture is not the window"
+            );
+            let sent: Vec<(WorkspaceId, [u8; 32], u64, InputEvent)> = take_input()
+                .into_iter()
+                .map(|(workspace, host, tab, event)| {
+                    let event = postcard::from_bytes(&event).expect("an input event");
+                    (workspace, host, tab, event)
+                })
+                .collect();
+            assert_eq!(
+                sent,
+                vec![
+                    (
+                        WorkspaceId::from_u128(3),
+                        HOST,
+                        TAB,
+                        InputEvent::PointerMotion { x: 640.0, y: 360.0 }
+                    ),
+                    (
+                        WorkspaceId::from_u128(3),
+                        HOST,
+                        TAB,
+                        InputEvent::PointerButton {
+                            button: 272,
+                            pressed: true
+                        }
+                    ),
+                    (
+                        WorkspaceId::from_u128(3),
+                        HOST,
+                        TAB,
+                        InputEvent::Key {
+                            keysym: 45,
+                            pressed: true,
+                            modifiers: 1
+                        }
+                    ),
+                ]
+            );
+            assert!(take_input().is_empty(), "each event goes once");
+        }
 
-    #[test]
-    fn a_window_this_page_cannot_decode_says_so_and_bytes_that_are_no_picture_are_dropped() {
-        let mut window = Window::new();
-        assert_eq!(window.heard(b"not a picture", counted), Heard::Nothing);
-        assert_eq!(
-            window.heard(&object(1, true, &[1]), unsupported),
-            Heard::Tile
-        );
-        assert_eq!(
-            window.failed.as_deref(),
-            Some("This browser cannot decode the window's pictures")
-        );
-        assert_eq!(
-            window.heard(&object(2, true, &[2]), counted),
-            Heard::Nothing
-        );
-    }
-
-    #[test]
-    fn a_click_and_a_key_on_the_picture_go_to_the_host_in_the_windows_pixels() {
-        use neighbour_wire::input::InputEvent;
-        use ui::synthetic_input::{cursor_moved, key_event, keyboard_input, mouse_input};
-        use ui::winit::event::MouseButton;
-        use ui::winit::keyboard::{Key, KeyCode, PhysicalKey};
-        const TAB: u64 = 0x1e7;
-        const HOST: [u8; 32] = [7; 32];
-        let window = Rc::new(RefCell::new(Window::new()));
-        window.borrow_mut().heard(&object(1, true, &[1]), counted);
-        window.borrow_mut().host = Some((WorkspaceId::from_u128(3), HOST));
-        WINDOWS.with_borrow_mut(|windows| windows.insert(TAB, Rc::clone(&window)));
-        let mut view = WindowView::new(window, "Calculator", "org.gnome.Calculator");
-        // The 1280 x 720 window drawn at half size in a 640 x 400 tile, 20 points above and below.
-        view.rect = Rect::new(0.0, 0.0, 640.0, 400.0);
-        let none = ModifiersState::empty();
-        assert!(view.input(&cursor_moved(320.0, 200.0), 1.0, none));
-        assert!(view.input(
-            &mouse_input(ElementState::Pressed, MouseButton::Left),
-            1.0,
-            none
-        ));
-        let mut key = key_event(Key::Character("X".into()), None, ElementState::Pressed);
-        key.physical_key = PhysicalKey::Code(KeyCode::KeyX);
-        assert!(view.input(&keyboard_input(key), 1.0, ModifiersState::SHIFT));
-        assert!(
-            !view.input(&cursor_moved(320.0, 5.0), 1.0, none),
-            "the band above the picture is not the window"
-        );
-        let sent: Vec<(WorkspaceId, [u8; 32], u64, InputEvent)> = take_input()
-            .into_iter()
-            .map(|(workspace, host, tab, event)| {
-                let event = postcard::from_bytes(&event).expect("an input event");
-                (workspace, host, tab, event)
-            })
-            .collect();
-        assert_eq!(
-            sent,
-            vec![
-                (
-                    WorkspaceId::from_u128(3),
-                    HOST,
-                    TAB,
-                    InputEvent::PointerMotion { x: 640.0, y: 360.0 }
-                ),
-                (
-                    WorkspaceId::from_u128(3),
-                    HOST,
-                    TAB,
-                    InputEvent::PointerButton {
-                        button: 272,
-                        pressed: true
-                    }
-                ),
-                (
-                    WorkspaceId::from_u128(3),
-                    HOST,
-                    TAB,
-                    InputEvent::Key {
-                        keysym: 45,
-                        pressed: true,
-                        modifiers: 1
-                    }
-                ),
-            ]
-        );
-        assert!(take_input().is_empty(), "each event goes once");
-    }
-
-    #[test]
-    fn the_tile_is_the_picture_named_by_the_windows_title() {
-        const TAB: u64 = 0x5eed;
-        assert!(
-            tile(TAB, "Calculator", "org.gnome.Calculator").is_none(),
-            "no picture yet"
-        );
-        let window = Rc::new(RefCell::new(Window::new()));
-        window.borrow_mut().heard(&object(1, true, &[1]), counted);
-        WINDOWS.with_borrow_mut(|windows| windows.insert(TAB, Rc::clone(&window)));
-        assert!(tile(TAB, "Calculator", "org.gnome.Calculator").is_some());
-        let mut view = WindowView::new(window, "Calculator", "org.gnome.Calculator");
-        view.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
-        let node = view.accessibility().expect("a node");
-        assert_eq!(node.role, Role::Image);
-        assert_eq!(node.name.as_deref(), Some("Calculator"));
+        phase the_tile_is_the_picture_named_by_the_windows_title;
+        {
+            const TAB: u64 = 0x5eed;
+            assert!(
+                tile(TAB, "Calculator", "org.gnome.Calculator").is_none(),
+                "no picture yet"
+            );
+            let window = Rc::new(RefCell::new(Window::new()));
+            window.borrow_mut().heard(&object(1, true, &[1]), counted);
+            WINDOWS.with_borrow_mut(|windows| windows.insert(TAB, Rc::clone(&window)));
+            assert!(tile(TAB, "Calculator", "org.gnome.Calculator").is_some());
+            let mut view = WindowView::new(window, "Calculator", "org.gnome.Calculator");
+            view.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
+            let node = view.accessibility().expect("a node");
+            assert_eq!(node.role, Role::Image);
+            assert_eq!(node.name.as_deref(), Some("Calculator"));
+        }
     }
 }

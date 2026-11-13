@@ -59,69 +59,77 @@ impl Loads {
 mod tests {
     use super::*;
 
-    /// The worst case the bound has to outlast: the largest split app of a
-    /// release desktop bundle (`typst_editor`, 24.6 MB of its own plus 11
-    /// shared chunks) over a slow mobile link. Measured from
-    /// `pkg/split.json`; kept here so shrinking the bound below what an app
-    /// can actually be fails a test rather than a person's window.
-    #[test]
-    fn the_bound_outlasts_the_largest_app_on_a_slow_link() {
-        const LARGEST_APP_BYTES: u64 = 38_250_409;
-        const SLOW_LINK_BYTES_PER_SECOND: u64 = 2_000_000 / 8;
-        let needed = LARGEST_APP_BYTES * 1000 / SLOW_LINK_BYTES_PER_SECOND;
-        assert!(
-            u64::from(LOAD_BOUND_MS) > needed,
-            "{LOAD_BOUND_MS} ms must outlast {needed} ms, the largest app's \
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_deferred_apps_fetch_is_bounded_and_startable_again;
+
+        phase the_bound_outlasts_the_largest_app_on_a_slow_link;
+        // The worst case the bound has to outlast: the largest split app of a
+        // release desktop bundle (`typst_editor`, 24.6 MB of its own plus 11
+        // shared chunks) over a slow mobile link. Measured from
+        // `pkg/split.json`; kept here so shrinking the bound below what an app
+        // can actually be fails a test rather than a person's window.
+        {
+            const LARGEST_APP_BYTES: u64 = 38_250_409;
+            const SLOW_LINK_BYTES_PER_SECOND: u64 = 2_000_000 / 8;
+            let needed = LARGEST_APP_BYTES * 1000 / SLOW_LINK_BYTES_PER_SECOND;
+            assert!(
+                u64::from(LOAD_BOUND_MS) > needed,
+                "{LOAD_BOUND_MS} ms must outlast {needed} ms, the largest app's \
              code over a 2 Mbps link"
-        );
-    }
+            );
+        }
 
-    #[test]
-    fn a_stalled_fetch_settles_at_its_bound_and_a_reopen_fetches_again() {
-        let mut loads = Loads::default();
-        let first = loads.start("so.tilo.themes").unwrap();
-        assert_eq!(
-            loads.start("so.tilo.themes"),
-            None,
-            "a second window waits for the fetch in flight"
-        );
-        assert!(
-            loads.settle("so.tilo.themes", first),
-            "the bound passing first says the code could not be loaded"
-        );
-        let second = loads.start("so.tilo.themes").unwrap();
-        assert_ne!(first, second, "opening again starts a fresh fetch");
-        assert!(
-            !loads.settle("so.tilo.themes", first),
-            "the stalled fetch ending late decides nothing for the new one"
-        );
-        assert!(loads.settle("so.tilo.themes", second));
-    }
+        phase a_stalled_fetch_settles_at_its_bound_and_a_reopen_fetches_again;
+        {
+            let mut loads = Loads::default();
+            let first = loads.start("so.tilo.themes").unwrap();
+            assert_eq!(
+                loads.start("so.tilo.themes"),
+                None,
+                "a second window waits for the fetch in flight"
+            );
+            assert!(
+                loads.settle("so.tilo.themes", first),
+                "the bound passing first says the code could not be loaded"
+            );
+            let second = loads.start("so.tilo.themes").unwrap();
+            assert_ne!(first, second, "opening again starts a fresh fetch");
+            assert!(
+                !loads.settle("so.tilo.themes", first),
+                "the stalled fetch ending late decides nothing for the new one"
+            );
+            assert!(loads.settle("so.tilo.themes", second));
+        }
 
-    #[test]
-    fn a_fetch_that_ends_in_time_is_not_reported_by_its_bound() {
-        let mut loads = Loads::default();
-        let attempt = loads.start("so.tilo.notes").unwrap();
-        assert!(loads.settle("so.tilo.notes", attempt), "the fetch ended");
-        assert!(
-            !loads.settle("so.tilo.notes", attempt),
-            "its bound passing later changes nothing"
-        );
-    }
+        phase a_fetch_that_ends_in_time_is_not_reported_by_its_bound;
+        {
+            let mut loads = Loads::default();
+            let attempt = loads.start("so.tilo.notes").unwrap();
+            assert!(loads.settle("so.tilo.notes", attempt), "the fetch ended");
+            assert!(
+                !loads.settle("so.tilo.notes", attempt),
+                "its bound passing later changes nothing"
+            );
+        }
 
-    /// The loader keeps no failure of its own: an app whose fetch ended is
-    /// startable again at once, for the window that was told it could not be
-    /// loaded and for any window opened after.
-    #[test]
-    fn an_app_whose_fetch_failed_is_still_fetchable() {
-        let mut loads = Loads::default();
-        let failed = loads.start("so.tilo.typst-editor").unwrap();
-        assert!(loads.settle("so.tilo.typst-editor", failed));
-        for _ in 0..3 {
-            let retry = loads
-                .start("so.tilo.typst-editor")
-                .expect("a window that gave up may fetch again");
-            assert!(loads.settle("so.tilo.typst-editor", retry));
+        phase an_app_whose_fetch_failed_is_still_fetchable;
+        // The loader keeps no failure of its own: an app whose fetch ended is
+        // startable again at once, for the window that was told it could not be
+        // loaded and for any window opened after.
+        {
+            let mut loads = Loads::default();
+            let failed = loads.start("so.tilo.typst-editor").unwrap();
+            assert!(loads.settle("so.tilo.typst-editor", failed));
+            for _ in 0..3 {
+                let retry = loads
+                    .start("so.tilo.typst-editor")
+                    .expect("a window that gave up may fetch again");
+                assert!(loads.settle("so.tilo.typst-editor", retry));
+            }
         }
     }
 }
