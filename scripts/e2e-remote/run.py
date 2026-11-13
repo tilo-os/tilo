@@ -579,7 +579,10 @@ ip -o addr show dev "$dev"
             print(f"  log: {exc.reason()}", flush=True)
 
     def branch(self, a: Box, b: Box, res: Result) -> None:
-        out = a.vm.vm_cmd("branch", a.name, b.name, "--stop", timeout=900)
+        # Only made here: `vm branch` would otherwise boot A and B once to have A take B in,
+        # before they are plugged into the network they meet on, and wait out its admission
+        # timeout. This step boots them on that network itself, and E03 reads what came of it.
+        out = a.vm.vm_cmd("branch", a.name, b.name, "--stop", "--no-admit", timeout=900)
         res.facts["branch"] = out[-2000:]
         for box in (a, b):
             self.plug_lan(box)
@@ -1031,7 +1034,8 @@ ip -o addr show dev "$dev"
 
     def third_device(self, a: Box, d: Box, res: Result) -> None:
         """D: A branched once more, so a third device of the person, on the boxes' network."""
-        out = a.vm.vm_cmd("branch", a.name, d.name, "--stop", timeout=900)
+        # Only made, as B was: D meets A on the boxes' network, where this step starts both.
+        out = a.vm.vm_cmd("branch", a.name, d.name, "--stop", "--no-admit", timeout=900)
         res.facts["branch"] = out[-1200:]
         self.running.discard("a")
         for box in (a, d):
