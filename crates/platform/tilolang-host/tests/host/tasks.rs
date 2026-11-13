@@ -799,3 +799,38 @@ fn today_reads_tasks_from_its_record_and_clears_it_at_its_door() {
         "Today's record holds no root of Tasks"
     );
 }
+
+/// An agent at the door of a Tasks no one has written in yet finds the list's actions by name:
+/// `new_task` on the list, which the directory publishes at the app's top level.
+#[test]
+fn a_fresh_tasks_offers_its_lists_actions_at_the_door_by_name() {
+    let (app, bundle) = shipped(&shipped_dir().join("tasks"));
+    let directory = Rc::new(RefCell::new(Directory::default()));
+    let (mut host, mut window, _sent, _inbox, _route) =
+        running_with("ada", &app, bundle, Rc::clone(&directory));
+    settle(&mut host, &mut window);
+    let found = page(
+        &mut host,
+        &mut window,
+        &directory,
+        ActionDirectoryQuery {
+            needle: "new task".into(),
+            ..query()
+        },
+    );
+    let list = found
+        .rows
+        .iter()
+        .find(|row| row.action.as_deref() == Some("new_task"))
+        .unwrap_or_else(|| panic!("new_task is offered by name: {:?}", found.rows));
+    assert!(
+        list.resource.starts_with(&format!("tl:{app}:root-")),
+        "{list:?}"
+    );
+    let top = page(&mut host, &mut window, &directory, query());
+    assert!(
+        top.rows.iter().any(|row| row.resource == list.resource),
+        "the list is at the app's top level: {:?}",
+        top.rows
+    );
+}

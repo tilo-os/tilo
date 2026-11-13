@@ -18,6 +18,7 @@ use tilolang_tilo::host::argument_json;
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{
     ActionTypes, Moved, PlanRequest, Planner, action_type, open_with_id, publish_record,
+    resource_id,
 };
 use tilolang_tilo::surface::package_surfaces;
 
@@ -211,6 +212,31 @@ fn an_action_is_published_by_its_name() {
         assert_eq!(declared.name, name);
         assert_ne!(declared.id, name, "stored by its id");
     }
+}
+
+/// A workspace no one has written in yet offers its root's actions, by name, to a caller that
+/// asks about the whole workspace (an agent at the door), as the window that shows it does.
+#[test]
+fn a_fresh_workspace_offers_its_roots_actions_by_name() {
+    let (replica, packages) = Replica::new("ada", AutoCommit::new(), &[(SHAPES, "")]);
+    let meta = &packages[0].meta;
+    let root = replica.host.root_of(&meta.app).unwrap();
+    let planner: Arc<dyn Planner> = Arc::new(NoPlanner);
+    let whole = tilolang_tilo::publish::Publications::new(&replica.host)
+        .everything(&replica.host, &planner);
+    let shelf = whole
+        .iter()
+        .find(|record| record.id.as_str() == resource_id(&meta.app, &root.id_string()))
+        .unwrap_or_else(|| {
+            let ids: Vec<&str> = whole.iter().map(|record| record.id.as_str()).collect();
+            panic!("the root is published: {ids:?}")
+        });
+    let offered: Vec<&str> = shelf
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    assert!(offered.contains(&"resize"), "{offered:?}");
 }
 
 #[test]
