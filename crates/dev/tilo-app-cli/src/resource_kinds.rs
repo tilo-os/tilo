@@ -535,11 +535,7 @@ mod tests {
         for dependency in super::local_dependencies(&metadata).unwrap() {
             expected.extend(super::declared_in(&dependency).unwrap());
         }
-        // `declared_by_app` is `declared_with_metadata` over the app's own `cargo metadata`,
-        // which `kinds_declared_in_local_normal_dependencies_belong_to_the_app` holds equal.
-        // This workspace's metadata takes seconds to resolve, so the one read above serves
-        // both sides.
-        let declared = super::declared_with_metadata(&app, &metadata).unwrap();
+        let declared = super::declared_by_app(&app).unwrap();
         assert_eq!(
             declared,
             expected.into_iter().collect::<Vec<_>>(),
@@ -758,17 +754,10 @@ mod tests {
             r#"#[resource(kind = "example.fixture")] impl Fixture {}"#,
         );
 
-        let app = root.join("app");
-        let declared = super::declared_by_app(&app).unwrap();
         assert_eq!(
-            declared,
+            super::declared_by_app(&root.join("app")).unwrap(),
             ["example.app", "example.notebook", "example.tag"],
             "a model crate's kinds, transitively, and not a dev-dependency's"
-        );
-        assert_eq!(
-            super::declared_with_metadata(&app, &crate::cargo_metadata(&app).unwrap()).unwrap(),
-            declared,
-            "declared_by_app reads the app's own cargo metadata and nothing else"
         );
     }
 }
