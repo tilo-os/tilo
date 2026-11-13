@@ -1308,58 +1308,6 @@ fn text(s: &str) -> Value {
     Value::Text(s.to_owned())
 }
 
-/// The fields of an arrangement workspace, as it is written into the shell's record.
-fn workspace_fields(w: &ArrangementWorkspaceReading) -> Vec<(&'static str, Value)> {
-    vec![
-        ("key", text(&w.key)),
-        ("name", text(&w.name)),
-        ("current", Value::Bool(w.current)),
-    ]
-}
-
-/// The fields of a row, as it is written into the shell's record.
-fn row_fields(r: &ArrangementRowReading) -> Vec<(&'static str, Value)> {
-    vec![
-        ("key", text(&r.key)),
-        ("workspace", text(&r.workspace)),
-        ("name", text(&r.name)),
-        ("shell", text(&r.shell)),
-    ]
-}
-
-/// The fields of a strip, as it is written into the shell's record.
-fn strip_fields(s: &ArrangementStripReading) -> Vec<(&'static str, Value)> {
-    vec![
-        ("key", text(&s.key)),
-        ("workspace", text(&s.workspace)),
-        ("row", text(&s.row)),
-        ("width", Value::Int(s.width)),
-        ("maximized", Value::Bool(s.maximized)),
-        ("active", text(&s.active)),
-        ("placed", Value::Bool(s.placed)),
-        ("canvas_x", Value::Int(s.canvas_x)),
-        ("canvas_y", Value::Int(s.canvas_y)),
-        ("canvas_width", Value::Int(s.canvas_width)),
-        ("canvas_height", Value::Int(s.canvas_height)),
-        ("shell", text(&s.shell)),
-    ]
-}
-
-/// The fields of a place, as it is written into the shell's record.
-fn place_fields(p: &ArrangementPlaceReading) -> Vec<(&'static str, Value)> {
-    vec![
-        ("key", text(&p.key)),
-        ("strip", text(&p.strip)),
-        ("shows", text(&p.shows)),
-        ("shown_as", text(&p.shown_as)),
-        ("record", text(&p.record)),
-        ("title", text(&p.title)),
-        ("name", text(&p.name)),
-        ("pinned", Value::Bool(p.pinned)),
-        ("shell", text(&p.shell)),
-    ]
-}
-
 impl SessionOrigin {
     /// Write the person's arrangement into the shell's `Arrangement` root, when the session
     /// published one the origin has not written yet. Whether anything was written.
@@ -1438,7 +1386,7 @@ impl SessionOrigin {
                 field,
                 item,
                 |w| w.key.clone(),
-                workspace_fields,
+                readings::workspace_fields,
             ));
         }
         if let (Some(field), Some(item)) = (ty.field("rows"), find("arrangement_row")) {
@@ -1449,7 +1397,7 @@ impl SessionOrigin {
                 field,
                 item,
                 |r| r.key.clone(),
-                row_fields,
+                readings::row_fields,
             ));
         }
         if let (Some(field), Some(item)) = (ty.field("strips"), find("arrangement_strip")) {
@@ -1460,7 +1408,7 @@ impl SessionOrigin {
                 field,
                 item,
                 |s| s.key.clone(),
-                strip_fields,
+                readings::strip_fields,
             ));
         }
         if let (Some(field), Some(item)) = (ty.field("places"), find("arrangement_place")) {
@@ -1471,7 +1419,7 @@ impl SessionOrigin {
                 field,
                 item,
                 |p| p.key.clone(),
-                place_fields,
+                readings::place_fields,
             ));
         }
         if let (Some(field), Some(item)) = (ty.field("queries"), find("arrangement_query")) {

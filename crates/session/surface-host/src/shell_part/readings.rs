@@ -11,7 +11,8 @@ use tilolang_tilo::origin::OriginCx;
 use tilolang_tilo::runtime::{ResourceRef, Value};
 
 use super::{
-    ArrangementQueryReading, ArrangementReading, ArrangementRefReading, Ask, SessionLink,
+    ArrangementPlaceReading, ArrangementQueryReading, ArrangementReading, ArrangementRefReading,
+    ArrangementRowReading, ArrangementStripReading, ArrangementWorkspaceReading, Ask, SessionLink,
     SessionOrigin,
 };
 
@@ -770,4 +771,61 @@ pub(super) fn ref_fields(r: &ArrangementRefReading) -> Vec<(&'static str, Value)
 /// The query a ref belongs to, from its key (`<query>/<number>`).
 fn query_of_ref_key(key: &str) -> String {
     key.split('/').next().unwrap_or_default().to_owned()
+}
+
+/// The field value a text is, in the shell's record.
+fn text(s: &str) -> Value {
+    Value::Text(s.to_owned())
+}
+
+/// The fields of an arrangement workspace, as it is written into the shell's record.
+pub(super) fn workspace_fields(w: &ArrangementWorkspaceReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", text(&w.key)),
+        ("name", text(&w.name)),
+        ("current", Value::Bool(w.current)),
+    ]
+}
+
+/// The fields of a row, as it is written into the shell's record.
+pub(super) fn row_fields(r: &ArrangementRowReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", text(&r.key)),
+        ("workspace", text(&r.workspace)),
+        ("name", text(&r.name)),
+        ("shell", text(&r.shell)),
+    ]
+}
+
+/// The fields of a strip, as it is written into the shell's record.
+pub(super) fn strip_fields(s: &ArrangementStripReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", text(&s.key)),
+        ("workspace", text(&s.workspace)),
+        ("row", text(&s.row)),
+        ("width", Value::Int(s.width)),
+        ("maximized", Value::Bool(s.maximized)),
+        ("active", text(&s.active)),
+        ("placed", Value::Bool(s.placed)),
+        ("canvas_x", Value::Int(s.canvas_x)),
+        ("canvas_y", Value::Int(s.canvas_y)),
+        ("canvas_width", Value::Int(s.canvas_width)),
+        ("canvas_height", Value::Int(s.canvas_height)),
+        ("shell", text(&s.shell)),
+    ]
+}
+
+/// The fields of a place, as it is written into the shell's record.
+pub(super) fn place_fields(p: &ArrangementPlaceReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", text(&p.key)),
+        ("strip", text(&p.strip)),
+        ("shows", text(&p.shows)),
+        ("shown_as", text(&p.shown_as)),
+        ("record", text(&p.record)),
+        ("title", text(&p.title)),
+        ("name", text(&p.name)),
+        ("pinned", Value::Bool(p.pinned)),
+        ("shell", text(&p.shell)),
+    ]
 }
