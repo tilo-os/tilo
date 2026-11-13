@@ -30,6 +30,7 @@ use crate::desk::Desk;
 
 mod readings;
 pub use readings::*;
+mod beside;
 mod queries;
 use queries::{query_resource, query_state_from_outcome, query_target, settle};
 
@@ -1051,11 +1052,7 @@ impl Arrangement {
             self.bring_forward(asked, held, Busy::default())?;
             return Ok(None);
         }
-        let anchor = if beside.trim().is_empty() {
-            None
-        } else {
-            self.place_of(beside)
-        };
+        let anchor = self.anchor_of(beside);
         let surface = self.surface_at()?;
         // Where the new place stands: the free space next to the anchor (`free_place_next_to`),
         // its trailing side first, then below it, then further down the two columns the anchor
@@ -1065,19 +1062,7 @@ impl Arrangement {
         // one anchor therefore runs right, then down, never over the anchor or over each other,
         // and never above or to the left of it (`shell.md` §3, "a place next to where it came
         // from").
-        let (width, height) = (clamp_side(DEFAULT_WIDTH), clamp_side(DEFAULT_HEIGHT));
-        let at = anchor.and_then(|place| {
-            self.handle.read(|tree| {
-                let (workspace, row, group, _) = locate(tree, place)?;
-                let held = tree.workspaces.get(workspace)?;
-                let id = held.strips.get(row)?.window_groups.get(group)?.id;
-                let subject = held.arrangement.place_of(id)?;
-                let free = held
-                    .arrangement
-                    .free_place_next_to(subject, width, height, None);
-                Some((i64::from(free.x), i64::from(free.y)))
-            })
-        });
+        let at = anchor.and_then(|place| self.point_beside(place, None));
         let (x, y) = at.map_or((0, 0), |at| at);
         let action = ArrangementAction::Place {
             workspace: surface.workspace,
@@ -2050,8 +2035,15 @@ fn place_actions(key: &str) -> Vec<ActionSpec> {
             "position",
             "Stand a place at a point on the canvas, as a drag that let it go there",
             vec![
-                required("x", ParamType::Integer, "Its canvas x"),
-                required("y", ParamType::Integer, "Its canvas y"),
+                optional("x", ParamType::Integer, "Its canvas x"),
+                optional("y", ParamType::Integer, "Its canvas y"),
+                // A place moved next to another stands in the free space beside it, as one opened
+                // there does: what "put my notes next to the inbox" asks.
+                optional(
+                    "beside",
+                    ParamType::Text,
+                    "Without x and y, it stands in the free space beside this: a place (`shell:place:<key>`) or the resource a place shows, by its address",
+                ),
             ],
             move |args| ArrangementAction::Position {
                 place: count_of(&positioned),
@@ -2384,6 +2376,14 @@ fn place_action() -> ActionSpec {
                 ParamType::Integer,
                 "A float's distance from that corner's top or bottom edge, in canvas pixels",
             ),
+            // Where it stands when it names no point: beside the place showing this resource, in
+            // the free space nearest it. An agent's step names the conversation it was asked in,
+            // so what it places stands next to that conversation (`shell.md` §8.1).
+            optional(
+                "beside",
+                ParamType::Text,
+                "Without x and y, it stands beside the place showing this resource, by its address; an agent's step stands it beside the conversation it was asked in",
+            ),
         ],
         |args| {
             let float = args.text("float").map(|corner| {
@@ -2643,15 +2643,23 @@ impl Door {
             ArrangementAction::decode(&encoded.type_id, &encoded.payload).ok_or_else(|| {
                 tilo_actions::DoorError::UnregisteredType("tilo.shell.arranging".to_owned())
             })?;
-        if address.action == "place" {
-            self.place_at_surface(arguments, &mut action)?;
-        }
         // An action that names no one is the person's own input: theirs to take back, and never
         // made to wait for themselves.
         let asked = match actor.filter(|actor| !actor.is_empty()) {
             Some(actor) => actor.to_owned(),
             None => self.person(),
         };
+        if address.action == "place" {
+            if self.placed_beside(&asked, arguments, &action)? {
+                return Ok(ui::host_operation::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                ));
+            }
+            self.place_at_surface(arguments, &mut action)?;
+        }
+        if let ArrangementAction::Position { place, x, y } = &mut action {
+            self.position_beside(arguments, *place, x, y)?;
+        }
         // The person's own change is what their gesture is making; only anyone else's waits for
         // them to finish.
         let busy = if asked == self.person() {

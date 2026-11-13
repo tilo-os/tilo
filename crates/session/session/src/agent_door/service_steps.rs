@@ -20,17 +20,18 @@ pub(super) fn arguments_of(
         .map_err(|error| invalid(format!("the step's arguments do not read: {error}")))
 }
 
-/// `arguments` of the system's `open`, with the place the asking turn is in filled in when it names
-/// none: a place it opens stands beside the conversation of the turn
-/// (`docs/designs/app-language/one-app-model.md` §3). Every other action's arguments stand as they
-/// were.
+/// `arguments` of the system's `open` and `place`, with the place the asking turn is in filled in
+/// when they name none: a place they make stands beside the conversation of the turn
+/// (`docs/designs/app-language/one-app-model.md` §3) — a `place` only when it names no point of its
+/// own, which the arrangement reads. Every other action's arguments stand as they were.
 pub(super) fn with_turn_beside(
     address: &tilo_actions::ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
     beside: &str,
 ) -> serde_json::Map<String, serde_json::Value> {
-    let system_open = address.resource == crate::arrangement::RESOURCE && address.action == "open";
-    if !system_open || beside.is_empty() || arguments.contains_key("beside") {
+    let anchored = address.resource == crate::arrangement::RESOURCE
+        && matches!(address.action.as_str(), "open" | "place");
+    if !anchored || beside.is_empty() || arguments.contains_key("beside") {
         return arguments.clone();
     }
     let mut arguments = arguments.clone();

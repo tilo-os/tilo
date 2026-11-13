@@ -28,13 +28,27 @@ pub(in crate::session) struct ProgramWorld {
     types: BTreeMap<String, String>,
     /// Every host's declarations, merged: what the first message's app lines are read from.
     catalogue: Vec<Value>,
+    /// The apps whose records the session serves, by alias, with their root's type, when the
+    /// session's door runs programs: what a program names without a window of the app open.
+    served: Vec<(String, String)>,
 }
 
 impl ProgramWorld {
-    /// The session's first-message section on the apps, empty when no tilolang app is open.
+    /// The session's first-message section on the apps, empty when no program can run.
     pub(in crate::session) fn apps_section(&self) -> String {
         if self.mounted.is_empty() {
-            return String::new();
+            if self.served.is_empty() {
+                return String::new();
+            }
+            let mut lines = String::new();
+            for (alias, root) in &self.served {
+                lines.push_str(&format!("- `{alias}`: its record is a `{alias}.{root}`\n"));
+            }
+            return format!(
+                "Apps your `{}` programs can use, open or not (`find({{alias}}.{{Type}})` finds \
+                 their records; a program answers with references you can place):\n\n{lines}",
+                programs::TILO
+            );
         }
         let lines = programs::app_lines(&self.mounted, &Value::Array(self.catalogue.clone()));
         format!(
@@ -43,6 +57,43 @@ impl ProgramWorld {
             programs::TILO
         )
     }
+}
+
+/// The apps whose records the session serves (`tl:<app>:<root>`, of kind `tl.<app>.<Type>`), by
+/// alias with their root's type, when the session's door runs programs: none without the door.
+fn served_apps(catalogue: &crate::surface::Catalogue) -> Vec<(String, String)> {
+    let door = catalogue.offers.iter().any(|offer| {
+        offer.descriptor.address.resource == task_programs::RESOURCE
+            && offer.descriptor.address.action == task_programs::RUN
+    });
+    if !door {
+        return Vec::new();
+    }
+    let mut served: Vec<(String, String)> = Vec::new();
+    for offer in &catalogue.offers {
+        let resource = offer.descriptor.address.resource.as_str();
+        let Some((app, root)) = resource
+            .strip_prefix("tl:")
+            .and_then(|rest| rest.split_once(':'))
+        else {
+            continue;
+        };
+        if root.contains('/') {
+            continue;
+        }
+        let Some(ty) = offer
+            .descriptor
+            .resource_kind
+            .strip_prefix(&format!("tl.{app}."))
+        else {
+            continue;
+        };
+        let alias = programs::alias_of(app).to_owned();
+        if !served.iter().any(|(seen, _)| *seen == alias) {
+            served.push((alias, ty.to_owned()));
+        }
+    }
+    served
 }
 
 impl Session {
@@ -83,6 +134,7 @@ impl Session {
             }
         }
         state.programs.mounted = mounted;
+        state.programs.served = served_apps(&catalogue);
         Ok(())
     }
 
@@ -132,14 +184,10 @@ impl Session {
             Ok(program) => program,
             Err(error) => return Ok(Handled::Result(error)),
         };
+        // The session's door runs the program in the task's own tilolang host, over every app
+        // the session runs: no window of an app need be open for a program to read or change its
+        // records. What the open apps' hosts declare only describes them better.
         self.program_world(run, state)?;
-        if state.programs.mounted.is_empty() {
-            return Ok(Handled::Result(
-                "No tilolang app is open. Open the app you need with its open operation (see \
-                 list_applications), then run the program."
-                    .into(),
-            ));
-        }
         let catalogue = self.task_catalogue();
         let Some(door) = catalogue.offers.iter().find(|offer| {
             offer.descriptor.address.resource == task_programs::RESOURCE

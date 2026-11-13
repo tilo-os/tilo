@@ -978,7 +978,9 @@ impl World {
                 }}}),
                 false,
             ),
-            "record-work" => (serde_json::json!({"succeeded": {}}), false),
+            "record-work" | "place" | "position" | "close" | "activate" | "show-style" => {
+                (serde_json::json!({"succeeded": {}}), false)
+            }
             "type-text" => {
                 if self.blocks.is_empty() {
                     self.blocks.push(("p1".into(), String::new()));

@@ -4637,11 +4637,13 @@ impl AppBrokerState {
             .into_iter()
             .filter(|app| !live_apps.contains(&app.package_id))
             .collect::<Vec<_>>();
-        // A step marked for turns (the session's own actions, a task's programs) is a turn's
-        // step: a task agent's through its issue's run, offered to the agent working a turn; a
-        // session step's listed to every caller the grants allow, as an app action is, and
+        // A step marked for tasks (a task's programs) is an agent's step in one of its runs: a
+        // task agent's through its issue's run, and the workspace's kept agent's through the run
+        // of each turn it answers — whose catalogue is its connection's, not one turn's. Listed
+        // to every agent, as a run's steps; taken only inside a run, which admits it. A session
+        // step (for turns) is listed to every caller the grants allow, as an app action is, and
         // admitted by the turn when an agent takes it.
-        let by_turn = actor.turn().is_some() || actor.issue().is_some();
+        let by_turn = actor.is_agent() || actor.turn().is_some() || actor.issue().is_some();
         let task_steps = self
             .services
             .host_steps
