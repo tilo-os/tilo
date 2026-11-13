@@ -541,66 +541,108 @@ fn install(machine: &Machine) -> (i32, Value) {
     (code, machine.status())
 }
 
-#[test]
-fn install_assembles_signed_artifacts_and_remove_restores_everything() {
-    let Some(fixture) = fixture() else { return };
-    let machine = machine(fixture);
-    publish(&machine, fixture, &fixture.key, |_, _, _| {});
-    let (code, status) = install(&machine);
-    assert_eq!(code, 0, "{status}");
-    assert_eq!(
-        (status["state"].clone(), status["parts"].clone()),
-        (
-            json!("installed"),
-            json!({"tilo-codecs": "enabled", "tilo-codecs-mesa": "enabled"})
-        )
-    );
-    let codecs = machine.codecs();
-    assert_eq!(
-        fs::read_to_string(codecs.join("usr/lib64/gstreamer-1.0/libgstopenh264.so")).unwrap(),
-        "plugin"
-    );
-    assert!(
-        !codecs.join("etc").exists(),
-        "an extension carries only /usr"
-    );
-    assert_eq!(
-        fs::read_to_string(codecs.join("usr/lib64/libavcodec.so.61")).unwrap(),
-        "freeworld libavcodec"
-    );
-    let mesa = machine.part("tilo-codecs-mesa");
-    assert_eq!(
-        fs::read_to_string(mesa.join("usr/lib64/dri-freeworld/radeonsi_drv_video.so")).unwrap(),
-        "freeworld gallium"
-    );
-    if on_path("systemd-sysext") {
-        let listing = String::from_utf8(run(
-            "systemd-sysext",
-            &[&format!("--root={}", machine.root.display()), "list"],
-        ))
-        .unwrap();
-        for name in ["tilo-codecs", "tilo-codecs-mesa"] {
-            assert!(
-                listing
-                    .lines()
-                    .any(|l| l.split_whitespace().take(2).eq([name, "directory"])),
-                "{listing}"
-            );
+tilo_test_env::scenario! {
+    fn real_packages_install_only_under_the_trusted_keys_signature;
+
+    phase install_assembles_signed_artifacts_and_remove_restores_everything;
+    {
+        let Some(fixture) = fixture() else { return };
+        let machine = machine(fixture);
+        publish(&machine, fixture, &fixture.key, |_, _, _| {});
+        let (code, status) = install(&machine);
+        assert_eq!(code, 0, "{status}");
+        assert_eq!(
+            (status["state"].clone(), status["parts"].clone()),
+            (
+                json!("installed"),
+                json!({"tilo-codecs": "enabled", "tilo-codecs-mesa": "enabled"})
+            )
+        );
+        let codecs = machine.codecs();
+        assert_eq!(
+            fs::read_to_string(codecs.join("usr/lib64/gstreamer-1.0/libgstopenh264.so")).unwrap(),
+            "plugin"
+        );
+        assert!(
+            !codecs.join("etc").exists(),
+            "an extension carries only /usr"
+        );
+        assert_eq!(
+            fs::read_to_string(codecs.join("usr/lib64/libavcodec.so.61")).unwrap(),
+            "freeworld libavcodec"
+        );
+        let mesa = machine.part("tilo-codecs-mesa");
+        assert_eq!(
+            fs::read_to_string(mesa.join("usr/lib64/dri-freeworld/radeonsi_drv_video.so")).unwrap(),
+            "freeworld gallium"
+        );
+        if on_path("systemd-sysext") {
+            let listing = String::from_utf8(run(
+                "systemd-sysext",
+                &[&format!("--root={}", machine.root.display()), "list"],
+            ))
+            .unwrap();
+            for name in ["tilo-codecs", "tilo-codecs-mesa"] {
+                assert!(
+                    listing
+                        .lines()
+                        .any(|l| l.split_whitespace().take(2).eq([name, "directory"])),
+                    "{listing}"
+                );
+            }
         }
+        fs::write(codecs.join("usr/lib64/libavcodec.so.61"), "hijacked").unwrap();
+        assert_eq!(machine.run("activate"), 0);
+        assert_eq!(
+            fs::read_to_string(codecs.join("usr/lib64/libavcodec.so.61")).unwrap(),
+            "freeworld libavcodec"
+        );
+        assert_eq!(machine.run("remove"), 0);
+        assert_eq!(machine.status()["state"], "not-installed");
+        assert_eq!(
+            fs::read_dir(machine.layout.extensions()).unwrap().count(),
+            0
+        );
+        assert!(!machine.layout.objects("media-codecs").exists());
     }
-    fs::write(codecs.join("usr/lib64/libavcodec.so.61"), "hijacked").unwrap();
-    assert_eq!(machine.run("activate"), 0);
-    assert_eq!(
-        fs::read_to_string(codecs.join("usr/lib64/libavcodec.so.61")).unwrap(),
-        "freeworld libavcodec"
-    );
-    assert_eq!(machine.run("remove"), 0);
-    assert_eq!(machine.status()["state"], "not-installed");
-    assert_eq!(
-        fs::read_dir(machine.layout.extensions()).unwrap().count(),
-        0
-    );
-    assert!(!machine.layout.objects("media-codecs").exists());
+
+    phase a_manifest_signed_by_another_key_is_refused;
+    {
+        refused("signature is not valid", |f| &f.rogue, |_, _, _| {});
+    }
+
+    phase a_manifest_changed_after_signing_is_refused;
+    {
+        refused(
+            "signature is not valid",
+            |f| &f.key,
+            |machine, url, _| {
+                let mut web = machine.host.web.borrow_mut();
+                let text = String::from_utf8(web[url].clone()).unwrap();
+                web.insert(
+                    url.to_owned(),
+                    text.replacen(r#""license": "MIT""#, r#""license": "MIU""#, 1)
+                        .into_bytes(),
+                );
+            },
+        );
+    }
+
+    phase a_replaced_artifact_is_refused;
+    {
+        refused(
+            "does not match the signed manifest",
+            |f| &f.key,
+            |machine, _, manifest| {
+                let url = manifest["parts"][0]["artifacts"][0]["urls"][0]
+                    .as_str()
+                    .unwrap();
+                let mut web = machine.host.web.borrow_mut();
+                let last = web[url].len() - 1;
+                web.get_mut(url).unwrap()[last] ^= 1;
+            },
+        );
+    }
 }
 
 fn refused(
@@ -621,57 +663,33 @@ fn refused(
     assert!(!machine.codecs().exists());
 }
 
-#[test]
-fn a_manifest_signed_by_another_key_is_refused() {
-    refused("signature is not valid", |f| &f.rogue, |_, _, _| {});
-}
+tilo_test_env::scenario! {
+    fn an_image_with_the_release_root_installs_only_under_its_root_and_epoch;
 
-#[test]
-fn a_manifest_changed_after_signing_is_refused() {
-    refused(
-        "signature is not valid",
-        |f| &f.key,
-        |machine, url, _| {
-            let mut web = machine.host.web.borrow_mut();
-            let text = String::from_utf8(web[url].clone()).unwrap();
-            web.insert(
-                url.to_owned(),
-                text.replacen(r#""license": "MIT""#, r#""license": "MIU""#, 1)
-                    .into_bytes(),
-            );
-        },
-    );
-}
+    phase an_image_with_the_release_root_installs_a_certified_manifest;
+    {
+        let Some(fixture) = fixture() else { return };
+        let machine = machine(fixture);
+        certify(&machine, fixture, &fixture.root, &trust(1));
+        publish(&machine, fixture, &fixture.key, |_, _, _| {});
+        publish_bundle(&machine, fixture);
+        let (code, status) = install(&machine);
+        assert_eq!(code, 0, "{status}");
+        assert_eq!(status["state"], "installed");
+        fs::remove_dir_all(machine.codecs()).unwrap();
+        assert_eq!(machine.run("activate"), 0);
+        assert!(machine.codecs().is_dir());
+    }
 
-#[test]
-fn a_replaced_artifact_is_refused() {
-    refused(
-        "does not match the signed manifest",
-        |f| &f.key,
-        |machine, _, manifest| {
-            let url = manifest["parts"][0]["artifacts"][0]["urls"][0]
-                .as_str()
-                .unwrap();
-            let mut web = machine.host.web.borrow_mut();
-            let last = web[url].len() - 1;
-            web.get_mut(url).unwrap()[last] ^= 1;
-        },
-    );
-}
+    phase a_certificate_from_another_root_is_refused;
+    {
+        refused_certified(|f| &f.other_root, 1);
+    }
 
-#[test]
-fn an_image_with_the_release_root_installs_a_certified_manifest() {
-    let Some(fixture) = fixture() else { return };
-    let machine = machine(fixture);
-    certify(&machine, fixture, &fixture.root, &trust(1));
-    publish(&machine, fixture, &fixture.key, |_, _, _| {});
-    publish_bundle(&machine, fixture);
-    let (code, status) = install(&machine);
-    assert_eq!(code, 0, "{status}");
-    assert_eq!(status["state"], "installed");
-    fs::remove_dir_all(machine.codecs()).unwrap();
-    assert_eq!(machine.run("activate"), 0);
-    assert!(machine.codecs().is_dir());
+    phase a_certificate_of_a_revoked_epoch_is_refused;
+    {
+        refused_certified(|f| &f.root, 2);
+    }
 }
 
 fn refused_certified(root: impl Fn(&Fixture) -> &Path, epoch: u32) {
@@ -690,14 +708,4 @@ fn refused_certified(root: impl Fn(&Fixture) -> &Path, epoch: u32) {
         "{status}"
     );
     assert!(!machine.codecs().exists());
-}
-
-#[test]
-fn a_certificate_from_another_root_is_refused() {
-    refused_certified(|f| &f.other_root, 1);
-}
-
-#[test]
-fn a_certificate_of_a_revoked_epoch_is_refused() {
-    refused_certified(|f| &f.root, 2);
 }

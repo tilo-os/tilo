@@ -61,168 +61,221 @@ fn components() -> Components {
     Components::parse(MANIFEST).unwrap()
 }
 
-#[test]
-fn bootc_reports_both_layouts() {
-    let digest = format!("sha256:{}", "a".repeat(64));
-    let verity = "b".repeat(128);
-    let json = format!(
-        r#"{{"status":{{
+tilo_test_env::scenario! {
+    fn an_update_is_planned_from_bootc_status_the_manifest_and_the_tree_diff;
+
+    phase bootc_reports_both_layouts;
+    {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let verity = "b".repeat(128);
+        let json = format!(
+            r#"{{"status":{{
             "booted":{{"image":{{"imageDigest":"{digest}"}},"composefs":{{"verity":"sha512:{verity}"}}}},
             "staged":{{"image":{{"imageDigest":"{digest}"}},"ostree":{{"checksum":"{c}","deploySerial":2,"stateroot":"default"}}}},
             "rollback":null}}}}"#,
-        c = "c".repeat(64)
-    );
-    let (booted, staged) = deployments(&json).unwrap();
-    assert_eq!(
-        booted,
-        Some(Deployment::Composefs {
-            image: digest.clone(),
-            verity: verity.clone()
-        })
-    );
-    assert_eq!(
-        staged,
-        Some(Deployment::Ostree {
-            image: digest.clone(),
-            stateroot: "default".into(),
-            checksum: "c".repeat(64),
-            serial: 2,
-        })
-    );
-    let none = format!(
-        r#"{{"status":{{"booted":{{"image":{{"imageDigest":"{digest}"}},"composefs":{{"verity":"{verity}"}}}},"staged":null}}}}"#
-    );
-    assert_eq!(deployments(&none).unwrap().1, None);
-    // An identity that could name another path is refused.
-    let escape = format!(
-        r#"{{"status":{{"staged":{{"image":{{"imageDigest":"{digest}"}},"composefs":{{"verity":"../../etc"}}}}}}}}"#
-    );
-    assert!(deployments(&escape).is_err());
-    assert!(deployments("not json").is_err());
-}
+            c = "c".repeat(64)
+        );
+        let (booted, staged) = deployments(&json).unwrap();
+        assert_eq!(
+            booted,
+            Some(Deployment::Composefs {
+                image: digest.clone(),
+                verity: verity.clone()
+            })
+        );
+        assert_eq!(
+            staged,
+            Some(Deployment::Ostree {
+                image: digest.clone(),
+                stateroot: "default".into(),
+                checksum: "c".repeat(64),
+                serial: 2,
+            })
+        );
+        let none = format!(
+            r#"{{"status":{{"booted":{{"image":{{"imageDigest":"{digest}"}},"composefs":{{"verity":"{verity}"}}}},"staged":null}}}}"#
+        );
+        assert_eq!(deployments(&none).unwrap().1, None);
+        // An identity that could name another path is refused.
+        let escape = format!(
+            r#"{{"status":{{"staged":{{"image":{{"imageDigest":"{digest}"}},"composefs":{{"verity":"../../etc"}}}}}}}}"#
+        );
+        assert!(deployments(&escape).is_err());
+        assert!(deployments("not json").is_err());
+    }
 
-#[test]
-fn the_manifest_says_who_installs_a_path() {
-    let components = components();
-    assert_eq!(components.owner("/usr/bin/shell").unwrap().name, "shell");
-    assert_eq!(
-        components
-            .owner("/usr/share/fonts/tilo/a.ttf")
-            .unwrap()
-            .name,
-        "shell"
-    );
-    assert_eq!(
-        components
-            .owner("/usr/lib/tilo-runtime/2026.10/lib.so")
-            .unwrap()
-            .name,
-        "apps+runtime"
-    );
-    assert!(components.owner("/usr/bin/shellfish").is_none());
-    assert!(Components::parse("").is_err());
-}
+    phase the_manifest_says_who_installs_a_path;
+    {
+        let components = components();
+        assert_eq!(components.owner("/usr/bin/shell").unwrap().name, "shell");
+        assert_eq!(
+            components
+                .owner("/usr/share/fonts/tilo/a.ttf")
+                .unwrap()
+                .name,
+            "shell"
+        );
+        assert_eq!(
+            components
+                .owner("/usr/lib/tilo-runtime/2026.10/lib.so")
+                .unwrap()
+                .name,
+            "apps+runtime"
+        );
+        assert!(components.owner("/usr/bin/shellfish").is_none());
+        assert!(Components::parse("").is_err());
+    }
 
-#[test]
-fn only_the_kernel_bootloader_and_initramfs_need_a_restart_of_the_machine() {
-    let components = components();
-    let class = |path: &str| classify(path, components.owner(path));
-    assert_eq!(class("/usr/lib/modules/6.17.1/vmlinuz"), Class::Boot);
-    assert_eq!(class("/usr/lib/modules/6.17.1/initramfs.img"), Class::Boot);
-    assert_eq!(
-        class("/usr/lib/systemd/boot/efi/systemd-bootx64.efi"),
-        Class::Boot
-    );
-    assert_eq!(class("/usr/lib/bootupd/updates/EFI/x.efi"), Class::Boot);
-    assert_eq!(class("/usr/etc/hosts"), Class::NextBoot);
-    assert_eq!(class("/usr/lib/sysimage/rpm/rpmdb.sqlite"), Class::NextBoot);
-    assert_eq!(class("/usr/lib/os-release"), Class::NextBoot);
-    assert_eq!(class("/usr/bin/fs"), Class::System);
-    assert_eq!(class("/usr/bin/shell"), Class::Session);
-    assert_eq!(
-        class("/usr/share/tilo/system-interfaces.toml"),
-        Class::Session
-    );
-    assert_eq!(class("/usr/lib/tilo-runtime/2026.10/x"), Class::Apps);
-    assert_eq!(class("/usr/lib64/libc.so.6"), Class::Base);
-}
+    phase only_the_kernel_bootloader_and_initramfs_need_a_restart_of_the_machine;
+    {
+        let components = components();
+        let class = |path: &str| classify(path, components.owner(path));
+        assert_eq!(class("/usr/lib/modules/6.17.1/vmlinuz"), Class::Boot);
+        assert_eq!(class("/usr/lib/modules/6.17.1/initramfs.img"), Class::Boot);
+        assert_eq!(
+            class("/usr/lib/systemd/boot/efi/systemd-bootx64.efi"),
+            Class::Boot
+        );
+        assert_eq!(class("/usr/lib/bootupd/updates/EFI/x.efi"), Class::Boot);
+        assert_eq!(class("/usr/etc/hosts"), Class::NextBoot);
+        assert_eq!(class("/usr/lib/sysimage/rpm/rpmdb.sqlite"), Class::NextBoot);
+        assert_eq!(class("/usr/lib/os-release"), Class::NextBoot);
+        assert_eq!(class("/usr/bin/fs"), Class::System);
+        assert_eq!(class("/usr/bin/shell"), Class::Session);
+        assert_eq!(
+            class("/usr/share/tilo/system-interfaces.toml"),
+            Class::Session
+        );
+        assert_eq!(class("/usr/lib/tilo-runtime/2026.10/x"), Class::Apps);
+        assert_eq!(class("/usr/lib64/libc.so.6"), Class::Base);
+    }
 
-#[test]
-fn a_daily_update_applies_by_component_scope_without_a_reboot() {
-    let components = components();
-    let plan = Plan::new(
-        vec![
-            written("/usr/bin/fs"),
-            written("/usr/bin/shell"),
-            written("/usr/libexec/tilo-app-host"),
-            written("/usr/lib/tilo-runtime/2026.10/lib.so"),
-            written("/usr/lib64/libfoo.so"),
-        ],
-        &components,
-    );
-    assert!(!plan.reboot, "no kernel, bootloader or initramfs changed");
-    assert!(plan.desktop_pending(), "the compositor changed");
-    let in_system: Vec<&str> = plan
-        .changes
-        .iter()
-        .filter(|(_, class)| plan.in_layer(*class, Phase::System))
-        .map(|(change, _)| change.path.as_str())
-        .collect();
-    assert_eq!(
-        in_system,
-        [
-            "/usr/bin/fs",
-            "/usr/lib/tilo-runtime/2026.10/lib.so",
-            "/usr/lib64/libfoo.so"
-        ],
-        "system services, apps, the runtime and the base apply at once"
-    );
-    assert!(
-        plan.changes
+    phase a_daily_update_applies_by_component_scope_without_a_reboot;
+    {
+        let components = components();
+        let plan = Plan::new(
+            vec![
+                written("/usr/bin/fs"),
+                written("/usr/bin/shell"),
+                written("/usr/libexec/tilo-app-host"),
+                written("/usr/lib/tilo-runtime/2026.10/lib.so"),
+                written("/usr/lib64/libfoo.so"),
+            ],
+            &components,
+        );
+        assert!(!plan.reboot, "no kernel, bootloader or initramfs changed");
+        assert!(plan.desktop_pending(), "the compositor changed");
+        let in_system: Vec<&str> = plan
+            .changes
             .iter()
-            .all(|(_, class)| plan.in_layer(*class, Phase::Session)),
-        "the desktop restart takes the rest"
-    );
-    let system = plan.restarts(Phase::System, false);
-    assert_eq!(system.units, ["fs.service"]);
-    assert_eq!(system.user_units, ["tilo-fs-recipient.service"]);
-    let session = plan.restarts(Phase::Session, true);
-    assert!(
-        session.units.is_empty(),
-        "already restarted by the system phase"
-    );
-    assert_eq!(session.user_units, ["tilo-app-host.service"]);
+            .filter(|(_, class)| plan.in_layer(*class, Phase::System))
+            .map(|(change, _)| change.path.as_str())
+            .collect();
+        assert_eq!(
+            in_system,
+            [
+                "/usr/bin/fs",
+                "/usr/lib/tilo-runtime/2026.10/lib.so",
+                "/usr/lib64/libfoo.so"
+            ],
+            "system services, apps, the runtime and the base apply at once"
+        );
+        assert!(
+            plan.changes
+                .iter()
+                .all(|(_, class)| plan.in_layer(*class, Phase::Session)),
+            "the desktop restart takes the rest"
+        );
+        let system = plan.restarts(Phase::System, false);
+        assert_eq!(system.units, ["fs.service"]);
+        assert_eq!(system.user_units, ["tilo-fs-recipient.service"]);
+        let session = plan.restarts(Phase::Session, true);
+        assert!(
+            session.units.is_empty(),
+            "already restarted by the system phase"
+        );
+        assert_eq!(session.user_units, ["tilo-app-host.service"]);
 
-    let interfaces = Plan::new(
-        vec![
-            written("/usr/share/tilo/system-interfaces.toml"),
-            written("/usr/lib/tilo-runtime/2026.11/lib.so"),
-        ],
-        &components,
-    );
-    assert!(interfaces.interfaces_changed);
-    assert!(!interfaces.in_layer(Class::Apps, Phase::System));
-    assert!(interfaces.in_layer(Class::Apps, Phase::Session));
-    assert!(interfaces.desktop_pending());
+        let interfaces = Plan::new(
+            vec![
+                written("/usr/share/tilo/system-interfaces.toml"),
+                written("/usr/lib/tilo-runtime/2026.11/lib.so"),
+            ],
+            &components,
+        );
+        assert!(interfaces.interfaces_changed);
+        assert!(!interfaces.in_layer(Class::Apps, Phase::System));
+        assert!(interfaces.in_layer(Class::Apps, Phase::Session));
+        assert!(interfaces.desktop_pending());
 
-    // An apps-only update restarts nothing.
-    let apps = Plan::new(
-        vec![written("/usr/lib/tilo-runtime/2026.10/x")],
-        &components,
-    );
-    assert!(!apps.desktop_pending());
-    assert_eq!(apps.restarts(Phase::System, false), Restarts::default());
+        // An apps-only update restarts nothing.
+        let apps = Plan::new(
+            vec![written("/usr/lib/tilo-runtime/2026.10/x")],
+            &components,
+        );
+        assert!(!apps.desktop_pending());
+        assert_eq!(apps.restarts(Phase::System, false), Restarts::default());
 
-    let kernel = Plan::new(
-        vec![
-            written("/usr/lib/modules/6.18/vmlinuz"),
-            written("/usr/bin/fs"),
-        ],
-        &components,
-    );
-    assert!(kernel.reboot);
-    assert!(!kernel.in_layer(Class::Boot, Phase::Session));
-    assert!(!kernel.desktop_pending());
+        let kernel = Plan::new(
+            vec![
+                written("/usr/lib/modules/6.18/vmlinuz"),
+                written("/usr/bin/fs"),
+            ],
+            &components,
+        );
+        assert!(kernel.reboot);
+        assert!(!kernel.in_layer(Class::Boot, Phase::Session));
+        assert!(!kernel.desktop_pending());
+    }
+
+    phase the_trees_differ_by_bytes_mode_links_and_removals;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (base, new) = (dir.path().join("base"), dir.path().join("new"));
+        tree(
+            &base,
+            &[
+                ("usr/bin/same", "x"),
+                ("usr/bin/changed", "old"),
+                ("usr/bin/mode", "m"),
+                ("usr/bin/gone", "g"),
+                ("usr/share/old/a", "a"),
+                ("usr/share/old/b", "b"),
+            ],
+        );
+        tree(
+            &new,
+            &[
+                ("usr/bin/same", "x"),
+                ("usr/bin/changed", "new"),
+                ("usr/bin/mode", "m"),
+                ("usr/bin/added", "n"),
+                ("usr/share/fresh/c", "c"),
+            ],
+        );
+        fs::set_permissions(new.join("usr/bin/mode"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(base.join("usr/bin/mode"), fs::Permissions::from_mode(0o644)).unwrap();
+        symlink("same", base.join("usr/bin/link")).unwrap();
+        symlink("changed", new.join("usr/bin/link")).unwrap();
+
+        let changes = diff(&base, &new).unwrap();
+        let listed: Vec<(&str, ChangeKind)> = changes
+            .iter()
+            .map(|change| (change.path.as_str(), change.kind))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("/usr/bin/added", ChangeKind::Written),
+                ("/usr/bin/changed", ChangeKind::Written),
+                ("/usr/bin/gone", ChangeKind::Removed),
+                ("/usr/bin/link", ChangeKind::Written),
+                ("/usr/bin/mode", ChangeKind::Written),
+                ("/usr/share/fresh/c", ChangeKind::Written),
+                ("/usr/share/old", ChangeKind::Removed),
+            ]
+        );
+    }
 }
 
 fn tree(root: &Path, files: &[(&str, &str)]) {
@@ -231,55 +284,6 @@ fn tree(root: &Path, files: &[(&str, &str)]) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, text).unwrap();
     }
-}
-
-#[test]
-fn the_trees_differ_by_bytes_mode_links_and_removals() {
-    let dir = tempfile::tempdir().unwrap();
-    let (base, new) = (dir.path().join("base"), dir.path().join("new"));
-    tree(
-        &base,
-        &[
-            ("usr/bin/same", "x"),
-            ("usr/bin/changed", "old"),
-            ("usr/bin/mode", "m"),
-            ("usr/bin/gone", "g"),
-            ("usr/share/old/a", "a"),
-            ("usr/share/old/b", "b"),
-        ],
-    );
-    tree(
-        &new,
-        &[
-            ("usr/bin/same", "x"),
-            ("usr/bin/changed", "new"),
-            ("usr/bin/mode", "m"),
-            ("usr/bin/added", "n"),
-            ("usr/share/fresh/c", "c"),
-        ],
-    );
-    fs::set_permissions(new.join("usr/bin/mode"), fs::Permissions::from_mode(0o755)).unwrap();
-    fs::set_permissions(base.join("usr/bin/mode"), fs::Permissions::from_mode(0o644)).unwrap();
-    symlink("same", base.join("usr/bin/link")).unwrap();
-    symlink("changed", new.join("usr/bin/link")).unwrap();
-
-    let changes = diff(&base, &new).unwrap();
-    let listed: Vec<(&str, ChangeKind)> = changes
-        .iter()
-        .map(|change| (change.path.as_str(), change.kind))
-        .collect();
-    assert_eq!(
-        listed,
-        [
-            ("/usr/bin/added", ChangeKind::Written),
-            ("/usr/bin/changed", ChangeKind::Written),
-            ("/usr/bin/gone", ChangeKind::Removed),
-            ("/usr/bin/link", ChangeKind::Written),
-            ("/usr/bin/mode", ChangeKind::Written),
-            ("/usr/share/fresh/c", ChangeKind::Written),
-            ("/usr/share/old", ChangeKind::Removed),
-        ]
-    );
 }
 
 #[derive(Default)]
@@ -421,206 +425,210 @@ fn machine() -> (tempfile::TempDir, Layout, Fake) {
     (dir, layout, fake)
 }
 
-#[test]
-fn the_staged_image_applies_live_first_the_system_then_the_desktop() {
-    let (_dir, layout, fake) = machine();
+tilo_test_env::scenario! {
+    fn a_staged_image_is_applied_live_or_waits_for_a_restart;
 
-    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-    let layer = fs::read_link(link(&layout)).unwrap();
-    assert!(layer.starts_with(layers(&layout)));
-    assert_eq!(
-        fs::read_to_string(layer.join("usr/bin/fs")).unwrap(),
-        "fs 2"
-    );
-    assert!(
-        !layer.join("usr/bin/shell").exists(),
-        "the compositor waits for the desktop restart"
-    );
-    assert!(
-        !layer.join("usr/lib/modules").exists(),
-        "the kernel waits for a restart of the machine"
-    );
-    assert_eq!(
-        fs::read_to_string(layer.join("usr/lib/old-lib.so")).unwrap(),
-        "whiteout",
-        "a file the image dropped is hidden"
-    );
-    assert!(
-        fs::read_to_string(
-            layer.join("usr/lib/extension-release.d/extension-release.tilo-live-update")
-        )
-        .unwrap()
-        .contains(&"e".repeat(64))
-    );
-    assert_eq!(
-        *fake.restarted.borrow(),
-        ["fs.service", "ana:tilo-fs-recipient.service"],
-        "the greeter is never restarted under a login"
-    );
-    assert!(
-        fake.desktops.borrow().is_empty(),
-        "the desktop is left alone"
-    );
-    assert!(*fake.merges.borrow() >= 1, "the layer was merged");
-    assert!(merged_marker(&layout).exists());
-    let state = read_state(&layout).unwrap();
-    assert_eq!(state.applied, Some(Phase::System));
-    assert!(state.desktop_pending);
-    assert!(
-        state.reboot_required,
-        "the kernel needs a restart of the machine"
-    );
-    assert_eq!(state.deferred, ["greetd.service"]);
+    phase the_staged_image_applies_live_first_the_system_then_the_desktop;
+    {
+        let (_dir, layout, fake) = machine();
 
-    fake.restarted.borrow_mut().clear();
-    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-    assert!(fake.restarted.borrow().is_empty());
+        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+        let layer = fs::read_link(link(&layout)).unwrap();
+        assert!(layer.starts_with(layers(&layout)));
+        assert_eq!(
+            fs::read_to_string(layer.join("usr/bin/fs")).unwrap(),
+            "fs 2"
+        );
+        assert!(
+            !layer.join("usr/bin/shell").exists(),
+            "the compositor waits for the desktop restart"
+        );
+        assert!(
+            !layer.join("usr/lib/modules").exists(),
+            "the kernel waits for a restart of the machine"
+        );
+        assert_eq!(
+            fs::read_to_string(layer.join("usr/lib/old-lib.so")).unwrap(),
+            "whiteout",
+            "a file the image dropped is hidden"
+        );
+        assert!(
+            fs::read_to_string(
+                layer.join("usr/lib/extension-release.d/extension-release.tilo-live-update")
+            )
+            .unwrap()
+            .contains(&"e".repeat(64))
+        );
+        assert_eq!(
+            *fake.restarted.borrow(),
+            ["fs.service", "ana:tilo-fs-recipient.service"],
+            "the greeter is never restarted under a login"
+        );
+        assert!(
+            fake.desktops.borrow().is_empty(),
+            "the desktop is left alone"
+        );
+        assert!(*fake.merges.borrow() >= 1, "the layer was merged");
+        assert!(merged_marker(&layout).exists());
+        let state = read_state(&layout).unwrap();
+        assert_eq!(state.applied, Some(Phase::System));
+        assert!(state.desktop_pending);
+        assert!(
+            state.reboot_required,
+            "the kernel needs a restart of the machine"
+        );
+        assert_eq!(state.deferred, ["greetd.service"]);
 
-    assert_eq!(apply(&fake, &fake, &layout, Phase::Session).unwrap(), 0);
-    let layer = fs::read_link(link(&layout)).unwrap();
-    assert_eq!(
-        fs::read_to_string(layer.join("usr/bin/shell")).unwrap(),
-        "shell 2"
-    );
-    assert_eq!(*fake.desktops.borrow(), ["ana"]);
-    assert!(
-        fake.restarted.borrow().is_empty(),
-        "the system services already run the update"
-    );
-    let state = read_state(&layout).unwrap();
-    assert_eq!(state.applied, Some(Phase::Session));
-    assert!(!state.desktop_pending);
-    assert_eq!(
-        fs::read_dir(layers(&layout)).unwrap().count(),
-        1,
-        "only the linked layer is kept"
-    );
-}
+        fake.restarted.borrow_mut().clear();
+        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+        assert!(fake.restarted.borrow().is_empty());
 
-#[test]
-fn a_newer_image_over_an_applied_one_restarts_only_what_changed_since() {
-    let (dir, layout, fake) = machine();
-    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-    assert_eq!(apply(&fake, &fake, &layout, Phase::Session).unwrap(), 0);
+        assert_eq!(apply(&fake, &fake, &layout, Phase::Session).unwrap(), 0);
+        let layer = fs::read_link(link(&layout)).unwrap();
+        assert_eq!(
+            fs::read_to_string(layer.join("usr/bin/shell")).unwrap(),
+            "shell 2"
+        );
+        assert_eq!(*fake.desktops.borrow(), ["ana"]);
+        assert!(
+            fake.restarted.borrow().is_empty(),
+            "the system services already run the update"
+        );
+        let state = read_state(&layout).unwrap();
+        assert_eq!(state.applied, Some(Phase::Session));
+        assert!(!state.desktop_pending);
+        assert_eq!(
+            fs::read_dir(layers(&layout)).unwrap().count(),
+            1,
+            "only the linked layer is kept"
+        );
+    }
 
-    let newer = dir.path().join("newer");
-    tree(
-        &newer,
-        &[
-            ("usr/bin/fs", "fs 2"),
-            ("usr/bin/shell", "shell 2"),
-            ("usr/libexec/tilo/tilo-greeter", "greeter 3"),
-            ("usr/lib/old-lib.so", "old"),
-            ("usr/lib/modules/6.18/vmlinuz", "kernel"),
-            ("usr/share/tilo/components.toml", MANIFEST),
-        ],
-    );
-    let verity = "f".repeat(128);
-    fake.roots.borrow_mut().insert(verity.clone(), newer);
-    let status = fake
-        .status
-        .borrow()
-        .replace(&"d".repeat(128), &verity)
-        .replace(&"e".repeat(64), &"f".repeat(64));
-    *fake.status.borrow_mut() = status;
-    fake.restarted.borrow_mut().clear();
-    fake.desktops.borrow_mut().clear();
+    phase a_newer_image_over_an_applied_one_restarts_only_what_changed_since;
+    {
+        let (dir, layout, fake) = machine();
+        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+        assert_eq!(apply(&fake, &fake, &layout, Phase::Session).unwrap(), 0);
 
-    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-    assert!(
-        fake.restarted.borrow().is_empty(),
-        "fs and its recipient already run this build"
-    );
-    let layer = fs::read_link(link(&layout)).unwrap();
-    assert_eq!(
-        fs::read_to_string(layer.join("usr/bin/shell")).unwrap(),
-        "shell 2",
-        "the system phase keeps the compositor the desktop already runs"
-    );
-    assert_eq!(
-        fs::read_to_string(layer.join("usr/libexec/tilo/tilo-greeter")).unwrap(),
-        "greeter 3"
-    );
-    assert!(
-        !layer.join("usr/lib/old-lib.so").exists(),
-        "the library is back as booted"
-    );
-    let state = read_state(&layout).unwrap();
-    assert_eq!(state.deferred, ["greetd.service"]);
-    assert!(
-        !state.desktop_pending,
-        "nothing the desktop runs changed since it restarted"
-    );
-    assert_eq!(apply(&fake, &fake, &layout, Phase::Session).unwrap(), 0);
-    assert!(
-        fake.desktops.borrow().is_empty(),
-        "the desktop is not restarted again"
-    );
-}
+        let newer = dir.path().join("newer");
+        tree(
+            &newer,
+            &[
+                ("usr/bin/fs", "fs 2"),
+                ("usr/bin/shell", "shell 2"),
+                ("usr/libexec/tilo/tilo-greeter", "greeter 3"),
+                ("usr/lib/old-lib.so", "old"),
+                ("usr/lib/modules/6.18/vmlinuz", "kernel"),
+                ("usr/share/tilo/components.toml", MANIFEST),
+            ],
+        );
+        let verity = "f".repeat(128);
+        fake.roots.borrow_mut().insert(verity.clone(), newer);
+        let status = fake
+            .status
+            .borrow()
+            .replace(&"d".repeat(128), &verity)
+            .replace(&"e".repeat(64), &"f".repeat(64));
+        *fake.status.borrow_mut() = status;
+        fake.restarted.borrow_mut().clear();
+        fake.desktops.borrow_mut().clear();
 
-#[test]
-fn a_unit_that_fails_after_the_update_rolls_it_back() {
-    let (_dir, layout, fake) = machine();
-    fake.failing.borrow_mut().push("fs.service".into());
-    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 1);
-    assert!(!link(&layout).exists(), "nothing was linked before");
-    assert!(
-        !merged_marker(&layout).exists(),
-        "the layer was merged away"
-    );
-    assert_eq!(
-        *fake.restarted.borrow(),
-        [
-            "fs.service",
-            "ana:tilo-fs-recipient.service",
-            "fs.service",
-            "ana:tilo-fs-recipient.service"
-        ],
-        "the same units restart again on the old build"
-    );
-    let state = read_state(&layout).unwrap();
-    assert!(state.failed);
-    assert!(
-        state.reboot_required,
-        "it applies with the next restart of the machine"
-    );
-    assert!(state.detail.contains("fs.service"));
-    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-}
+        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+        assert!(
+            fake.restarted.borrow().is_empty(),
+            "fs and its recipient already run this build"
+        );
+        let layer = fs::read_link(link(&layout)).unwrap();
+        assert_eq!(
+            fs::read_to_string(layer.join("usr/bin/shell")).unwrap(),
+            "shell 2",
+            "the system phase keeps the compositor the desktop already runs"
+        );
+        assert_eq!(
+            fs::read_to_string(layer.join("usr/libexec/tilo/tilo-greeter")).unwrap(),
+            "greeter 3"
+        );
+        assert!(
+            !layer.join("usr/lib/old-lib.so").exists(),
+            "the library is back as booted"
+        );
+        let state = read_state(&layout).unwrap();
+        assert_eq!(state.deferred, ["greetd.service"]);
+        assert!(
+            !state.desktop_pending,
+            "nothing the desktop runs changed since it restarted"
+        );
+        assert_eq!(apply(&fake, &fake, &layout, Phase::Session).unwrap(), 0);
+        assert!(
+            fake.desktops.borrow().is_empty(),
+            "the desktop is not restarted again"
+        );
+    }
 
-#[test]
-fn nothing_staged_takes_a_stale_layer_off() {
-    let (_dir, layout, fake) = machine();
-    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-    assert!(linked(&layout));
-    let booted = fake
-        .status
-        .borrow()
-        .replace(r#""staged":"#, r#""ignored":"#);
-    *fake.status.borrow_mut() = booted;
-    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-    assert!(!link(&layout).exists());
-    assert!(!merged_marker(&layout).exists());
-    let state = read_state(&layout).unwrap();
-    assert_eq!(state.image, "");
-    assert!(!state.reboot_required && !state.desktop_pending);
-}
+    phase a_unit_that_fails_after_the_update_rolls_it_back;
+    {
+        let (_dir, layout, fake) = machine();
+        fake.failing.borrow_mut().push("fs.service".into());
+        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 1);
+        assert!(!link(&layout).exists(), "nothing was linked before");
+        assert!(
+            !merged_marker(&layout).exists(),
+            "the layer was merged away"
+        );
+        assert_eq!(
+            *fake.restarted.borrow(),
+            [
+                "fs.service",
+                "ana:tilo-fs-recipient.service",
+                "fs.service",
+                "ana:tilo-fs-recipient.service"
+            ],
+            "the same units restart again on the old build"
+        );
+        let state = read_state(&layout).unwrap();
+        assert!(state.failed);
+        assert!(
+            state.reboot_required,
+            "it applies with the next restart of the machine"
+        );
+        assert!(state.detail.contains("fs.service"));
+        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+    }
 
-#[test]
-fn an_image_that_cannot_be_opened_waits_for_a_restart_of_the_machine() {
-    let (_dir, layout, fake) = machine();
-    fake.roots.borrow_mut().remove(&"d".repeat(128));
-    assert!(apply(&fake, &fake, &layout, Phase::System).is_err());
-    assert!(!link(&layout).exists(), "nothing was linked");
-    let state = read_state(&layout).unwrap();
-    assert_eq!(state.image, format!("sha256:{}", "e".repeat(64)));
-    assert!(state.failed);
-    assert!(
-        state.reboot_required,
-        "the desktop asks for the restart that applies it"
-    );
-    assert!(state.detail.contains("mount failed"));
-    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+    phase nothing_staged_takes_a_stale_layer_off;
+    {
+        let (_dir, layout, fake) = machine();
+        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+        assert!(linked(&layout));
+        let booted = fake
+            .status
+            .borrow()
+            .replace(r#""staged":"#, r#""ignored":"#);
+        *fake.status.borrow_mut() = booted;
+        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+        assert!(!link(&layout).exists());
+        assert!(!merged_marker(&layout).exists());
+        let state = read_state(&layout).unwrap();
+        assert_eq!(state.image, "");
+        assert!(!state.reboot_required && !state.desktop_pending);
+    }
+
+    phase an_image_that_cannot_be_opened_waits_for_a_restart_of_the_machine;
+    {
+        let (_dir, layout, fake) = machine();
+        fake.roots.borrow_mut().remove(&"d".repeat(128));
+        assert!(apply(&fake, &fake, &layout, Phase::System).is_err());
+        assert!(!link(&layout).exists(), "nothing was linked");
+        let state = read_state(&layout).unwrap();
+        assert_eq!(state.image, format!("sha256:{}", "e".repeat(64)));
+        assert!(state.failed);
+        assert!(
+            state.reboot_required,
+            "the desktop asks for the restart that applies it"
+        );
+        assert!(state.detail.contains("mount failed"));
+        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+    }
 }
 
 #[test]
