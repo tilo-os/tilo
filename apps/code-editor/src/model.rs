@@ -1014,6 +1014,21 @@ mod tests {
     }
 
     #[test]
+    fn a_language_is_read_from_the_last_extension_whatever_its_case() {
+        for (name, language) in [
+            ("MAIN.RS", Language::Rust),
+            ("Notes.MD", Language::Markdown),
+            ("types.d.ts", Language::TypeScript),
+            ("main.rs.bak", Language::PlainText),
+            ("archive.tar.gz", Language::PlainText),
+            (".gitignore", Language::PlainText),
+            ("LICENSE", Language::PlainText),
+        ] {
+            assert_eq!(Language::from_path(name), language, "{name}");
+        }
+    }
+
+    #[test]
     fn hardware_source_and_header_paths_select_their_dialect() {
         for name in ["mac.v", "rtl/defines.vh", "RTL/MAC.V", "include/DEFINES.VH"] {
             assert_eq!(Language::from_path(name), Language::Verilog, "{name}");
