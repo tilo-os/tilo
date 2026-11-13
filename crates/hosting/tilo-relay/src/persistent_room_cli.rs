@@ -1812,6 +1812,21 @@ mod tests {
     use tilo_user_identity::DeviceCapabilities;
     const NS_PER_SEC: u64 = 1_000_000_000;
 
+    fn store() -> tilo_secrets::SecretStore {
+        tilo_secrets::SecretStore::memory(SECRET_APP)
+    }
+
+    fn member(key: u8, administrator: bool) -> tilo_peer_state::GovernedMember {
+        tilo_peer_state::GovernedMember {
+            user_public_key: [key; 32],
+            role: tilo_peer_state::join::Role::Editor,
+            display_name: None,
+            active_device_keys: Vec::new(),
+            removed: false,
+            administrator,
+        }
+    }
+
     #[test]
     fn the_workspace_is_named_after_the_room_capitalized() {
         assert_eq!(workspace_name("plaza"), "Plaza");
