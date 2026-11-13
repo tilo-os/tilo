@@ -170,277 +170,285 @@ fn living_room() -> Script {
     ])
 }
 
-#[test]
-fn each_speaker_is_measured_from_the_listening_position() {
-    let now = Instant::now();
-    let mut harness = start(living_room(), ALL_GIVEN, now);
-    let run = &mut harness.run;
-    assert_eq!(run.phase(), CalibrationPhase::Measuring);
-    assert_eq!(run.progress()[0], MemberProgress::Measuring);
-    assert_eq!(run.progress()[1], MemberProgress::Waiting);
+tilo_test_env::scenario! {
+    fn a_calibration_measures_each_speaker_and_applies_only_when_asked;
+
+    phase each_speaker_is_measured_from_the_listening_position;
     {
+        let now = Instant::now();
+        let mut harness = start(living_room(), ALL_GIVEN, now);
+        let run = &mut harness.run;
+        assert_eq!(run.phase(), CalibrationPhase::Measuring);
+        assert_eq!(run.progress()[0], MemberProgress::Measuring);
+        assert_eq!(run.progress()[1], MemberProgress::Waiting);
+        {
+            let asked = harness.requests.lock().unwrap().clone();
+            assert_eq!(asked.len(), 1);
+            assert_eq!(asked[0].member, id("desk"));
+            assert_eq!(
+                asked[0].microphones,
+                vec![
+                    (id("desk"), microphone("desk")),
+                    (id("shelf"), microphone("shelf")),
+                    (id("phone"), microphone("phone")),
+                ],
+                "every microphone hears the same sweep"
+            );
+        }
+        assert!(run.tick());
+        assert!(run.tick());
+        assert_eq!(run.phase(), CalibrationPhase::Proposed);
         let asked = harness.requests.lock().unwrap().clone();
-        assert_eq!(asked.len(), 1);
-        assert_eq!(asked[0].member, id("desk"));
+        assert_ne!(asked[0].sweep, asked[1].sweep, "every sweep has its own id");
+        assert!(*harness.cancelled.lock().unwrap(), "clock sync is released");
+
+        // Arrivals at the sofa decide: desk waits 23 ms for shelf and is cut
+        // 3 dB to match it.
+        let after = run.after().unwrap();
+        assert_eq!(after[0].delay_ns, 23_000_000);
+        assert_eq!(after[0].gain_mb, -300);
+        assert_eq!(after[1].delay_ns, 0);
+        assert_eq!(after[1].gain_mb, 0);
+        let MemberProgress::Measured(desk) = &run.progress()[0] else {
+            panic!("{:?}", run.progress()[0]);
+        };
+        assert_eq!(desk.arrival_ns, 28_000_000);
+        assert_eq!(desk.heard_by, 3);
+        assert_eq!(desk.output_latency_ns, Some(20_300_000));
+        assert_eq!(desk.acoustic_ns, Some(7_700_000));
+        assert_eq!(
+            run.microphone_progress(),
+            &[
+                MicrophoneProgress::Used {
+                    heard: 2,
+                    rejected: 0
+                },
+                MicrophoneProgress::Used {
+                    heard: 2,
+                    rejected: 0
+                },
+                MicrophoneProgress::Used {
+                    heard: 2,
+                    rejected: 0
+                },
+            ]
+        );
+        assert_eq!(
+            run.before()[0].delay_ns,
+            1_000,
+            "before keeps current trims"
+        );
+    }
+
+    phase a_listening_reading_the_other_microphones_contradict_is_set_aside;
+    {
+        let now = Instant::now();
+        // A subwoofer joins: 30 ms of output, 1.5 m from the sofa.
+        let mut trio = pair();
+        let mut sub = trio.members[1].clone();
+        sub.device = id("sub");
+        sub.output = EndpointSelector::mint(&id("sub"), "out");
+        trio.members.push(sub);
+        let mut script = living_room();
+        script.push_back(vec![
+            heard(38.7, -8.0),
+            heard(37.3, -7.0),
+            heard(34.4, -4.0),
+        ]);
+        // A missed direct sound at the sofa: a reflection 40 ms late.
+        script[1][2] = heard(91.0, -9.0);
+        let mut harness = start_group(&trio, script, ALL_GIVEN, now);
+        for _ in 0..3 {
+            harness.run.tick();
+        }
+        assert_eq!(harness.run.phase(), CalibrationPhase::Proposed);
+        let MemberProgress::Measured(shelf) = &harness.run.progress()[1] else {
+            panic!("{:?}", harness.run.progress()[1]);
+        };
+        assert!(
+            (shelf.arrival_ns - 51_000_000).abs() < 15_000_000,
+            "estimated from the other microphones, within the room's path differences: {}",
+            shelf.arrival_ns
+        );
+        assert_eq!(
+            harness.run.microphone_progress()[2],
+            MicrophoneProgress::Used {
+                heard: 3,
+                rejected: 1
+            }
+        );
+        let MemberProgress::Measured(desk) = &harness.run.progress()[0] else {
+            panic!("{:?}", harness.run.progress()[0]);
+        };
+        assert_eq!(desk.arrival_ns, 28_000_000, "the other seat readings stand");
+    }
+
+    phase a_pair_s_seat_readings_stand_even_when_the_others_disagree;
+    {
+        let now = Instant::now();
+        let mut script = living_room();
+        script[1][2] = heard(91.0, -9.0);
+        let mut harness = start(script, ALL_GIVEN, now);
+        harness.run.tick();
+        harness.run.tick();
+        let MemberProgress::Measured(shelf) = &harness.run.progress()[1] else {
+            panic!("{:?}", harness.run.progress()[1]);
+        };
+        assert_eq!(shelf.arrival_ns, 91_000_000);
+    }
+
+    phase nothing_is_applied_until_asked_and_revert_restores_the_old_trims;
+    {
+        let now = Instant::now();
+        let mut harness = start(living_room(), ALL_GIVEN, now);
+        let run = &mut harness.run;
+        run.tick();
+        run.tick();
+        assert!(run.previous_trims().is_none(), "nothing applied yet");
+        let proposed = run.proposed_trims().unwrap();
+        assert_eq!(proposed[0].2.delay_ns, 23_000_000);
+        run.mark_applied();
+        assert!(run.proposed_trims().is_none());
+        let previous = run.previous_trims().unwrap();
+        assert_eq!(previous[0].2.delay_ns, 1_000);
+        assert_eq!(previous[1].0, id("shelf"));
+    }
+
+    phase a_member_no_microphone_heard_fails_the_run_with_its_name;
+    {
+        let now = Instant::now();
+        let not_heard = || MicrophoneHearing::failed(HearingFailure::NoArrival);
+        let mut harness = start(
+            VecDeque::from([
+                vec![heard(20.3, -1.0), heard(31.0, -12.0), heard(28.0, -6.0)],
+                vec![not_heard(), not_heard(), not_heard()],
+            ]),
+            ALL_GIVEN,
+            now,
+        );
+        harness.run.tick();
+        harness.run.tick();
+        assert_eq!(harness.run.phase(), CalibrationPhase::Failed);
+        assert_eq!(
+            harness.run.message(),
+            Some("Could not measure Shelf: no sweep stood out of the noise there")
+        );
+        assert!(harness.run.proposed_trims().is_none());
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_calibration_waits_for_microphone_consent_and_stops_when_refused_or_cancelled;
+
+    phase measuring_waits_for_microphone_consent_and_leaves_out_who_did_not_answer;
+    {
+        let now = Instant::now();
+        let mut harness = start(
+            living_room(),
+            [
+                MicrophoneConsent::Given,
+                MicrophoneConsent::Asked,
+                MicrophoneConsent::Asked,
+            ],
+            now,
+        );
+        assert_eq!(harness.run.phase(), CalibrationPhase::WaitingForMicrophones);
+        assert!(
+            harness.requests.lock().unwrap().is_empty(),
+            "nothing plays yet"
+        );
+        assert!(!harness.run.tick());
+        // The phone agrees; shelf never answers.
+        let answers = |device: &DeviceId| {
+            if device == &id("phone") {
+                MicrophoneConsent::Given
+            } else {
+                MicrophoneConsent::Asked
+            }
+        };
+        assert!(harness.run.update_consent(answers, now));
+        assert_eq!(harness.run.phase(), CalibrationPhase::WaitingForMicrophones);
+        assert_eq!(
+            harness.run.microphone_progress()[2],
+            MicrophoneProgress::Listening
+        );
+        assert!(
+            harness
+                .run
+                .update_consent(answers, now + MICROPHONE_CONSENT_WAIT)
+        );
+        assert_eq!(harness.run.phase(), CalibrationPhase::Measuring);
+        assert_eq!(
+            harness.run.microphone_progress()[1],
+            MicrophoneProgress::Declined
+        );
+        let asked = harness.requests.lock().unwrap().clone();
         assert_eq!(
             asked[0].microphones,
             vec![
                 (id("desk"), microphone("desk")),
-                (id("shelf"), microphone("shelf")),
                 (id("phone"), microphone("phone")),
-            ],
-            "every microphone hears the same sweep"
+            ]
         );
     }
-    assert!(run.tick());
-    assert!(run.tick());
-    assert_eq!(run.phase(), CalibrationPhase::Proposed);
-    let asked = harness.requests.lock().unwrap().clone();
-    assert_ne!(asked[0].sweep, asked[1].sweep, "every sweep has its own id");
-    assert!(*harness.cancelled.lock().unwrap(), "clock sync is released");
 
-    // Arrivals at the sofa decide: desk waits 23 ms for shelf and is cut
-    // 3 dB to match it.
-    let after = run.after().unwrap();
-    assert_eq!(after[0].delay_ns, 23_000_000);
-    assert_eq!(after[0].gain_mb, -300);
-    assert_eq!(after[1].delay_ns, 0);
-    assert_eq!(after[1].gain_mb, 0);
-    let MemberProgress::Measured(desk) = &run.progress()[0] else {
-        panic!("{:?}", run.progress()[0]);
-    };
-    assert_eq!(desk.arrival_ns, 28_000_000);
-    assert_eq!(desk.heard_by, 3);
-    assert_eq!(desk.output_latency_ns, Some(20_300_000));
-    assert_eq!(desk.acoustic_ns, Some(7_700_000));
-    assert_eq!(
-        run.microphone_progress(),
-        &[
-            MicrophoneProgress::Used {
-                heard: 2,
-                rejected: 0
-            },
-            MicrophoneProgress::Used {
-                heard: 2,
-                rejected: 0
-            },
-            MicrophoneProgress::Used {
-                heard: 2,
-                rejected: 0
-            },
-        ]
-    );
-    assert_eq!(
-        run.before()[0].delay_ns,
-        1_000,
-        "before keeps current trims"
-    );
-}
-
-#[test]
-fn a_listening_reading_the_other_microphones_contradict_is_set_aside() {
-    let now = Instant::now();
-    // A subwoofer joins: 30 ms of output, 1.5 m from the sofa.
-    let mut trio = pair();
-    let mut sub = trio.members[1].clone();
-    sub.device = id("sub");
-    sub.output = EndpointSelector::mint(&id("sub"), "out");
-    trio.members.push(sub);
-    let mut script = living_room();
-    script.push_back(vec![
-        heard(38.7, -8.0),
-        heard(37.3, -7.0),
-        heard(34.4, -4.0),
-    ]);
-    // A missed direct sound at the sofa: a reflection 40 ms late.
-    script[1][2] = heard(91.0, -9.0);
-    let mut harness = start_group(&trio, script, ALL_GIVEN, now);
-    for _ in 0..3 {
-        harness.run.tick();
+    phase a_refused_listening_microphone_ends_the_run;
+    {
+        let now = Instant::now();
+        let mut harness = start(
+            living_room(),
+            [
+                MicrophoneConsent::Given,
+                MicrophoneConsent::Given,
+                MicrophoneConsent::Asked,
+            ],
+            now,
+        );
+        assert!(
+            harness
+                .run
+                .update_consent(|_| MicrophoneConsent::Refused, now)
+        );
+        assert_eq!(harness.run.phase(), CalibrationPhase::Failed);
+        assert_eq!(
+            harness.run.message(),
+            Some(
+                "phone microphone was not allowed to listen, so nothing can be measured from where you sit"
+            )
+        );
+        assert!(harness.requests.lock().unwrap().is_empty());
     }
-    assert_eq!(harness.run.phase(), CalibrationPhase::Proposed);
-    let MemberProgress::Measured(shelf) = &harness.run.progress()[1] else {
-        panic!("{:?}", harness.run.progress()[1]);
-    };
-    assert!(
-        (shelf.arrival_ns - 51_000_000).abs() < 15_000_000,
-        "estimated from the other microphones, within the room's path differences: {}",
-        shelf.arrival_ns
-    );
-    assert_eq!(
-        harness.run.microphone_progress()[2],
-        MicrophoneProgress::Used {
-            heard: 3,
-            rejected: 1
-        }
-    );
-    let MemberProgress::Measured(desk) = &harness.run.progress()[0] else {
-        panic!("{:?}", harness.run.progress()[0]);
-    };
-    assert_eq!(desk.arrival_ns, 28_000_000, "the other seat readings stand");
-}
 
-#[test]
-fn a_pair_s_seat_readings_stand_even_when_the_others_disagree() {
-    let now = Instant::now();
-    let mut script = living_room();
-    script[1][2] = heard(91.0, -9.0);
-    let mut harness = start(script, ALL_GIVEN, now);
-    harness.run.tick();
-    harness.run.tick();
-    let MemberProgress::Measured(shelf) = &harness.run.progress()[1] else {
-        panic!("{:?}", harness.run.progress()[1]);
-    };
-    assert_eq!(shelf.arrival_ns, 91_000_000);
-}
+    phase a_refused_listening_microphone_cannot_start_a_run;
+    {
+        let refused = CalibrationRun::start(
+            &pair(),
+            &[],
+            vec![run_microphone("phone", MicrophoneConsent::Refused)],
+            0,
+            Box::new(Fake {
+                script: VecDeque::new(),
+                pending: false,
+                requests: Arc::default(),
+                cancelled: Arc::default(),
+            }),
+            Box::new(|| [1; 16]),
+            Instant::now(),
+        );
+        assert!(refused.is_err());
+    }
 
-#[test]
-fn nothing_is_applied_until_asked_and_revert_restores_the_old_trims() {
-    let now = Instant::now();
-    let mut harness = start(living_room(), ALL_GIVEN, now);
-    let run = &mut harness.run;
-    run.tick();
-    run.tick();
-    assert!(run.previous_trims().is_none(), "nothing applied yet");
-    let proposed = run.proposed_trims().unwrap();
-    assert_eq!(proposed[0].2.delay_ns, 23_000_000);
-    run.mark_applied();
-    assert!(run.proposed_trims().is_none());
-    let previous = run.previous_trims().unwrap();
-    assert_eq!(previous[0].2.delay_ns, 1_000);
-    assert_eq!(previous[1].0, id("shelf"));
-}
-
-#[test]
-fn a_member_no_microphone_heard_fails_the_run_with_its_name() {
-    let now = Instant::now();
-    let not_heard = || MicrophoneHearing::failed(HearingFailure::NoArrival);
-    let mut harness = start(
-        VecDeque::from([
-            vec![heard(20.3, -1.0), heard(31.0, -12.0), heard(28.0, -6.0)],
-            vec![not_heard(), not_heard(), not_heard()],
-        ]),
-        ALL_GIVEN,
-        now,
-    );
-    harness.run.tick();
-    harness.run.tick();
-    assert_eq!(harness.run.phase(), CalibrationPhase::Failed);
-    assert_eq!(
-        harness.run.message(),
-        Some("Could not measure Shelf: no sweep stood out of the noise there")
-    );
-    assert!(harness.run.proposed_trims().is_none());
-}
-
-#[test]
-fn measuring_waits_for_microphone_consent_and_leaves_out_who_did_not_answer() {
-    let now = Instant::now();
-    let mut harness = start(
-        living_room(),
-        [
-            MicrophoneConsent::Given,
-            MicrophoneConsent::Asked,
-            MicrophoneConsent::Asked,
-        ],
-        now,
-    );
-    assert_eq!(harness.run.phase(), CalibrationPhase::WaitingForMicrophones);
-    assert!(
-        harness.requests.lock().unwrap().is_empty(),
-        "nothing plays yet"
-    );
-    assert!(!harness.run.tick());
-    // The phone agrees; shelf never answers.
-    let answers = |device: &DeviceId| {
-        if device == &id("phone") {
-            MicrophoneConsent::Given
-        } else {
-            MicrophoneConsent::Asked
-        }
-    };
-    assert!(harness.run.update_consent(answers, now));
-    assert_eq!(harness.run.phase(), CalibrationPhase::WaitingForMicrophones);
-    assert_eq!(
-        harness.run.microphone_progress()[2],
-        MicrophoneProgress::Listening
-    );
-    assert!(
-        harness
-            .run
-            .update_consent(answers, now + MICROPHONE_CONSENT_WAIT)
-    );
-    assert_eq!(harness.run.phase(), CalibrationPhase::Measuring);
-    assert_eq!(
-        harness.run.microphone_progress()[1],
-        MicrophoneProgress::Declined
-    );
-    let asked = harness.requests.lock().unwrap().clone();
-    assert_eq!(
-        asked[0].microphones,
-        vec![
-            (id("desk"), microphone("desk")),
-            (id("phone"), microphone("phone")),
-        ]
-    );
-}
-
-#[test]
-fn a_refused_listening_microphone_ends_the_run() {
-    let now = Instant::now();
-    let mut harness = start(
-        living_room(),
-        [
-            MicrophoneConsent::Given,
-            MicrophoneConsent::Given,
-            MicrophoneConsent::Asked,
-        ],
-        now,
-    );
-    assert!(
-        harness
-            .run
-            .update_consent(|_| MicrophoneConsent::Refused, now)
-    );
-    assert_eq!(harness.run.phase(), CalibrationPhase::Failed);
-    assert_eq!(
-        harness.run.message(),
-        Some(
-            "phone microphone was not allowed to listen, so nothing can be measured from where you sit"
-        )
-    );
-    assert!(harness.requests.lock().unwrap().is_empty());
-}
-
-#[test]
-fn a_refused_listening_microphone_cannot_start_a_run() {
-    let refused = CalibrationRun::start(
-        &pair(),
-        &[],
-        vec![run_microphone("phone", MicrophoneConsent::Refused)],
-        0,
-        Box::new(Fake {
-            script: VecDeque::new(),
-            pending: false,
-            requests: Arc::default(),
-            cancelled: Arc::default(),
-        }),
-        Box::new(|| [1; 16]),
-        Instant::now(),
-    );
-    assert!(refused.is_err());
-}
-
-#[test]
-fn cancelling_stops_measuring_and_a_changed_group_no_longer_matches() {
-    let mut harness = start(VecDeque::new(), ALL_GIVEN, Instant::now());
-    assert!(harness.run.matches(&pair()));
-    harness.run.cancel();
-    assert_eq!(harness.run.phase(), CalibrationPhase::Failed);
-    assert!(!harness.run.tick());
-    let mut changed = pair();
-    changed.members.pop();
-    assert!(!harness.run.matches(&changed));
+    phase cancelling_stops_measuring_and_a_changed_group_no_longer_matches;
+    {
+        let mut harness = start(VecDeque::new(), ALL_GIVEN, Instant::now());
+        assert!(harness.run.matches(&pair()));
+        harness.run.cancel();
+        assert_eq!(harness.run.phase(), CalibrationPhase::Failed);
+        assert!(!harness.run.tick());
+        let mut changed = pair();
+        changed.members.pop();
+        assert!(!harness.run.matches(&changed));
+    }
 }
 
 #[test]
