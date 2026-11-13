@@ -835,10 +835,30 @@ fn typed_answer(answer: &Value) -> Result<Value, ApiError> {
 }
 
 /// `value` as `T`, or the refusal that it was not.
+///
+/// A tool that had nothing of the kind to answer says why in words
+/// (`{"status": .., "text": ..}`, such as a listing of an app the workspace
+/// does not hold open): that is what the caller is told, not the shape.
 fn shaped<T: serde::de::DeserializeOwned + serde::Serialize>(
     value: Value,
 ) -> Result<Value, ApiError> {
-    typed::<T>(value).map_err(|why| ApiError::malformed(std::any::type_name::<T>(), &why))
+    let said = said_instead(&value);
+    typed::<T>(value).map_err(|why| match said {
+        Some((failed, text)) => ApiError::new(if failed { "failed" } else { "not_found" }, text),
+        None => ApiError::malformed(std::any::type_name::<T>(), &why),
+    })
+}
+
+/// What a tool said in words in place of a typed answer, and whether it said
+/// it as a failure.
+fn said_instead(value: &Value) -> Option<(bool, String)> {
+    let fields = value.as_object()?;
+    if fields.len() != 2 {
+        return None;
+    }
+    let status = fields.get("status")?.as_str()?;
+    let text = fields.get("text")?.as_str()?;
+    Some((status == "failed", text.to_owned()))
 }
 
 /// An action's answer as the API names it: `200` done, `202` pending with
@@ -911,4 +931,26 @@ fn refusal(refused: &ApiError) -> Reply {
         reply.headers_mut().insert(header::RETRY_AFTER, value);
     }
     reply
+}
+
+#[cfg(test)]
+mod shaped_tests {
+    use super::*;
+
+    /// A listing of something the workspace does not hold open is told as
+    /// what the host said of it, not as an answer of the wrong shape.
+    #[test]
+    fn a_tool_that_said_why_in_words_is_told_in_its_words() {
+        let note = json!({"status": "ok", "text": "browser is not open in this workspace"});
+        let error = shaped::<answers::Listing>(note).expect_err("a note is no listing");
+        let said = serde_json::to_value(&*error.body).expect("an error body");
+        assert_eq!(said["code"], "not_found", "{said}");
+        assert_eq!(
+            said["message"], "browser is not open in this workspace",
+            "{said}"
+        );
+        let wrong = shaped::<answers::Listing>(json!({"rows": 3})).expect_err("not a listing");
+        let said = serde_json::to_value(&*wrong.body).expect("an error body");
+        assert_eq!(said["code"], "unavailable", "{said}");
+    }
 }
