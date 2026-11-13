@@ -1,11 +1,4 @@
 //! The terminal's decoded images, read from the content store on a worker.
-//!
-//! A placement names its bytes by content address; reading them can wait on
-//! the disk, and a terminal the compositor hosts paints on its frame loop. So
-//! painting only looks images up: one not loaded yet is asked of a worker,
-//! which reads and decodes it and wakes the window, and the cells it covers
-//! keep their outline until it arrives. An image that cannot be shown is
-//! remembered as such, so it is read once, not on every frame.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Sender};
@@ -17,13 +10,11 @@ use ui::widget::Image;
 
 use crate::graphics::{TerminalImagePlacement, decode_for_rendering};
 
-/// How many decoded images are kept; past it the cache starts over.
 const MAX_ENTRIES: usize = 128;
 
 enum Entry {
     Loading,
     Ready(Image),
-    /// Missing, of another length than placed, or not decodable.
     Unavailable,
 }
 
@@ -39,7 +30,6 @@ pub(crate) struct ImageLoads {
     content: ContentStore,
     entries: HashMap<String, Entry>,
     finished: Finished,
-    /// The worker's queue, once one is started.
     jobs: Option<Sender<Job>>,
 }
 
@@ -53,24 +43,20 @@ impl ImageLoads {
         }
     }
 
-    /// Read content from `content` from now on, forgetting what was loaded.
     pub(crate) fn set_content(&mut self, content: ContentStore) {
         self.content = content;
         self.entries.clear();
         self.jobs = None;
     }
 
-    /// The image for `placement` if it is loaded; otherwise ask for it, to
-    /// wake the terminal through `waker` once it is read, and return `None`.
-    /// Never waits.
+    /// The image for `placement`, or `None` after asking `waker` to load it; never waits.
     pub(crate) fn image(
         &mut self,
         placement: &TerminalImagePlacement,
         waker: &Arc<Mutex<ui::WakeHandle>>,
     ) -> Option<&mut Image> {
-        // The MIME and dimensions form part of the key: raw Kitty payloads
-        // have no self-describing header, and a replicated descriptor must
-        // not reuse a decoded image under altered metadata.
+        // The MIME and dimensions are part of the key: a raw Kitty payload has no header of its own, so a
+        // descriptor with altered metadata must not reuse a decoded image.
         let key = format!(
             "{}:{}:{}:{}",
             placement.hash, placement.mime, placement.pixel_width, placement.pixel_height
@@ -97,12 +83,10 @@ impl ImageLoads {
         }
     }
 
-    /// Take in what the worker finished; whether any image arrived to paint.
     pub(crate) fn take_finished(&mut self) -> bool {
         let finished = std::mem::take(&mut *self.finished.lock_recover());
         let mut arrived = false;
         for (key, image) in finished {
-            // A load the cache forgot meanwhile is still worth keeping.
             let entry = match image {
                 Some(image) => {
                     arrived = true;
@@ -115,7 +99,6 @@ impl ImageLoads {
         arrived
     }
 
-    /// Whether any image is still being loaded.
     #[cfg(test)]
     pub(crate) fn loading(&self) -> bool {
         self.entries
@@ -136,8 +119,6 @@ impl ImageLoads {
         self.start_worker(job)
     }
 
-    /// Start the worker with `first` as its first job. It ends once this
-    /// terminal drops its queue.
     fn start_worker(&mut self, first: Job) -> bool {
         let (jobs, queue) = mpsc::channel::<Job>();
         let content = self.content.clone();
@@ -176,7 +157,6 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// A content store that counts its reads.
     struct Counted {
         inner: ContentStore,
         opened: Arc<AtomicUsize>,

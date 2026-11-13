@@ -1,11 +1,4 @@
-//! Protocol-neutral terminal image placements and a bounded Kitty APC scanner.
-//!
-//! Placements name bytes by the same BLAKE3 address used by Tilo documents/files,
-//! so collaborators exchange a tiny immutable descriptor and resolve the blob
-//! locally.  This module accepts a deliberately small, safe Kitty subset:
-//! complete direct `a=T,t=d` PNG, RGB and RGBA uploads.  File/shared-memory
-//! transports, chunking and mutable image ids are refused rather than giving a
-//! terminal process access to paths, shared memory, or unbounded assembly.
+//! Terminal image placements, protocol neutral, and a bounded Kitty APC scanner.
 
 use base64::Engine as _;
 use std::sync::Arc;
@@ -13,8 +6,6 @@ use ui::widget::Image;
 
 const MAX_APC_BYTES: usize = 12 * 1024 * 1024;
 const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
-/// Keep PNG decompression from turning a small compressed blob into a huge GPU
-/// allocation.  This is also used for raw pixels, whose decoded form is exact.
 const MAX_DECODED_PIXELS: u64 = 8 * 1024 * 1024;
 const MAX_PLACEMENT_CELLS: u32 = 1024;
 
@@ -27,9 +18,6 @@ pub struct TerminalImagePlacement {
     pub col: usize,
     pub columns: u32,
     pub rows: u32,
-    /// Intrinsic source width and height.  PNG carries these in IHDR; Kitty raw
-    /// RGB(A) supplies `s`/`v`.  Persisting them lets another replica decode and
-    /// paint a raw placement without host-local protocol state.
     pub pixel_width: u32,
     pub pixel_height: u32,
     pub protocol_id: Option<u32>,
@@ -172,9 +160,6 @@ pub(crate) fn parse_kitty(payload: &[u8]) -> Option<KittyImage> {
             _ => {}
         }
     }
-    // First foundation: one direct, complete transmit-and-place command. File,
-    // shared-memory and chunk continuations require ownership/lifetime rules
-    // outside the terminal process and are rejected rather than guessed.
     if action != b'T' || transmission != b'd' || more {
         return None;
     }
@@ -212,9 +197,6 @@ pub(crate) fn parse_kitty(payload: &[u8]) -> Option<KittyImage> {
     Some(KittyImage {
         bytes,
         mime,
-        // Zero means "use natural size" in the full Kitty protocol.  There is
-        // no terminal-independent natural cell size, so our subset makes it a
-        // single cell; dimensions are still retained for a sharp paint.
         columns: columns.clamp(1, MAX_PLACEMENT_CELLS),
         rows: rows.clamp(1, MAX_PLACEMENT_CELLS),
         pixel_width,
@@ -223,9 +205,8 @@ pub(crate) fn parse_kitty(payload: &[u8]) -> Option<KittyImage> {
     })
 }
 
-/// Decode a replicated placement only after applying the same bounds the
-/// stream parser uses.  A remote CRDT replica can contain malformed metadata,
-/// so rendering must validate again instead of trusting the original host.
+/// Decode a replicated placement only after the parser's bounds: a replica can carry malformed
+/// metadata, so rendering validates again.
 pub(crate) fn decode_for_rendering(
     placement: &TerminalImagePlacement,
     bytes: &[u8],
@@ -284,9 +265,6 @@ fn dimensions_allowed(width: u32, height: u32) -> bool {
             .is_some_and(|pixels| pixels <= MAX_DECODED_PIXELS)
 }
 
-/// Read and validate a PNG IHDR without decompressing it.  `Image` performs
-/// the actual decode afterwards, but this gate prevents an image bomb from
-/// reaching its allocation path.
 fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
     let header = bytes.get(..24)?;

@@ -1,10 +1,6 @@
 //! The terminal emulator: `alacritty_terminal` parses the process's output
 //! into its grid, and [`Emulator`] projects that grid onto the [`Screen`] the
 //! widget draws, selects in and searches.
-//!
-//! The projection is incremental. Rows a feed did not touch keep their shared
-//! [`Line`], so a redraw converts only what changed; history the feed only
-//! moved is found without rescanning it (see [`Emulator::kept`]).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -21,35 +17,24 @@ use crate::graphics::{GraphicsScanner, StreamEvent, TerminalImagePlacement, pars
 use crate::inner::{Attr, CellColor, TermModes, safe_osc_text};
 use crate::screen::{Line, Screen};
 
-/// Retained scrollback lines for the main buffer. Under `cfg(test)` it is
-/// small so the history limit is reachable without feeding thousands of lines.
 #[cfg(not(test))]
 pub(crate) const MAX_HISTORY: usize = 5000;
 #[cfg(test)]
 pub(crate) const MAX_HISTORY: usize = 120;
 
-/// OSC is process-controlled input. Keep its metadata bounded before it can
-/// reach the clipboard, a link or the app title.
 const MAX_OSC_TITLE_BYTES: usize = 256;
 pub(crate) const MAX_OSC_LINK_BYTES: usize = 2 * 1024;
 const MAX_OSC_LINKS: usize = 4096;
 const MAX_OSC_CLIPBOARD_BYTES: usize = 1024 * 1024;
 
-/// What a feed asks of the widget besides the screen it drew.
 #[derive(Default)]
 pub(crate) struct Output {
-    /// The last OSC 0/2 title set.
     pub title: Option<String>,
-    /// How many times the bell rang.
     pub bells: u32,
-    /// Replies to capability queries, written back on the process's stdin.
     pub responses: Vec<u8>,
-    /// OSC 52 clipboard writes: the text, and whether it targets the primary
-    /// selection.
     pub clipboard: Vec<(String, bool)>,
 }
 
-/// Collects the emulator's events while a feed parses.
 #[derive(Clone, Default)]
 struct Events(Rc<RefCell<Vec<Event>>>);
 
@@ -59,9 +44,6 @@ impl EventListener for Events {
     }
 }
 
-/// Synchronized updates (`CSI ? 2026 h`) hold output back until the program
-/// ends them or a timer fires. Nothing here would fire that timer while the
-/// process is quiet, so the update is shown as it arrives instead.
 #[derive(Default)]
 struct Unsynchronized;
 
@@ -90,28 +72,20 @@ impl Dimensions for Size {
     }
 }
 
-/// Where the main buffer stood when a feed began.
 #[derive(Clone, Copy)]
 struct Armed {
-    /// Whether the display offset was held one row back (see
-    /// [`Emulator::arm`]).
     held: bool,
     alternate: bool,
 }
 
-/// The emulator of one process's output. See the [module docs](self).
 pub(crate) struct Emulator {
     term: Term<Events>,
     parser: ansi::Processor<Unsynchronized>,
     events: Events,
-    /// Kitty graphics travel in APC strings, which the parser drops.
     graphics: GraphicsScanner,
     screen: Screen,
-    /// OSC 8 targets by URI, to the ids their cells carry on the screen.
     link_ids: HashMap<String, u16>,
     armed: Option<Armed>,
-    /// The cell buffer of each row of the projected main buffer, and how
-    /// many of those rows were history.
     rows: Vec<*const Cell>,
     history: usize,
 }
@@ -150,7 +124,6 @@ impl Emulator {
         &self.screen
     }
 
-    /// The cursor's column and row on the screen (scrollback excluded).
     pub(crate) fn cursor(&self) -> (usize, usize) {
         let point = self.term.grid().cursor.point;
         (point.column.0, usize::try_from(point.line.0).unwrap_or(0))
@@ -178,7 +151,6 @@ impl Emulator {
         }
     }
 
-    /// Reflow both buffers to `columns` × `lines`.
     pub(crate) fn resize(&mut self, columns: usize, lines: usize) {
         self.term.resize(Size {
             columns: columns.max(1),
@@ -200,8 +172,6 @@ impl Emulator {
             match event {
                 StreamEvent::Bytes(bytes) => self.parser.advance(&mut self.term, &bytes),
                 StreamEvent::Kitty(payload) => {
-                    // The placement's row counts from the top of the
-                    // projected buffer, so bring the projection up to here.
                     self.project();
                     self.arm();
                     self.kitty_graphics(&payload, content);
@@ -233,10 +203,6 @@ impl Emulator {
         output
     }
 
-    /// Hold the view one row back before parsing. The grid advances a
-    /// scrolled-back view by every row it scrolls and drops it to the bottom
-    /// when history is cleared or the terminal reset, so afterwards the
-    /// offset tells [`Self::kept`] whether history may have been replaced.
     fn arm(&mut self) {
         let held = self.term.grid().history_size() > 0;
         if held {
@@ -248,22 +214,15 @@ impl Emulator {
         });
     }
 
-    /// How many rows at the top of the main buffer's history are the
-    /// projection's rows from `dropped` on, unchanged.
-    ///
-    /// History rows never change in place; the grid only rotates its row
-    /// buffers. So where the buffer of history's first row sat in the last
-    /// projection says how many rows fell off the top, and the rows that were
-    /// history then still are. Rows that were on the screen are converted
-    /// again, as a feed may have written them before they scrolled.
+    /// How many rows at the top of the history the projection already has, unchanged from `dropped` on.
+    /// History rows never change in place, so only the screen's rows are converted again: a feed may have
+    /// written them before they scrolled.
     fn kept(&self, armed: Armed) -> Option<(usize, usize)> {
         if armed.alternate || self.screen.alternate {
             return None;
         }
         let grid = self.term.grid();
         if armed.held {
-            // Back at the bottom, history was cleared or the terminal reset;
-            // at the limit, more may have scrolled than the history holds.
             let offset = grid.display_offset();
             if offset == 0 || offset >= MAX_HISTORY {
                 return None;
@@ -285,7 +244,6 @@ impl Emulator {
         same.then_some((dropped, kept))
     }
 
-    /// Bring [`Self::screen`] up to date with the grid.
     fn project(&mut self) {
         let kept = self.armed.take().and_then(|armed| self.kept(armed));
         self.term.scroll_display(Scroll::Bottom);
@@ -296,8 +254,6 @@ impl Emulator {
         let total = history + grid.screen_lines();
 
         let mut previous = std::mem::take(self.screen.lines_mut(alternate));
-        // The rows to convert again start at `keep`; `previous` is aligned so
-        // its row `i` is the same buffer row as the projection's `keep + i`.
         let keep = match kept {
             Some((dropped, kept)) if !alternate => {
                 previous.drain(..dropped.min(previous.len()));
@@ -337,10 +293,8 @@ impl Emulator {
         self.screen.cursor = (column as u64, (top + row) as u64);
     }
 
-    /// Store a complete direct Kitty transmission as a content-addressed blob
-    /// plus a lightweight placement at the cursor. The renderer validates and
-    /// paints this subset, but no protocol success reply is sent: clients must
-    /// not infer broad Kitty support from an acknowledgement.
+    /// Store a complete direct Kitty transmission as a content-addressed blob and a placement at the
+    /// cursor. No protocol success reply is sent, so clients do not infer more support than this subset.
     fn kitty_graphics(&mut self, payload: &[u8], content: &ContentStore) {
         let Some(image) = parse_kitty(payload) else {
             return;
@@ -375,8 +329,6 @@ impl Emulator {
     }
 }
 
-/// One grid row as a screen line: one character per cell (a wide glyph is
-/// followed by a padding space), with trailing blank cells left off.
 fn convert(
     cells: &[Cell],
     link_ids: &mut HashMap<String, u16>,
@@ -402,7 +354,6 @@ fn convert(
             link_id,
         });
         let spacer = flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER);
-        // A tab keeps its character in the cell it started at.
         text.push(if spacer || cell.c == '\t' {
             ' '
         } else {
@@ -416,9 +367,6 @@ fn convert(
     Line { text, attrs }
 }
 
-/// The id cells linking to `uri` carry, registering it on first sight.
-/// Unsafe or over-long targets, and links past the registry's bound, are not
-/// links.
 fn link_id(
     uri: &str,
     link_ids: &mut HashMap<String, u16>,
@@ -445,7 +393,6 @@ fn cell_color(color: Color) -> CellColor {
     match color {
         Color::Spec(rgb) => CellColor::Rgb(rgb.r, rgb.g, rgb.b),
         Color::Indexed(index) => CellColor::Indexed(index),
-        // The sixteen ANSI colours; the rest name the theme's defaults.
         Color::Named(named) => u8::try_from(named as usize)
             .ok()
             .filter(|index| *index < 16)

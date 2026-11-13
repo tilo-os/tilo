@@ -44,10 +44,6 @@ fn ended_session_banner_reserves_its_own_band_above_the_grid() {
     }
 }
 
-/// A terminal whose shell ended offers to start it again in place: the
-/// ended session's banner carries "Restart shell", which is the `restart`
-/// action, and a press on it puts a new process behind the same terminal on
-/// a clean screen.
 #[test]
 fn an_ended_shell_restarts_in_place() {
     use crate::resource::TerminalEffect;
@@ -118,8 +114,6 @@ fn an_ended_shell_restarts_in_place() {
     });
 }
 
-/// The scroll bar lies over the body padding, as every overlay bar does:
-/// the grid keeps the columns a gutter beside it would take.
 #[test]
 fn the_scroll_bar_takes_no_columns_from_the_grid() {
     let (mut w, _) = build_test_widget();
@@ -132,9 +126,6 @@ fn the_scroll_bar_takes_no_columns_from_the_grid() {
     );
 }
 
-/// The history bar is an overlay: output alone does not show it, scrolling
-/// back does and it fades after, and neither resizes the session's screen.
-/// Under reduced motion it stays shown.
 #[test]
 fn the_history_bar_shows_on_scroll_and_fades_at_rest() {
     use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};

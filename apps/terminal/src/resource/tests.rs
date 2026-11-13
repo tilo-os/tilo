@@ -50,8 +50,6 @@ fn read_reports_the_live_screen_and_where_the_session_runs() {
     assert!(output.chars().all(|character| character == 'é'));
 }
 
-/// What a process prints is live: output of any volume writes nothing to
-/// the record and adds no version; the record keeps where the session runs.
 #[test]
 fn output_stays_out_of_the_record() {
     let mut app = TestApp::<TerminalShell>::new().expect("terminal");
@@ -110,8 +108,6 @@ fn the_record_takes_valid_facts_only() {
     assert_eq!(session.state().unwrap().relay(), None);
 }
 
-/// Two devices claiming a pane at once converge on one; an agent records
-/// in one call.
 #[test]
 fn replicas_converge_on_one_pane() {
     let mut ours = Replica::<Terminal>::new();
@@ -158,8 +154,6 @@ fn a_session_nested_in_another_record_stays_under_its_object() {
     );
 }
 
-/// What the session recorded is history the person reads in their
-/// language.
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
     let mut app = TestApp::<TerminalShell>::new().expect("terminal");
@@ -189,7 +183,6 @@ fn the_session_publishes_its_effects_and_the_links_on_screen() {
     app.settle();
 
     let published = app.agent_surface().to_string();
-    // Showing a run's item is offered on the runs (run_tests).
     for effect in TerminalEffect::declarations()
         .into_iter()
         .filter(|effect| effect.id != "open-item")
@@ -208,7 +201,6 @@ fn the_session_publishes_its_effects_and_the_links_on_screen() {
         "the public link is a row, the local file link is not: {published}"
     );
 
-    // Scrolling to the oldest output through the door moves the view.
     app.effect(&TerminalEffect::HistoryTop)
         .expect("history-top is offered while older output is retained");
     let scrolled = app
@@ -216,7 +208,6 @@ fn the_session_publishes_its_effects_and_the_links_on_screen() {
         .expect("the terminal surface is hosted");
     assert!(scrolled > 0, "the view scrolled back");
 
-    // A reviewed command may not smuggle control characters.
     assert!(
         app.call(
             "run",
@@ -225,7 +216,6 @@ fn the_session_publishes_its_effects_and_the_links_on_screen() {
         .is_err()
     );
 
-    // An emulating terminal keeps its own screen when the record is presented.
     let mut widget = TerminalWidget::spawn_headless().expect("headless terminal");
     widget.feed(b"hello");
     ResourceSurface::<Terminal, TerminalEffect>::present(
@@ -238,8 +228,6 @@ fn the_session_publishes_its_effects_and_the_links_on_screen() {
     );
 }
 
-/// A scenario's output on screen through `--shots`' own path, with the
-/// view state staged over it.
 fn captured<T>(scenario: &str, read: impl FnOnce(&mut crate::TerminalView) -> T) -> T {
     let mut app = ui::framework::testing::TestApp::<TerminalShell>::capture(Some(scenario))
         .unwrap_or_else(|error| panic!("{scenario} stages: {error}"));
@@ -275,8 +263,6 @@ fn scenarios_stage_their_output_and_view_state() {
     assert_eq!(target, Some(crate::target::SessionTarget::Host));
 }
 
-/// A folder granted to an environment is named by an absolute path: a
-/// relative one would mean wherever Terminal happens to run.
 #[test]
 fn granting_a_relative_folder_is_refused() {
     use ui::tilo_resource::Effect as _;
@@ -319,9 +305,6 @@ fn native_replacement_preserves_private_effect_contract() {
     assert_eq!(effect.arguments()["text"], "private transcript");
 }
 
-/// Each Terminal window is a session of its own: a second window starts its
-/// own session record, and what one window's session records (where it
-/// runs) is not another's.
 #[test]
 fn every_window_is_a_session_of_its_own() {
     let mut app = TestApp::<TerminalShell>::new().expect("terminal");
@@ -339,10 +322,6 @@ fn every_window_is_a_session_of_its_own() {
     assert_ne!(first, second, "and holds nothing of it");
 }
 
-/// History reads an agent's command from the session's record as it is
-/// stored, never through this model: the request a `run` queued, how the
-/// terminal settled it, and the run it recorded under the request's id.
-/// This pins that stored shape.
 #[test]
 fn history_reads_a_requested_run_from_the_stored_record() {
     use ui::tilo_resource::Settled;
@@ -361,8 +340,6 @@ fn history_reads_a_requested_run_from_the_stored_record() {
         .next()
         .map(|(id, _)| id.clone())
         .unwrap();
-    // The record names a run's output by the reference the store that ran it
-    // answered, which a sealed store keeps its own key under.
     let store = tilo_content::ContentStore::memory().sealing();
     let printed = b"error: signup failed\n";
     let reference = store.put(printed).unwrap();

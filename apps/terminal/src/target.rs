@@ -1,29 +1,20 @@
-//! Where a terminal session runs.
-//!
-//! Every session is bound to a target (`docs/app-model/environments.md`):
-//! the device's own login shell ([`SessionTarget::Host`]), a guest built from
-//! an environment record ([`SessionTarget::Environment`]), or a legacy VM
-//! ([`SessionTarget::Legacy`]). The target is part of the synced
-//! `terminal.session` record, so reopening a session — here or on another
-//! device — goes back to the same place where it can.
+//! Where a terminal session runs: every session is bound to a target
+//! (docs/app-model/environments.md).
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Model, Refusal, resource};
 
-/// Where a session runs.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum SessionTarget {
-    /// The device's own login shell, unconfined.
     Host,
-    /// A guest built from an environment record. `None` is the default
-    /// environment.
     Environment {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         record: Option<String>,
     },
-    /// A legacy VM, by name.
-    Legacy { vm: String },
+    Legacy {
+        vm: String,
+    },
 }
 
 impl Default for SessionTarget {
@@ -32,16 +23,13 @@ impl Default for SessionTarget {
     }
 }
 
-/// The most a stored target may weigh; anything larger is not a target.
 const MAX_TARGET_BYTES: usize = 1024;
 
 impl SessionTarget {
-    /// The default environment on this device.
     pub fn default_environment() -> Self {
         Self::Environment { record: None }
     }
 
-    /// An environment on this device.
     pub fn environment(record: impl Into<String>) -> Self {
         let record = record.into();
         Self::Environment {
@@ -53,7 +41,6 @@ impl SessionTarget {
         matches!(self, Self::Host)
     }
 
-    /// The environment record key this target names, if it is one.
     pub fn environment_record(&self) -> Option<&str> {
         match self {
             Self::Environment { record, .. } => Some(
@@ -65,9 +52,6 @@ impl SessionTarget {
         }
     }
 
-    /// Whether every field is one a request may carry: record keys and VM
-    /// names arrive from synced state, so they are checked before they are
-    /// used for anything.
     pub fn is_valid(&self) -> bool {
         match self {
             Self::Host => true,
@@ -78,8 +62,6 @@ impl SessionTarget {
         }
     }
 
-    /// The target as the `ush` supervisor on this device understands it.
-    /// `None` for a legacy VM.
     pub fn to_supervisor(&self) -> Option<tilo_environment::Target> {
         match self {
             Self::Host => Some(tilo_environment::Target::Host),
@@ -90,12 +72,10 @@ impl SessionTarget {
         }
     }
 
-    /// Encode for the record.
     pub fn encode(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
     }
 
-    /// Decode a stored target; anything malformed or invalid is no target.
     pub fn decode(raw: &str) -> Option<Self> {
         if raw.len() > MAX_TARGET_BYTES {
             return None;
@@ -106,21 +86,16 @@ impl SessionTarget {
     }
 }
 
-/// An environment as the target picker and the management sheet show it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EnvironmentSummary {
-    /// The record key.
     pub key: String,
     pub name: String,
-    /// Package names the environment's tools provide, in order.
     pub tools: Vec<String>,
-    /// Granted directories, `(path, writable)`.
     pub grants: Vec<(String, bool)>,
 }
 
-/// Every target the picker offers, in order: each environment, then the
-/// device's own shell, then legacy VMs (only when the legacy VM service
-/// reports any).
+/// Every target the picker offers, in order: each environment, the device's own shell, then legacy
+/// VMs (only when the legacy VM service reports any).
 pub fn picker_targets(
     environments: &[EnvironmentSummary],
     host_available: bool,
@@ -145,9 +120,6 @@ pub fn picker_targets(
     out
 }
 
-/// The target a new tab opens on: the most recently used environment, else
-/// the default environment — or the device's own shell where no environment
-/// can run at all.
 pub fn default_target(
     recent: Option<&SessionTarget>,
     environments_available: bool,
@@ -161,10 +133,8 @@ pub fn default_target(
     }
 }
 
-/// The environment each device used last, by device: a record Terminal
-/// keeps beside its sessions in the workspace. Which environment you last
-/// opened on one device says nothing about the next, so each device reads
-/// and writes only its own entry.
+/// The environment each device used last, by device: what one device opened says nothing about the
+/// next, so each reads and writes only its own entry.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct RecentEnvironments {
     /// The environment, encoded as a request carries it, by device.
@@ -172,12 +142,6 @@ pub struct RecentEnvironments {
 }
 
 impl RecentEnvironments {
-    /// What the record holds: the environment each device opened last.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -191,8 +155,6 @@ impl RecentEnvironments {
     read_content = RecentEnvironments::read_document
 )]
 impl RecentEnvironments {
-    /// `device` opened the environment `target` (encoded as a request
-    /// carries it): a new tab there opens on it.
     #[action(housekeeping)]
     pub fn used(&mut self, device: String, target: String) -> Result<(), Refusal> {
         if !matches!(
@@ -207,15 +169,12 @@ impl RecentEnvironments {
 }
 
 impl RecentEnvironments {
-    /// The environment `device` used last.
     #[must_use]
     pub fn on(&self, device: &str) -> Option<SessionTarget> {
         SessionTarget::decode(self.devices.get(device)?.trim())
     }
 }
 
-/// The most recently used environment on this device: its entry in the
-/// [`RecentEnvironments`] record, where the window has one.
 #[derive(Clone, Default)]
 pub struct RecentTarget {
     record: Option<(ui::framework::PersonRecord<RecentEnvironments>, String)>,
@@ -230,7 +189,6 @@ impl std::fmt::Debug for RecentTarget {
 }
 
 impl RecentTarget {
-    /// `device`'s entry in `record`.
     pub fn in_record(
         record: ui::framework::PersonRecord<RecentEnvironments>,
         device: impl Into<String>,
@@ -240,7 +198,6 @@ impl RecentTarget {
         }
     }
 
-    /// No record: nothing is remembered.
     pub fn none() -> Self {
         Self::default()
     }
@@ -287,8 +244,6 @@ mod tests {
             SessionTarget::environment(tilo_environment::DEFAULT_RECORD),
             SessionTarget::default_environment()
         );
-        // Targets stored while a full Linux session was a choice read back
-        // as the environment they named, in ush's shell.
         assert_eq!(
             SessionTarget::decode(r#"{"kind":"environment","shell":"linux"}"#),
             Some(SessionTarget::default_environment())
