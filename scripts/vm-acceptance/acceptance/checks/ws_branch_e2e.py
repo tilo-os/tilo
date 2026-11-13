@@ -625,9 +625,9 @@ def branch_said(ctx, name: str, room: str) -> dict:
 
     notices = wait_until(told, 15, interval=0.5) or []
     # What did not come along, as the session logged it (the notice's body is not on screen).
-    why = ctx.vm.root_exec("journalctl --no-pager -o cat | sed 's/\\x1b\\[[0-9;]*m//g' "
-                           f"| grep -a 'a branch of a workspace is not complete' | grep -a {shlex.quote(room)} "
-                           "| tail -n 12 | cut -c1-500", timeout=120, check=False) if any(
+    why = ctx.vm.exec(f"{{ cat \"{core.SESSION_LOG}\"; journalctl --user --no-pager -o cat; }} 2>/dev/null "
+                      "| sed 's/\\x1b\\[[0-9;]*m//g' | grep -a 'branch of a workspace is not complete' "
+                      "| tail -n 20 | cut -c1-500", timeout=120, check=False) if any(
         "is not complete" in n for n in notices) else ""
     audit = ctx.vm.exec("cat \"$HOME\"/.local/share/ush/audit/* \"$HOME\"/.local/share/ush/*/audit/* 2>/dev/null "
                         f"| grep -a branch-workspace | grep -a {shlex.quote(room)} | tail -n 2 | cut -c1-600",
@@ -668,7 +668,9 @@ def branch(ctx, res):
     # The desk offers the person its Branch workspace entry.
     entries = ctx.vm.actions("Branch")
     ctx.write("WB02-entries.json", json.dumps(entries, indent=1))
-    offered = [r for r in entries if str(r.get("title", "")).lower() in (BRANCH_ENTRY.lower(), "branch a workspace")]
+    # By its action, whatever words the catalogue gives its title ("Branch the workspace").
+    offered = [r for r in entries if str(r.get("id", "")).endswith("branch-workspace")
+               or str(r.get("title", "")).lower() in (BRANCH_ENTRY.lower(), "branch a workspace", "branch the workspace")]
     res.metrics["entry"] = [{k: r.get(k) for k in ("provider", "id", "title")} for r in offered][:5]
     problems.want(bool(offered), f"the desk offers no {BRANCH_ENTRY!r} entry")
     branches, timings = [], {}
@@ -841,6 +843,10 @@ def post_chat(ctx, ws: dict, text: str) -> None:
                 "nm -D -C --defined-only \"$o\" 2>/dev/null | sort | awk -v at=\"$at\" "
                 "'{ if (strtonum(\"0x\" $1) <= strtonum(at)) last=$0 } END { print \"nearest \" last }'; true",
                 timeout=600, check=False)
+            # The kernel names a composefs object by its fs-verity digest: the image's ELF files
+            # whose digest it is.
+            crash += "\n" + ctx.vm.root_exec(
+                "python3 -I - <<'PY'\n" + VERITY_SCAN.replace("DIGEST", digest) + "\nPY", timeout=600, check=False)
         # Which processes the crashed threads were: the units started around the first crash.
         first = re.search(r"^(\w+ +\d+ [\d:]+) \S+ kernel: native-render-p", crash, re.M)
         if first:
@@ -860,6 +866,44 @@ def post_chat(ctx, ws: dict, text: str) -> None:
     ctx.vm.key("Return")
 
 
+# Finds the files under the image's library directories whose fs-verity SHA-512 digest (the name
+# composefs gives their object, and the kernel's crash line) is DIGEST.
+VERITY_SCAN = r"""
+import hashlib, os, subprocess
+want = "DIGEST"
+def verity(path):
+    data = open(path, "rb").read()
+    size, block = len(data), 4096
+    level = [hashlib.sha512(data[i:i + block].ljust(block, b"\0")).digest()
+             for i in range(0, max(size, 1), block)] if size else []
+    while len(level) > 1:
+        joined = b"".join(level)
+        level = [hashlib.sha512(joined[i:i + block].ljust(block, b"\0")).digest()
+                 for i in range(0, len(joined), block)]
+    root = level[0] if level else b""
+    desc = bytes([1, 2, 12, 0]) + bytes(4) + size.to_bytes(8, "little") + root.ljust(64, b"\0") + bytes(32 + 144)
+    return hashlib.sha512(desc).hexdigest()
+found = 0
+for top in ("/usr/lib/tilo-runtime", "/usr/lib64", "/usr/lib", "/usr/libexec", "/var/lib/tilo", "/opt"):
+    for base, dirs, files in os.walk(top):
+        for name in files:
+            path = os.path.join(base, name)
+            try:
+                if os.path.islink(path) or not 4096 <= os.path.getsize(path) <= 8 << 20:
+                    continue
+                with open(path, "rb") as f:
+                    if f.read(4) != b"\x7fELF":
+                        continue
+                if verity(path) == want:
+                    found += 1
+                    print("crashed in", path)
+                    print(subprocess.run(["readelf", "-dW", path], capture_output=True, text=True).stdout[-800:])
+            except OSError:
+                pass
+print("verity scan:", found, "file(s) match")
+"""
+
+
 def app_processes(ctx, app: str) -> str:
     """`app`'s running processes: each one's threads, what they wait in, and what its scope
     logged, whatever words it used. For an app whose window never came."""
@@ -871,6 +915,9 @@ def app_processes(ctx, app: str) -> str:
         "done | sort | uniq -c | sort -rn | head -n 25; done; u=$(basename \"$c\"); "
         "journalctl --no-pager -o short-precise _SYSTEMD_USER_UNIT=$u 2>/dev/null | sed 's/\\x1b\\[[0-9;]*m//g' "
         "| grep -avE 'FRAME-LIFECYCLE|paint-stats' | tail -n 60 | cut -c1-300; done",
+        timeout=180, check=False) + "\n== its scopes' logs, ended ones too\n" + ctx.vm.exec(
+        f"journalctl --user --no-pager -o short-precise -u 'app-tilo-{app}-*' 2>&1 "
+        "| sed 's/\\x1b\\[[0-9;]*m//g' | grep -avE 'FRAME-LIFECYCLE|paint-stats' | tail -n 80 | cut -c1-300",
         timeout=180, check=False)
 
 
