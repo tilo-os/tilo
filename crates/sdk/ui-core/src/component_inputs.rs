@@ -418,25 +418,14 @@ pub(crate) fn forced() -> bool {
 /// arrives. Taking that in again would change the tree the proof means to
 /// find unchanged, and it is the frame's take-in, not the tree's sync.
 pub fn proving<R>(check: impl FnOnce() -> R) -> R {
-    let _proving = Proving::begin();
+    struct Proving(bool);
+    impl Drop for Proving {
+        fn drop(&mut self) {
+            PROVING.with(|proving| proving.set(self.0));
+        }
+    }
+    let _proving = Proving(PROVING.with(|proving| proving.replace(true)));
     check()
-}
-
-/// Passes are proofs while this lives ([`proving`]).
-pub struct Proving(bool);
-
-impl Proving {
-    #[inline(never)]
-    #[must_use]
-    pub fn begin() -> Self {
-        Self(PROVING.with(|proving| proving.replace(true)))
-    }
-}
-
-impl Drop for Proving {
-    fn drop(&mut self) {
-        PROVING.with(|proving| proving.set(self.0));
-    }
 }
 
 /// Whether the pass running is a proof ([`proving`]).
