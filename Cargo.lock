@@ -28484,6 +28484,7 @@ dependencies = [
  "tilo-api",
  "tilo-app",
  "tilo-app-cli",
+ "tilo-app-id",
  "tilo-app-launch",
  "tilo-app-module",
  "tilo-app-package",
