@@ -173,6 +173,14 @@ or changed in an application, do it there; never put that content in your reply 
 does it say) is answered in your reply: read what you need with read operations, then call \
 `plan` alone with the whole answer in `reply`. List no parts for a question, and write nothing \
 into an application unless the request asks for that too. A remark is answered the same way.
+- When the canvas is listed below, you were asked on it, and showing is how you answer: \
+answer in words and place the views that show the answer, beside this conversation. Read what \
+you need (a `tilo` program, a read operation), then in the same or the next turn `invoke` the \
+canvas' place for each resource that shows it, with your answer in `reply` on the last one. A \
+listing or a program that answered what was asked is enough: do not open the application to \
+check it. To show something, place it; to arrange, use the places' own steps (close, position, \
+activate, move, pin) and the canvas' style switch. Open an application in a window of its own \
+only when the person asks for that application.
 - A result too long for one observation shows its first page and a `continues`; read on with \
 `read_result`, only as far as the request needs. A result read long ago may come back put \
 aside, as its `result` handle and a summary; `read_result` reads it again from `from` 0.
@@ -1004,6 +1012,10 @@ impl Session {
                 (offer.broker_peer_id.is_some() || offer.broker_provider.is_some())
                     // The agent's own AI transforms are not task steps.
                     && !crate::transform::is_transform_kind(&offer.descriptor.resource_kind)
+                    // A host program's open is no step of a task: its window
+                    // publishes nothing to work with. The session's `open-app`
+                    // still opens an app the person names.
+                    && !tools::canvas::is_host_app(offer)
                     // An operation needing confirmation is offered too: the
                     // step pauses until the person answers it.
                     // An operation its application marks deprecated names
@@ -1201,8 +1213,22 @@ impl Session {
                 });
             }
         }
-        let summary =
-            tools::catalogue_summary(&catalogue, &mut state.revealed, tools::MOST_SUMMARISED);
+        // Asked on the canvas, the canvas' own steps come first, whole: showing
+        // what answers the question beside the conversation is the answer's
+        // normal shape. The applications' operations are summarised after them.
+        let canvas = tools::canvas::canvas_section(
+            &catalogue,
+            &mut state.revealed,
+            tools::canvas::conversation_of(&run.task_id),
+        );
+        let summary = if canvas.is_empty() {
+            tools::catalogue_summary(&catalogue, &mut state.revealed, tools::MOST_SUMMARISED)
+        } else {
+            let rest = tools::canvas::without_canvas(&catalogue);
+            let summary =
+                tools::catalogue_summary(&rest, &mut state.revealed, tools::MOST_SUMMARISED);
+            format!("{canvas}Applications:\n\n{summary}")
+        };
         // Stable first, volatile last. System and tools are the same bytes on
         // every turn of every task; this catalogue changes only when the
         // applications republish, so it opens the first turn in a block of
@@ -2186,6 +2212,17 @@ impl Session {
             let catalogue = self.task_catalogue();
             if let Some(offer) = surface::find(&catalogue.offers, operation) {
                 *state.done_apps.entry(offer.app.clone()).or_default() += 1;
+                // Showing or arranging an app's thing on the canvas is what a
+                // request naming that app asked of it there.
+                if tools::canvas::is_canvas_step(offer) {
+                    let parameters = call
+                        .input
+                        .get(tools::INVOKE_PARAMETERS)
+                        .unwrap_or(&Value::Null);
+                    for app in tools::canvas::apps_shown(&catalogue, offer, parameters) {
+                        *state.done_apps.entry(app).or_default() += 1;
+                    }
+                }
             }
         }
         let mut report = report;
