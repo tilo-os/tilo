@@ -1697,8 +1697,8 @@ mod tests {
         assert!(
             grant
                 .summary
-                .starts_with("Granted read on /home/user/notes to files"),
-            "the grant names verb, scope and subject: {:?}",
+                .starts_with("Granted read on /home/user/notes to ada in files"),
+            "the grant names the verb, the scope, who it reaches and the app: {:?}",
             grant.summary
         );
         assert_eq!(grant.entry_kind, EntryKind::Access);
