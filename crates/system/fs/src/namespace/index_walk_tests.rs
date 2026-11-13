@@ -142,8 +142,8 @@ fn a_change_costs_the_change_not_the_tree() {
     eprintln!("WORK rebuild-100k-tree: {rebuild_ms} ms");
 
     local_changes(&mut ns, rebuild_ms);
+    // `measure` compares the indexes with a rebuild after each change, the last included.
     peer_changes(&mut ns, rebuild_ms);
-    assert_indexes_match_rebuild(&ns);
 }
 
 fn measure<T>(
