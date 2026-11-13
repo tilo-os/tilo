@@ -207,6 +207,8 @@ fn a_section_opens_under_its_tile_and_closing_it_puts_the_controls_back() {
 fn every_section_opens_under_its_tile() {
     let _settled = ui::motion::testing::settled();
     let (mut app, host) = hosted("controls");
+    // What the tile before this one listed, once its section has opened.
+    let mut replaced: Option<&str> = None;
     for (tile, section, shows) in [
         ("qs-tile-wifi", QsSection::Wifi, "qs-network-Home"),
         (
@@ -234,6 +236,14 @@ fn every_section_opens_under_its_tile() {
             "{section:?} lists what it is about under its tile: {listed:?} under {opener:?}"
         );
         assert!(has(&mut app, "qs-tile-vpn"), "the controls stay");
+        // One section at a time: what the tile before listed went with its section.
+        if let Some(gone) = replaced.replace(shows) {
+            assert!(
+                !has(&mut app, gone),
+                "{section:?} takes the place of the section open before it, which still lists \
+                 {gone}"
+            );
+        }
     }
 }
 
@@ -983,6 +993,19 @@ fn back_closes_a_section_leaves_a_page_and_finishes_arranging() {
     panel.back();
     assert_eq!(panel.section, None);
     assert!(!panel.showing().goes_back(), "now Back closes the panel");
+    // Arranging stands over the controls: Back finishes it, and the controls it returns to are
+    // where Back closes the panel again.
+    panel.edit(true);
+    assert!(
+        panel.showing().goes_back(),
+        "arranging has the controls behind it"
+    );
+    panel.back();
+    assert!(!panel.editing, "Back finishes arranging");
+    assert!(
+        !panel.showing().goes_back(),
+        "and the controls it finished on have nothing behind them"
+    );
     panel.paste();
     assert!(
         !panel.showing().goes_back(),
@@ -994,6 +1017,48 @@ fn back_closes_a_section_leaves_a_page_and_finishes_arranging() {
         panel, pasting,
         "Back has nothing to go back to, so the first Escape closes it"
     );
+}
+
+/// A section opens from wherever the panel stands (an accessory's page, the arrangement, the
+/// clipboard opened to paste) and it opens on the controls: none of those stays over it, and what
+/// shows the panel is told the section and nothing of the place it left.
+#[test]
+fn a_section_opens_on_the_controls_from_every_place_the_panel_stands() {
+    /// A way the panel comes to stand somewhere other than its controls.
+    type Stand = fn(&mut QuickSettings);
+    let places: [(&str, Stand); 3] = [
+        ("an accessory's page", |panel: &mut QuickSettings| {
+            panel.show_accessory("00:11".into());
+        }),
+        ("the arrangement", |panel: &mut QuickSettings| {
+            panel.edit(true);
+        }),
+        ("the clipboard opened to paste", QuickSettings::paste),
+    ];
+    for (place, stand) in places {
+        let mut panel = QuickSettings::default();
+        stand(&mut panel);
+        assert!(
+            panel.showing().is_deeper(),
+            "{place} stands over the controls"
+        );
+        panel.open_section(QsSection::Vpn);
+        let showing = panel.showing();
+        assert_eq!(
+            (
+                showing.page,
+                showing.section,
+                showing.pasting,
+                showing.editing
+            ),
+            (Page::Root, Some(QsSection::Vpn), false, false),
+            "a section opened from {place} stands on the controls"
+        );
+        assert_eq!(
+            showing.accessory, "",
+            "from {place}, no accessory is named off its page"
+        );
+    }
 }
 
 /// A panel whose page is taller than the room it is given keeps its footer
