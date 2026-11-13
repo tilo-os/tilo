@@ -2172,6 +2172,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
         fn a_nearby_offer_is_bound_to_its_peer_manifest_and_consent;
 
         phase nearby_fresh_consent_rebinds_retry_and_truncates_only_uncommitted_tail;
