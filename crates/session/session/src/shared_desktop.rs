@@ -38,13 +38,27 @@ use ui::state::UndoLog;
 use tilo_broker_core::custody::OwnerCustody as _;
 
 use crate::engine::{Engine, SealKeys};
-use crate::sync::Client as Sync;
 use tilo_desktop_surface::DesktopHandle;
-use tilo_session_core::desk::actor_of_person;
 
 /// The person `person`, as a history names them.
 fn user(person: &str) -> UserId {
     UserId(person.to_owned())
+}
+
+/// A layout's history as this session drives it: every change of it a person made, on any of
+/// their devices, is one step of theirs.
+fn history(doc: &mut automerge::AutoCommit) -> UndoLog {
+    UndoLog::new(doc).on_any_device()
+}
+
+/// The actor `person`'s changes of a layout are written as on this device: their handle and this
+/// device's key, so two of their devices writing at once never number a change the same
+/// (`ui::history_source::authors::device_actor`).
+fn actor(engine: &Engine, person: &str) -> automerge::ActorId {
+    automerge::ActorId::from(ui::history_source::authors::device_actor(
+        person,
+        &automerge::ActorId::from(engine.identity().device_cert.device_public_key.to_vec()),
+    ))
 }
 
 /// A record of a workspace: the app it belongs to and its name there.
@@ -254,10 +268,10 @@ impl Save {
                 windows,
             };
         }
-        // A change of a layout is the person's, whichever of their devices made it: the record is
-        // every member's, and a step taken back later is found by the actor they write as.
+        // A change of a layout is the person's, written as this device: the record is every
+        // member's, and their other devices' changes are theirs to take back with it.
         let mut candidate = base;
-        candidate.set_actor(actor_of_person(person));
+        candidate.set_actor(actor(engine, person));
         let mine = |id: u64| peer_salt_of(id) == local;
         let by_tab: BTreeMap<u64, String> = notes.into_iter().collect();
         let records = |id: u64| by_tab.get(&id).cloned();
@@ -355,14 +369,16 @@ pub(crate) struct SharedDesktops {
 
 impl SharedDesktops {
     /// This session's records, writing what its windows note of themselves (`notes`), on the loop
-    /// `wake` wakes.
+    /// `wake` wakes, and each workspace's view kept for `person`.
     pub(crate) fn new(
         notes: Arc<crate::continuations::Continuations>,
         wake: tilo_service::LoopWake,
+        person: String,
     ) -> Self {
         Self {
             notes,
             wake,
+            person: RefCell::new(Some(person)),
             ..Self::default()
         }
     }
@@ -501,7 +517,7 @@ impl SharedDesktops {
                 held.read = true;
                 held.revision = Some(revision);
                 if held.undo.is_none() {
-                    held.undo = Some(UndoLog::new(&mut doc));
+                    held.undo = Some(history(&mut doc));
                 }
                 if held.kept.is_none() {
                     held.kept = Some(doc.clone());
@@ -635,16 +651,10 @@ impl SharedDesktops {
     /// the strips and windows it makes and arranges, and where the person here is looking. Returns
     /// whether this look published the view, the layout's write being handed to the task that
     /// makes it.
-    pub(crate) fn capture(
-        &self,
-        engine: &Arc<Engine>,
-        sync: Option<&Sync>,
-        tree: &DesktopTree,
-    ) -> bool {
-        let Some(person) = sync.and_then(|sync| sync.own().user) else {
+    pub(crate) fn capture(&self, engine: &Arc<Engine>, tree: &DesktopTree) -> bool {
+        let Some(person) = self.person.borrow().clone() else {
             return false;
         };
-        *self.person.borrow_mut() = Some(person.clone());
         self.capture_layout(engine, &person, tree);
         self.capture_view(engine, &person, tree)
     }
@@ -781,7 +791,7 @@ impl SharedDesktops {
                         // begins here, and the change it makes is the first step in it.
                         let log = held.undo.get_or_insert_with(|| {
                             let mut from = taken.record.clone();
-                            UndoLog::new(&mut from)
+                            history(&mut from)
                         });
                         {
                             log.record_committed_span(
@@ -869,11 +879,11 @@ impl SharedDesktops {
         let (reached, revision, _) = self.reached(engine, &key);
         let kept = self.held(&key, |held| held.kept.clone());
         let mut doc = base_of(room, kept, reached);
-        doc.set_actor(actor_of_person(person));
+        doc.set_actor(actor(engine, person));
         let before = doc.get_heads();
         let mut log = self
             .held(&key, |held| held.undo.take())
-            .unwrap_or_else(|| UndoLog::new(&mut doc));
+            .unwrap_or_else(|| history(&mut doc));
         let stepped = if redo {
             log.redo_as(&mut doc, Some(&user(person)), None, None)
         } else {
@@ -987,7 +997,7 @@ impl SharedDesktops {
         let (reached, revision, _) = self.reached(engine, &key);
         let kept = self.held(&key, |held| held.kept.clone());
         let mut doc = base_of(room, kept, reached);
-        doc.set_actor(actor_of_person(person));
+        doc.set_actor(actor(engine, person));
         let before = doc.get_heads();
         if !edit(&mut doc) {
             doc.rollback();

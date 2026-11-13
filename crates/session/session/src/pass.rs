@@ -557,6 +557,11 @@ impl Session {
         self.shared.serve_activity();
         self.shared.serve_mentions();
         self.follow_collaboration();
+        // A workspace's strips and windows are the workspace's: what its members put there —
+        // before this device joined, and since — is this device's desk too, and what this device
+        // arranges there is theirs to see. A desk with no one else on it writes its workspaces'
+        // layouts through the same records.
+        self.shared.follow_shared_desktops();
         self.follow_automation();
         // The person's list is kept on the hosts of their workspaces through the sessions the
         // broker reaches them on.

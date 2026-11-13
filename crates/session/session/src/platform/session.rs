@@ -282,6 +282,7 @@ impl Session {
         let desktops = Rc::new(crate::shared_desktop::SharedDesktops::new(
             std::sync::Arc::clone(&notes),
             options.wake.clone(),
+            options.person.clone(),
         ));
         let activity = crate::activity::Activity::new(
             options.state.as_deref(),

@@ -80,6 +80,11 @@ pub struct UndoLog {
     /// frame asks, and the answer moves only with the document or this
     /// history.
     next: std::cell::RefCell<HashMap<NextQuery, (HistoryMoment, Option<UndoEntry>)>>,
+    /// Whether a change an author made on another of their devices is a step
+    /// of theirs too: their actor names them
+    /// ([`authors::device_actor`]), where a window's history counts only what
+    /// this device wrote.
+    any_device: bool,
 }
 
 /// An author's window and whether it asks for the next redo.
@@ -107,6 +112,7 @@ impl Default for UndoLog {
             index: std::cell::RefCell::default(),
             origin_len: 0,
             next: std::cell::RefCell::default(),
+            any_device: false,
         }
     }
 }
@@ -158,7 +164,8 @@ fn bracket(doc: &AutoCommit, step: &[Version]) -> (Vec<ChangeHash>, Vec<ChangeHa
     (before, after)
 }
 
-/// What a history may take back: not the open step, only this device's.
+/// What a history may take back: not the open step, and only what this device — or, where it
+/// follows a person onto their other devices, they — wrote.
 struct Reach {
     open: HashSet<ChangeHash>,
     device: authors::DeviceActors,
@@ -214,11 +221,21 @@ impl UndoLog {
             index: std::cell::RefCell::default(),
             origin_len: 0,
             next: std::cell::RefCell::default(),
+            any_device: false,
         };
         log.index.borrow_mut().refresh(doc);
         log.origin_len = log.index.borrow().len();
         log.open_next();
         log
+    }
+
+    /// Count an author's changes on their other devices as steps of theirs:
+    /// the document is one several of their devices write, and what they did
+    /// there is theirs to take back here. A change whose actor names no
+    /// person ([`authors::actor_handle`]) is only this device's.
+    pub fn on_any_device(mut self) -> Self {
+        self.any_device = true;
+        self
     }
 
     /// Open the next step: the changes made from now on join it.
@@ -329,11 +346,18 @@ impl UndoLog {
                 None => presented.is_some(),
             },
         };
-        // Only what was done here: a step on another device is that
-        // device's to take back (or the published undo's, by scope).
+        // Only what was done here, or — where the history follows the
+        // person across their devices — what their actor names them as the
+        // author of. Another person's step on this device is not.
+        let theirs = presented.is_some()
+            || reach.device.wrote(&version.actor)
+            || (self.any_device
+                && author.is_some_and(|author| {
+                    authors::actor_handle(&version.actor).is_some_and(|actor| actor == author.0)
+                }));
         by && instance
             .is_none_or(|instance| presented.is_none_or(|step| step.instance_id == Some(instance)))
-            && (presented.is_some() || reach.device.wrote(&version.actor))
+            && theirs
     }
 
     /// Whether `next` is a change of the step `last` is in: the step this

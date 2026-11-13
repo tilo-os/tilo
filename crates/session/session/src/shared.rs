@@ -59,7 +59,7 @@ impl Shared {
         // since was written first, so the fold comes back with this device's own change in it and
         // nothing is undone.
         let mut tree = self.handle.read(Clone::clone);
-        self.desktops.capture(engine, self.sync.as_deref(), &tree);
+        self.desktops.capture(engine, &tree);
         // What the workspace did not take of this desk is on the desk the person used: they hear it
         // once, naming the workspace and why.
         if let Some(refusal) = self.desktops.take_refusal() {
