@@ -1241,6 +1241,9 @@ d-p5wzoqr5 = Window controls
     .w-maximize = Maximize
     .w-close = Close
 
+d-6bfcv6wf = Window actions
+    .w-window-actions = Window actions
+
 d-z4vc77e6 = Place controls
     .w-pin-place = Pin place
     .w-move-to-row = Move to row
