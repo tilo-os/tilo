@@ -1098,7 +1098,6 @@ impl FakeDiscord {
         self.shared.lock().voice.speaking.clone()
     }
 
-    /// The voice channel the bot is in.
     #[must_use]
     pub fn voice_bot_channel(&self) -> Option<String> {
         self.shared.lock().voice.bot_channel.clone()
@@ -1123,8 +1122,7 @@ impl FakeDiscord {
         self.shared.lock().voice.dave_version
     }
 
-    /// The voice privacy codes the fake users see, one per user in the group: all equal once DAVE is
-    /// established.
+    /// The voice privacy codes the fake users see, one per user: all equal once DAVE is established.
     #[must_use]
     pub fn voice_privacy_codes(&self) -> Vec<String> {
         self.shared.lock().voice.privacy_codes()
