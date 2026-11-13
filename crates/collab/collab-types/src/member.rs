@@ -232,7 +232,6 @@ mod tests {
             assert_eq!(MemberId::parse(&id.key()).as_ref(), Some(&id), "{id}");
         }
         assert_eq!(MemberId::parse("ada"), Some(MemberId::person("ada")));
-        assert_eq!(MemberId::parse("person:ada"), Some(MemberId::person("ada")));
         assert_eq!(MemberId::parse("agent:"), None);
     }
 }

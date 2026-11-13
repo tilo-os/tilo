@@ -2118,23 +2118,19 @@ impl HeldChat {
     /// messages `peer` wrote lie past this person's read mark (a part, and how many of the
     /// conversation's messages in it they saw).
     fn conversation(&self, peer: &str) -> Result<Conversation, String> {
-        use chat::record::{Chat, Participant};
+        use chat::record::Chat;
         let people = self.chat["people"]
             .as_object()
             .filter(|people| !people.is_empty());
         let Some(people) = people else {
             return Err("the workspace's people are not in Chat's record yet".into());
         };
-        if peer == self.me
-            || people
-                .get(peer)
-                .is_none_or(|person| person["agent"] == true)
-        {
+        if peer == self.me || people.get(peer).is_none() {
             return Err(format!("Chat knows no person {peer}"));
         }
         let channel = Chat::direct_id([
-            Participant::person(self.me.clone()),
-            Participant::person(peer),
+            tilo_actions::policy::MemberId::person(self.me.clone()),
+            tilo_actions::policy::MemberId::person(peer),
         ])
         .to_string();
         let mark = &self.chat["read"][&self.me][&channel];

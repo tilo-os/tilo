@@ -1,3 +1,4 @@
+use tilo_actions::policy::MemberId;
 use ui::tilo_actions::DoorError;
 use ui::tilo_resource::{Id, Invoke, Replica, Resource};
 
@@ -1763,7 +1764,7 @@ fn a_person_the_workspace_has_no_name_for_goes_by_their_tag() {
     .unwrap();
     ada.sync_with(&mut bo).unwrap();
     let chat = ada.state().unwrap();
-    let with_bo = Chat::direct_id([Participant::person(ADA), Participant::person(BO)]);
+    let with_bo = Chat::direct_id([MemberId::person(ADA), MemberId::person(BO)]);
     let row = chat
         .conversation_rows(
             ADA,
@@ -1793,7 +1794,7 @@ fn a_person_the_workspace_has_no_name_for_goes_by_their_tag() {
 #[test]
 fn a_conversation_is_about_its_participants_not_who_may_read_it() {
     const CY: &str = "u_cy";
-    let with_bo = Chat::direct_id([Participant::person(ADA), Participant::person(BO)]);
+    let with_bo = Chat::direct_id([MemberId::person(ADA), MemberId::person(BO)]);
     let mut ada = Talk::new();
     let mut cy = ada.fork_as(CY);
     cy.apply(post_to(with_bo.as_str(), "in their conversation"))
@@ -1823,8 +1824,8 @@ fn a_conversation_is_about_its_participants_not_who_may_read_it() {
 fn two_devices_opening_the_same_conversation_at_once_share_one() {
     let mut ada = Talk::new();
     let mut bo = ada.fork_as(BO);
-    let from_ada = Chat::direct_id([Participant::person(ADA), Participant::person(BO)]);
-    let from_bo = Chat::direct_id([Participant::person(BO), Participant::person(ADA)]);
+    let from_ada = Chat::direct_id([MemberId::person(ADA), MemberId::person(BO)]);
+    let from_bo = Chat::direct_id([MemberId::person(BO), MemberId::person(ADA)]);
     assert_eq!(from_ada, from_bo, "the id is the set, in any order");
     ada.apply(post_to(from_ada.as_str(), "from Ada")).unwrap();
     bo.apply(post_to(from_bo.as_str(), "from Bo")).unwrap();

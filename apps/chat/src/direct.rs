@@ -9,6 +9,7 @@
 //! are the chat's messages in the chat's parts, beside every channel's; its
 //! read mark is this person's, in the record.
 
+use tilo_actions::policy::MemberId;
 use ui::framework::{Effected, LiveRow};
 use ui::tilo_resource::Effect as _;
 use ui::tilo_resource::{Id, Invoke};
@@ -17,7 +18,7 @@ use crate::app::{ChatApp, Focus};
 use crate::effects::{ChatEffect, item_row_id};
 use crate::messages::chat_part;
 use crate::parts::ChatPart;
-use crate::record::{Chat, Participant};
+use crate::record::Chat;
 
 impl ChatApp {
     /// The person the operation's `key` names here, and the one conversation
@@ -35,7 +36,7 @@ impl ChatApp {
         let Some(person) = chat
             .people
             .iter()
-            .find(|person| person.id.0 == key && !person.agent)
+            .find(|person| person.id.0 == key && !person.is_agent())
         else {
             return Err(crate::i18n::t("chat-person-unknown"));
         };
@@ -43,8 +44,8 @@ impl ChatApp {
             return Err(crate::i18n::t("chat-person-unknown"));
         }
         let id = Chat::direct_id([
-            Participant::person(self.me.id.clone()),
-            Participant::person(person.id.0.clone()),
+            MemberId::person(self.me.id.clone()),
+            MemberId::person(person.id.0.clone()),
         ]);
         Ok((person.id.0.clone(), id))
     }
@@ -54,8 +55,8 @@ impl ChatApp {
     /// window has not talked to yet still opens where the conversation is.
     pub(crate) fn open_agent(&mut self, agent: &str, chat: &Chat) {
         let id = Chat::direct_id([
-            Participant::person(self.me.id.clone()),
-            Participant::agent(agent.to_owned()),
+            MemberId::person(self.me.id.clone()),
+            MemberId::agent(agent.to_owned()),
         ]);
         self.open_conversation(&id, chat);
     }
@@ -171,17 +172,17 @@ impl ChatApp {
             }
             return Ok(Id::from_raw(conversation.id.clone()));
         }
-        let mut participants = vec![Participant::person(self.me.id.clone())];
+        let mut participants = vec![MemberId::person(self.me.id.clone())];
         for recipient in to {
             match recipient.kind {
                 RecipientKind::Person => {
                     if !chat.people.iter().any(|person| person.id.0 == recipient.id) {
                         return Err(crate::i18n::t("chat-person-unknown"));
                     }
-                    participants.push(Participant::person(recipient.id.clone()));
+                    participants.push(MemberId::person(recipient.id.clone()));
                 }
                 RecipientKind::Agent => {
-                    participants.push(Participant::agent(recipient.id.clone()));
+                    participants.push(MemberId::agent(recipient.id.clone()));
                 }
                 // What a box holds of a new agent is made before it sends
                 // ([`crate::effects::ChatEffect::Send`]): an agent still
@@ -204,7 +205,7 @@ impl ChatApp {
     /// conversation with an agent, or one of more than two people, is not one of them.
     fn direct_peer(&self, channel: &crate::model::Channel) -> Option<String> {
         self.conversation_peer(&channel.participants)
-            .filter(|peer| channel.direct && !peer.is_agent())
+            .filter(|peer| channel.direct && peer.is_person())
             .map(|peer| peer.id().to_owned())
     }
 

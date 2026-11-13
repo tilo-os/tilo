@@ -1353,7 +1353,7 @@ impl ChatApp {
             self.active_channel.clone(),
         ))?
         .into_iter()
-        .find(|participant| !participant.is_agent() && participant.id() != self.me.id)
+        .find(|participant| participant.is_person() && participant.id() != self.me.id)
         .map(|participant| participant.id().to_owned())
     }
 

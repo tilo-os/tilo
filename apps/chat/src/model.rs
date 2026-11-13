@@ -156,8 +156,8 @@ pub struct Channel {
     /// A direct conversation between some of the workspace's people, rather
     /// than one of its named channels.
     pub direct: bool,
-    /// Who a direct conversation is with, by participant key
-    /// (`person:<root>`, `agent:<id>`); empty for a channel.
+    /// Who a direct conversation is with, by [`MemberId::key`]
+    /// (`<root>`, `agent:<id>`, `bot:<id>`); empty for a channel.
     pub participants: Vec<String>,
 }
 

@@ -171,7 +171,7 @@ fn a_mention_completed_with_tab_is_sent_as_a_marked_reference() {
     let who = app
         .participants()
         .into_iter()
-        .find(|participant| !app.is_me(&participant.id) && participant.name.len() > 2)
+        .find(|participant| !app.is_me(&participant.id.0) && participant.name.len() > 2)
         .expect("the demo workspace has someone to mention");
     let prefix: String = who.name.chars().take(2).collect();
     type_str(&mut app, &mut doc, &format!("ping @{prefix}"));
@@ -186,13 +186,13 @@ fn a_mention_completed_with_tab_is_sent_as_a_marked_reference() {
         .unwrap();
     assert_eq!(sent.text, format!("ping {label} now"));
     assert_eq!(sent.mentions.len(), 1, "{:?}", sent.mentions);
-    assert_eq!(sent.mentions[0].user, who.id);
+    assert_eq!(sent.mentions[0].user, who.id.0);
     assert_eq!(sent.mentions[0].slice(&sent.text), label);
     assert!(
         sent.blocks()[0]
             .marks
             .iter()
-            .any(|span| span.mark == ui::widget::Mark::Mention(who.id.clone())),
+            .any(|span| span.mark == ui::widget::Mark::Mention(who.id.0.clone())),
         "the body keeps the mention as written"
     );
     // Rendered through the read-only view, it lays out at its width.

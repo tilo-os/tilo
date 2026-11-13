@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 
+use tilo_actions::policy::MemberId;
+
 use crate::model::{self, Id, User};
 
 use super::ChatApp;
@@ -18,8 +20,9 @@ impl ChatApp {
     /// about a third's name is a difference nobody can settle. So the workspace
     /// answers, and a peer only ever supplies its id.
     pub fn display_name(&self, id: &str) -> String {
-        if let Some(agent) = id.strip_prefix("agent:")
-            && let Some(name) = self.known_agent_name(agent)
+        if let Some(name) = MemberId::parse(id)
+            .filter(|member| !member.is_person())
+            .and_then(|member| self.known_agent_name(member.id()))
         {
             return name;
         }
@@ -115,9 +118,9 @@ impl ChatApp {
         id: &str,
         acting: Option<&ui::tilo_resource::Acting>,
     ) -> Option<String> {
-        let name = id
-            .strip_prefix("agent:")
-            .and_then(|agent| self.known_agent_name(agent))
+        let name = MemberId::parse(id)
+            .filter(|member| !member.is_person())
+            .and_then(|member| self.known_agent_name(member.id()))
             .or_else(|| self.agent_authors.get(id).cloned())
             .or_else(|| acting?.name.as_ref().map(|name| name.0.clone()))?;
         let person = acting
@@ -164,8 +167,9 @@ impl ChatApp {
     /// the one rule every surface draws a participant by ([`ui::presence::participant_hue`]) —
     /// so a face, a chip and a byline are one colour, here as in every app of the workspace.
     pub(crate) fn participant_hue(&self, id: &str) -> ui::tokens::PresenceHue {
-        id.strip_prefix("agent:")
-            .and_then(|agent| self.workspace_agent_colours.get(agent))
+        MemberId::parse(id)
+            .filter(|member| !member.is_person())
+            .and_then(|member| self.workspace_agent_colours.get(member.id()))
             .map(|slot| ui::tokens::PresenceHue::from_slot(usize::from(*slot)))
             .or_else(|| {
                 self.workspace_colors
@@ -181,9 +185,9 @@ impl ChatApp {
     /// when it made one for a person, otherwise [`Self::participant_hue`] as the colour that hue
     /// wears.
     pub fn participant_color(&self, id: &str) -> (u8, u8, u8) {
-        let agent = id
-            .strip_prefix("agent:")
-            .is_some_and(|agent| self.workspace_agent_colours.contains_key(agent));
+        let agent = MemberId::parse(id)
+            .filter(|member| !member.is_person())
+            .is_some_and(|member| self.workspace_agent_colours.contains_key(member.id()));
         self.workspace_colors
             .get(id)
             .filter(|_| !agent)
@@ -210,14 +214,14 @@ impl ChatApp {
     /// Everyone a message's `@name`s bind to when it is sent: the
     /// document's own users, plus anyone the workspace is talking about who has
     /// not yet written themselves into it.
-    pub fn participants(&self) -> Vec<crate::mention::Participant> {
-        let mut out: Vec<crate::mention::Participant> = self
+    pub fn participants(&self) -> Vec<crate::record::Person> {
+        let mut out: Vec<crate::record::Person> = self
             .participant_ids()
             .into_iter()
-            .map(|(id, is_agent)| crate::mention::Participant {
-                id: id.to_owned(),
+            .map(|(id, _)| crate::record::Person {
+                id: ui::tilo_resource::Atom(id.to_owned()),
                 name: self.display_name(id),
-                is_agent,
+                ..crate::record::Person::default()
             })
             .collect();
         out.sort_by(|a, b| a.name.cmp(&b.name));

@@ -800,12 +800,10 @@ fn summonses(chat: &chat::Chat, part: &chat::parts::ChatPart) -> Vec<Id> {
         let agents: Vec<String> = chat
             .conversation_participants(&message.channel)
             .into_iter()
-            .filter_map(|participant| match &participant {
-                // The reply an agent's answer is derives from the participant key it writes as,
-                // which spells the agent `agent:<id>` (`chat::record::reply_id`).
-                chat::record::Participant::Agent(_) => Some(participant.key()),
-                chat::record::Participant::Person(_) => None,
-            })
+            // The reply an agent's answer is derives from the member key it writes as, which
+            // spells the agent `agent:<id>` (`chat::record::reply_id`).
+            .filter(|participant| !participant.is_person())
+            .map(|participant| participant.key())
             .collect();
         for agent in agents {
             // The reply of the attempt the message is in: a retry moved it on, so the reply that
@@ -866,25 +864,17 @@ fn summons_item(id: &Id) -> tilo_actions::ResourceSpec {
     spec
 }
 
-/// The person a message's author names, when it names one: the participant key (`person:<root>`,
-/// what a conversation's fields keep) or the bare id a record write attributes its change to
-/// ([`ActionCx::author`](tilo_resource::action)). Both spell one person — the second is what Chat
-/// writes a message's author as — so a message a person posted summons its conversation's agent
-/// however it was written, and the run answers for the person it names.
+/// The person a message's author names, when it names one: a member key that is a person
+/// ([`MemberId::key`], what a conversation's fields keep). A message a person posted summons its
+/// conversation's agent, and the run answers for the person it names; software names nobody.
 fn person_of(author: &str) -> Option<String> {
-    match chat::record::Participant::parse(author) {
-        Some(chat::record::Participant::Person(root)) if !root.is_empty() => return Some(root),
-        // A participant key naming an agent, or an empty person.
-        Some(chat::record::Participant::Person(_) | chat::record::Participant::Agent(_)) => {
-            return None;
-        }
-        None => {}
+    if author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX) {
+        // A run of a task writes under its own id, which is no member's.
+        return None;
     }
-    // A bare id: not a participant key at all, and no agent's either.
-    (!author.is_empty()
-        && !author.contains(':')
-        && !author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX))
-    .then(|| author.to_owned())
+    tilo_actions::policy::MemberId::parse(author)
+        .and_then(|member| member.person_id().map(str::to_owned))
+        .filter(|person| !person.is_empty())
 }
 
 /// The turns `chat` 's conversations give, read from `part` 's messages, and the agents the
@@ -921,10 +911,11 @@ fn turns(
             .filter(|(_, message)| message.channel == *id)
             .collect();
         for participant in chat.conversation_participants(id) {
-            let key = participant.key();
-            let chat::record::Participant::Agent(agent) = participant else {
+            if participant.is_person() {
                 continue;
-            };
+            }
+            let key = participant.key();
+            let agent = participant.id().to_owned();
             if !agents.contains(&agent) {
                 agents.push(agent.clone());
             }
@@ -1165,12 +1156,10 @@ mod tests {
         assert_eq!(entry.run.instruction, "It quotes: \"before Friday\".");
     }
 
-    /// A message Chat writes names its author by the bare id the record write
-    /// gives, not by the `person:<root>` key its conversation keeps: both spell
-    /// one person, so a message a person posts in Chat summons its agent as
-    /// surely as one written under the key.
+    /// A person writes messages under their root key, which is the member key their
+    /// conversation keeps: a message they post summons its conversation's agent.
     #[test]
-    fn a_message_written_by_a_bare_person_id_is_a_turn_too() {
+    fn a_persons_message_is_a_turn() {
         let bare = "22503e79b0b80274014ec6333d3561ca89cb3209937b901c4bc2e4bedccc2f85";
         let chat = workspace();
         let head = part(vec![("m1", message(bare, "what is on my task list?", 10))]);

@@ -16,6 +16,7 @@
 //! which asks the agent again on the same message rather than posting the question twice
 //! (shell.md §8.1).
 
+use tilo_actions::policy::MemberId;
 use tilo_view::node;
 use tilo_view::ui::{self, Gap};
 use tilo_view::{Arg, Node, ResourceRef, Value, ViewCx, ViewResource};
@@ -60,17 +61,21 @@ pub struct Channel {
 }
 
 /// Someone who speaks in a channel, as their name shows them.
-#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Person {
-    /// Their participant id, as messages and reactions name them.
-    #[serde(default)]
-    pub id: String,
+    /// Who they are, as messages and reactions name them.
+    pub id: MemberId,
     /// The name they show.
     #[serde(default)]
     pub name: String,
-    /// An automated agent rather than a person.
-    #[serde(default)]
-    pub agent: bool,
+}
+
+impl Person {
+    /// Whether this is software acting in the workspace rather than a person.
+    #[must_use]
+    pub fn is_agent(&self) -> bool {
+        !self.id.is_person()
+    }
 }
 
 /// What a channel's record does not itself say of the people in it, which the session reading
@@ -280,7 +285,7 @@ impl Channel {
     /// Who wrote `author`, when the channel names them.
     #[must_use]
     pub fn person(&self, author: &str) -> Option<&Person> {
-        self.people.iter().find(|person| person.id == author)
+        self.people.iter().find(|person| person.id.key() == author)
     }
 
     /// The message `id` says it answers, for the quote over a reply.
@@ -437,11 +442,14 @@ impl Channel {
         author: &str,
         acting: Option<&sdk::tilo_resource::Acting>,
     ) {
-        if people.iter().any(|held| held.id == author) {
+        if people.iter().any(|held| held.id.key() == author) {
             return;
         }
         let roster = chat.people.iter().find(|person| person.id.0 == author);
-        let agent = roster.map_or_else(|| is_agent(author), |person| person.agent);
+        let agent = match roster {
+            Some(person) => person.is_agent(),
+            None => is_agent(author),
+        };
         let shown = roster
             .map(|person| person.name.trim().to_owned())
             .filter(|name| !name.is_empty())
@@ -467,9 +475,8 @@ impl Channel {
             None => shown,
         };
         people.push(Person {
-            id: author.to_owned(),
+            id: MemberId::parse(author).unwrap_or_else(|| MemberId::agent(author)),
             name,
-            agent,
         });
     }
 }
@@ -552,11 +559,13 @@ fn retryable(rows: &[crate::model::Message], row: &crate::model::Message) -> boo
         .to_string()
 }
 
-/// Whether `author` is an agent rather than a person: one of the workspace's own (`agent:<id>`,
-/// the actor its identity record names) or a run of a task (`agent-task:<task>`). An agent is a
-/// collaborator and reads as one, in the byline and its face, wherever its name is shown.
+/// Whether `author` is software rather than a person: a member that is an agent or a bot, or a
+/// run of a task (`agent-task:<task>`), which is no member.
 pub(crate) fn is_agent(author: &str) -> bool {
-    author.starts_with("agent:") || author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
+    MemberId::parse(author).map_or_else(
+        || author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX),
+        |member| !member.is_person(),
+    )
 }
 
 /// The name an agent author shows, as the record or the workspace names it: the name the
@@ -576,9 +585,9 @@ fn agent_name(
     // names it.
     let called = [
         chat.agent_names.get(author).map(|name| name.trim()),
-        author
-            .strip_prefix("agent:")
-            .and_then(|id| names.agents.get(id))
+        MemberId::parse(author)
+            .filter(|member| !member.is_person())
+            .and_then(|member| names.agents.get(member.id()))
             .map(|name| name.trim()),
         acting
             .and_then(|acting| acting.name.as_ref())
@@ -1312,7 +1321,7 @@ fn author_label(person: Option<&Person>, id: &str) -> String {
 /// cannot name, never their id.
 fn principal(person: Option<&Person>, id: &str) -> tilo_view::Principal {
     tilo_view::Principal {
-        id: person.map_or_else(|| id.to_owned(), |person| person.id.clone()),
+        id: person.map_or_else(|| id.to_owned(), |person| person.id.key()),
         name: author_label(person, id),
     }
 }
@@ -1487,8 +1496,8 @@ mod tests {
             crate::record::Conversation {
                 name: "Assistant".to_owned(),
                 participants: vec![
-                    crate::record::Participant::person(me).atom(),
-                    crate::record::Participant::agent(agent).atom(),
+                    sdk::tilo_resource::Atom(MemberId::person(me).key()),
+                    sdk::tilo_resource::Atom(MemberId::agent(agent).key()),
                 ],
                 ..crate::record::Conversation::default()
             },
@@ -1568,7 +1577,7 @@ mod tests {
         let agent = channel
             .person("agent:assistant")
             .expect("the agent is in the channel's people");
-        assert!(agent.agent, "the author is an agent");
+        assert!(agent.is_agent(), "the author is an agent");
         assert_eq!(agent.name, "Assistant", "the agent is named");
         let cx = view_cx(&channel);
         let tree = page(&channel, &cx);
@@ -1812,7 +1821,7 @@ mod tests {
         };
         channel.messages.push(Message {
             id: "m_shared".to_owned(),
-            author: channel.people[0].id.clone(),
+            author: channel.people[0].id.key(),
             ts: 1_782_470_400,
             attachments: vec![Attachment {
                 kind: "resource".to_owned(),
@@ -1879,7 +1888,7 @@ mod tests {
         let mut channel = demo_channel();
         channel.messages.push(Message {
             id: "m_dropped".to_owned(),
-            author: channel.people[0].id.clone(),
+            author: channel.people[0].id.key(),
             ts: 1_782_470_400,
             text: "what is left?".to_owned(),
             attachments: vec![attachment],
@@ -2004,7 +2013,7 @@ mod tests {
         };
         channel.messages.push(Message {
             id: "m_shared".to_owned(),
-            author: channel.people[0].id.clone(),
+            author: channel.people[0].id.key(),
             ts: 1_782_470_400,
             attachments: vec![Attachment {
                 kind: "resource".to_owned(),
@@ -2057,8 +2066,8 @@ mod tests {
             crate::record::Conversation {
                 name: "Assistant".to_owned(),
                 participants: vec![
-                    crate::record::Participant::person(ME).atom(),
-                    crate::record::Participant::agent("assistant").atom(),
+                    sdk::tilo_resource::Atom(MemberId::person(ME).key()),
+                    sdk::tilo_resource::Atom(MemberId::agent("assistant").key()),
                 ],
                 ..crate::record::Conversation::default()
             },
@@ -2228,8 +2237,8 @@ mod tests {
             crate::record::Conversation {
                 name: "Assistant".to_owned(),
                 participants: vec![
-                    crate::record::Participant::person(ME).atom(),
-                    crate::record::Participant::agent("assistant").atom(),
+                    sdk::tilo_resource::Atom(MemberId::person(ME).key()),
+                    sdk::tilo_resource::Atom(MemberId::agent("assistant").key()),
                 ],
                 ..crate::record::Conversation::default()
             },
@@ -2395,9 +2404,8 @@ mod tests {
     fn writing_channel(state: &str, partial: &str) -> Channel {
         let mut channel = demo_channel();
         channel.people.push(Person {
-            id: "agent:tide".to_owned(),
+            id: MemberId::agent("tide"),
             name: "Tide".to_owned(),
-            agent: true,
         });
         channel.messages.push(Message {
             id: "m_asked".to_owned(),

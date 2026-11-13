@@ -128,7 +128,7 @@ impl ChatApp {
     /// that person's speech. Appearance supplies only the model's display name.
     pub(crate) fn is_provider_output(&self, message: &crate::model::Message) -> bool {
         !message.author.starts_with("bot:")
-            && !message.author.starts_with("agent:")
+            && !crate::views::is_agent(&message.author)
             && !message
                 .author
                 .starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)

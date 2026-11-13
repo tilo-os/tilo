@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 use ui::icons::Icon;
 use ui::widget::{Element, NavAction, NavFeed, NavItem, NavList, NavSection, WindowBarLink};
 
+use tilo_actions::policy::MemberId;
+
 use crate::app::{ChatApp, Hit, MenuAction, MenuTarget};
 use crate::model::{Channel, ChannelKind};
 
@@ -146,16 +148,11 @@ impl ChatApp {
                 // A conversation with one other wears their face: an agent's own, a person's
                 // avatar, each in the colour they wear everywhere in the workspace.
                 if let Some(with) = with {
-                    let key = with.key();
-                    let author = if with.is_agent() {
-                        key
-                    } else {
-                        with.id().to_owned()
-                    };
+                    let author = with.key();
                     item = item
                         .person(&author, Some(self.identity_colour(&author)), false)
                         .person_face(&conversation.name, None);
-                    if with.is_agent() {
+                    if !with.is_person() {
                         item = item.agent_face();
                     }
                 }
@@ -166,14 +163,11 @@ impl ChatApp {
 
     /// The one other participant of a conversation with `participants` (their keys), when it has
     /// exactly one.
-    pub(crate) fn conversation_peer(
-        &self,
-        participants: &[String],
-    ) -> Option<crate::record::Participant> {
+    pub(crate) fn conversation_peer(&self, participants: &[String]) -> Option<MemberId> {
         let mut others = participants
             .iter()
-            .filter_map(|key| crate::record::Participant::parse(key))
-            .filter(|participant| participant.is_agent() || !self.is_me(participant.id()));
+            .filter_map(|key| MemberId::parse(key))
+            .filter(|participant| !participant.is_person() || !self.is_me(participant.id()));
         let peer = others.next()?;
         others.next().is_none().then_some(peer)
     }

@@ -43,7 +43,7 @@
 
 use serde::{Deserialize, Serialize};
 #[allow(unused_imports, reason = "the `JsonSchema` derive names the crate")]
-use ui::tilo_resource::{self, JsonSchema};
+use ui::tilo_resource::{self, Atom, JsonSchema};
 
 use crate::model::Id;
 
@@ -80,20 +80,6 @@ impl Mention {
     }
 }
 
-/// Someone a message's `@name` can bind to: a person or an agent in the
-/// workspace.
-///
-/// `name` is the workspace's answer, never the client's own claim about itself —
-/// see `ChatApp::participants`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Participant {
-    pub id: Id,
-    pub name: String,
-    /// An automated agent acting in the workspace rather than a person. The roster
-    /// draws the distinction; a mention carries it forward.
-    pub is_agent: bool,
-}
-
 /// Resolve every `@`-run in `text` against the workspace's `participants`.
 ///
 /// This is the binding step: it runs once, when a message is sent, and its
@@ -102,9 +88,9 @@ pub struct Participant {
 /// binds `@Ada Lovelace` to the longer one rather than to "Ada" plus stray
 /// prose. An `@` that matches nobody is left as ordinary text — no mention is
 /// invented for a name the workspace does not have.
-pub fn resolve(text: &str, participants: &[Participant]) -> Vec<Mention> {
+pub fn resolve(text: &str, people: &[crate::record::Person]) -> Vec<Mention> {
     // Longest first so "Ada Lovelace" wins over "Ada" at the same offset.
-    let mut by_len: Vec<&Participant> = participants.iter().collect();
+    let mut by_len: Vec<&crate::record::Person> = people.iter().collect();
     by_len.sort_by_key(|p| std::cmp::Reverse(p.name.len()));
 
     // Case-insensitive matching runs against a lowered copy. `to_lowercase` can
@@ -136,7 +122,7 @@ pub fn resolve(text: &str, participants: &[Participant]) -> Vec<Mention> {
         }
         let after = at + '@'.len_utf8();
         let mut matched: Option<usize> = None;
-        let mut who: Option<&Participant> = None;
+        let mut who: Option<&crate::record::Person> = None;
         for p in &by_len {
             if p.name.is_empty() {
                 continue;
@@ -179,10 +165,10 @@ pub fn resolve(text: &str, participants: &[Participant]) -> Vec<Mention> {
         match (matched, who) {
             (Some(n), Some(p)) => {
                 out.push(Mention {
-                    user: p.id.clone(),
+                    user: p.id.0.clone(),
                     start: at,
                     len: '@'.len_utf8() + n,
-                    is_agent: p.is_agent,
+                    is_agent: p.is_agent(),
                 });
                 cursor = after + n;
             }
@@ -196,24 +182,19 @@ pub fn resolve(text: &str, participants: &[Participant]) -> Vec<Mention> {
 mod tests {
     use super::*;
 
-    fn workspace() -> Vec<Participant> {
-        vec![
-            Participant {
-                id: "u_ada".into(),
-                name: "Ada".into(),
-                is_agent: false,
-            },
-            Participant {
-                id: "u_lovelace".into(),
-                name: "Ada Lovelace".into(),
-                is_agent: false,
-            },
-            Participant {
-                id: "agent_scribe".into(),
-                name: "Scribe".into(),
-                is_agent: true,
-            },
+    fn workspace() -> Vec<crate::record::Person> {
+        [
+            ("u_ada", "Ada"),
+            ("u_lovelace", "Ada Lovelace"),
+            ("agent:agent_scribe", "Scribe"),
         ]
+        .into_iter()
+        .map(|(id, name)| crate::record::Person {
+            id: Atom(id.into()),
+            name: name.into(),
+            ..crate::record::Person::default()
+        })
+        .collect()
     }
 
     #[test]
@@ -237,7 +218,7 @@ mod tests {
         // Phase: an_agent_resolves_the_same_way_a_person_does.
         {
             let m = resolve("@Scribe please summarise", &workspace());
-            assert_eq!(m[0].user, "agent_scribe");
+            assert_eq!(m[0].user, "agent:agent_scribe", "the member's key");
             assert!(
                 m[0].is_agent,
                 "the workspace's agent flag travels with the mention"

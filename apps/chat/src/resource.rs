@@ -77,7 +77,7 @@ impl Chat {
                     name: person.name.trim().to_owned(),
                     anchor: person_anchor,
                     identity: person.id.0.clone(),
-                    agent: person.agent,
+                    agent: person.is_agent(),
                 }])
         });
         channels
@@ -97,15 +97,12 @@ impl Chat {
                 name: self
                     .people
                     .iter()
-                    .find(|person| person.id.0 == participant.id())
+                    .find(|person| person.id.0 == participant.key())
                     .map(|person| person.name.trim().to_owned())
                     .unwrap_or_default(),
-                anchor: item_resource_id::<Self>(
-                    "people",
-                    &Id::from_raw(participant.id().to_owned()),
-                ),
-                identity: participant.id().to_owned(),
-                agent: participant.is_agent(),
+                anchor: item_resource_id::<Self>("people", &Id::from_raw(participant.key())),
+                identity: participant.key(),
+                agent: !participant.is_person(),
             })
             .collect()
     }

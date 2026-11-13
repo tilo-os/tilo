@@ -30,6 +30,8 @@ use ui::tilo_resource::{
     NonBlank, Refusal,
 };
 
+use tilo_actions::policy::MemberId;
+
 use crate::model::{ChannelKind, Presence};
 
 /// Longest message body, in bytes: a conversation turn, not a document.
@@ -309,7 +311,7 @@ fn participants_of_old_channels(doc: &mut ui::tilo_resource::Doc) -> Result<(), 
                     _ => None,
                 })
                 .collect();
-            let key = Participant::agent(agent).key();
+            let key = MemberId::agent(agent).key();
             if !keys.contains(&key) {
                 let at = doc.length(&participants);
                 doc.insert(&participants, at, ScalarValue::Str(key.into()))?;
@@ -407,7 +409,7 @@ pub fn kept_messages(doc: &ui::tilo_resource::Doc) -> Collection<Message> {
 }
 
 /// The names a chat from before its record was a model kept for the people
-/// in it, under `users`, by participant id: what the authors of its kept
+/// in it, under `users`, by member id: what the authors of its kept
 /// messages are called where the workspace no longer names them.
 pub(crate) fn kept_names(doc: &ui::tilo_resource::Doc) -> BTreeMap<String, String> {
     use ui::automerge::{ROOT, ReadDoc as _};
@@ -546,7 +548,7 @@ pub struct Chat {
     /// ([`Chat::direct_id`]).
     #[model(readonly)]
     pub channels: Collection<Conversation>,
-    /// The people and agents in the workspace, by their participant id.
+    /// The people and agents in the workspace, by [`MemberId::key`].
     pub people: Keyed<Person>,
     /// The name every member shows for an agent task, as the person hosting
     /// it labelled it.
@@ -612,7 +614,7 @@ pub struct Conversation {
     /// keep the workspace's layout may.
     #[model(readonly)]
     pub archived: bool,
-    /// Who the conversation is with, by [`Participant::key`]: empty for a
+    /// Who the conversation is with, by [`MemberId::key`]: empty for a
     /// channel of the whole workspace. Not access control — every member
     /// reads every conversation; it decides where the conversation is
     /// listed and whose unread count moves.
@@ -630,72 +632,8 @@ impl Conversation {
 }
 
 /// The prefix of a direct conversation's id: what it is with follows it
-/// (`direct:person:<root>|person:<root>`, the keys in order).
+/// (`direct:<root>|agent:<id>`, the member keys in order).
 pub const DIRECT_CONVERSATION_PREFIX: &str = "direct:";
-
-/// One of the people or agents a conversation is with.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Participant {
-    /// A person, by the root key of their identity.
-    Person(String),
-    /// An agent, by its participant id.
-    Agent(String),
-}
-
-impl Participant {
-    /// The person whose root key is `root`.
-    #[must_use]
-    pub fn person(root: impl Into<String>) -> Self {
-        Self::Person(root.into())
-    }
-
-    /// The agent whose participant id is `id`.
-    #[must_use]
-    pub fn agent(id: impl Into<String>) -> Self {
-        Self::Agent(id.into())
-    }
-
-    /// How the participant is spelled in a conversation's id and fields:
-    /// `person:<root>` or `agent:<id>`.
-    #[must_use]
-    pub fn key(&self) -> String {
-        match self {
-            Self::Person(root) => format!("person:{root}"),
-            Self::Agent(id) => format!("agent:{id}"),
-        }
-    }
-
-    /// The participant `key` spells, or none when it spells neither kind.
-    #[must_use]
-    pub fn parse(key: &str) -> Option<Self> {
-        if let Some(root) = key.strip_prefix("person:") {
-            return (!root.is_empty()).then(|| Self::Person(root.to_owned()));
-        }
-        let id = key.strip_prefix("agent:")?;
-        (!id.is_empty()).then(|| Self::Agent(id.to_owned()))
-    }
-
-    /// The person's root key or the agent's id.
-    #[must_use]
-    pub fn id(&self) -> &str {
-        match self {
-            Self::Person(root) => root,
-            Self::Agent(id) => id,
-        }
-    }
-
-    /// Whether this is an agent.
-    #[must_use]
-    pub fn is_agent(&self) -> bool {
-        matches!(self, Self::Agent(_))
-    }
-
-    /// The participant as a conversation's fields keep it.
-    #[must_use]
-    pub fn atom(&self) -> Atom {
-        Atom(self.key())
-    }
-}
 
 /// One message of a channel.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -703,7 +641,7 @@ pub struct Message {
     /// The channel it was posted in.
     #[model(readonly)]
     pub channel: Id,
-    /// Who wrote it: their participant id.
+    /// Who wrote it: their [`MemberId::key`], or the id of a task run.
     #[model(readonly)]
     pub author: Atom,
     /// When, in seconds since the epoch.
@@ -881,7 +819,9 @@ pub struct Revision {
 /// A person or agent in the workspace.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Person {
-    /// Their participant id: what messages, reactions and read marks name.
+    /// Who they are, by [`MemberId::key`]: what messages, reactions and read
+    /// marks name. A run of a task writes under its own id, which is none of a
+    /// member's.
     #[model(readonly)]
     pub id: Atom,
     /// The name they show.
@@ -893,9 +833,27 @@ pub struct Person {
     pub color: u32,
     /// Whether they are around.
     pub status: Presence,
-    /// An automated agent rather than a person.
-    #[model(readonly)]
-    pub agent: bool,
+}
+
+impl Person {
+    /// Who this is, when a member writes under it.
+    #[must_use]
+    pub fn member(&self) -> Option<MemberId> {
+        MemberId::parse(&self.id.0)
+    }
+
+    /// Whether this is software acting in the workspace rather than a person.
+    #[must_use]
+    pub fn is_agent(&self) -> bool {
+        self.member().map_or_else(
+            || {
+                self.id
+                    .0
+                    .starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
+            },
+            |member| !member.is_person(),
+        )
+    }
 }
 
 impl Identified for Person {
@@ -1308,7 +1266,7 @@ impl Chat {
     /// from the set, so two devices that open the same conversation at once
     /// make one, and neither has to create it first.
     #[must_use]
-    pub fn direct_id(participants: impl IntoIterator<Item = Participant>) -> Id {
+    pub fn direct_id(participants: impl IntoIterator<Item = MemberId>) -> Id {
         let mut keys: Vec<String> = participants.into_iter().map(|one| one.key()).collect();
         keys.sort();
         keys.dedup();
@@ -1318,10 +1276,9 @@ impl Chat {
     /// The participants the direct conversation `id` names, or none when
     /// `id` names no direct conversation.
     #[must_use]
-    pub fn direct_participants(id: &Id) -> Option<Vec<Participant>> {
+    pub fn direct_participants(id: &Id) -> Option<Vec<MemberId>> {
         let keys = id.as_str().strip_prefix(DIRECT_CONVERSATION_PREFIX)?;
-        let participants: Option<Vec<Participant>> =
-            keys.split('|').map(Participant::parse).collect();
+        let participants: Option<Vec<MemberId>> = keys.split('|').map(MemberId::parse).collect();
         participants.filter(|participants| !participants.is_empty())
     }
 
@@ -1341,7 +1298,10 @@ impl Chat {
         }
         let participants = Self::direct_participants(id)?;
         Some(Conversation {
-            participants: participants.into_iter().map(|one| one.atom()).collect(),
+            participants: participants
+                .into_iter()
+                .map(|one| Atom(one.key()))
+                .collect(),
             ..Conversation::default()
         })
     }
@@ -1349,12 +1309,12 @@ impl Chat {
     /// Who the conversation `id` is with: a channel of the whole workspace
     /// has no participants.
     #[must_use]
-    pub fn conversation_participants(&self, id: &Id) -> Vec<Participant> {
+    pub fn conversation_participants(&self, id: &Id) -> Vec<MemberId> {
         if let Some(channel) = self.channels.get(id) {
             return channel
                 .participants
                 .iter()
-                .filter_map(|key| Participant::parse(&key.0))
+                .filter_map(|key| MemberId::parse(&key.0))
                 .collect();
         }
         Self::direct_participants(id).unwrap_or_default()
@@ -1376,25 +1336,18 @@ impl Chat {
             return false;
         };
         participants.iter().all(|participant| {
-            participant.is_agent()
+            !participant.is_person()
                 || self
                     .people
                     .iter()
-                    .any(|person| person.id.0 == participant.id())
+                    .any(|person| person.id.0 == participant.key())
         })
     }
 
     /// Everyone who can be mentioned: the workspace's people and agents.
     #[must_use]
-    pub fn participants(&self) -> Vec<crate::mention::Participant> {
-        self.people
-            .iter()
-            .map(|person| crate::mention::Participant {
-                id: person.id.0.clone(),
-                name: person.name.clone(),
-                is_agent: person.agent,
-            })
-            .collect()
+    pub fn participants(&self) -> Vec<Person> {
+        self.people.iter().cloned().collect()
     }
 
     /// Who a message refers to: the mentions marked in its paragraphs as
@@ -1452,7 +1405,6 @@ impl Chat {
         if self.people.find(&key).is_none() {
             self.people.push(Person {
                 id: Atom(id.to_owned()),
-                agent: id.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX),
                 ..Person::default()
             });
         }
@@ -1591,7 +1543,7 @@ impl Chat {
     /// that exists leaves it as it is.
     ///
     /// `participants` says who the conversation is with, by
-    /// [`Participant::key`] (`person:<root>`, `agent:<id>`): a conversation an
+    /// [`MemberId::key`] (`<root>`, `agent:<id>`): a conversation an
     /// agent takes part in is one whose agents answer the person's messages in
     /// it. None is a channel of the whole workspace.
     #[action(moderation, audience = "agents")]
@@ -1617,8 +1569,8 @@ impl Chat {
             .unwrap_or_default()
             .iter()
             .map(|key| {
-                Participant::parse(key.trim())
-                    .map(|participant| participant.atom())
+                MemberId::parse(key.trim())
+                    .map(|participant| Atom(participant.key()))
                     .ok_or_else(|| {
                         Refusal::new(format!("`{key}` names no person or agent of the workspace"))
                     })

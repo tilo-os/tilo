@@ -2,12 +2,13 @@
 //! person has a direct conversation with, each once and by name.
 
 use super::*;
+use tilo_actions::policy::MemberId;
 
 /// A direct conversation row as the record projects it, named `name`.
 fn conversation(app: &ChatApp, key: &str, name: &str) -> crate::model::Channel {
     let id = crate::record::Chat::direct_id([
-        crate::record::Participant::person(app.me.id.as_str()),
-        crate::record::Participant::person(key),
+        MemberId::person(app.me.id.as_str()),
+        MemberId::person(key),
     ]);
     crate::model::Channel {
         id: id.to_string(),
@@ -21,8 +22,8 @@ fn conversation(app: &ChatApp, key: &str, name: &str) -> crate::model::Channel {
         archived: false,
         direct: true,
         participants: vec![
-            crate::record::Participant::person(app.me.id.as_str()).key(),
-            crate::record::Participant::person(key).key(),
+            MemberId::person(app.me.id.as_str()).key(),
+            MemberId::person(key).key(),
         ],
     }
 }
@@ -60,8 +61,8 @@ fn channels_open_the_sidebar_and_only_conversations_follow() {
     let key = |i: u64| format!("{i:064x}");
     let row = |i: u64, name: &str| {
         let id = crate::record::Chat::direct_id([
-            crate::record::Participant::person(me.clone()),
-            crate::record::Participant::person(key(i)),
+            MemberId::person(me.clone()),
+            MemberId::person(key(i)),
         ]);
         crate::model::Channel {
             id: id.to_string(),

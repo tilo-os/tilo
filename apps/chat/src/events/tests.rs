@@ -1,6 +1,7 @@
 use super::*;
 use crate::model;
 use taffy::{NodeId, TaffyTree};
+use tilo_actions::policy::MemberId;
 use tilo_automerge::ApplyIncoming;
 use ui::Widget;
 use ui::widget::DrawChild;
@@ -2825,8 +2826,8 @@ fn the_attach_action_refuses_a_relative_path() {
 fn the_bar_leads_the_conversation_with_who_it_is_with() {
     let (mut app, _doc) = app_with_doc();
     app.active_channel = crate::record::Chat::direct_id([
-        crate::record::Participant::person(app.me.id.clone()),
-        crate::record::Participant::agent("assistant"),
+        MemberId::person(app.me.id.clone()),
+        MemberId::agent("assistant"),
     ])
     .to_string();
     render_frame(&mut app, 360.0, 520.0);

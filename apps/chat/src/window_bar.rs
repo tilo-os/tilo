@@ -9,6 +9,7 @@
 //! the conversation used to draw did. A thread that fills the window is the
 //! window's location, with Back to the conversation.
 
+use tilo_actions::policy::MemberId;
 use ui::framework::BarCommands;
 use ui::window_toolbar::{
     LocationAvatar, LocationPresence, ToolbarAction, ToolbarEvent, ToolbarLocation,
@@ -17,7 +18,6 @@ use ui::window_toolbar::{
 
 use crate::app::{ChatApp, Hit};
 use crate::model::{ChannelKind, Presence};
-use crate::record::Participant;
 
 /// The bar's entries, each carrying the window's own hit.
 pub(crate) type BarEntries = BarCommands<Hit>;
@@ -181,18 +181,14 @@ impl ChatApp {
             None => crate::record::Chat::direct_participants(&ui::tilo_resource::Id::from_raw(
                 self.active_channel.clone(),
             ))
-            .map(|participants| participants.iter().map(Participant::key).collect()),
+            .map(|participants| participants.iter().map(MemberId::key).collect()),
         };
         if let Some(participants) = participants {
             let Some(other) = self.conversation_peer(&participants) else {
                 return (Some("users".to_owned()), None);
             };
-            // An agent is named and coloured by its actor, as its byline and its row are.
-            let identity = if other.is_agent() {
-                other.key()
-            } else {
-                other.id().to_owned()
-            };
+            // A member is named and coloured by its key, as its byline and its row are.
+            let identity = other.key();
             let presence = self
                 .user(other.id())
                 .map(|user| match self.live_status(user) {
@@ -205,7 +201,7 @@ impl ChatApp {
                 name: self.display_name(&identity),
                 hue: Some(self.participant_hue(&identity)),
                 identity,
-                agent: other.is_agent(),
+                agent: !other.is_person(),
                 presence,
             };
             return (None, Some(avatar));

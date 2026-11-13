@@ -1,4 +1,5 @@
 use super::*;
+use tilo_actions::policy::MemberId;
 use ui::widget::Widget;
 
 /// A window's person joins the roster through `introduce`.
@@ -368,8 +369,8 @@ fn an_agents_answer_reads_by_the_workspaces_agent_record() {
         .insert("notes".to_owned(), "Notes".to_owned());
     app.reload(&doc);
     let conversation = crate::record::Chat::direct_id([
-        crate::record::Participant::person(crate::model::ME),
-        crate::record::Participant::agent("notes"),
+        MemberId::person(crate::model::ME),
+        MemberId::agent("notes"),
     ]);
     let replied = crate::testing::say(
         &mut doc,

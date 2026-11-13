@@ -62,7 +62,7 @@ impl MemberId {
         }
     }
 
-    /// The member a stored id spells: a prefixed id, or a person's root key.
+    /// The member [`Self::key`] spells.
     #[must_use]
     pub fn parse(key: &str) -> Option<Self> {
         fn nonempty(id: &str) -> Option<String> {
@@ -74,7 +74,7 @@ impl MemberId {
         if let Some(id) = key.strip_prefix("bot:") {
             return nonempty(id).map(Self::Bot);
         }
-        nonempty(key.strip_prefix("person:").unwrap_or(key)).map(Self::Person)
+        nonempty(key).map(Self::Person)
     }
 }
 

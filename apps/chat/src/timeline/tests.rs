@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
+use tilo_actions::policy::MemberId;
 use ui::Widget;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -381,7 +382,7 @@ fn a_received_message_lays_out_and_draws_only_its_row() {
 
 #[test]
 fn a_channel_keeps_its_answers_in_a_thread_and_a_direct_conversation_shows_them_inline() {
-    use crate::record::{Chat, Participant};
+    use crate::record::Chat;
     use ui::tilo_resource::Id;
 
     let mut doc = crate::testing::demo_doc();
@@ -415,10 +416,7 @@ fn a_channel_keeps_its_answers_in_a_thread_and_a_direct_conversation_shows_them_
     // The same workspace, spoken into a conversation with an agent: the
     // person's message and the agent's answer to it stand in the timeline,
     // in the order they were written.
-    let dm = Chat::direct_id([
-        Participant::person(crate::model::ME),
-        Participant::agent("notes"),
-    ]);
+    let dm = Chat::direct_id([MemberId::person(crate::model::ME), MemberId::agent("notes")]);
     let asked = crate::testing::say(
         &mut doc,
         crate::model::ME,

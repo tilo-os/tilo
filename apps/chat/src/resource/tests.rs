@@ -1,6 +1,7 @@
 use super::*;
 use crate::testing::MountedChat;
 use crate::testing::item;
+use tilo_actions::policy::MemberId;
 use ui::framework::testing::TestApp;
 use ui::search::SearchProvider as _;
 use ui::tilo_resource::Resource as _;
@@ -1166,8 +1167,8 @@ fn search_finds_an_agents_conversation_by_the_name_its_record_keeps() {
         .insert("notes".to_owned(), "Notes".to_owned());
     app.reload(&doc);
     let conversation = crate::record::Chat::direct_id([
-        crate::record::Participant::person(crate::model::ME),
-        crate::record::Participant::agent("notes"),
+        MemberId::person(crate::model::ME),
+        MemberId::agent("notes"),
     ]);
     crate::testing::say(
         &mut doc,

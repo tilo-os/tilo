@@ -12,7 +12,7 @@
 use ui::widget::BlockContent;
 use ui::widget::marks::{Mark, MarkSpan};
 
-use crate::mention::{Mention, Participant};
+use crate::mention::Mention;
 
 /// The plain text of `blocks`: one line per paragraph.
 pub fn plain_text(blocks: &[BlockContent]) -> String {
@@ -50,7 +50,7 @@ pub fn legacy(id: &str, text: &str, mentions: &[Mention]) -> Vec<BlockContent> {
 /// Who `blocks` mention: every mention mark, at its byte offset in
 /// [`plain_text`], and every `@name` typed by hand that no mark covers,
 /// resolved against `participants` as a hand-typed mention always was.
-pub fn mentions(blocks: &[BlockContent], participants: &[Participant]) -> Vec<Mention> {
+pub fn mentions(blocks: &[BlockContent], participants: &[crate::record::Person]) -> Vec<Mention> {
     let mut found = Vec::new();
     let mut offset = 0usize;
     for block in blocks {
@@ -60,9 +60,9 @@ pub fn mentions(blocks: &[BlockContent], participants: &[Participant]) -> Vec<Me
                     user: user.clone(),
                     start: offset.saturating_add(span.range.start),
                     len: span.range.len(),
-                    is_agent: participants
-                        .iter()
-                        .any(|participant| participant.id == *user && participant.is_agent),
+                    is_agent: participants.iter().any(|participant| {
+                        participant.id.0 == user.as_str() && participant.is_agent()
+                    }),
                 });
             }
         }
@@ -85,11 +85,11 @@ pub fn mentions(blocks: &[BlockContent], participants: &[Participant]) -> Vec<Me
 mod tests {
     use super::*;
 
-    fn ada() -> Participant {
-        Participant {
-            id: "u-ada".into(),
+    fn ada() -> crate::record::Person {
+        crate::record::Person {
+            id: ui::tilo_resource::Atom("u-ada".into()),
             name: "Ada".into(),
-            is_agent: false,
+            ..crate::record::Person::default()
         }
     }
 
