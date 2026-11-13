@@ -217,6 +217,79 @@ fn decode_entity(ent: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use BlockKind::{Code, Divider, Heading1, Heading2, Heading3, Paragraph, Quote};
+
+    /// What a block is: its kind and its text.
+    type Shape<'a> = (BlockKind, &'a str);
+
+    fn shape(blocks: &[ContentBlock]) -> Vec<Shape<'_>> {
+        blocks
+            .iter()
+            .map(|block| (block.kind, block.text.as_str()))
+            .collect()
+    }
+
+    /// A fragment at each edge of what a feed sends, and every block it
+    /// becomes.
+    const EDGES: &[(&str, &str, &[Shape<'static>])] = &[
+        ("an empty body", "", &[]),
+        ("white space only", " \n\t ", &[]),
+        ("blocks with nothing in them", "<p></p><div> </div>", &[]),
+        ("a tag and no text", "<img src=\"x.png\">", &[]),
+        (
+            "inline tags only",
+            "<b>bold</b> and <i>plain</i>",
+            &[(Paragraph, "bold and plain")],
+        ),
+        ("a line break", "one<br>two", &[(Paragraph, "one two")]),
+        (
+            "a rule between text",
+            "above<hr>below",
+            &[(Paragraph, "above"), (Divider, ""), (Paragraph, "below")],
+        ),
+        ("a rule that closes itself", "<hr />", &[(Divider, "")]),
+        (
+            "the first heading and the deeper ones",
+            "<h1>Top</h1><h4>Deep</h4><h6>Deepest</h6>",
+            &[(Heading1, "Top"), (Heading3, "Deep"), (Heading3, "Deepest")],
+        ),
+        (
+            "upper case and attributes",
+            "<H2 CLASS=\"x\">Loud</H2>",
+            &[(Heading2, "Loud")],
+        ),
+        (
+            "a quote",
+            "<blockquote>Said</blockquote>",
+            &[(Quote, "Said")],
+        ),
+        (
+            "text before a heading",
+            "intro<h2>Head</h2>",
+            &[(Paragraph, "intro"), (Heading2, "Head")],
+        ),
+        (
+            "preformatted text keeps its spaces",
+            "<pre>a  b\n  c &lt; d\n</pre><p>after</p>",
+            &[(Code, "a  b\n  c < d"), (Paragraph, "after")],
+        ),
+        ("a tag cut short", "kept <b", &[(Paragraph, "kept")]),
+        (
+            "named punctuation",
+            "&ldquo;so&rdquo;&hellip;&nbsp;&mdash;",
+            &[(Paragraph, "\u{201c}so\u{201d}\u{2026} \u{2014}")],
+        ),
+        (
+            "an entity nobody knows stays as written",
+            "&bogus; fish",
+            &[(Paragraph, "&bogus; fish")],
+        ),
+        (
+            "a number past the last character stays as written",
+            "&#x110000;",
+            &[(Paragraph, "&#x110000;")],
+        ),
+    ];
 
     #[test]
     fn html_renders_blocks_text_and_entities() {
@@ -255,6 +328,10 @@ mod tests {
             assert_eq!(blocks.len(), 1);
             assert_eq!(blocks[0].kind, BlockKind::Code);
             assert_eq!(blocks[0].text, "fn main() {\n    work();\n}");
+        }
+
+        for (edge, html, expected) in EDGES {
+            assert_eq!(shape(&to_blocks(html)), *expected, "{edge}: {html:?}");
         }
     }
 }
