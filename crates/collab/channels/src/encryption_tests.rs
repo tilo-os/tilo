@@ -2812,3 +2812,115 @@ fn a_competing_genesis_is_judged_once_the_device_names_the_record() {
         "the reader leaves the group whose genesis lost"
     );
 }
+
+/// A member whose link to the device it reaches the workspace through was down
+/// when a channel's group changed heard nothing of the commit, which that
+/// device published once. What the device hands a member that links
+/// ([`ChannelEncryption::standing_governance`]) makes it current again: nobody
+/// has to commit a second time for it to leave the epoch it was left at.
+#[test]
+fn a_member_that_links_after_a_commit_is_handed_the_channels_head() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let channel = ChannelId::new();
+    let policy = Policy::default();
+    for seed in [3, 4, 5] {
+        policy.allowed.lock().unwrap().insert(public(seed));
+    }
+    let (owner_dir, phone_dir, tablet_dir) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let mut now = Instant::now();
+    let mut owner = device(&workspace, workspace_id, 0, 3, &policy, owner_dir.path());
+    let mut phone = device(&workspace, workspace_id, 1, 4, &policy, phone_dir.path());
+    create(&mut owner, workspace_id, channel, now);
+    phone.service.access(workspace_id, channel, now);
+    run(&mut [&mut owner, &mut phone], &mut now, 30);
+    let joined = ready_epoch(&phone.service.access(workspace_id, channel, now));
+    assert!(joined.is_some(), "the phone is in the channel");
+    assert_eq!(
+        ready_epoch(&owner.service.access(workspace_id, channel, now)),
+        joined
+    );
+
+    // The tablet is admitted while nothing reaches the phone: what the others
+    // publish meanwhile is lost to it, as on a link that is down.
+    let mut tablet = device(&workspace, workspace_id, 2, 5, &policy, tablet_dir.path());
+    tablet.service.access(workspace_id, channel, now);
+    for _ in 0..240 {
+        now = now.checked_add(Duration::from_millis(250)).unwrap();
+        owner.service.pump(&owner.endpoint, now, 1_000);
+        tablet.service.pump(&tablet.endpoint, now, 1_000);
+        workspace
+            .queues
+            .lock()
+            .unwrap()
+            .entry(phone.endpoint.id)
+            .or_default()
+            .clear();
+    }
+    let ahead = ready_epoch(&owner.service.access(workspace_id, channel, now));
+    assert_eq!(
+        ready_epoch(&tablet.service.access(workspace_id, channel, now)),
+        ahead,
+        "the tablet is in the channel"
+    );
+    assert!(
+        joined < ahead,
+        "the channel moved on: {joined:?} then {ahead:?}"
+    );
+    assert_eq!(
+        ready_epoch(&phone.service.access(workspace_id, channel, now)),
+        joined,
+        "the phone heard nothing of it"
+    );
+
+    // The phone's link is up again, and the device it reaches the workspace
+    // through hands it what its channels hold.
+    let handed = owner.service.standing_governance(workspace_id);
+    assert!(
+        handed.iter().all(|message| matches!(
+            message,
+            NeighbourMsg::MlsGovernance { workspace, .. } if *workspace == workspace_id.to_string()
+        )),
+        "frames of the workspace's channels, and nothing else"
+    );
+    assert!(
+        owner
+            .service
+            .standing_governance(WorkspaceId::new())
+            .is_empty(),
+        "and none of another workspace's"
+    );
+    workspace
+        .queues
+        .lock()
+        .unwrap()
+        .entry(phone.endpoint.id)
+        .or_default()
+        .extend(
+            handed
+                .into_iter()
+                .filter_map(InboundChannelGovernance::from_message),
+        );
+    run(&mut [&mut phone], &mut now, 2);
+    assert_ne!(
+        ready_epoch(&phone.service.access(workspace_id, channel, now)),
+        joined,
+        "the phone no longer seals under the epoch it was left at"
+    );
+    run(&mut [&mut owner, &mut phone, &mut tablet], &mut now, 130);
+    let settled = ready_epoch(&owner.service.access(workspace_id, channel, now));
+    assert!(settled.is_some());
+    assert_eq!(
+        ready_epoch(&phone.service.access(workspace_id, channel, now)),
+        settled
+    );
+    assert_eq!(
+        owner.service.peers[&channel].peer.members(),
+        phone.service.peers[&channel].peer.members(),
+        "one group"
+    );
+}

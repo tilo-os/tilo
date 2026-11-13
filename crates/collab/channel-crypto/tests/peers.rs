@@ -91,6 +91,48 @@ impl Device {
     }
 }
 
+/// A member that was not reached when the channel's newest commit was published
+/// is current again from what a member that took the commit holds of the
+/// channel: nobody has to commit again for it to hear of the epoch it missed.
+#[test]
+fn a_member_that_missed_the_newest_commit_is_current_from_what_another_holds() {
+    let channel = ChannelId::new();
+    let mut alice = Device::creating(1, channel);
+    let mut bob = Device::waiting(2, channel);
+    let mut carol = Device::waiting(3, channel);
+    let members = allowed(&[&alice, &bob, &carol]);
+    alice.peer.learn_request(bob.ask(false)).unwrap();
+    alice.peer.reconcile_now(&members, &vault()).unwrap();
+    deliver(&alice.take(), &mut [&mut bob], &members);
+    assert_eq!(bob.epoch(), alice.epoch());
+    assert!(
+        Device::waiting(4, channel).peer.standing().is_empty(),
+        "a device that is not in the group has nothing of it to hand over"
+    );
+
+    // Carol is admitted while Bob is not reached: the commit is published
+    // once, and Bob hears none of it.
+    alice.peer.learn_request(carol.ask(false)).unwrap();
+    alice.peer.reconcile_now(&members, &vault()).unwrap();
+    deliver(&alice.take(), &mut [&mut carol], &members);
+    assert_eq!(carol.epoch(), alice.epoch());
+    assert!(bob.epoch() < alice.epoch(), "Bob missed the commit");
+    assert!(alice.peer.outbox().is_empty(), "and nothing is left to say");
+
+    // What Alice holds of the channel, handed to Bob as he reaches her again.
+    let standing = alice.peer.standing();
+    assert!(
+        standing
+            .iter()
+            .any(|frame| frame.epoch == alice.epoch().unwrap()),
+        "the head is among what a member is handed"
+    );
+    deliver(&standing, &mut [&mut bob], &members);
+    assert_eq!(bob.epoch(), alice.epoch());
+    let sealed = carol.seal("after the commit");
+    assert_eq!(bob.opens(&sealed).as_deref(), Some("after the commit"));
+}
+
 fn allowed(devices: &[&Device]) -> BTreeSet<Ed25519PublicKey> {
     devices.iter().map(|device| device.public()).collect()
 }

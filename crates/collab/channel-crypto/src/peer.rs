@@ -729,6 +729,36 @@ impl ChannelPeer {
         }
     }
 
+    /// What a device that was away from this channel is handed to be current
+    /// in it again: the genesis this channel follows, where this device holds
+    /// its frame, and this device's head as its committer published it, whole
+    /// for the devices it adds and with its join material withheld for every
+    /// other member. Nothing from a device that is not in the group.
+    ///
+    /// A transport that keeps a channel's newest frame hands it to whoever
+    /// comes back. A device its members reach the channel through directly
+    /// keeps none for them: it hands them this as they link, so a member that
+    /// was not linked when the head was published does not stay an epoch
+    /// behind for as long as nobody commits again. One commit behind, the
+    /// member follows the head; further behind, it starts over and asks
+    /// ([`PeerEvent::Desynchronised`]), as it does when a host kept only the
+    /// newest frame.
+    #[must_use]
+    pub fn standing(&self) -> Vec<MlsGovernanceFrame> {
+        if !matches!(self.record, MemberRecord::Joined(_)) {
+            return Vec::new();
+        }
+        let mut frames: Vec<MlsGovernanceFrame> = self.genesis_frame.iter().cloned().collect();
+        if let Some(head) = &self.head {
+            for frame in head.clone().into_deliveries().unwrap_or_default() {
+                if !frames.contains(&frame) {
+                    frames.push(frame);
+                }
+            }
+        }
+        frames
+    }
+
     /// Queue this device's branch again from `epoch` up to the head, when
     /// this device signed any of those frames: a device on a branch that
     /// diverged there then hears this branch's frame at that point and can

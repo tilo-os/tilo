@@ -315,6 +315,16 @@ pub type ChannelHistory = Arc<
         + Sync,
 >;
 
+/// The channel governance a device hands each device that links to it in a
+/// workspace it serves ([`Owning::with_channel_history`]): what its own
+/// channel service holds of that workspace's channels when the link starts.
+pub type MemberChannels =
+    Arc<dyn Fn(tilo_desktop_model::WorkspaceId) -> Vec<NeighbourMsg> + Send + Sync>;
+
+/// What a link is handed as its channel history, once it is read.
+type ChannelHistoryRead =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Vec<([u8; 32], NeighbourMsg)>> + Send>>;
+
 struct Inner {
     replica: Replica,
     /// Where this device's engine owns the workspace: frames are admitted into
@@ -1688,6 +1698,9 @@ pub struct Owning {
     serving: Serving,
     /// Who takes what the members' links bring ([`Self::hear`]).
     sinks: Arc<RwLock<Vec<MemberSink>>>,
+    /// What each member that links is handed of the workspace's channels
+    /// ([`Self::with_channel_history`]).
+    channels: Option<MemberChannels>,
     /// Hands what this device commits to a workspace it hosts itself to the
     /// members linked here, for as long as this is kept.
     _kept_here: Arc<crate::owner::NativeKeptHereSubscription>,
@@ -1732,8 +1745,24 @@ impl Owning {
             store,
             serving,
             sinks: Arc::default(),
+            channels: None,
             _kept_here: Arc::new(kept_here),
         }
+    }
+
+    /// Hand every member that links to this device, in a workspace it serves,
+    /// the channel governance `channels` reads for that workspace then, each
+    /// frame in its signer's name: what a host that keeps a channel's newest
+    /// frame replays to a member that comes back
+    /// ([`DirectSync::with_channel_history`]). This device's channel service
+    /// publishes a frame once, to the members linked at that moment, and its
+    /// store keeps sealed records only: without this a member whose link came
+    /// up after a commit of a channel's group never heard of it, and sealed
+    /// under keys the workspace's other devices had moved past.
+    #[must_use]
+    pub fn with_channel_history(mut self, channels: MemberChannels) -> Self {
+        self.channels = Some(channels);
+        self
     }
 
     /// Hand `sink` every frame the members linked to this device bring it, in
@@ -1805,8 +1834,32 @@ impl Owning {
             })
             .owning(self.owner.clone(), held)?
             .with_store(Arc::clone(&self.store));
+        let link = match &self.channels {
+            Some(channels) => {
+                let (channels, own) = (Arc::clone(channels), self.signer.device_public_key());
+                link.with_channel_history(Arc::new(move || -> ChannelHistoryRead {
+                    // Read when a link starts, not when the workspace was first served: the
+                    // channels moved since.
+                    let history: Vec<([u8; 32], NeighbourMsg)> = channels(held)
+                        .into_iter()
+                        .map(|message| (governance_signer(&message).unwrap_or(own), message))
+                        .collect();
+                    Box::pin(async move { history })
+                }))
+            }
+            None => link,
+        };
         self.serving.serve(link.clone())?;
         Ok(link)
+    }
+}
+
+/// The device that signed `message` when it is a frame of a channel's group:
+/// whose frame a link says it is, whichever device hands it on.
+fn governance_signer(message: &NeighbourMsg) -> Option<[u8; 32]> {
+    match message {
+        NeighbourMsg::MlsGovernance { frame, .. } => Some(*frame.signed_by.as_bytes()),
+        _ => None,
     }
 }
 

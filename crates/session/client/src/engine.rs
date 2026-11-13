@@ -413,11 +413,24 @@ impl Engine {
         // device that holds a workspace is a store device of it.
         engine.directed = match tilo_peer_state::store::Store::open(frames_path(state), FRAMES_KEPT)
         {
-            Ok(store) => Some(tilo_peer_state::direct::Owning::new(
-                owner,
-                Arc::clone(&engine.identity.signer),
-                Arc::new(store),
-            )),
+            Ok(store) => {
+                // A member that links is handed what this device's channels hold of the workspace
+                // then, as a host that keeps a channel's newest frame replays it: the channel
+                // service publishes a commit once, to the members linked at that moment.
+                let keys = engine.keys.clone();
+                Some(
+                    tilo_peer_state::direct::Owning::new(
+                        owner,
+                        Arc::clone(&engine.identity.signer),
+                        Arc::new(store),
+                    )
+                    .with_channel_history(Arc::new(move |workspace| {
+                        keys.get()
+                            .map(|channels| channels.standing_governance(workspace))
+                            .unwrap_or_default()
+                    })),
+                )
+            }
             Err(error) => {
                 tracing::warn!(%error, "this device serves no workspace to its other devices");
                 None

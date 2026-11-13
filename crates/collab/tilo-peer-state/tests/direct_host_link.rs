@@ -462,7 +462,31 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     ));
     let frames = tempfile::tempdir().unwrap();
     let store = Arc::new(Store::open(frames.path(), Appetite::StoreAll).unwrap());
-    let serving = Owning::new(host.clone(), host_key.clone(), Arc::clone(&store));
+    // What the device's own channels hold of the workspace: a member that links is handed it as
+    // its link starts, since the device says a channel's frame once, to the members linked then.
+    let standing = NeighbourMsg::MlsGovernance {
+        workspace: WORKSPACE.into(),
+        frame: Box::new(
+            collab_types::MlsGovernanceFrame::signed(
+                collab_types::ChannelId::new(),
+                [0; 32],
+                0,
+                collab_types::MlsGovernanceAction::Genesis,
+                &host_key,
+            )
+            .unwrap(),
+        ),
+        delivery: 7,
+    };
+    let handed = standing.clone();
+    let serving = Owning::new(host.clone(), host_key.clone(), Arc::clone(&store))
+        .with_channel_history(Arc::new(move |asked| {
+            if asked == workspace {
+                vec![handed.clone()]
+            } else {
+                Vec::new()
+            }
+        }));
     // The device's session hears what its members bring, in the workspace they write to: its own
     // apps and channels read it, and it sends it on to the workspace's own host. A member's write
     // and its channel governance went nowhere past this device's links.
@@ -604,6 +628,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     .await;
     let c = DirectSync::over(c.replica(workspace).unwrap(), c_key.clone());
     let c_endpoint = localhost_endpoint(&c_key).await;
+    let mut c_first = c.heard();
     let c_link = tokio::spawn({
         let c = c.clone();
         let c_endpoint = c_endpoint.clone();
@@ -614,6 +639,19 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
         peer.document_heads(APP, RECORD) == written
     })
     .await;
+    // It was also handed what the device's channels hold, in the name of the device that signed
+    // it, and none of it is the workspace's state.
+    let first = hears(
+        &mut c_first,
+        &standing,
+        "a member that links is handed the channel governance the device holds",
+    )
+    .await;
+    assert_eq!(first.author, host_key.verifying_key().to_bytes());
+    assert!(
+        !first.landed,
+        "channel governance is never the workspace's state"
+    );
 
     // A channel's governance one member sends reaches the others through the device that holds
     // the workspace, which admits none of it into the workspace: a request to join a record's
