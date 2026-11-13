@@ -226,7 +226,6 @@ fn the_outline_follows_headings() {
 /// Rich text stored as a field of another document: edited, read and
 /// refreshed under its own map, never touching the document's root or a
 /// sibling field.
-#[test]
 fn rich_text_under_a_field_is_edited_and_refreshed_in_place() {
     use automerge::transaction::Transactable;
     let mut doc = automerge::AutoCommit::new();
@@ -335,7 +334,6 @@ fn team() -> Vec<Vec<String>> {
     .collect()
 }
 
-#[test]
 fn a_filled_table_is_laid_out_row_by_row_with_its_header_first() {
     let mut replica = document(2);
     let ids = body_ids(&replica.state().unwrap());
@@ -374,7 +372,6 @@ fn a_filled_table_is_laid_out_row_by_row_with_its_header_first() {
     assert_eq!(replica.state().unwrap().featured("cell").len(), 9);
 }
 
-#[test]
 fn replicas_applying_a_filled_table_mint_the_same_table() {
     let mut origin = document(2);
     let mut peer = origin.fork();
@@ -392,7 +389,6 @@ fn replicas_applying_a_filled_table_mint_the_same_table() {
     assert_eq!(origin.state().unwrap(), peer.state().unwrap());
 }
 
-#[test]
 fn a_filled_table_and_the_edits_after_it_are_one_group() {
     use tilo_resource::Invoke;
     let mut origin = document(3);
@@ -418,6 +414,28 @@ fn a_filled_table_and_the_edits_after_it_are_one_group() {
     peer.replay(&envelope).unwrap();
     assert_eq!(table_cells(&origin), table_cells(&peer));
     assert_eq!(body, body_ids(&peer.state().unwrap()));
+}
+
+#[test]
+fn a_filled_table_is_laid_out_and_replays_the_same_on_every_replica() {
+    let cases: [(&str, fn()); 3] = [
+        (
+            "a filled table is laid out row by row with its header first",
+            a_filled_table_is_laid_out_row_by_row_with_its_header_first,
+        ),
+        (
+            "replicas applying a filled table mint the same table",
+            replicas_applying_a_filled_table_mint_the_same_table,
+        ),
+        (
+            "a filled table and the edits after it are one group",
+            a_filled_table_and_the_edits_after_it_are_one_group,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
+    }
 }
 
 #[test]
@@ -667,7 +685,6 @@ fn a_view_holding_the_state_costs_a_keystroke_its_paragraph_not_the_document() {
     assert_eq!(reader.state().as_ref(), &read);
 }
 
-#[test]
 fn a_field_paragraph_forgotten_leaves_no_objects_behind() {
     use automerge::transaction::Transactable;
     let mut doc = Doc::new();
@@ -927,7 +944,6 @@ fn type_at(block: &str, at: usize, ins: &str) -> RichTextAction {
     }
 }
 
-#[test]
 fn each_key_is_marked_on_its_own_and_the_marks_do_not_nest() {
     let mut origin = document(1);
     let mut peer = origin.fork();
@@ -965,7 +981,6 @@ fn each_key_is_marked_on_its_own_and_the_marks_do_not_nest() {
     assert_eq!(author_runs(&peer), author_runs(&origin));
 }
 
-#[test]
 fn text_written_beside_a_run_is_not_taken_into_it() {
     let mut replica = document(1);
     let block = body_ids(&replica.state().unwrap())[1].clone();
@@ -991,7 +1006,6 @@ fn text_written_beside_a_run_is_not_taken_into_it() {
     );
 }
 
-#[test]
 fn concurrent_keys_after_one_run_stay_with_whoever_typed_them() {
     // Concurrent ops from one base share counters, so the devices' actor ids
     // order them: both ways round.
@@ -1038,7 +1052,6 @@ fn concurrent_keys_after_one_run(ada_device: &[u8], grace_device: &[u8]) {
     assert_eq!(author_runs(&grace), author_runs(&ada));
 }
 
-#[test]
 fn text_nobody_invoked_and_text_taken_away_stay_unattributed() {
     let mut replica = document(1);
     let ids = body_ids(&replica.state().unwrap());
@@ -1065,6 +1078,32 @@ fn text_nobody_invoked_and_text_taken_away_stay_unattributed() {
         "ada",
     );
     assert!(author_runs(&replica).is_empty());
+}
+
+#[test]
+fn typed_keys_are_attributed_to_whoever_typed_them_and_to_nobody_else() {
+    let cases: [(&str, fn()); 4] = [
+        (
+            "each key is marked on its own and the marks do not nest",
+            each_key_is_marked_on_its_own_and_the_marks_do_not_nest,
+        ),
+        (
+            "text written beside a run is not taken into it",
+            text_written_beside_a_run_is_not_taken_into_it,
+        ),
+        (
+            "concurrent keys after one run stay with whoever typed them",
+            concurrent_keys_after_one_run_stay_with_whoever_typed_them,
+        ),
+        (
+            "text nobody invoked and text taken away stay unattributed",
+            text_nobody_invoked_and_text_taken_away_stay_unattributed,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
+    }
 }
 
 #[test]
@@ -1176,7 +1215,6 @@ fn a_new_document_starts_the_same_on_every_device() {
 
 /// An imported file is remembered by its content address, and a write of
 /// the file records what it then holds, as content from outside.
-#[test]
 fn the_document_remembers_the_file_it_was_read_from_and_written_to() {
     use tilo_actions::Action;
     let mut doc = automerge::AutoCommit::new();
@@ -1209,7 +1247,6 @@ fn the_document_remembers_the_file_it_was_read_from_and_written_to() {
 /// sets it, and the two actions that take a file's content clear it. That is
 /// what a window's bar marks "Edited" from — not a repaint flag, which is
 /// gone the moment after the frame is drawn.
-#[test]
 fn the_document_remembers_work_its_file_has_not_taken() {
     use tilo_actions::Action;
     let mut doc = automerge::AutoCommit::new();
@@ -1260,6 +1297,24 @@ fn the_document_remembers_work_its_file_has_not_taken() {
         !RichText::read(&doc).unwrap().unsaved(),
         "the file took the work"
     );
+}
+
+#[test]
+fn the_document_remembers_its_file_and_the_work_the_file_has_not_taken() {
+    let cases: [(&str, fn()); 2] = [
+        (
+            "the document remembers the file it was read from and written to",
+            the_document_remembers_the_file_it_was_read_from_and_written_to,
+        ),
+        (
+            "the document remembers work its file has not taken",
+            the_document_remembers_work_its_file_has_not_taken,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
+    }
 }
 
 /// The body's blocks as `(id, kind, alt)`.
@@ -1366,7 +1421,6 @@ fn path_from_document(doc: &Doc, obj: &ObjId) -> tilo_resource::ObjPath {
 /// headings included, comes out as reading it by its id does, and once an
 /// edit reaches the field each paragraph's objects are placed where the
 /// document says they are.
-#[test]
 fn a_field_read_whole_equals_reading_each_paragraph_and_places_its_objects() {
     use automerge::transaction::Transactable;
     let mut doc = Doc::new();
@@ -1429,6 +1483,28 @@ fn a_field_read_whole_equals_reading_each_paragraph_and_places_its_objects() {
                 "paragraph {id}"
             );
         }
+    }
+}
+
+#[test]
+fn rich_text_under_a_field_is_read_edited_and_forgotten_in_place() {
+    let cases: [(&str, fn()); 3] = [
+        (
+            "rich text under a field is edited and refreshed in place",
+            rich_text_under_a_field_is_edited_and_refreshed_in_place,
+        ),
+        (
+            "a field paragraph forgotten leaves no objects behind",
+            a_field_paragraph_forgotten_leaves_no_objects_behind,
+        ),
+        (
+            "a field read whole equals reading each paragraph and places its objects",
+            a_field_read_whole_equals_reading_each_paragraph_and_places_its_objects,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
     }
 }
 

@@ -191,7 +191,6 @@ fn the_apply_descriptor_names_every_edit_with_its_fields() {
     assert!(listed.to_string().contains("\"InsertParagraph\""));
 }
 
-#[test]
 fn every_edit_serde_writes_is_one_the_schema_accepts() {
     let schema = schema();
     for (name, content) in variants(&schema) {
@@ -209,7 +208,6 @@ fn every_edit_serde_writes_is_one_the_schema_accepts() {
     }
 }
 
-#[test]
 fn what_the_editor_writes_is_accepted() {
     let edits = [
         RichTextAction::SpliceText {
@@ -257,7 +255,6 @@ fn what_the_editor_writes_is_accepted() {
     }
 }
 
-#[test]
 fn a_malformed_edit_is_refused_by_name_before_it_is_built() {
     let apply = descriptor(APPLY);
     let bind = |action: Value| {
@@ -290,6 +287,28 @@ fn a_malformed_edit_is_refused_by_name_before_it_is_built() {
         panic!("an unknown field binds");
     };
     assert!(reason.contains("`style`"), "{reason}");
+}
+
+#[test]
+fn the_schema_accepts_every_written_edit_and_refuses_a_malformed_one_by_name() {
+    let cases: [(&str, fn()); 3] = [
+        (
+            "every edit serde writes is one the schema accepts",
+            every_edit_serde_writes_is_one_the_schema_accepts,
+        ),
+        (
+            "what the editor writes is accepted",
+            what_the_editor_writes_is_accepted,
+        ),
+        (
+            "a malformed edit is refused by name before it is built",
+            a_malformed_edit_is_refused_by_name_before_it_is_built,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
+    }
 }
 
 #[test]

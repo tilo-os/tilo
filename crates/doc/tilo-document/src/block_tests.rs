@@ -131,7 +131,6 @@ fn a_page_reads_as_markdown_with_an_id_on_every_line() {
     assert_eq!(one["markdown"], format!("- [ ] eggs ^{}\n", ids[2]));
 }
 
-#[test]
 fn a_block_of_any_kind_is_inserted_after_an_id_or_at_the_ends() {
     let mut replica = Replica::<RichText>::new().as_author("ada");
     // The new body's empty paragraph is replaced, not left above the text.
@@ -207,7 +206,6 @@ fn a_block_of_any_kind_is_inserted_after_an_id_or_at_the_ends() {
     }
 }
 
-#[test]
 fn markdown_is_inserted_as_the_blocks_it_says_with_their_marks() {
     let mut replica = seeded("intro");
     let intro = id_of(&replica, "intro");
@@ -255,6 +253,23 @@ fn markdown_is_inserted_as_the_blocks_it_says_with_their_marks() {
 }
 
 #[test]
+fn blocks_and_markdown_are_inserted_where_asked() {
+    let cases: [(&str, fn()); 2] = [
+        (
+            "a block of any kind is inserted after an id or at the ends",
+            a_block_of_any_kind_is_inserted_after_an_id_or_at_the_ends,
+        ),
+        (
+            "markdown is inserted as the blocks it says with their marks",
+            markdown_is_inserted_as_the_blocks_it_says_with_their_marks,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
+    }
+}
+
 fn block_text_written_as_the_read_shows_it_means_what_its_markdown_says() {
     let mut replica = seeded("[tilo OS](search for the tilo homepage)");
     let id = id_of(&replica, "\\[tilo OS");
@@ -302,7 +317,6 @@ fn block_text_written_as_the_read_shows_it_means_what_its_markdown_says() {
     assert_eq!(blocks(&replica)[0].text, "[a](https://tilo.so/)");
 }
 
-#[test]
 fn block_text_changes_only_the_characters_that_differ_and_is_attributed() {
     let mut replica = seeded("buy **oat** milk");
     let id = id_of(&replica, "buy");
@@ -353,6 +367,24 @@ fn block_text_changes_only_the_characters_that_differ_and_is_attributed() {
         .unwrap_err()
         .contains("no block")
     );
+}
+
+#[test]
+fn block_text_is_set_as_markdown_or_plain_changing_only_what_differs() {
+    let cases: [(&str, fn()); 2] = [
+        (
+            "block text written as the read shows it means what its markdown says",
+            block_text_written_as_the_read_shows_it_means_what_its_markdown_says,
+        ),
+        (
+            "block text changes only the characters that differ and is attributed",
+            block_text_changes_only_the_characters_that_differ_and_is_attributed,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
+    }
 }
 
 #[test]
@@ -454,7 +486,6 @@ fn a_range_of_a_block_is_replaced_and_the_rest_of_the_page_stays() {
     }
 }
 
-#[test]
 fn a_block_changes_kind_keeping_its_text() {
     let mut replica = seeded("milk\neggs");
     let milk = id_of(&replica, "milk");
@@ -494,7 +525,6 @@ fn a_block_changes_kind_keeping_its_text() {
     );
 }
 
-#[test]
 fn an_item_is_ticked_unticked_toggled_and_a_plain_line_is_refused() {
     let mut replica = seeded("- [ ] milk\n- eggs\nplain");
     let milk = id_of(&replica, "- [ ] milk");
@@ -526,6 +556,24 @@ fn an_item_is_ticked_unticked_toggled_and_a_plain_line_is_refused() {
     let plain = id_of(&replica, "plain");
     let error = call(&mut replica, "set-block-kind", json!({ "block": plain })).unwrap_err();
     assert!(error.contains("not a list item"), "{error}");
+}
+
+#[test]
+fn a_block_changes_kind_and_an_item_is_ticked() {
+    let cases: [(&str, fn()); 2] = [
+        (
+            "a block changes kind keeping its text",
+            a_block_changes_kind_keeping_its_text,
+        ),
+        (
+            "an item is ticked unticked toggled and a plain line is refused",
+            an_item_is_ticked_unticked_toggled_and_a_plain_line_is_refused,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
+    }
 }
 
 #[test]
@@ -630,7 +678,10 @@ fn blocks_are_deleted_and_a_page_is_never_left_without_one() {
     );
 }
 
-#[test]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "a test's counters, which the lint passes over in a #[test] function"
+)]
 fn replacing_the_body_keeps_unchanged_blocks_and_edits_the_rest_as_one_change() {
     let mut replica = seeded("buy milk\nbuy eggs\nbuy bread\ncall mum\nwater plants");
     let ids: Vec<String> = [
@@ -693,7 +744,6 @@ fn replacing_the_body_keeps_unchanged_blocks_and_edits_the_rest_as_one_change() 
     assert_eq!(peer.heads(), replica.heads());
 }
 
-#[test]
 fn naming_a_line_by_its_id_keeps_its_block_whatever_the_text() {
     let mut replica = seeded("one\ntwo\nthree");
     let (one, two, three) = (
@@ -727,7 +777,10 @@ fn naming_a_line_by_its_id_keeps_its_block_whatever_the_text() {
     assert!(error.contains("not on this page"), "{error}");
 }
 
-#[test]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "a test's counters, which the lint passes over in a #[test] function"
+)]
 fn a_replacement_that_changes_nothing_writes_nothing() {
     let mut replica = seeded("# Todo\n- [ ] a\n- [x] b\n> q");
     let markdown = read(&replica);
@@ -745,12 +798,37 @@ fn a_replacement_that_changes_nothing_writes_nothing() {
     assert!(changes(&mut replica) <= before + 2);
 }
 
-#[test]
 fn a_body_replaced_by_nothing_keeps_a_paragraph_to_write_in() {
     let mut replica = seeded("a\nb");
     call(&mut replica, "replace-body", json!({ "markdown": "" })).unwrap();
     assert_eq!(blocks(&replica).len(), 1);
     assert_eq!(blocks(&replica)[0].kind, "paragraph");
+}
+
+#[test]
+fn replacing_the_body_keeps_what_it_can_and_writes_only_what_differs() {
+    let cases: [(&str, fn()); 4] = [
+        (
+            "replacing the body keeps unchanged blocks and edits the rest as one change",
+            replacing_the_body_keeps_unchanged_blocks_and_edits_the_rest_as_one_change,
+        ),
+        (
+            "naming a line by its id keeps its block whatever the text",
+            naming_a_line_by_its_id_keeps_its_block_whatever_the_text,
+        ),
+        (
+            "a replacement that changes nothing writes nothing",
+            a_replacement_that_changes_nothing_writes_nothing,
+        ),
+        (
+            "a body replaced by nothing keeps a paragraph to write in",
+            a_body_replaced_by_nothing_keeps_a_paragraph_to_write_in,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
+    }
 }
 
 #[test]
@@ -831,7 +909,6 @@ fn a_viewer_cannot_reach_the_actions_the_editor_takes() {
     }
 }
 
-#[test]
 fn replace_text_rewrites_the_first_occurrence_where_it_is_or_every_one() {
     let mut replica = seeded("# Plan\nbuy **oat** milk and milk\n- milk run");
     let answer = call(
@@ -861,7 +938,6 @@ fn replace_text_rewrites_the_first_occurrence_where_it_is_or_every_one() {
     );
 }
 
-#[test]
 fn replace_text_is_refused_naming_text_the_page_lacks() {
     let mut replica = seeded("hello world");
     let refused = call(
@@ -882,4 +958,22 @@ fn replace_text_is_refused_naming_text_the_page_lacks() {
     .unwrap_err();
     assert!(empty.contains("empty"), "{empty}");
     assert_eq!(page(&replica), ["hello world"]);
+}
+
+#[test]
+fn replace_text_rewrites_the_first_occurrence_or_every_one_or_is_refused() {
+    let cases: [(&str, fn()); 2] = [
+        (
+            "replace text rewrites the first occurrence where it is or every one",
+            replace_text_rewrites_the_first_occurrence_where_it_is_or_every_one,
+        ),
+        (
+            "replace text is refused naming text the page lacks",
+            replace_text_is_refused_naming_text_the_page_lacks,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
+    }
 }
