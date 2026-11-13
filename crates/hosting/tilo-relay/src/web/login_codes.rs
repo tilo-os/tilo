@@ -973,7 +973,10 @@ mod tests {
         let polled = codes
             .follow(&offered.follow, Some(&offer), None, NOW + 23)
             .unwrap();
-        assert!(!polled.resolved && !polled.expired, "an offer outlives a restart");
+        assert!(
+            !polled.resolved && !polled.expired,
+            "an offer outlives a restart"
+        );
         codes.resolve(&offered.code, None, NOW + 24).unwrap();
 
         // A file the host cannot read is no reason not to start.
