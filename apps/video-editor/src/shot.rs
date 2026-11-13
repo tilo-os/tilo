@@ -119,7 +119,7 @@ mod tests {
 
     /// The plain capture, every scenario the launcher lists, the plain capture at another
     /// size and the blank capture. The thrice-built rows come first, the plain capture at
-    /// their head, so that dealing the rows out gives each part one of them.
+    /// their head, so that dealing the rows out gives each part one of them, as its first row.
     fn rows() -> Vec<Row> {
         let row = |scenario: Option<&'static str>| Row {
             scenario,
@@ -160,6 +160,11 @@ mod tests {
         rows.iter().copied().skip(part).step_by(PARTS).collect()
     }
 
+    /// A part's thrice-built row is its first, and it is built before anything else, the plain
+    /// capture included. Under a runner that gives each test a process, its first build is
+    /// then the first capture that process makes, as a `--shots` run's is, and the builds it
+    /// must equal are not: a scene that depended on what an earlier capture left in the
+    /// process would differ between them.
     fn assert_part(part: usize) {
         let rows = rows();
         let plain_row = *rows.first().expect("the table has rows");
@@ -168,19 +173,23 @@ mod tests {
             (None, FULL),
             "the table starts at the plain capture"
         );
-        let plain = plain_row.build();
+        let mut plain_print = None;
         for row in part_of(&rows, part) {
             let name = row.name();
-            let first = if row == plain_row {
-                plain
-            } else {
-                let print = row.build();
+            let first = row.build();
+            let plain = *plain_print.get_or_insert_with(|| {
+                if row == plain_row {
+                    first
+                } else {
+                    plain_row.build()
+                }
+            });
+            if row != plain_row {
                 assert_ne!(
-                    print, plain,
+                    first, plain,
                     "{name} composed the plain capture's scene: it staged nothing visible"
                 );
-                print
-            };
+            }
             for again in 1..row.builds {
                 assert_eq!(
                     first,
@@ -253,13 +262,16 @@ mod tests {
             "nothing else claims to be"
         );
         for part in 0..PARTS {
+            let of_part = part_of(&rows, part);
             assert_eq!(
-                part_of(&rows, part)
-                    .iter()
-                    .filter(|row| row.builds == 3)
-                    .count(),
+                of_part.iter().filter(|row| row.builds == 3).count(),
                 1,
                 "part {part} builds one capture three times"
+            );
+            assert_eq!(
+                of_part.first().map(|row| row.builds),
+                Some(3),
+                "part {part} builds it first, before its process has made any other capture"
             );
         }
         let blank: Vec<Row> = rows
