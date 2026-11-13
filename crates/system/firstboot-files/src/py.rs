@@ -133,44 +133,48 @@ mod tests {
         OsStr::new(text)
     }
 
-    #[test]
-    fn dirname_and_basename_split_like_posixpath() {
-        for (path, dir, base) in [
-            (
-                "/etc/tilo/install-user.transaction",
-                "/etc/tilo",
-                "install-user.transaction",
-            ),
-            ("/home/alice", "/home", "alice"),
-            ("/var//home//alice", "/var//home", "alice"),
-            ("alice", "", "alice"),
-            ("/alice", "/", "alice"),
-            ("//alice", "//", "alice"),
-            ("/home/alice/", "/home/alice", ""),
-            ("", "", ""),
-        ] {
-            assert_eq!(dirname(os(path)), os(dir), "{path}");
-            assert_eq!(basename(os(path)), os(base), "{path}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn paths_split_and_resolve_as_posixpath_does;
 
-    #[test]
-    fn realpath_follows_existing_links_and_keeps_the_rest() {
-        let work = tempfile::tempdir().unwrap();
-        let root = work.path().canonicalize().unwrap();
-        std::fs::create_dir_all(root.join("var/home")).unwrap();
-        std::os::unix::fs::symlink("var/home", root.join("home")).unwrap();
-        std::os::unix::fs::symlink("loop", root.join("loop")).unwrap();
-        let at = |rest: &str| root.join(rest).into_os_string();
-        assert_eq!(realpath(&at("home")).unwrap(), at("var/home"));
-        assert_eq!(realpath(&at("home/../home/./")).unwrap(), at("var/home"));
-        assert_eq!(realpath(&at("missing/../home")).unwrap(), at("var/home"));
-        assert_eq!(
-            realpath(&at("home/missing/more")).unwrap(),
-            at("var/home/missing/more")
-        );
-        assert_eq!(realpath(&at("loop")).unwrap(), at("loop"));
-        assert_eq!(realpath(os("/")).unwrap(), os("/"));
-        assert_eq!(realpath(os("/..")).unwrap(), os("/"));
+        phase dirname_and_basename_split_like_posixpath;
+        {
+            for (path, dir, base) in [
+                (
+                    "/etc/tilo/install-user.transaction",
+                    "/etc/tilo",
+                    "install-user.transaction",
+                ),
+                ("/home/alice", "/home", "alice"),
+                ("/var//home//alice", "/var//home", "alice"),
+                ("alice", "", "alice"),
+                ("/alice", "/", "alice"),
+                ("//alice", "//", "alice"),
+                ("/home/alice/", "/home/alice", ""),
+                ("", "", ""),
+            ] {
+                assert_eq!(dirname(os(path)), os(dir), "{path}");
+                assert_eq!(basename(os(path)), os(base), "{path}");
+            }
+        }
+
+        phase realpath_follows_existing_links_and_keeps_the_rest;
+        {
+            let work = tempfile::tempdir().unwrap();
+            let root = work.path().canonicalize().unwrap();
+            std::fs::create_dir_all(root.join("var/home")).unwrap();
+            std::os::unix::fs::symlink("var/home", root.join("home")).unwrap();
+            std::os::unix::fs::symlink("loop", root.join("loop")).unwrap();
+            let at = |rest: &str| root.join(rest).into_os_string();
+            assert_eq!(realpath(&at("home")).unwrap(), at("var/home"));
+            assert_eq!(realpath(&at("home/../home/./")).unwrap(), at("var/home"));
+            assert_eq!(realpath(&at("missing/../home")).unwrap(), at("var/home"));
+            assert_eq!(
+                realpath(&at("home/missing/more")).unwrap(),
+                at("var/home/missing/more")
+            );
+            assert_eq!(realpath(&at("loop")).unwrap(), at("loop"));
+            assert_eq!(realpath(os("/")).unwrap(), os("/"));
+            assert_eq!(realpath(os("/..")).unwrap(), os("/"));
+        }
     }
 }
