@@ -1275,21 +1275,25 @@ mod unix {
     mod tests {
         use super::*;
 
-        #[test]
-        fn a_code_matches_however_it_is_grouped() {
-            assert_eq!(digits(" 123-456 "), digits("123456"));
-            assert_ne!(digits("123-457"), digits("123456"));
-        }
+        tilo_test_env::scenario! {
+            fn the_identity_command_reads_codes_and_guides_errors;
 
-        #[test]
-        fn every_error_names_its_next_step() {
-            let error = guided("no identity", CREATE_OR_PAIR);
-            assert_eq!(
-                error
-                    .downcast_ref::<Guided>()
-                    .map(|guided| guided.next.as_str()),
-                Some(CREATE_OR_PAIR)
-            );
+            phase a_code_matches_however_it_is_grouped;
+            {
+                assert_eq!(digits(" 123-456 "), digits("123456"));
+                assert_ne!(digits("123-457"), digits("123456"));
+            }
+
+            phase every_error_names_its_next_step;
+            {
+                let error = guided("no identity", CREATE_OR_PAIR);
+                assert_eq!(
+                    error
+                        .downcast_ref::<Guided>()
+                        .map(|guided| guided.next.as_str()),
+                    Some(CREATE_OR_PAIR)
+                );
+            }
         }
     }
 }

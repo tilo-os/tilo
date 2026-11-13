@@ -179,89 +179,93 @@ mod tests {
             .expect("date fleet file back");
     }
 
-    #[test]
-    fn a_login_on_an_established_identity_rewrites_no_fleet() {
-        // Every login provisions again. A rewrite that changes nothing would
-        // make each login on a full disk fail.
-        let fixture = Fixture::new();
-        let fleet = fixture.fleet_file();
-        settle(&fleet);
-        let before = std::fs::metadata(&fleet)
-            .expect("fleet")
-            .modified()
-            .expect("mtime");
-        let system_root = fixture
-            .identity_dir
-            .parent()
-            .and_then(Path::parent)
-            .and_then(Path::parent)
-            .expect("fixture root")
-            .join("system");
-        crate::provisioning::ensure_collaboration_identity(
-            &fixture.identity_dir,
-            &IdentityPaths::under(&system_root),
-            crate::provisioning::IdentityStorage::Files,
-        )
-        .expect("provisioning an established identity again");
-        let after = std::fs::metadata(&fleet)
-            .expect("fleet")
-            .modified()
-            .expect("mtime");
-        assert_eq!(before, after, "the unchanged fleet was not written again");
-    }
+    tilo_test_env::scenario! {
+        fn authorizing_a_join_through_the_fleet_cache;
 
-    #[test]
-    fn authorize_join_loads_fleet_once() {
-        let fixture = Fixture::new();
-        settle(&fixture.fleet_file());
-        assert_eq!(
-            fixture.authorize_join_twice(),
-            1,
-            "one load serves both checks of the first call, and the unchanged fleet the second"
-        );
-    }
+        phase a_login_on_an_established_identity_rewrites_no_fleet;
+        {
+            // Every login provisions again. A rewrite that changes nothing would
+            // make each login on a full disk fail.
+            let fixture = Fixture::new();
+            let fleet = fixture.fleet_file();
+            settle(&fleet);
+            let before = std::fs::metadata(&fleet)
+                .expect("fleet")
+                .modified()
+                .expect("mtime");
+            let system_root = fixture
+                .identity_dir
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+                .expect("fixture root")
+                .join("system");
+            crate::provisioning::ensure_collaboration_identity(
+                &fixture.identity_dir,
+                &IdentityPaths::under(&system_root),
+                crate::provisioning::IdentityStorage::Files,
+            )
+            .expect("provisioning an established identity again");
+            let after = std::fs::metadata(&fleet)
+                .expect("fleet")
+                .modified()
+                .expect("mtime");
+            assert_eq!(before, after, "the unchanged fleet was not written again");
+        }
 
-    #[test]
-    fn revocation_visible_immediately_after_revoke() {
-        let fixture = Fixture::new();
-        settle(&fixture.fleet_file());
-        assert_eq!(fixture.authorize_join_twice(), 1, "the fleet is cached");
-        fixture.revoke();
-        assert_eq!(
-            authorize_join(WORKSPACE, &fixture.cert),
-            Err("device revoked or identity mismatched".into())
-        );
-        assert_eq!(
-            authorize(WORKSPACE, &fixture.cert),
-            Err("device revoked or identity mismatched".into())
-        );
-    }
+        phase authorize_join_loads_fleet_once;
+        {
+            let fixture = Fixture::new();
+            settle(&fixture.fleet_file());
+            assert_eq!(
+                fixture.authorize_join_twice(),
+                1,
+                "one load serves both checks of the first call, and the unchanged fleet the second"
+            );
+        }
 
-    #[test]
-    fn external_fleet_write_invalidates() {
-        let fixture = Fixture::new();
-        let path = fixture.fleet_file();
-        let enrolled = std::fs::read(&path).expect("enrolled fleet");
-        fixture.revoke();
-        let revoked = std::fs::read(&path).expect("revoked fleet");
+        phase revocation_visible_immediately_after_revoke;
+        {
+            let fixture = Fixture::new();
+            settle(&fixture.fleet_file());
+            assert_eq!(fixture.authorize_join_twice(), 1, "the fleet is cached");
+            fixture.revoke();
+            assert_eq!(
+                authorize_join(WORKSPACE, &fixture.cert),
+                Err("device revoked or identity mismatched".into())
+            );
+            assert_eq!(
+                authorize(WORKSPACE, &fixture.cert),
+                Err("device revoked or identity mismatched".into())
+            );
+        }
 
-        // Another process puts the enrolled fleet back; once old it is cached.
-        std::fs::write(&path, &enrolled).expect("external write");
-        settle(&path);
-        assert_eq!(fixture.authorize_join_twice(), 1, "the fleet is cached");
+        phase external_fleet_write_invalidates;
+        {
+            let fixture = Fixture::new();
+            let path = fixture.fleet_file();
+            let enrolled = std::fs::read(&path).expect("enrolled fleet");
+            fixture.revoke();
+            let revoked = std::fs::read(&path).expect("revoked fleet");
 
-        std::fs::write(&path, &revoked).expect("external revocation");
-        assert_eq!(
-            authorize_join(WORKSPACE, &fixture.cert),
-            Err("device revoked or identity mismatched".into())
-        );
+            // Another process puts the enrolled fleet back; once old it is cached.
+            std::fs::write(&path, &enrolled).expect("external write");
+            settle(&path);
+            assert_eq!(fixture.authorize_join_twice(), 1, "the fleet is cached");
 
-        // A fleet that no longer parses denies instead of serving the cache.
-        std::fs::write(&path, &enrolled).expect("external write");
-        settle(&path);
-        assert_eq!(fixture.authorize_join_twice(), 1, "the fleet is cached");
-        std::fs::write(&path, b"{ not a fleet").expect("external corruption");
-        assert!(authorize_join(WORKSPACE, &fixture.cert).is_err());
-        assert!(authorize(WORKSPACE, &fixture.cert).is_err());
+            std::fs::write(&path, &revoked).expect("external revocation");
+            assert_eq!(
+                authorize_join(WORKSPACE, &fixture.cert),
+                Err("device revoked or identity mismatched".into())
+            );
+
+            // A fleet that no longer parses denies instead of serving the cache.
+            std::fs::write(&path, &enrolled).expect("external write");
+            settle(&path);
+            assert_eq!(fixture.authorize_join_twice(), 1, "the fleet is cached");
+            std::fs::write(&path, b"{ not a fleet").expect("external corruption");
+            assert!(authorize_join(WORKSPACE, &fixture.cert).is_err());
+            assert!(authorize(WORKSPACE, &fixture.cert).is_err());
+        }
     }
 }

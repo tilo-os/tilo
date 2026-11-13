@@ -451,163 +451,167 @@ pub(crate) mod tests {
             .issued_at_ns
     }
 
-    #[test]
-    fn proof_is_minted_once_while_identity_files_are_unchanged() {
-        let fixture = Fixture::new();
-        let mut proofs = Vec::new();
-        let fleet_loads = crate::device_fleet::loads_on_this_thread();
-        let mints = mints(|| {
-            for _ in 0..3 {
-                proofs
-                    .push(trusted_current_join_proof(&fixture.workspace).expect("trusted device"));
-            }
-        });
-        assert_eq!(mints, 1, "one mint serves every later call");
-        assert!(
-            crate::device_fleet::loads_on_this_thread().saturating_sub(fleet_loads) <= 1,
-            "the fleet is read at most once"
-        );
-        assert!(proofs.windows(2).all(|pair| pair[0] == pair[1]));
-        let proof = &proofs[0];
-        ed25519_dalek::VerifyingKey::from_bytes(&proof.certificate.device_public_key)
-            .expect("device key")
-            .verify_strict(
-                &runtime_identity::collaboration_join_signing_bytes(&fixture.workspace),
-                &ed25519_dalek::Signature::from_bytes(&proof.proof),
-            )
-            .expect("the proof is this device's signature for this workspace");
-        let other = uuid_like_workspace();
-        let other_proof = trusted_current_join_proof(&other).expect("another workspace");
-        assert_ne!(
-            other_proof.proof, proof.proof,
-            "a proof binds its workspace"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_join_proof_cache;
 
-    #[test]
-    fn revocation_fails_the_very_next_call() {
-        let fixture = Fixture::new();
-        trusted_current_join_proof(&fixture.workspace).expect("trusted device");
-        let stamp = current_device_stamp(&fixture.workspace).expect("stamp");
-        assert_eq!(
-            mints(|| {
-                trusted_current_join_proof(&fixture.workspace).expect("cached");
-            }),
-            0
-        );
-        let device = trusted_current_join_proof(&fixture.workspace)
-            .expect("trusted device")
-            .certificate
-            .device_public_key;
-        fixture
-            .store()
-            .revoke(
-                &fixture.identity_id,
-                device,
-                RevocationReason::Lost,
-                proof_issued_at(&fixture).saturating_add(1),
-            )
-            .expect("revoke");
-        let refused = trusted_current_join_proof(&fixture.workspace)
-            .expect_err("a revoked device has no proof");
-        assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied);
-        assert_ne!(current_device_stamp(&fixture.workspace), Some(stamp));
-        // Even once the revoked fleet settles, nothing was cached.
-        fixture.settle();
-        assert!(trusted_current_join_proof(&fixture.workspace).is_err());
-    }
+        phase proof_is_minted_once_while_identity_files_are_unchanged;
+        {
+            let fixture = Fixture::new();
+            let mut proofs = Vec::new();
+            let fleet_loads = crate::device_fleet::loads_on_this_thread();
+            let mints = mints(|| {
+                for _ in 0..3 {
+                    proofs
+                        .push(trusted_current_join_proof(&fixture.workspace).expect("trusted device"));
+                }
+            });
+            assert_eq!(mints, 1, "one mint serves every later call");
+            assert!(
+                crate::device_fleet::loads_on_this_thread().saturating_sub(fleet_loads) <= 1,
+                "the fleet is read at most once"
+            );
+            assert!(proofs.windows(2).all(|pair| pair[0] == pair[1]));
+            let proof = &proofs[0];
+            ed25519_dalek::VerifyingKey::from_bytes(&proof.certificate.device_public_key)
+                .expect("device key")
+                .verify_strict(
+                    &runtime_identity::collaboration_join_signing_bytes(&fixture.workspace),
+                    &ed25519_dalek::Signature::from_bytes(&proof.proof),
+                )
+                .expect("the proof is this device's signature for this workspace");
+            let other = uuid_like_workspace();
+            let other_proof = trusted_current_join_proof(&other).expect("another workspace");
+            assert_ne!(
+                other_proof.proof, proof.proof,
+                "a proof binds its workspace"
+            );
+        }
 
-    #[test]
-    fn rewritten_certificate_or_key_mints_again() {
-        let fixture = Fixture::new();
-        trusted_current_join_proof(&fixture.workspace).expect("trusted device");
-        for path in [fixture.cert_file(), fixture.paths.device_privkey.clone()] {
-            let bytes = std::fs::read(&path).expect("read");
-            std::fs::write(&path, &bytes).expect("rewrite");
+        phase revocation_fails_the_very_next_call;
+        {
+            let fixture = Fixture::new();
+            trusted_current_join_proof(&fixture.workspace).expect("trusted device");
+            let stamp = current_device_stamp(&fixture.workspace).expect("stamp");
             assert_eq!(
                 mints(|| {
-                    trusted_current_join_proof(&fixture.workspace).expect("still trusted");
+                    trusted_current_join_proof(&fixture.workspace).expect("cached");
                 }),
-                1,
-                "{} changed",
-                path.display()
+                0
             );
+            let device = trusted_current_join_proof(&fixture.workspace)
+                .expect("trusted device")
+                .certificate
+                .device_public_key;
+            fixture
+                .store()
+                .revoke(
+                    &fixture.identity_id,
+                    device,
+                    RevocationReason::Lost,
+                    proof_issued_at(&fixture).saturating_add(1),
+                )
+                .expect("revoke");
+            let refused = trusted_current_join_proof(&fixture.workspace)
+                .expect_err("a revoked device has no proof");
+            assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied);
+            assert_ne!(current_device_stamp(&fixture.workspace), Some(stamp));
+            // Even once the revoked fleet settles, nothing was cached.
             fixture.settle();
-            trusted_current_join_proof(&fixture.workspace).expect("re-cached");
+            assert!(trusted_current_join_proof(&fixture.workspace).is_err());
         }
-        std::fs::write(fixture.cert_file(), b"malformed").expect("break certificate");
-        assert!(trusted_current_join_proof(&fixture.workspace).is_err());
-    }
 
-    /// Wall time of re-deriving a workspace's proof from disk as every action
-    /// call did before (registry, key, certificate, an uncached fleet load,
-    /// a signature) against serving it from its stamps. Prints the numbers
-    /// (`--nocapture`); the mint counts above are the regression guard.
-    #[test]
-    fn join_proof_cost() {
-        const ROUNDS: u32 = 200;
-        let fixture = Fixture::new();
-        trusted_current_join_proof(&fixture.workspace).expect("warm");
-        let started = std::time::Instant::now();
-        for _ in 0..ROUNDS {
-            let (key, _) =
-                crate::broker::trusted_current_device(&fixture.workspace).expect("trusted device");
-            fixture.store().load(&fixture.identity_id).expect("fleet");
-            let proof = key.sign(&runtime_identity::collaboration_join_signing_bytes(
-                &fixture.workspace,
-            ));
-            assert_eq!(proof.to_bytes().len(), 64);
+        phase rewritten_certificate_or_key_mints_again;
+        {
+            let fixture = Fixture::new();
+            trusted_current_join_proof(&fixture.workspace).expect("trusted device");
+            for path in [fixture.cert_file(), fixture.paths.device_privkey.clone()] {
+                let bytes = std::fs::read(&path).expect("read");
+                std::fs::write(&path, &bytes).expect("rewrite");
+                assert_eq!(
+                    mints(|| {
+                        trusted_current_join_proof(&fixture.workspace).expect("still trusted");
+                    }),
+                    1,
+                    "{} changed",
+                    path.display()
+                );
+                fixture.settle();
+                trusted_current_join_proof(&fixture.workspace).expect("re-cached");
+            }
+            std::fs::write(fixture.cert_file(), b"malformed").expect("break certificate");
+            assert!(trusted_current_join_proof(&fixture.workspace).is_err());
         }
-        let minted = started.elapsed();
-        let mut cached = Duration::ZERO;
-        let mints = mints(|| {
+
+        phase join_proof_cost;
+        // Wall time of re-deriving a workspace's proof from disk as every action
+        // call did before (registry, key, certificate, an uncached fleet load,
+        // a signature) against serving it from its stamps. Prints the numbers
+        // (`--nocapture`); the mint counts above are the regression guard.
+        {
+            const ROUNDS: u32 = 200;
+            let fixture = Fixture::new();
+            trusted_current_join_proof(&fixture.workspace).expect("warm");
             let started = std::time::Instant::now();
             for _ in 0..ROUNDS {
-                trusted_current_join_proof(&fixture.workspace).expect("cached proof");
+                let (key, _) =
+                    crate::broker::trusted_current_device(&fixture.workspace).expect("trusted device");
+                fixture.store().load(&fixture.identity_id).expect("fleet");
+                let proof = key.sign(&runtime_identity::collaboration_join_signing_bytes(
+                    &fixture.workspace,
+                ));
+                assert_eq!(proof.to_bytes().len(), 64);
             }
-            cached = started.elapsed();
-        });
-        assert_eq!(mints, 0);
-        eprintln!(
-            "#3911 join proof: re-derived from disk {:?}/call, served from stamps {:?}/call",
-            minted.checked_div(ROUNDS).unwrap_or_default(),
-            cached.checked_div(ROUNDS).unwrap_or_default(),
-        );
-    }
+            let minted = started.elapsed();
+            let mut cached = Duration::ZERO;
+            let mints = mints(|| {
+                let started = std::time::Instant::now();
+                for _ in 0..ROUNDS {
+                    trusted_current_join_proof(&fixture.workspace).expect("cached proof");
+                }
+                cached = started.elapsed();
+            });
+            assert_eq!(mints, 0);
+            eprintln!(
+                "#3911 join proof: re-derived from disk {:?}/call, served from stamps {:?}/call",
+                minted.checked_div(ROUNDS).unwrap_or_default(),
+                cached.checked_div(ROUNDS).unwrap_or_default(),
+            );
+        }
 
-    #[test]
-    fn a_desktop_without_identity_has_a_stable_stamp() {
-        let temp = tempfile::tempdir().expect("temp root");
-        let config = temp.path().join("config");
-        let system = temp.path().join("system");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", &config)
-            .set("TILO_IDENTITY_ROOT", &system)
-            .set(crate::provisioning::FILE_SECRETS_ENV, "1");
-        let workspace = uuid_like_workspace();
-        let stamp = current_device_stamp(&workspace).expect("no identity is a known state");
-        assert!(stamp.settled());
-        assert_eq!(current_device_stamp(&workspace), Some(stamp));
-        assert!(trusted_current_join_proof(&workspace).is_err());
-    }
+        phase a_desktop_without_identity_has_a_stable_stamp;
+        {
+            let temp = tempfile::tempdir().expect("temp root");
+            let config = temp.path().join("config");
+            let system = temp.path().join("system");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &config)
+                .set("TILO_IDENTITY_ROOT", &system)
+                .set(crate::provisioning::FILE_SECRETS_ENV, "1");
+            let workspace = uuid_like_workspace();
+            let stamp = current_device_stamp(&workspace).expect("no identity is a known state");
+            assert!(stamp.settled());
+            assert_eq!(current_device_stamp(&workspace), Some(stamp));
+            assert!(trusted_current_join_proof(&workspace).is_err());
+        }
 
-    #[test]
-    fn unsettled_files_are_never_cached() {
-        let fixture = Fixture::new();
-        std::fs::write(
-            fixture.fleet_file(),
-            std::fs::read(fixture.fleet_file()).expect("fleet"),
-        )
-        .expect("touch fleet");
-        let mints = mints(|| {
-            trusted_current_join_proof(&fixture.workspace).expect("trusted");
-            trusted_current_join_proof(&fixture.workspace).expect("trusted");
-        });
-        assert_eq!(mints, 2, "a fleet written just now is read on every call");
-        assert!(
-            !current_device_stamp(&fixture.workspace)
-                .expect("stamp")
-                .settled()
-        );
+        phase unsettled_files_are_never_cached;
+        {
+            let fixture = Fixture::new();
+            std::fs::write(
+                fixture.fleet_file(),
+                std::fs::read(fixture.fleet_file()).expect("fleet"),
+            )
+            .expect("touch fleet");
+            let mints = mints(|| {
+                trusted_current_join_proof(&fixture.workspace).expect("trusted");
+                trusted_current_join_proof(&fixture.workspace).expect("trusted");
+            });
+            assert_eq!(mints, 2, "a fleet written just now is read on every call");
+            assert!(
+                !current_device_stamp(&fixture.workspace)
+                    .expect("stamp")
+                    .settled()
+            );
+        }
     }
 }

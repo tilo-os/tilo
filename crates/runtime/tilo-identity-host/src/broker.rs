@@ -942,170 +942,173 @@ mod tests {
         assert!(error.to_string().contains("revoked"));
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one signing session checked against every route, payload and role binding"
-    )]
-    fn collaboration_signing_binds_route_payload_and_live_action_role() {
-        let temp = tempfile::tempdir().expect("temp");
-        let xdg = temp.path().join("config");
-        let system_root = temp.path().join("system");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", &xdg)
-            .set("TILO_IDENTITY_ROOT", &system_root)
-            .set(crate::provisioning::FILE_SECRETS_ENV, "1");
-        let identity_dir = xdg.join("tilo/identity");
-        let paths = tilo_user_identity::IdentityPaths::under(&system_root);
-        ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one signing session checked against every route, payload and role binding"
+        )]
+        fn what_the_service_signs;
 
-        let workspace = WorkspaceId::new();
-        let workspace_id = workspace.to_string();
-        let app_id = "so.tilo.notes";
-        let record_id = "meeting-notes";
-        let profile = crate::registry::identity_for_workspace(&workspace_id)
-            .expect("registry")
-            .expect("profile");
-        let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
-            .expect("device key");
-        let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
+        phase collaboration_signing_binds_route_payload_and_live_action_role;
+        {
+            let temp = tempfile::tempdir().expect("temp");
+            let xdg = temp.path().join("config");
+            let system_root = temp.path().join("system");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &xdg)
+                .set("TILO_IDENTITY_ROOT", &system_root)
+                .set(crate::provisioning::FILE_SECRETS_ENV, "1");
+            let identity_dir = xdg.join("tilo/identity");
+            let paths = tilo_user_identity::IdentityPaths::under(&system_root);
+            ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
-        let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
-        committed.set_owner(profile.person_id());
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.workspaces.push(committed);
-        let tree = tree.shared();
+            let workspace = WorkspaceId::new();
+            let workspace_id = workspace.to_string();
+            let app_id = "so.tilo.notes";
+            let record_id = "meeting-notes";
+            let profile = crate::registry::identity_for_workspace(&workspace_id)
+                .expect("registry")
+                .expect("profile");
+            let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+                .expect("device key");
+            let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
 
-        let now = std::time::SystemTime::now();
-        let mut op = SignedOp::new_unsigned(
-            DocumentMutation::Snapshot(b"automerge document".to_vec())
-                .encode()
-                .expect("typed mutation"),
-            document_artifact_id(app_id, &workspace_id, record_id),
-            author,
-            document_attestation_id(app_id, &workspace_id, record_id),
-            collab_types::OpKind::Change,
-            now,
-            1,
-        );
-        let unsigned = postcard::to_stdvec(&op).expect("unsigned envelope");
-        let Response::Signature(signature) = sign_collaboration_op(
-            &tree,
-            &bound(&workspace, app_id),
-            &workspace_id,
-            app_id,
-            record_id,
-            &unsigned,
-        ) else {
-            panic!("valid certified document operation was not signed");
-        };
-        let signature = <[u8; 64]>::try_from(signature).expect("64-byte signature");
-        device
-            .verifying_key()
-            .verify(
-                &op.signing_bytes().expect("signing bytes"),
-                &Signature::from_bytes(&signature),
-            )
-            .expect("device signature");
+            let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
+            committed.set_owner(profile.person_id());
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(committed);
+            let tree = tree.shared();
 
-        let encrypted = SignedOp::new_unsigned_with_encryption(
-            b"opaque MLS application frame".to_vec(),
-            document_artifact_id(app_id, &workspace_id, record_id),
-            author,
-            document_attestation_id(app_id, &workspace_id, record_id),
-            collab_types::OpKind::Change,
-            now,
-            2,
-            collab_types::EncryptionMetadata::mls_application(3),
-        );
-        let encrypted_unsigned = postcard::to_stdvec(&encrypted).expect("encrypted envelope");
-        assert!(matches!(
-            sign_collaboration_op(
-                &tree,
-                &bound(&workspace, app_id),
-                &workspace_id,
-                app_id,
-                record_id,
-                &encrypted_unsigned,
-            ),
-            Response::Signature(_)
-        ));
-        assert!(matches!(
-            sign_collaboration_op(
-                &tree,
-                &bound(&workspace, app_id),
-                &workspace_id,
-                "so.tilo.calendar",
-                record_id,
-                &unsigned,
-            ),
-            Response::Denied(_)
-        ));
-        // An app renamed from Notes, as the installed catalogue believes it, changes the record
-        // Notes kept, where it is; an app claiming nothing of Notes does not.
-        let renamed = RenamedFrom(app_id);
-        let as_renamed = Bound {
-            workspace: &workspace,
-            app_id: "so.tilo.notebook",
-            person: &renamed,
-        };
-        assert!(matches!(
-            sign_collaboration_op(
-                &tree,
-                &as_renamed,
-                &workspace_id,
-                app_id,
-                record_id,
-                &unsigned
-            ),
-            Response::Signature(_)
-        ));
-        assert!(matches!(
-            sign_collaboration_op(
-                &tree,
-                &bound(&workspace, "so.tilo.notebook"),
-                &workspace_id,
-                app_id,
-                record_id,
-                &unsigned,
-            ),
-            Response::Denied(_)
-        ));
-        op.payload = b"untyped legacy bytes".to_vec();
-        let malformed = postcard::to_stdvec(&op).expect("malformed envelope");
-        assert!(matches!(
-            sign_collaboration_op(
-                &tree,
-                &bound(&workspace, app_id),
-                &workspace_id,
-                app_id,
-                record_id,
-                &malformed,
-            ),
-            Response::Denied(_)
-        ));
-
-        let mut tree_guard = tree.write();
-        let committed = &mut tree_guard.desktop.workspaces[0];
-        committed.set_owner("someone-else");
-        committed.admit(profile.person_id(), Role::Commenter);
-        drop(tree_guard);
-        // Without the app's surface a change is decided as an edit of the
-        // record, which a commenter is not granted.
-        assert!(matches!(
-            sign_collaboration_op(
+            let now = std::time::SystemTime::now();
+            let mut op = SignedOp::new_unsigned(
+                DocumentMutation::Snapshot(b"automerge document".to_vec())
+                    .encode()
+                    .expect("typed mutation"),
+                document_artifact_id(app_id, &workspace_id, record_id),
+                author,
+                document_attestation_id(app_id, &workspace_id, record_id),
+                collab_types::OpKind::Change,
+                now,
+                1,
+            );
+            let unsigned = postcard::to_stdvec(&op).expect("unsigned envelope");
+            let Response::Signature(signature) = sign_collaboration_op(
                 &tree,
                 &bound(&workspace, app_id),
                 &workspace_id,
                 app_id,
                 record_id,
                 &unsigned,
-            ),
-            Response::Denied(reason) if reason.contains("denies this document action")
-        ));
-        // With the app's surface a commenter's comment is signed, their edit
-        // of the page is not.
-        let surface: &str = r#"
+            ) else {
+                panic!("valid certified document operation was not signed");
+            };
+            let signature = <[u8; 64]>::try_from(signature).expect("64-byte signature");
+            device
+                .verifying_key()
+                .verify(
+                    &op.signing_bytes().expect("signing bytes"),
+                    &Signature::from_bytes(&signature),
+                )
+                .expect("device signature");
+
+            let encrypted = SignedOp::new_unsigned_with_encryption(
+                b"opaque MLS application frame".to_vec(),
+                document_artifact_id(app_id, &workspace_id, record_id),
+                author,
+                document_attestation_id(app_id, &workspace_id, record_id),
+                collab_types::OpKind::Change,
+                now,
+                2,
+                collab_types::EncryptionMetadata::mls_application(3),
+            );
+            let encrypted_unsigned = postcard::to_stdvec(&encrypted).expect("encrypted envelope");
+            assert!(matches!(
+                sign_collaboration_op(
+                    &tree,
+                    &bound(&workspace, app_id),
+                    &workspace_id,
+                    app_id,
+                    record_id,
+                    &encrypted_unsigned,
+                ),
+                Response::Signature(_)
+            ));
+            assert!(matches!(
+                sign_collaboration_op(
+                    &tree,
+                    &bound(&workspace, app_id),
+                    &workspace_id,
+                    "so.tilo.calendar",
+                    record_id,
+                    &unsigned,
+                ),
+                Response::Denied(_)
+            ));
+            // An app renamed from Notes, as the installed catalogue believes it, changes the record
+            // Notes kept, where it is; an app claiming nothing of Notes does not.
+            let renamed = RenamedFrom(app_id);
+            let as_renamed = Bound {
+                workspace: &workspace,
+                app_id: "so.tilo.notebook",
+                person: &renamed,
+            };
+            assert!(matches!(
+                sign_collaboration_op(
+                    &tree,
+                    &as_renamed,
+                    &workspace_id,
+                    app_id,
+                    record_id,
+                    &unsigned
+                ),
+                Response::Signature(_)
+            ));
+            assert!(matches!(
+                sign_collaboration_op(
+                    &tree,
+                    &bound(&workspace, "so.tilo.notebook"),
+                    &workspace_id,
+                    app_id,
+                    record_id,
+                    &unsigned,
+                ),
+                Response::Denied(_)
+            ));
+            op.payload = b"untyped legacy bytes".to_vec();
+            let malformed = postcard::to_stdvec(&op).expect("malformed envelope");
+            assert!(matches!(
+                sign_collaboration_op(
+                    &tree,
+                    &bound(&workspace, app_id),
+                    &workspace_id,
+                    app_id,
+                    record_id,
+                    &malformed,
+                ),
+                Response::Denied(_)
+            ));
+
+            let mut tree_guard = tree.write();
+            let committed = &mut tree_guard.desktop.workspaces[0];
+            committed.set_owner("someone-else");
+            committed.admit(profile.person_id(), Role::Commenter);
+            drop(tree_guard);
+            // Without the app's surface a change is decided as an edit of the
+            // record, which a commenter is not granted.
+            assert!(matches!(
+                sign_collaboration_op(
+                    &tree,
+                    &bound(&workspace, app_id),
+                    &workspace_id,
+                    app_id,
+                    record_id,
+                    &unsigned,
+                ),
+                Response::Denied(reason) if reason.contains("denies this document action")
+            ));
+            // With the app's surface a commenter's comment is signed, their edit
+            // of the page is not.
+            let surface: &str = r#"
 [[resources]]
 kind = "notes.page"
 label = "Page"
@@ -1125,239 +1128,315 @@ label = "Comment"
 field = "comments"
 params = []
 "#;
-        let hash = *blake3::hash(surface.as_bytes()).as_bytes();
-        let hex = hex::encode(hash);
-        collab_types::Surfaces::set_process(collab_types::Surfaces::from_source(
-            std::sync::Arc::new(collab_types::surface::ContentSurfaces::new(
-                move |_, wanted| (wanted == hex).then(|| surface.as_bytes().to_vec()),
-            )),
-        ));
-        let change = |what: tilo_actions::Did, seq: u64| {
-            use automerge::transaction::Transactable as _;
-            let mut doc = automerge::AutoCommit::new();
-            doc.put(automerge::ROOT, "written", seq).expect("write");
-            let context = tilo_actions::ActionContext {
-                what: Some(what),
-                ..tilo_actions::ActionContext::for_resource(record_id, "notes.page", "Page")
+            let hash = *blake3::hash(surface.as_bytes()).as_bytes();
+            let hex = hex::encode(hash);
+            collab_types::Surfaces::set_process(collab_types::Surfaces::from_source(
+                std::sync::Arc::new(collab_types::surface::ContentSurfaces::new(
+                    move |_, wanted| (wanted == hex).then(|| surface.as_bytes().to_vec()),
+                )),
+            ));
+            let change = |what: tilo_actions::Did, seq: u64| {
+                use automerge::transaction::Transactable as _;
+                let mut doc = automerge::AutoCommit::new();
+                doc.put(automerge::ROOT, "written", seq).expect("write");
+                let context = tilo_actions::ActionContext {
+                    what: Some(what),
+                    ..tilo_actions::ActionContext::for_resource(record_id, "notes.page", "Page")
+                };
+                doc.commit_with(
+                    automerge::transaction::CommitOptions::default()
+                        .with_message(context.change_message().expect("entry")),
+                );
+                let mut op = op.clone();
+                op.payload = DocumentMutation::Incremental(doc.save_after(&[]))
+                    .encode()
+                    .expect("typed mutation");
+                op.seq = seq;
+                postcard::to_stdvec(&op.with_surface(Some(hash))).expect("envelope")
             };
-            doc.commit_with(
-                automerge::transaction::CommitOptions::default()
-                    .with_message(context.change_message().expect("entry")),
+            let comment = change(
+                tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
+                    tilo_actions::ActionKey::new(app_id, "notes.page", "comment"),
+                    [],
+                )),
+                10,
             );
-            let mut op = op.clone();
-            op.payload = DocumentMutation::Incremental(doc.save_after(&[]))
-                .encode()
-                .expect("typed mutation");
-            op.seq = seq;
-            postcard::to_stdvec(&op.with_surface(Some(hash))).expect("envelope")
-        };
-        let comment = change(
-            tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
-                tilo_actions::ActionKey::new(app_id, "notes.page", "comment"),
-                [],
-            )),
-            10,
-        );
-        assert!(matches!(
-            sign_collaboration_op(
-                &tree,
-                &bound(&workspace, app_id),
-                &workspace_id,
-                app_id,
-                record_id,
-                &comment
-            ),
-            Response::Signature(_)
-        ));
-        let edit = change(
-            tilo_actions::Did::Edit(tilo_actions::FieldEdit {
-                ty: "page".into(),
-                field: "body".into(),
-                path: vec![tilo_actions::PathStep::Field("body".into())],
-                op: tilo_actions::EditOp::Set,
-                old: None,
-                new: None,
-                args: std::collections::BTreeMap::new(),
-            }),
-            11,
-        );
-        assert!(matches!(
-            sign_collaboration_op(&tree, &bound(&workspace, app_id), &workspace_id, app_id, record_id, &edit),
-            Response::Denied(reason) if reason.contains("denies this document action")
-        ));
-        let mut tree_guard = tree.write();
-        let committed = &mut tree_guard.desktop.workspaces[0];
-        committed.admit(profile.person_id(), Role::Viewer);
-        drop(tree_guard);
-        assert!(matches!(
-            sign_collaboration_op(
-                &tree,
-                &bound(&workspace, app_id),
-                &workspace_id,
-                app_id,
-                record_id,
-                &unsigned,
-            ),
-            Response::Denied(reason) if reason.contains("denies this document action")
-        ));
-    }
+            assert!(matches!(
+                sign_collaboration_op(
+                    &tree,
+                    &bound(&workspace, app_id),
+                    &workspace_id,
+                    app_id,
+                    record_id,
+                    &comment
+                ),
+                Response::Signature(_)
+            ));
+            let edit = change(
+                tilo_actions::Did::Edit(tilo_actions::FieldEdit {
+                    ty: "page".into(),
+                    field: "body".into(),
+                    path: vec![tilo_actions::PathStep::Field("body".into())],
+                    op: tilo_actions::EditOp::Set,
+                    old: None,
+                    new: None,
+                    args: std::collections::BTreeMap::new(),
+                }),
+                11,
+            );
+            assert!(matches!(
+                sign_collaboration_op(&tree, &bound(&workspace, app_id), &workspace_id, app_id, record_id, &edit),
+                Response::Denied(reason) if reason.contains("denies this document action")
+            ));
+            let mut tree_guard = tree.write();
+            let committed = &mut tree_guard.desktop.workspaces[0];
+            committed.admit(profile.person_id(), Role::Viewer);
+            drop(tree_guard);
+            assert!(matches!(
+                sign_collaboration_op(
+                    &tree,
+                    &bound(&workspace, app_id),
+                    &workspace_id,
+                    app_id,
+                    record_id,
+                    &unsigned,
+                ),
+                Response::Denied(reason) if reason.contains("denies this document action")
+            ));
+        }
 
-    /// Any app of a workspace writes the records every app of it opens (the
-    /// workspace's emoji, Chat's), decided by the workspace's grants on them,
-    /// and no other record of their owner's.
-    #[test]
-    fn any_app_of_the_workspace_signs_its_workspace_records_and_no_other_of_their_owner() {
-        let temp = tempfile::tempdir().expect("temp");
-        let xdg = temp.path().join("config");
-        let system_root = temp.path().join("system");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", &xdg)
-            .set("TILO_IDENTITY_ROOT", &system_root)
-            .set(crate::provisioning::FILE_SECRETS_ENV, "1");
-        let identity_dir = xdg.join("tilo/identity");
-        let paths = tilo_user_identity::IdentityPaths::under(&system_root);
-        ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
+        phase any_app_of_the_workspace_signs_its_workspace_records_and_no_other_of_their_owner;
+        // Any app of a workspace writes the records every app of it opens (the
+        // workspace's emoji, Chat's), decided by the workspace's grants on them,
+        // and no other record of their owner's.
+        {
+            let temp = tempfile::tempdir().expect("temp");
+            let xdg = temp.path().join("config");
+            let system_root = temp.path().join("system");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &xdg)
+                .set("TILO_IDENTITY_ROOT", &system_root)
+                .set(crate::provisioning::FILE_SECRETS_ENV, "1");
+            let identity_dir = xdg.join("tilo/identity");
+            let paths = tilo_user_identity::IdentityPaths::under(&system_root);
+            ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
-        let workspace = WorkspaceId::new();
-        let workspace_id = workspace.to_string();
-        let launched = "so.tilo.notes";
-        let owner = collab_types::WORKSPACE_RECORDS[0];
-        let emoji = collab_types::workspace_record_id(owner.kind);
-        let profile = crate::registry::identity_for_workspace(&workspace_id)
-            .expect("registry")
-            .expect("profile");
-        let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
-            .expect("device key");
-        let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
-        let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
-        committed.set_owner(profile.person_id());
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.workspaces.push(committed);
-        let tree = tree.shared();
-        let unsigned = |record: &str| {
-            postcard::to_stdvec(&SignedOp::new_unsigned(
+            let workspace = WorkspaceId::new();
+            let workspace_id = workspace.to_string();
+            let launched = "so.tilo.notes";
+            let owner = collab_types::WORKSPACE_RECORDS[0];
+            let emoji = collab_types::workspace_record_id(owner.kind);
+            let profile = crate::registry::identity_for_workspace(&workspace_id)
+                .expect("registry")
+                .expect("profile");
+            let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+                .expect("device key");
+            let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
+            let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
+            committed.set_owner(profile.person_id());
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(committed);
+            let tree = tree.shared();
+            let unsigned = |record: &str| {
+                postcard::to_stdvec(&SignedOp::new_unsigned(
+                    DocumentMutation::Snapshot(b"automerge document".to_vec())
+                        .encode()
+                        .expect("typed mutation"),
+                    document_artifact_id(owner.app, &workspace_id, record),
+                    author,
+                    document_attestation_id(owner.app, &workspace_id, record),
+                    collab_types::OpKind::Change,
+                    std::time::SystemTime::now(),
+                    1,
+                ))
+                .expect("unsigned envelope")
+            };
+            let sign = |record: &str| {
+                sign_collaboration_op(
+                    &tree,
+                    &bound(&workspace, launched),
+                    &workspace_id,
+                    owner.app,
+                    record,
+                    &unsigned(record),
+                )
+            };
+            assert!(matches!(sign(&emoji), Response::Signature(_)));
+            assert!(
+                matches!(sign("tab:0000000000000000"), Response::Denied(_)),
+                "the owner's other records stay its own"
+            );
+            let mut tree_guard = tree.write();
+            let committed = &mut tree_guard.desktop.workspaces[0];
+            committed.set_owner("someone-else");
+            committed.admit(profile.person_id(), Role::Viewer);
+            drop(tree_guard);
+            assert!(matches!(
+                sign(&emoji),
+                Response::Denied(reason) if reason.contains("denies this document action")
+            ));
+        }
+
+        phase the_service_signs_where_the_person_is_in_the_workspace_and_reports_where_they_are_not;
+        {
+            let temp = tempfile::tempdir().expect("temp");
+            let xdg = temp.path().join("config");
+            let system_root = temp.path().join("system");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &xdg)
+                .set("TILO_IDENTITY_ROOT", &system_root)
+                .set(crate::provisioning::FILE_SECRETS_ENV, "1");
+            let identity_dir = xdg.join("tilo/identity");
+            let paths = tilo_user_identity::IdentityPaths::under(&system_root);
+            ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
+
+            let workspace = WorkspaceId::new();
+            let workspace_id = workspace.to_string();
+            let app_id = "so.tilo.notes";
+            let record_id = "meeting-notes";
+            let profile = crate::registry::identity_for_workspace(&workspace_id)
+                .expect("registry")
+                .expect("profile");
+            let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+                .expect("device key");
+            let op = SignedOp::new_unsigned(
                 DocumentMutation::Snapshot(b"automerge document".to_vec())
                     .encode()
                     .expect("typed mutation"),
-                document_artifact_id(owner.app, &workspace_id, record),
-                author,
-                document_attestation_id(owner.app, &workspace_id, record),
+                document_artifact_id(app_id, &workspace_id, record_id),
+                Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+                document_attestation_id(app_id, &workspace_id, record_id),
                 collab_types::OpKind::Change,
                 std::time::SystemTime::now(),
                 1,
-            ))
-            .expect("unsigned envelope")
-        };
-        let sign = |record: &str| {
-            sign_collaboration_op(
-                &tree,
-                &bound(&workspace, launched),
-                &workspace_id,
-                owner.app,
-                record,
-                &unsigned(record),
-            )
-        };
-        assert!(matches!(sign(&emoji), Response::Signature(_)));
-        assert!(
-            matches!(sign("tab:0000000000000000"), Response::Denied(_)),
-            "the owner's other records stay its own"
-        );
-        let mut tree_guard = tree.write();
-        let committed = &mut tree_guard.desktop.workspaces[0];
-        committed.set_owner("someone-else");
-        committed.admit(profile.person_id(), Role::Viewer);
-        drop(tree_guard);
-        assert!(matches!(
-            sign(&emoji),
-            Response::Denied(reason) if reason.contains("denies this document action")
-        ));
+            );
+            let unsigned = postcard::to_stdvec(&op).expect("unsigned envelope");
+            let sign = |tree: &SharedTree| {
+                sign_collaboration_op(
+                    tree,
+                    &bound(&workspace, app_id),
+                    &workspace_id,
+                    app_id,
+                    record_id,
+                    &unsigned,
+                )
+            };
+
+            // The person this device signs as belongs to the workspace: the
+            // operation is signed with the device's key, no identity picked.
+            let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
+            committed.set_owner(profile.person_id());
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(committed);
+            let tree = tree.shared();
+            assert!(matches!(sign(&tree), Response::Signature(_)));
+
+            // The same workspace in other people's hands: this device would sign
+            // as someone its roster does not hold. That is a membership fault to
+            // report, never a question to put to the app.
+            let mut elsewhere = Workspace::in_workspace(WorkspaceSlot(2), workspace, "Workspace");
+            let other_person = hex::encode([9; 32]);
+            elsewhere.set_owner(other_person.clone());
+            tree.write().desktop.workspaces = vec![elsewhere];
+            match sign(&tree) {
+                Response::Error(message) => {
+                    assert!(message.contains("not a member"), "{message}");
+                }
+                other => panic!("a person the roster lacks is answered as a fault: {other:?}"),
+            }
+
+            // Two people in the workspace, the other one its owner, and this
+            // device's person a member beside them: the signature is theirs,
+            // again without anything chosen first.
+            let mut shared = Workspace::in_workspace(WorkspaceSlot(3), workspace, "Workspace");
+            shared.set_owner(other_person);
+            shared
+                .policy
+                .members
+                .insert(profile.person_id(), collab_types::Role::Editor);
+            tree.write().desktop.workspaces = vec![shared];
+            assert!(matches!(sign(&tree), Response::Signature(_)));
+        }
     }
 
-    #[test]
-    fn negotiated_photo_uses_actual_selected_record_and_refuses_wrong_root_and_invalid_pixels() {
-        let temp = tempfile::tempdir().unwrap();
-        let xdg = temp.path().join("config");
-        let system_root = temp.path().join("system");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", &xdg)
-            .set("TILO_IDENTITY_ROOT", &system_root)
-            .set(crate::provisioning::FILE_SECRETS_ENV, "1");
-        let identity_dir = xdg.join("tilo/identity");
-        let paths = tilo_user_identity::IdentityPaths::under(system_root);
-        ensure_collaboration_identity(&identity_dir, &paths).unwrap();
-        let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
-        runtime_identity::update_identity_photo(&identity_dir, "primary", Some(photo.clone()))
-            .unwrap();
-        let workspace = WorkspaceId::new();
-        let profile = crate::registry::identity_for_workspace(&workspace.to_string())
-            .unwrap()
-            .unwrap();
-        let original = std::fs::read(&profile.record_path).unwrap();
-        let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
-        committed.set_owner(profile.person_id());
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.workspaces.push(committed);
-        let socket = temp.path().join("identity.sock");
-        let _broker = spawn(
-            socket.clone(),
-            Arc::new(tree.shared()),
-            Arc::new(()),
-            Arc::new(()),
-        )
-        .unwrap();
-        let connect = |version| {
-            let mut client = UnixStream::connect(&socket).unwrap();
-            client
-                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one runtime client session checked against each request it may and may not make"
+        )]
+        fn broker_clients;
+
+        phase negotiated_photo_uses_actual_selected_record_and_refuses_wrong_root_and_invalid_pixels;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let xdg = temp.path().join("config");
+            let system_root = temp.path().join("system");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &xdg)
+                .set("TILO_IDENTITY_ROOT", &system_root)
+                .set(crate::provisioning::FILE_SECRETS_ENV, "1");
+            let identity_dir = xdg.join("tilo/identity");
+            let paths = tilo_user_identity::IdentityPaths::under(system_root);
+            ensure_collaboration_identity(&identity_dir, &paths).unwrap();
+            let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
+            runtime_identity::update_identity_photo(&identity_dir, "primary", Some(photo.clone()))
                 .unwrap();
-            client
-                .set_write_timeout(Some(tilo_test_env::hang_bound()))
+            let workspace = WorkspaceId::new();
+            let profile = crate::registry::identity_for_workspace(&workspace.to_string())
+                .unwrap()
                 .unwrap();
-            write_frame(
-                &mut client,
-                &runtime_identity::wire::PresentationHandshake {
-                    handshake: Handshake {
-                        workspace_id: workspace.to_string(),
-                        app_id: "so.tilo.notes".into(),
-                        surface: None,
-                    },
-                    presentation_version: version,
-                },
+            let original = std::fs::read(&profile.record_path).unwrap();
+            let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
+            committed.set_owner(profile.person_id());
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(committed);
+            let socket = temp.path().join("identity.sock");
+            let _broker = spawn(
+                socket.clone(),
+                Arc::new(tree.shared()),
+                Arc::new(()),
+                Arc::new(()),
             )
             .unwrap();
-            runtime_identity::BrokerSigningIdentity::from_connected_io(client)
-        };
-        let client = connect(runtime_identity::wire::PRESENTATION_VERSION).unwrap();
-        assert_eq!(client.metadata().profile_photo(), Some(&photo));
-        assert_eq!(
-            client.metadata().group_public_key(),
-            profile.user_public_key
-        );
-        assert!(client.sign(b"photo does not grant signing").is_err());
-        drop(client);
-        let legacy = connect(0).unwrap();
-        assert!(legacy.metadata().profile_photo().is_none());
-        assert_eq!(
-            legacy.metadata().group_public_key(),
-            profile.user_public_key
-        );
-        drop(legacy);
-        let mut record: serde_json::Value = serde_json::from_slice(&original).unwrap();
-        record["threshold_identity"]["group_public_key"] = serde_json::json!(vec![7_u8; 32]);
-        tilo_files::native::atomic::write_with_mode(
-            &profile.record_path,
-            &serde_json::to_vec(&record).unwrap(),
-            0o600,
-        )
-        .unwrap();
-        assert!(connect(runtime_identity::wire::PRESENTATION_VERSION).is_err());
-        for invalid in [
-            serde_json::json!({"width":0,"height":1,"rgba":[0,0,0,255]}),
-            serde_json::json!({"width":128,"height":128,"rgba":vec![0; runtime_identity::MAX_PHOTO_BYTES + 1]}),
-        ] {
+            let connect = |version| {
+                let mut client = UnixStream::connect(&socket).unwrap();
+                client
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                    .unwrap();
+                client
+                    .set_write_timeout(Some(tilo_test_env::hang_bound()))
+                    .unwrap();
+                write_frame(
+                    &mut client,
+                    &runtime_identity::wire::PresentationHandshake {
+                        handshake: Handshake {
+                            workspace_id: workspace.to_string(),
+                            app_id: "so.tilo.notes".into(),
+                            surface: None,
+                        },
+                        presentation_version: version,
+                    },
+                )
+                .unwrap();
+                runtime_identity::BrokerSigningIdentity::from_connected_io(client)
+            };
+            let client = connect(runtime_identity::wire::PRESENTATION_VERSION).unwrap();
+            assert_eq!(client.metadata().profile_photo(), Some(&photo));
+            assert_eq!(
+                client.metadata().group_public_key(),
+                profile.user_public_key
+            );
+            assert!(client.sign(b"photo does not grant signing").is_err());
+            drop(client);
+            let legacy = connect(0).unwrap();
+            assert!(legacy.metadata().profile_photo().is_none());
+            assert_eq!(
+                legacy.metadata().group_public_key(),
+                profile.user_public_key
+            );
+            drop(legacy);
             let mut record: serde_json::Value = serde_json::from_slice(&original).unwrap();
-            record["profile_photo"] = invalid;
+            record["threshold_identity"]["group_public_key"] = serde_json::json!(vec![7_u8; 32]);
             tilo_files::native::atomic::write_with_mode(
                 &profile.record_path,
                 &serde_json::to_vec(&record).unwrap(),
@@ -1365,271 +1444,281 @@ params = []
             )
             .unwrap();
             assert!(connect(runtime_identity::wire::PRESENTATION_VERSION).is_err());
-        }
-        tilo_files::native::atomic::write_with_mode(&profile.record_path, &original, 0o600)
-            .unwrap();
-        assert_eq!(
-            connect(runtime_identity::wire::PRESENTATION_VERSION)
-                .unwrap()
-                .metadata()
-                .profile_photo(),
-            Some(&photo)
-        );
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one runtime client session checked against each request it may and may not make"
-    )]
-    fn runtime_client_gets_metadata_but_never_generic_signing() {
-        let temp = tempfile::tempdir().expect("temp");
-        let xdg = temp.path().join("config");
-        let service_var = "TILO_SVC_IDENTITY_FD";
-        let system_root = temp.path().join("system");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", &xdg)
-            .set("TILO_IDENTITY_ROOT", &system_root)
-            .set(crate::provisioning::FILE_SECRETS_ENV, "1");
-        let identity_dir = xdg.join("tilo/identity");
-        let paths = tilo_user_identity::IdentityPaths::under(system_root);
-        ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
-
-        let workspace = WorkspaceId::new();
-        let workspace_id = workspace.to_string();
-        let profile = crate::registry::identity_for_workspace(&workspace_id)
-            .expect("registry")
-            .expect("profile");
-        let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
-        committed.set_owner(profile.person_id());
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.workspaces.push(committed);
-        let tree = Arc::new(tree.shared());
-        let socket = temp.path().join("identity.sock");
-        let _broker = spawn(
-            socket.clone(),
-            tree.clone(),
-            Arc::new(()),
-            Arc::new(NotesKeepsWatched),
-        )
-        .expect("broker");
-        let mut client = UnixStream::connect(socket).expect("connect");
-        write_frame(
-            &mut client,
-            &Handshake {
-                workspace_id: workspace.to_string(),
-                app_id: "so.tilo.notes".into(),
-                surface: None,
-            },
-        )
-        .expect("handshake");
-        let fd = client.into_raw_fd();
-        env.set(service_var, fd.to_string());
-
-        let identity = runtime_identity::load().expect("broker metadata");
-        assert!(!identity.group_public_key().iter().all(|byte| *byte == 0));
-        let cert: tilo_user_identity::DeviceCert = serde_json::from_slice(
-            identity
-                .device_certificate()
-                .expect("broker supplies identity-to-device certificate"),
-        )
-        .expect("certificate JSON");
-        tilo_user_identity::verify_device_cert(&cert).expect("root-signed certificate");
-        assert_eq!(cert.user_public_key, identity.group_public_key());
-        assert_eq!(cert.device_public_key, identity.signing_public_key());
-        // Leave the accepted worker waiting between frames; Darwin must not treat
-        // a temporarily empty nonblocking receive as the end of this session.
-        std::thread::sleep(Duration::from_millis(50));
-        assert!(identity.sign_for("document.save", b"saved").is_err());
-        let grant = signing_grant(&tree.read().desktop.workspaces[0]);
-        tree.write().desktop.workspaces[0].grant(grant);
-        assert!(
-            identity.sign_for("document.save", b"saved").is_err(),
-            "even an exact legacy signature grant must be denied"
-        );
-        // The ordinary socket must deny even a broad Outside grant and
-        // alternate labels, without dispatching on the app's action string.
-        let node = tree.read().desktop.workspaces[0].node();
-        tree.write().desktop.workspaces[0].grant(Grant::new(
-            "notes-outside",
-            Grantee::person("owner"),
-            node,
-            KindSet::ALL,
-            Answer::Allow,
-            Grantee::person(profile.person_id()),
-        ));
-        for action in [
-            "document.save",
-            "document.delete",
-            "sign",
-            "moderation.report",
-            "",
-        ] {
-            assert!(
-                identity.sign_for(action, b"caller-chosen payload").is_err(),
-                "broad Outside grants must not enable generic signing for {action:?}"
+            for invalid in [
+                serde_json::json!({"width":0,"height":1,"rgba":[0,0,0,255]}),
+                serde_json::json!({"width":128,"height":128,"rgba":vec![0; runtime_identity::MAX_PHOTO_BYTES + 1]}),
+            ] {
+                let mut record: serde_json::Value = serde_json::from_slice(&original).unwrap();
+                record["profile_photo"] = invalid;
+                tilo_files::native::atomic::write_with_mode(
+                    &profile.record_path,
+                    &serde_json::to_vec(&record).unwrap(),
+                    0o600,
+                )
+                .unwrap();
+                assert!(connect(runtime_identity::wire::PRESENTATION_VERSION).is_err());
+            }
+            tilo_files::native::atomic::write_with_mode(&profile.record_path, &original, 0o600)
+                .unwrap();
+            assert_eq!(
+                connect(runtime_identity::wire::PRESENTATION_VERSION)
+                    .unwrap()
+                    .metadata()
+                    .profile_photo(),
+                Some(&photo)
             );
         }
-        assert!(identity.sign(b"caller-chosen payload").is_err());
-        let join_proof = identity
-            .sign_collaboration_join(&workspace_id)
-            .expect("the launcher-bound workspace may request a join proof");
-        VerifyingKey::from_bytes(&identity.signing_public_key())
-            .expect("device key")
-            .verify(
-                &runtime_identity::collaboration_join_signing_bytes(&workspace_id),
-                &Signature::from_bytes(&join_proof),
-            )
-            .expect("workspace-scoped device proof");
-        assert!(
-            identity
-                .sign_collaboration_join(&WorkspaceId::new().to_string())
-                .is_err(),
-            "the identity broker must not sign a join for another workspace"
-        );
-        let record_id = "record-1";
-        let now = std::time::SystemTime::now();
-        let mut op = SignedOp::new_unsigned(
-            DocumentMutation::Incremental(b"automerge changes".to_vec())
-                .encode()
-                .expect("typed mutation"),
-            document_artifact_id("so.tilo.notes", &workspace_id, record_id),
-            Ed25519PublicKey::from_bytes(identity.signing_public_key()),
-            document_attestation_id("so.tilo.notes", &workspace_id, record_id),
-            collab_types::OpKind::Change,
-            now,
-            1,
-        );
-        let op_signature = identity
-            .sign_collaboration_op(
-                &workspace_id,
-                "so.tilo.notes",
-                record_id,
-                &postcard::to_stdvec(&op).expect("unsigned envelope"),
-            )
-            .expect("owner may sign a typed document operation");
-        op.signature = collab_types::Signature::from_bytes(op_signature);
-        collab_types::verify_op(&op).expect("identity service signature verifies");
-        assert!(identity.sign_for("document.delete", b"no").is_err());
 
-        let own_cluster = collab_types::personal_cluster(&identity.group_public_key()).to_string();
-        let own_proof = identity
-            .sign_collaboration_join(&own_cluster)
-            .expect("an app keeping a record of the person's joins their store");
-        VerifyingKey::from_bytes(&identity.signing_public_key())
-            .expect("device key")
-            .verify(
-                &runtime_identity::collaboration_join_signing_bytes(&own_cluster),
-                &Signature::from_bytes(&own_proof),
+        phase runtime_client_gets_metadata_but_never_generic_signing;
+        {
+            let temp = tempfile::tempdir().expect("temp");
+            let xdg = temp.path().join("config");
+            let service_var = "TILO_SVC_IDENTITY_FD";
+            let system_root = temp.path().join("system");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &xdg)
+                .set("TILO_IDENTITY_ROOT", &system_root)
+                .set(crate::provisioning::FILE_SECRETS_ENV, "1");
+            let identity_dir = xdg.join("tilo/identity");
+            let paths = tilo_user_identity::IdentityPaths::under(system_root);
+            ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
+
+            let workspace = WorkspaceId::new();
+            let workspace_id = workspace.to_string();
+            let profile = crate::registry::identity_for_workspace(&workspace_id)
+                .expect("registry")
+                .expect("profile");
+            let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
+            committed.set_owner(profile.person_id());
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(committed);
+            let tree = Arc::new(tree.shared());
+            let socket = temp.path().join("identity.sock");
+            let _broker = spawn(
+                socket.clone(),
+                tree.clone(),
+                Arc::new(()),
+                Arc::new(NotesKeepsWatched),
             )
-            .expect("a proof for the person's store");
-        let person_op = |record: &str| {
-            SignedOp::new_unsigned(
+            .expect("broker");
+            let mut client = UnixStream::connect(socket).expect("connect");
+            write_frame(
+                &mut client,
+                &Handshake {
+                    workspace_id: workspace.to_string(),
+                    app_id: "so.tilo.notes".into(),
+                    surface: None,
+                },
+            )
+            .expect("handshake");
+            let fd = client.into_raw_fd();
+            env.set(service_var, fd.to_string());
+
+            let identity = runtime_identity::load().expect("broker metadata");
+            assert!(!identity.group_public_key().iter().all(|byte| *byte == 0));
+            let cert: tilo_user_identity::DeviceCert = serde_json::from_slice(
+                identity
+                    .device_certificate()
+                    .expect("broker supplies identity-to-device certificate"),
+            )
+            .expect("certificate JSON");
+            tilo_user_identity::verify_device_cert(&cert).expect("root-signed certificate");
+            assert_eq!(cert.user_public_key, identity.group_public_key());
+            assert_eq!(cert.device_public_key, identity.signing_public_key());
+            // Leave the accepted worker waiting between frames; Darwin must not treat
+            // a temporarily empty nonblocking receive as the end of this session.
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(identity.sign_for("document.save", b"saved").is_err());
+            let grant = signing_grant(&tree.read().desktop.workspaces[0]);
+            tree.write().desktop.workspaces[0].grant(grant);
+            assert!(
+                identity.sign_for("document.save", b"saved").is_err(),
+                "even an exact legacy signature grant must be denied"
+            );
+            // The ordinary socket must deny even a broad Outside grant and
+            // alternate labels, without dispatching on the app's action string.
+            let node = tree.read().desktop.workspaces[0].node();
+            tree.write().desktop.workspaces[0].grant(Grant::new(
+                "notes-outside",
+                Grantee::person("owner"),
+                node,
+                KindSet::ALL,
+                Answer::Allow,
+                Grantee::person(profile.person_id()),
+            ));
+            for action in [
+                "document.save",
+                "document.delete",
+                "sign",
+                "moderation.report",
+                "",
+            ] {
+                assert!(
+                    identity.sign_for(action, b"caller-chosen payload").is_err(),
+                    "broad Outside grants must not enable generic signing for {action:?}"
+                );
+            }
+            assert!(identity.sign(b"caller-chosen payload").is_err());
+            let join_proof = identity
+                .sign_collaboration_join(&workspace_id)
+                .expect("the launcher-bound workspace may request a join proof");
+            VerifyingKey::from_bytes(&identity.signing_public_key())
+                .expect("device key")
+                .verify(
+                    &runtime_identity::collaboration_join_signing_bytes(&workspace_id),
+                    &Signature::from_bytes(&join_proof),
+                )
+                .expect("workspace-scoped device proof");
+            assert!(
+                identity
+                    .sign_collaboration_join(&WorkspaceId::new().to_string())
+                    .is_err(),
+                "the identity broker must not sign a join for another workspace"
+            );
+            let record_id = "record-1";
+            let now = std::time::SystemTime::now();
+            let mut op = SignedOp::new_unsigned(
                 DocumentMutation::Incremental(b"automerge changes".to_vec())
                     .encode()
                     .expect("typed mutation"),
-                document_artifact_id("so.tilo.notes", &own_cluster, record),
+                document_artifact_id("so.tilo.notes", &workspace_id, record_id),
                 Ed25519PublicKey::from_bytes(identity.signing_public_key()),
-                document_attestation_id("so.tilo.notes", &own_cluster, record),
+                document_attestation_id("so.tilo.notes", &workspace_id, record_id),
                 collab_types::OpKind::Change,
                 now,
                 1,
-            )
-        };
-        let watched = collab_types::person_record_id("notes.watched");
-        let mut kept = person_op(&watched);
-        kept.signature = collab_types::Signature::from_bytes(
-            identity
+            );
+            let op_signature = identity
                 .sign_collaboration_op(
-                    &own_cluster,
+                    &workspace_id,
                     "so.tilo.notes",
-                    &watched,
-                    &postcard::to_stdvec(&kept).expect("unsigned envelope"),
+                    record_id,
+                    &postcard::to_stdvec(&op).expect("unsigned envelope"),
                 )
-                .expect("its own record of the person's is signed"),
-        );
-        collab_types::verify_op(&kept).expect("the personal-cluster change verifies");
-        let undeclared = collab_types::person_record_id("notes.bookmarks");
-        assert!(
-            identity
-                .sign_collaboration_op(
-                    &own_cluster,
-                    "so.tilo.notes",
-                    &undeclared,
-                    &postcard::to_stdvec(&person_op(&undeclared)).expect("envelope"),
-                )
-                .is_err(),
-            "a kind the app does not declare is not signed"
-        );
-        assert!(
-            identity
-                .sign_collaboration_op(
-                    &own_cluster,
-                    "so.tilo.notes",
-                    "record-1",
-                    &postcard::to_stdvec(&person_op("record-1")).expect("envelope"),
-                )
-                .is_err(),
-            "nothing but the person's records is signed in their store"
-        );
-        assert!(
-            identity
-                .channel_keys(&own_cluster, "so.tilo.notes", &watched, 0)
-                .is_ok(),
-            "the keys of a record of the person's the app declares are asked for"
-        );
-        assert!(
-            identity
-                .channel_keys(&own_cluster, "so.tilo.notes", &undeclared, 0)
-                .is_err(),
-            "not those of a kind it does not declare"
-        );
-        drop(identity);
-    }
+                .expect("owner may sign a typed document operation");
+            op.signature = collab_types::Signature::from_bytes(op_signature);
+            collab_types::verify_op(&op).expect("identity service signature verifies");
+            assert!(identity.sign_for("document.delete", b"no").is_err());
 
-    #[test]
-    fn shutdown_reaps_clients_waiting_for_requests_and_partial_handshakes() {
-        let temp = tempfile::tempdir().unwrap();
-        let socket = temp.path().join("identity.sock");
-        let membership = Arc::new(WorkspaceTree::default().shared());
-        let retained = Arc::downgrade(&membership);
-        let broker = spawn(socket.clone(), membership, Arc::new(()), Arc::new(())).unwrap();
-        let mut client = UnixStream::connect(&socket).unwrap();
-        client
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            let own_cluster = collab_types::personal_cluster(&identity.group_public_key()).to_string();
+            let own_proof = identity
+                .sign_collaboration_join(&own_cluster)
+                .expect("an app keeping a record of the person's joins their store");
+            VerifyingKey::from_bytes(&identity.signing_public_key())
+                .expect("device key")
+                .verify(
+                    &runtime_identity::collaboration_join_signing_bytes(&own_cluster),
+                    &Signature::from_bytes(&own_proof),
+                )
+                .expect("a proof for the person's store");
+            let person_op = |record: &str| {
+                SignedOp::new_unsigned(
+                    DocumentMutation::Incremental(b"automerge changes".to_vec())
+                        .encode()
+                        .expect("typed mutation"),
+                    document_artifact_id("so.tilo.notes", &own_cluster, record),
+                    Ed25519PublicKey::from_bytes(identity.signing_public_key()),
+                    document_attestation_id("so.tilo.notes", &own_cluster, record),
+                    collab_types::OpKind::Change,
+                    now,
+                    1,
+                )
+            };
+            let watched = collab_types::person_record_id("notes.watched");
+            let mut kept = person_op(&watched);
+            kept.signature = collab_types::Signature::from_bytes(
+                identity
+                    .sign_collaboration_op(
+                        &own_cluster,
+                        "so.tilo.notes",
+                        &watched,
+                        &postcard::to_stdvec(&kept).expect("unsigned envelope"),
+                    )
+                    .expect("its own record of the person's is signed"),
+            );
+            collab_types::verify_op(&kept).expect("the personal-cluster change verifies");
+            let undeclared = collab_types::person_record_id("notes.bookmarks");
+            assert!(
+                identity
+                    .sign_collaboration_op(
+                        &own_cluster,
+                        "so.tilo.notes",
+                        &undeclared,
+                        &postcard::to_stdvec(&person_op(&undeclared)).expect("envelope"),
+                    )
+                    .is_err(),
+                "a kind the app does not declare is not signed"
+            );
+            assert!(
+                identity
+                    .sign_collaboration_op(
+                        &own_cluster,
+                        "so.tilo.notes",
+                        "record-1",
+                        &postcard::to_stdvec(&person_op("record-1")).expect("envelope"),
+                    )
+                    .is_err(),
+                "nothing but the person's records is signed in their store"
+            );
+            assert!(
+                identity
+                    .channel_keys(&own_cluster, "so.tilo.notes", &watched, 0)
+                    .is_ok(),
+                "the keys of a record of the person's the app declares are asked for"
+            );
+            assert!(
+                identity
+                    .channel_keys(&own_cluster, "so.tilo.notes", &undeclared, 0)
+                    .is_err(),
+                "not those of a kind it does not declare"
+            );
+            drop(identity);
+        }
+
+        phase shutdown_reaps_clients_waiting_for_requests_and_partial_handshakes;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let socket = temp.path().join("identity.sock");
+            let membership = Arc::new(WorkspaceTree::default().shared());
+            let retained = Arc::downgrade(&membership);
+            let broker = spawn(socket.clone(), membership, Arc::new(()), Arc::new(())).unwrap();
+            let mut client = UnixStream::connect(&socket).unwrap();
+            client
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            write_frame(
+                &mut client,
+                &Handshake {
+                    workspace_id: WorkspaceId::new().to_string(),
+                    app_id: "so.tilo.file-explorer".into(),
+                    surface: None,
+                },
+            )
             .unwrap();
-        write_frame(
-            &mut client,
-            &Handshake {
-                workspace_id: WorkspaceId::new().to_string(),
-                app_id: "so.tilo.file-explorer".into(),
-                surface: None,
-            },
-        )
-        .unwrap();
-        write_action_frame(&mut client, &Request::Metadata).unwrap();
-        let _: Response = read_action_frame(&mut client).unwrap();
-        let mut partial = UnixStream::connect(&socket).unwrap();
-        partial
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        partial.write_all(&[0]).unwrap();
-        tilo_test_env::wait_until("both actual client workers to be accepted", || {
-            broker.clients.lock().unwrap().len() == 2
-        });
-        drop(broker);
-        assert!(
-            retained.upgrade().is_none(),
-            "accepted workers must release their committed membership before shutdown returns"
-        );
-        assert!(
-            FRAMING
-                .read_value::<_, Response>(&mut client)
-                .unwrap()
-                .is_none()
-        );
-        let mut byte = [0];
-        assert_eq!(partial.read(&mut byte).unwrap(), 0);
+            write_action_frame(&mut client, &Request::Metadata).unwrap();
+            let _: Response = read_action_frame(&mut client).unwrap();
+            let mut partial = UnixStream::connect(&socket).unwrap();
+            partial
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            partial.write_all(&[0]).unwrap();
+            tilo_test_env::wait_until("both actual client workers to be accepted", || {
+                broker.clients.lock().unwrap().len() == 2
+            });
+            drop(broker);
+            assert!(
+                retained.upgrade().is_none(),
+                "accepted workers must release their committed membership before shutdown returns"
+            );
+            assert!(
+                FRAMING
+                    .read_value::<_, Response>(&mut client)
+                    .unwrap()
+                    .is_none()
+            );
+            let mut byte = [0];
+            assert_eq!(partial.read(&mut byte).unwrap(), 0);
+        }
     }
 
     /// A key service holding keys for every workspace.
@@ -1648,38 +1737,147 @@ params = []
         }
     }
 
-    /// An app opened in the person's own store (Settings) is answered the
-    /// keys of the person's records it declares there: that store is no
-    /// workspace with a policy, and the person reads it.
-    #[test]
-    fn an_app_opened_in_the_persons_own_cluster_gets_the_keys_of_their_records() {
-        let fixture = crate::join_proof::tests::Fixture::new();
-        let own_cluster = WorkspaceId::parse(
-            &collab_types::personal_cluster(&fixture.user_public_key).to_string(),
-        )
-        .expect("the person's store");
-        let own = own_cluster.to_string();
-        let app_id = "so.tilo.notes";
-        let watched = collab_types::person_record_id("notes.watched");
-        let answer = channel_keys(
-            &WorkspaceTree::default().shared(),
-            &ReadyChannels,
-            &ChannelKeyRoute {
-                bound: Bound {
-                    workspace: &own_cluster,
+    tilo_test_env::scenario! {
+        fn channel_keys_for_an_app;
+
+        phase an_app_opened_in_the_persons_own_cluster_gets_the_keys_of_their_records;
+        // An app opened in the person's own store (Settings) is answered the
+        // keys of the person's records it declares there: that store is no
+        // workspace with a policy, and the person reads it.
+        {
+            let fixture = crate::join_proof::tests::Fixture::new();
+            let own_cluster = WorkspaceId::parse(
+                &collab_types::personal_cluster(&fixture.user_public_key).to_string(),
+            )
+            .expect("the person's store");
+            let own = own_cluster.to_string();
+            let app_id = "so.tilo.notes";
+            let watched = collab_types::person_record_id("notes.watched");
+            let answer = channel_keys(
+                &WorkspaceTree::default().shared(),
+                &ReadyChannels,
+                &ChannelKeyRoute {
+                    bound: Bound {
+                        workspace: &own_cluster,
+                        app_id,
+                        person: &NotesKeepsWatched,
+                    },
+                    workspace_id: &own,
                     app_id,
-                    person: &NotesKeepsWatched,
+                    record_id: &watched,
                 },
-                workspace_id: &own,
-                app_id,
-                record_id: &watched,
-            },
-            0,
-        );
-        assert!(
-            matches!(answer, Response::ChannelKeys { .. }),
-            "the person reads their own cluster: {answer:?}"
-        );
+                0,
+            );
+            assert!(
+                matches!(answer, Response::ChannelKeys { .. }),
+                "the person reads their own cluster: {answer:?}"
+            );
+        }
+
+        phase an_app_gets_the_keys_of_the_records_it_declares_it_reads;
+        // An app is handed the keys of another app's record it declares it reads, as the broker
+        // admits its read-only join, and of no other app's.
+        {
+            let fixture = crate::join_proof::tests::Fixture::new();
+            let workspace = WorkspaceId::parse(
+                &collab_types::personal_cluster(&fixture.user_public_key).to_string(),
+            )
+            .expect("the person's store");
+            let launch = workspace.to_string();
+            let keys_of = |owner: &str| {
+                channel_keys(
+                    &WorkspaceTree::default().shared(),
+                    &ReadyChannels,
+                    &ChannelKeyRoute {
+                        bound: Bound {
+                            workspace: &workspace,
+                            app_id: "so.tilo.lang.today",
+                            person: &TodayReadsTasks,
+                        },
+                        workspace_id: &launch,
+                        app_id: owner,
+                        record_id: "",
+                    },
+                    0,
+                )
+            };
+            let tasks = keys_of("so.tilo.lang.tasks");
+            assert!(
+                matches!(tasks, Response::ChannelKeys { .. }),
+                "Today reads Tasks' record: {tasks:?}"
+            );
+            let chat = keys_of("so.tilo.lang.chat");
+            assert!(
+                matches!(chat, Response::Denied(_)),
+                "Today declares no read of Chat: {chat:?}"
+            );
+        }
+
+        phase channel_keys_trust_check_reads_identity_files_once_and_sees_revocation;
+        // Answering an app's key request checks this device's trust from the
+        // identity files while they are unchanged without reading them again,
+        // and still refuses keys on the very next request after a revocation.
+        {
+            let fixture = crate::join_proof::tests::Fixture::new();
+            let workspace = WorkspaceId::parse(&fixture.workspace).expect("workspace");
+            let app_id = "so.tilo.notes";
+            let profile = crate::registry::identity_for_workspace(&fixture.workspace)
+                .expect("registry")
+                .expect("profile");
+            let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
+            committed.set_owner(profile.person_id());
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(committed);
+            let tree = tree.shared();
+            let ask = || {
+                channel_keys(
+                    &tree,
+                    &ReadyChannels,
+                    &ChannelKeyRoute {
+                        bound: bound(&workspace, app_id),
+                        workspace_id: &fixture.workspace,
+                        app_id,
+                        record_id: "note",
+                    },
+                    0,
+                )
+            };
+            let fleet_loads = crate::device_fleet::loads_on_this_thread();
+            let derived = crate::join_proof::tests::mints(|| {
+                for _ in 0..3 {
+                    assert!(matches!(ask(), Response::ChannelKeys { .. }));
+                }
+            });
+            assert_eq!(
+                derived, 1,
+                "the identity files are read for the first answer only"
+            );
+            assert!(
+                crate::device_fleet::loads_on_this_thread().saturating_sub(fleet_loads) <= 1,
+                "the fleet is read at most once"
+            );
+
+            let device = trusted_current_device(&fixture.workspace)
+                .expect("trusted device")
+                .0
+                .verifying_key()
+                .to_bytes();
+            fixture
+                .store()
+                .revoke(
+                    &fixture.identity_id,
+                    device,
+                    tilo_user_identity::RevocationReason::Lost,
+                    crate::join_proof::tests::proof_issued_at(&fixture).saturating_add(1),
+                )
+                .expect("revoke");
+            assert!(
+                matches!(ask(), Response::Denied(_)),
+                "a revoked device gets no keys on the next request"
+            );
+            fixture.settle();
+            assert!(matches!(ask(), Response::Denied(_)), "nor once it settles");
+        }
     }
 
     /// Today declares that it reads Tasks' records.
@@ -1693,192 +1891,6 @@ params = []
         fn reads_records_of(&self, reader: &str, owner: &str) -> bool {
             reader == "so.tilo.lang.today" && owner == "so.tilo.lang.tasks"
         }
-    }
-
-    /// An app is handed the keys of another app's record it declares it reads, as the broker
-    /// admits its read-only join, and of no other app's.
-    #[test]
-    fn an_app_gets_the_keys_of_the_records_it_declares_it_reads() {
-        let fixture = crate::join_proof::tests::Fixture::new();
-        let workspace = WorkspaceId::parse(
-            &collab_types::personal_cluster(&fixture.user_public_key).to_string(),
-        )
-        .expect("the person's store");
-        let launch = workspace.to_string();
-        let keys_of = |owner: &str| {
-            channel_keys(
-                &WorkspaceTree::default().shared(),
-                &ReadyChannels,
-                &ChannelKeyRoute {
-                    bound: Bound {
-                        workspace: &workspace,
-                        app_id: "so.tilo.lang.today",
-                        person: &TodayReadsTasks,
-                    },
-                    workspace_id: &launch,
-                    app_id: owner,
-                    record_id: "",
-                },
-                0,
-            )
-        };
-        let tasks = keys_of("so.tilo.lang.tasks");
-        assert!(
-            matches!(tasks, Response::ChannelKeys { .. }),
-            "Today reads Tasks' record: {tasks:?}"
-        );
-        let chat = keys_of("so.tilo.lang.chat");
-        assert!(
-            matches!(chat, Response::Denied(_)),
-            "Today declares no read of Chat: {chat:?}"
-        );
-    }
-
-    /// Answering an app's key request checks this device's trust from the
-    /// identity files while they are unchanged without reading them again,
-    /// and still refuses keys on the very next request after a revocation.
-    #[test]
-    fn channel_keys_trust_check_reads_identity_files_once_and_sees_revocation() {
-        let fixture = crate::join_proof::tests::Fixture::new();
-        let workspace = WorkspaceId::parse(&fixture.workspace).expect("workspace");
-        let app_id = "so.tilo.notes";
-        let profile = crate::registry::identity_for_workspace(&fixture.workspace)
-            .expect("registry")
-            .expect("profile");
-        let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
-        committed.set_owner(profile.person_id());
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.workspaces.push(committed);
-        let tree = tree.shared();
-        let ask = || {
-            channel_keys(
-                &tree,
-                &ReadyChannels,
-                &ChannelKeyRoute {
-                    bound: bound(&workspace, app_id),
-                    workspace_id: &fixture.workspace,
-                    app_id,
-                    record_id: "note",
-                },
-                0,
-            )
-        };
-        let fleet_loads = crate::device_fleet::loads_on_this_thread();
-        let derived = crate::join_proof::tests::mints(|| {
-            for _ in 0..3 {
-                assert!(matches!(ask(), Response::ChannelKeys { .. }));
-            }
-        });
-        assert_eq!(
-            derived, 1,
-            "the identity files are read for the first answer only"
-        );
-        assert!(
-            crate::device_fleet::loads_on_this_thread().saturating_sub(fleet_loads) <= 1,
-            "the fleet is read at most once"
-        );
-
-        let device = trusted_current_device(&fixture.workspace)
-            .expect("trusted device")
-            .0
-            .verifying_key()
-            .to_bytes();
-        fixture
-            .store()
-            .revoke(
-                &fixture.identity_id,
-                device,
-                tilo_user_identity::RevocationReason::Lost,
-                crate::join_proof::tests::proof_issued_at(&fixture).saturating_add(1),
-            )
-            .expect("revoke");
-        assert!(
-            matches!(ask(), Response::Denied(_)),
-            "a revoked device gets no keys on the next request"
-        );
-        fixture.settle();
-        assert!(matches!(ask(), Response::Denied(_)), "nor once it settles");
-    }
-
-    #[test]
-    fn the_service_signs_where_the_person_is_in_the_workspace_and_reports_where_they_are_not() {
-        let temp = tempfile::tempdir().expect("temp");
-        let xdg = temp.path().join("config");
-        let system_root = temp.path().join("system");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", &xdg)
-            .set("TILO_IDENTITY_ROOT", &system_root)
-            .set(crate::provisioning::FILE_SECRETS_ENV, "1");
-        let identity_dir = xdg.join("tilo/identity");
-        let paths = tilo_user_identity::IdentityPaths::under(&system_root);
-        ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
-
-        let workspace = WorkspaceId::new();
-        let workspace_id = workspace.to_string();
-        let app_id = "so.tilo.notes";
-        let record_id = "meeting-notes";
-        let profile = crate::registry::identity_for_workspace(&workspace_id)
-            .expect("registry")
-            .expect("profile");
-        let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
-            .expect("device key");
-        let op = SignedOp::new_unsigned(
-            DocumentMutation::Snapshot(b"automerge document".to_vec())
-                .encode()
-                .expect("typed mutation"),
-            document_artifact_id(app_id, &workspace_id, record_id),
-            Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
-            document_attestation_id(app_id, &workspace_id, record_id),
-            collab_types::OpKind::Change,
-            std::time::SystemTime::now(),
-            1,
-        );
-        let unsigned = postcard::to_stdvec(&op).expect("unsigned envelope");
-        let sign = |tree: &SharedTree| {
-            sign_collaboration_op(
-                tree,
-                &bound(&workspace, app_id),
-                &workspace_id,
-                app_id,
-                record_id,
-                &unsigned,
-            )
-        };
-
-        // The person this device signs as belongs to the workspace: the
-        // operation is signed with the device's key, no identity picked.
-        let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
-        committed.set_owner(profile.person_id());
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.workspaces.push(committed);
-        let tree = tree.shared();
-        assert!(matches!(sign(&tree), Response::Signature(_)));
-
-        // The same workspace in other people's hands: this device would sign
-        // as someone its roster does not hold. That is a membership fault to
-        // report, never a question to put to the app.
-        let mut elsewhere = Workspace::in_workspace(WorkspaceSlot(2), workspace, "Workspace");
-        let other_person = hex::encode([9; 32]);
-        elsewhere.set_owner(other_person.clone());
-        tree.write().desktop.workspaces = vec![elsewhere];
-        match sign(&tree) {
-            Response::Error(message) => {
-                assert!(message.contains("not a member"), "{message}");
-            }
-            other => panic!("a person the roster lacks is answered as a fault: {other:?}"),
-        }
-
-        // Two people in the workspace, the other one its owner, and this
-        // device's person a member beside them: the signature is theirs,
-        // again without anything chosen first.
-        let mut shared = Workspace::in_workspace(WorkspaceSlot(3), workspace, "Workspace");
-        shared.set_owner(other_person);
-        shared
-            .policy
-            .members
-            .insert(profile.person_id(), collab_types::Role::Editor);
-        tree.write().desktop.workspaces = vec![shared];
-        assert!(matches!(sign(&tree), Response::Signature(_)));
     }
 
     #[cfg(target_os = "linux")]
