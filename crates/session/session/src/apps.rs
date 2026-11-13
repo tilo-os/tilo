@@ -19,7 +19,6 @@ use tilo_actions::remote::{
     RemoteActionTarget, application_open_target, application_provider, provider_workspace,
 };
 use tilo_actions::{ActionDescriptor, DoorError, ExecutionLocus, InvocationId};
-use tilo_app_launch::routing;
 use tilo_app_launch::{
     Answer, Authority, Cause, Doors as WindowDoors, HeldDoor, Instance, Kind, Launch, PlanContext,
     Planned, Routed, SessionEnvironment, Shown, Spawner, StartAlone, Workspace,
@@ -1979,16 +1978,26 @@ impl AppActions for Apps {
         Err(no_action_host())
     }
 
-    /// Open `uri` in the app that takes it: a document's own app when it is a file on this machine,
-    /// else the app that claims its scheme.
+    /// Open `uri` in the app that takes it: the app this workspace's defaults, the person's own or
+    /// this machine's open a file with, or the app that claims the scheme of a link.
     fn open_uri(&self, workspace: &str, uri: &str) -> Result<(), DoorError> {
-        let (installed, entries) = routes();
+        let person = self.state.borrow().person.clone();
+        let desk = self
+            .desktop
+            .borrow()
+            .clone()
+            .map(|desktop| desktop.with_policy(|policy| policy.handle().clone()));
         let launch = match uri.strip_prefix("file://") {
             // A file URI is percent-encoded; the path it names is not.
-            Some(path) => {
-                routing::document(Path::new(&ui::uri::decode(path)), &installed, &entries)
-            }
-            None => routing::link(uri, &installed, &entries),
+            Some(path) => crate::documents::openers(
+                desk.as_ref(),
+                workspace,
+                &person,
+                Path::new(&ui::uri::decode(path)),
+            )
+            .into_iter()
+            .next(),
+            None => crate::documents::opener(desk.as_ref(), workspace, &person, uri),
         }
         .ok_or_else(|| DoorError::Failed(format!("nothing on this device opens {uri}")))?;
         let workspace = self.workspace_named(workspace);
@@ -2006,14 +2015,6 @@ impl AppActions for Apps {
             &Workspace::under(&runtime_dir(), String::new()),
         )
     }
-}
-
-/// This device's apps as routing reads them: the installed Tilo packages and the machine's own
-/// desktop entries.
-pub(crate) fn routes() -> (Vec<app_catalogue::apps::InstalledApp>, desktop_entry::Scan) {
-    let installed = app_catalogue::apps::read_from_env().unwrap_or_default();
-    let entries = desktop_entry::cache::cached_scan(&crate::app_names::entry_locales());
-    (installed, entries)
 }
 
 /// `launch` as this machine can start it: a bare name is the app as a window

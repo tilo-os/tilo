@@ -187,6 +187,8 @@ mod display_sheet;
 #[cfg(target_os = "linux")]
 pub mod displays;
 #[cfg(target_os = "linux")]
+mod documents;
+#[cfg(target_os = "linux")]
 mod door_runs;
 #[cfg(target_os = "linux")]
 mod doors;

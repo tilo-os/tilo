@@ -390,36 +390,21 @@ pub fn installed_candidates() -> Vec<AppCandidate> {
         if manifest.entrypoint.gui_bin().is_none() {
             continue;
         }
-        let resources = manifest
-            .opens_ext
-            .iter()
-            .filter_map(|e| ResourceKind::extension(e).ok())
-            .chain(
-                manifest
-                    .opens_mime
-                    .iter()
-                    .filter_map(|mime| ResourceKind::mime(mime).ok()),
-            )
-            .chain(
-                manifest
-                    .opens_schemes
-                    .iter()
-                    .filter_map(|scheme| ResourceKind::scheme(scheme).ok()),
-            )
-            .collect();
         let package_id = if manifest.package_id.is_empty() {
             entry.id
         } else {
             manifest.package_id
         };
-        out.push(AppCandidate {
-            display_name: manifest
+        out.push(AppCandidate::package(
+            package_id.clone(),
+            manifest
                 .name
                 .unwrap_or_else(|| package_store::display_name_for_package_id(&package_id)),
-            package_id,
-            resources,
-            secondary: manifest.opens_secondary,
-        });
+            &manifest.opens_ext,
+            &manifest.opens_mime,
+            &manifest.opens_schemes,
+            manifest.opens_secondary,
+        ));
     }
     out.sort_by(|a, b| {
         a.display_name

@@ -185,7 +185,9 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros", "ti
 # A Rust app's views and resources, published in a development session only
 # (`dev-rust-views`): the sample catalogue, never the live worker.
 tube = { path = "../../../apps/tube", default-features = false, features = ["samples"], optional = true }
-desktop-policy = { path = "../../system/desktop-policy", default-features = false }
+# Which app opens a file or a link: the workspace's and the person's default apps, and this
+# machine's own `mimeapps.list`, resolved in that order.
+desktop-policy = { path = "../../system/desktop-policy" }
 tilo-dictation = { path = "../dictation" }
 # What the session binary's search reads of the device: the installed apps,
 # the machine's own, the person's search choices.

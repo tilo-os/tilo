@@ -17560,6 +17560,7 @@ dependencies = [
  "blake3",
  "collab-types",
  "collaboration",
+ "desktop-policy",
  "durable-store",
  "fs-protocol",
  "hex",

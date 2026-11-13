@@ -28,7 +28,8 @@ pub fn next_workspace_default(
     resource: &desktop_policy::ResourceKind,
     candidates: &[desktop_policy::AppCandidate],
 ) -> desktop_policy::WorkspaceDefaultPolicy {
-    let apps: Vec<_> = candidates.iter().filter(|a| a.handles(resource)).collect();
+    let apps = desktop_policy::DefaultAppResolver::new(candidates)
+        .claimants(std::slice::from_ref(resource));
     match current.unwrap_or(&desktop_policy::WorkspaceDefaultPolicy::FollowPersonal) {
         desktop_policy::WorkspaceDefaultPolicy::FollowPersonal => apps.first().map_or(
             desktop_policy::WorkspaceDefaultPolicy::FollowPersonal,
@@ -50,7 +51,8 @@ pub fn next_user_default(
     resource: &desktop_policy::ResourceKind,
     candidates: &[desktop_policy::AppCandidate],
 ) -> desktop_policy::UserWorkspaceChoice {
-    let apps: Vec<_> = candidates.iter().filter(|a| a.handles(resource)).collect();
+    let apps = desktop_policy::DefaultAppResolver::new(candidates)
+        .claimants(std::slice::from_ref(resource));
     match current.unwrap_or(&desktop_policy::UserWorkspaceChoice::FollowWorkspace) {
         desktop_policy::UserWorkspaceChoice::FollowWorkspace => {
             desktop_policy::UserWorkspaceChoice::PersonalDefault

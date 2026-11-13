@@ -685,24 +685,43 @@ impl Shared {
         tools.saw_apps(&crate::app_icons::app_lists().unwrap_or_default().tools);
         tools.saw_media(media);
         for ask in tools.take_asks() {
-            let answered = match &ask {
-                crate::tools::Ask::WorkspaceSettings {
-                    workspace, route, ..
-                } => workspace_settings::open_route(
-                    self.workspace_settings.as_ref(),
-                    &self.workspace_settings_feed(),
+            match ask {
+                // Which app opens a file is decided here, where the desk's workspaces and the
+                // person's defaults are read.
+                crate::tools::Ask::Openers {
+                    path,
                     workspace,
-                    *route,
-                ),
-                crate::tools::Ask::Uninstall { app, .. } => {
-                    if self.ask_uninstall(app) {
+                    reply,
+                } => {
+                    let _ = reply.send(crate::documents::openers(
+                        Some(&self.handle),
+                        &workspace,
+                        &self.person,
+                        &path,
+                    ));
+                }
+                crate::tools::Ask::WorkspaceSettings {
+                    workspace,
+                    route,
+                    reply,
+                } => {
+                    let answered = workspace_settings::open_route(
+                        self.workspace_settings.as_ref(),
+                        &self.workspace_settings_feed(),
+                        &workspace,
+                        route,
+                    );
+                    let _ = reply.send(answered);
+                }
+                crate::tools::Ask::Uninstall { app, reply } => {
+                    let answered = if self.ask_uninstall(&app) {
                         Ok(())
                     } else {
                         Err("this session shows no uninstall question".to_owned())
-                    }
+                    };
+                    let _ = reply.send(answered);
                 }
-            };
-            ask.answer(answered);
+            }
         }
     }
 

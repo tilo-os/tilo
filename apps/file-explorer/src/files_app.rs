@@ -570,6 +570,8 @@ pub struct FilesState {
     open_request: crate::open_with::OpenRequest,
     document_candidates: crate::open_with::CandidateList,
     open_replies: crate::open_with::OpenReplies,
+    /// The apps that open each kind of file, as the session last listed them: asked again when
+    /// the menu is built, so a default the person changed shows.
     open_with_cache: RefCell<HashMap<String, Vec<runtime_portal::tools::DocumentApp>>>,
     entry_ids: RefCell<EntryIds>,
     entry_rows: RefCell<entry_rows::EntryRows>,
@@ -6261,6 +6263,9 @@ impl FilesState {
 
     fn open_context_menu(&mut self, at: Point) {
         self.menus.push(MenuChange::CloseSub);
+        // The menu says what opens the kind of file it was opened on now: a default the person
+        // changed since this folder was read is asked for again here.
+        self.invalidate_open_with();
         let spec = self.context_menu_spec(&self.available_templates());
         let mut menu = self.new_overlay_menu();
         let mut cmds = Vec::with_capacity(spec.len());

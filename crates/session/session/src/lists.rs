@@ -104,41 +104,28 @@ impl AppLists {
         let host_apps = machine_search_apps(&scan.entries, &tilo_apps);
         let candidates: Vec<desktop_policy::AppCandidate> = installed
             .iter()
-            .map(|app| desktop_policy::AppCandidate {
-                package_id: app.app_id.to_string(),
-                display_name: app.display_name.clone(),
-                resources: app
-                    .opens_extensions
-                    .iter()
-                    .filter_map(|ext| desktop_policy::ResourceKind::extension(ext).ok())
-                    .chain(
-                        app.opens_mime_types
-                            .iter()
-                            .filter_map(|mime| desktop_policy::ResourceKind::mime(mime).ok()),
-                    )
-                    .chain(
-                        app.opens_uri_schemes
-                            .iter()
-                            .filter_map(|scheme| desktop_policy::ResourceKind::scheme(scheme).ok()),
-                    )
-                    .collect::<std::collections::BTreeSet<_>>(),
-                secondary: app.opens_secondary,
+            .map(|app| {
+                desktop_policy::AppCandidate::package(
+                    app.app_id.to_string(),
+                    app.name_in(&locales).to_owned(),
+                    &app.opens_extensions,
+                    &app.opens_mime_types,
+                    &app.opens_uri_schemes,
+                    app.opens_secondary,
+                )
             })
-            .chain(scan.entries.iter().filter_map(|entry| {
-                let resources: std::collections::BTreeSet<_> = entry
-                    .mime_types
+            .chain(
+                scan.entries
                     .iter()
-                    .filter_map(|mime| desktop_policy::ResourceKind::from_mimeapps_type(mime))
-                    .collect();
-                (!resources.is_empty() && !entry.no_display && !entry.hidden).then(|| {
-                    desktop_policy::AppCandidate {
-                        package_id: entry.id.clone(),
-                        display_name: entry.name.clone(),
-                        resources,
-                        secondary: false,
-                    }
-                })
-            }))
+                    .filter(|entry| !entry.no_display && !entry.hidden)
+                    .filter_map(|entry| {
+                        desktop_policy::AppCandidate::host(
+                            &entry.id,
+                            entry.name.clone(),
+                            &entry.mime_types,
+                        )
+                    }),
+            )
             .collect();
         let present = app_catalogue::Installed::from_ids(
             installed
