@@ -26,6 +26,9 @@ fn names_in(dir: &Path) -> Vec<String> {
     names
 }
 
+/// A scenario: the directory, the folder in it, and the centre of the folder's row.
+type Scenario = fn(&Path, &Path, Point);
+
 /// The three scenarios read one directory and write nothing to it, and each opens a
 /// window of its own on it: the centre of its first row is found once, and the
 /// directory is checked to be as it was after each of them.
@@ -33,7 +36,7 @@ fn names_in(dir: &Path) -> Vec<String> {
 fn clicks_select_and_double_clicks_open_the_folder_across_rebuilds() {
     let (dir, folder) = dir_with_folder();
     let p = row_center(dir.path(), 0);
-    let scenarios: [(&str, fn(&Path, &Path, Point)); 3] = [
+    let scenarios: [(&str, Scenario); 3] = [
         (
             "a single click",
             single_click_selects_row_zero_but_does_not_open,

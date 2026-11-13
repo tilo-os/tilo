@@ -156,6 +156,6 @@ pub fn row_center(dir: &Path, index: usize) -> Point {
             below = mid;
         }
     }
-    // The middle of the band's heights, `first..=last`.
-    Point::new(x, ys[first + (last - first + 1) / 2])
+    // The middle of the band's heights, `first..=last`: half their number past the first.
+    Point::new(x, ys[first + (last - first).div_ceil(2)])
 }
