@@ -1,17 +1,10 @@
-//! Per-seat uinput devices for headful slots.
-//!
-//! A uinput device lives as long as the file descriptor that created it,
-//! and every `tilo-vmd rpc` is a short-lived process, so the devices are
-//! owned by `tilo-vmd input-serve`, a transient system unit
-//! (`tilo-vm-input-<slot>.service`, started with `systemd-run`). It creates
-//! a keyboard and an absolute pointer at once, and a touchscreen, a pen and
-//! a gamepad the first time an action needs one, so a slot only has the
-//! hardware its test plugged in. Every device's `phys` is the slot's logind
-//! seat; `73-uinput-seat.rules` tags them `ID_SEAT=<phys>`, so the slot's
-//! compositor gets them like hardware plugged into its seat (libinput for
-//! keyboard, pointer, touch and pen; the seat's evdev ACL for the gamepad),
-//! and no other seat sees them. `rpc` sends it actions over a Unix socket,
-//! one JSON line per request.
+//! Per-seat uinput devices for headful slots. A uinput device lives as long as the
+//! file descriptor that created it, and every `tilo-vmd rpc` is short-lived, so the
+//! devices are owned by `tilo-vmd input-serve`, a transient system unit. It creates
+//! a keyboard and an absolute pointer at once, and a touchscreen, a pen and a
+//! gamepad the first time an action needs one. Every device's `phys` is the slot's
+//! logind seat, so `73-uinput-seat.rules` tags them for that seat only and the
+//! slot's compositor gets them like plugged-in hardware.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
@@ -58,8 +51,8 @@ pub const MOTION_STEP_MS: u32 = 10;
 pub const TAP_MS: u32 = 60;
 /// How long a gamepad control stays pressed, and the pause after it.
 pub const PRESS_MS: u32 = 60;
-/// How long touchpad fingers rest before they move, so libinput sees a scroll or
-/// swipe start from stationary contacts rather than a flick.
+/// How long touchpad fingers rest before they move, so libinput sees a scroll or swipe start from
+/// stationary contacts rather than a flick.
 pub const SETTLE_MS: u32 = 40;
 /// Distance between fingers of a multi-finger touchpad gesture.
 pub const FINGER_GAP_MM: i32 = 14;
@@ -118,8 +111,8 @@ fn clamp(v: u32) -> i32 {
     i32::try_from(v).unwrap_or(i32::MAX)
 }
 
-/// Positions from `from` (excluded) to `to` (included), one per
-/// [`MOTION_STEP_MS`] of `duration_ms`.
+/// Positions from `from` (excluded) to `to` (included), one per [`MOTION_STEP_MS`] of
+/// `duration_ms`.
 pub fn path(from: (u32, u32), to: (u32, u32), duration_ms: u32) -> Vec<(u32, u32)> {
     let steps = (duration_ms / MOTION_STEP_MS).max(1);
     (1..=steps)
@@ -143,8 +136,8 @@ fn lerp(from: u32, to: u32, step: u32, steps: u32) -> u32 {
     u32::try_from(value).unwrap_or(0)
 }
 
-/// Turns actions into kernel events. Touch tracking ids keep counting
-/// across requests, as a real touchscreen's do.
+/// Turns actions into kernel events. Touch tracking ids keep counting across requests, as a real
+/// touchscreen's do.
 #[derive(Debug, Default)]
 pub struct Encoder {
     next_tracking_id: i32,
@@ -170,8 +163,8 @@ impl Encoder {
         }
     }
 
-    /// A key press or release followed by its report, on the keyboard the user
-    /// types on: a plugged profile keyboard, else the default one.
+    /// A key press or release followed by its report, on the keyboard the user types on: a plugged
+    /// profile keyboard, else the default one.
     fn key(&mut self, code: u16, down: bool) {
         let keyboard = self.keyboard.map_or(Device::Keyboard, Device::Profile);
         self.emit(keyboard, EV_KEY, code, i32::from(down));
@@ -223,7 +216,7 @@ impl Encoder {
             self.next_tracking_id = id.checked_add(1).filter(|n| *n < 65_536).unwrap_or(0);
             self.emit(device, EV_ABS, ABS_MT_TRACKING_ID, id);
             if profile.axis(ABS_MT_TOOL_TYPE).is_some() {
-                // MT_TOOL_FINGER: a real pad names what touched it.
+                // `MT_TOOL_FINGER`: a real pad names what touched it.
                 self.emit(device, EV_ABS, ABS_MT_TOOL_TYPE, 0);
             }
         }
@@ -471,15 +464,15 @@ impl Encoder {
         ]
     }
 
-    /// The steps for `actions`, each event report its own so the
-    /// compositor sees presses, releases and motion in order.
+    /// The steps for `actions`, each event report its own so the compositor sees presses, releases
+    /// and motion in order.
     ///
     /// # Errors
-    /// A combo, character or gamepad control that does not map (callers
-    /// validate first).
+    ///
+    /// A combo, character or gamepad control that does not map (callers validate first).
     pub fn encode(&mut self, actions: &[InputAction]) -> Result<Vec<Step>, String> {
-        // All or nothing: a refused action leaves neither its batch's steps (they would
-        // run with the next request) nor its plug state behind.
+        // All or nothing: a refused action leaves neither its batch's steps, which would run with
+        // the next request, nor its plug state behind.
         let saved = (self.next_tracking_id, self.plugged.clone(), self.keyboard);
         for action in actions {
             if let Err(error) = self.action(action) {
@@ -658,9 +651,8 @@ pub fn events(actions: &[InputAction]) -> Result<Vec<Step>, String> {
     Encoder::default().encode(actions)
 }
 
-/// `(width, height)` of the output a seat shows, from its DRM connector's
-/// preferred (first) mode; the pointer's absolute range matches it, so
-/// `move X Y` lands on output pixel X, Y.
+/// `(width, height)` of the output a seat shows, from its DRM connector's preferred mode; the
+/// pointer's absolute range matches it, so `move X Y` lands on output pixel X, Y.
 pub fn output_size(seat: &str) -> (u32, u32) {
     let cards: Vec<PathBuf> = if seat == "seat0" {
         std::fs::read_dir("/sys/class/drm")
@@ -700,10 +692,9 @@ pub fn parse_mode(modes: &str) -> Option<(u32, u32)> {
     Some((w.parse().ok()?, h.parse().ok()?))
 }
 
-/// The coordinate spaces of a slot made with `--outputs`: the absolute
-/// pointer spans the logical desktop; touch and pen span the first
-/// (primary) output, which is where the compositor puts a touchscreen that
-/// names no output.
+/// The coordinate spaces of a slot made with `--outputs`: the absolute pointer spans the logical
+/// desktop, touch and pen the first output, where the compositor puts a touchscreen that names
+/// none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Geometry {
     pub desktop: (u32, u32),
@@ -776,8 +767,8 @@ impl Devices {
                 }
             };
             if !matches!(device, Device::Keyboard | Device::Pointer) {
-                // Plugged in just now: let udev tag it for the seat and the
-                // compositor open it before the first event.
+                // Plugged in just now: let udev tag it for the seat and the compositor open it
+                // before the first event.
                 let _ = std::process::Command::new("udevadm").arg("settle").status();
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
@@ -793,8 +784,8 @@ impl Devices {
         let device = profile(name).map_err(std::io::Error::other)?;
         let file = uinput::profile(&self.seat, &device)?;
         self.open.insert(Device::Profile(name), file);
-        // Let udev tag it for the seat (and run its hwdb and input_id rules) and the
-        // compositor open it before the first event.
+        // Let udev tag it for the seat and run its hwdb and `input_id` rules, and the compositor
+        // open it before the first event.
         let _ = std::process::Command::new("udevadm").arg("settle").status();
         std::thread::sleep(std::time::Duration::from_millis(700));
         Ok(())
@@ -839,9 +830,8 @@ impl Devices {
     }
 }
 
-/// Serve input requests for `seat` on `socket` until killed. The pointer
-/// spans `geometry.desktop`, touch and pen `geometry.touch`; without a
-/// geometry both span the seat's output.
+/// Serve input requests for `seat` on `socket` until killed: the pointer spans `geometry.desktop`,
+/// touch and pen `geometry.touch`, and without a geometry both span the seat's output.
 pub fn serve(seat: &str, socket: &Path, geometry: Option<Geometry>) -> Result<(), DaemonError> {
     let fallback = || output_size(seat);
     let mut devices = Devices {
@@ -932,8 +922,8 @@ mod uinput {
     const BUS_VIRTUAL: u16 = 0x06;
     /// A touchscreen or pen display: positions are on the screen itself.
     const INPUT_PROP_DIRECT: libc::c_int = 0x01;
-    /// Units per millimetre on touch and pen axes (about 100 dpi); libinput
-    /// needs a resolution to treat a device as a tablet.
+    /// Units per millimetre on touch and pen axes (about 100 dpi); libinput needs a resolution to
+    /// treat a device as a tablet.
     const RESOLUTION: i32 = 4;
 
     #[repr(C)]
@@ -965,14 +955,11 @@ mod uinput {
         }
     }
 
-    /// An ioctl whose argument is an `int`.
     fn ioctl(file: &File, request: Ioctl, arg: libc::c_int) -> std::io::Result<()> {
         // SAFETY: `request` is a uinput ioctl taking an int by value.
         check(unsafe { libc::ioctl(file.as_raw_fd(), request, arg) })
     }
 
-    /// An ioctl whose argument points at data the kernel reads; the data
-    /// outlives the call.
     fn ioctl_ptr(file: &File, request: Ioctl, arg: *const libc::c_void) -> std::io::Result<()> {
         // SAFETY: `request` is a uinput ioctl that reads the struct (or,
         // for UI_SET_PHYS, the NUL-terminated string) `arg` points at.
@@ -1041,8 +1028,8 @@ mod uinput {
         create_as(file, name, (BUS_VIRTUAL, 0x7469, product, 1), phys)
     }
 
-    /// Register the device under `(bus, vendor, product, version)`, the identity
-    /// udev's hwdb and libinput's quirks match on.
+    /// Register the device under `(bus, vendor, product, version)`, the identity udev's hwdb and
+    /// libinput's quirks match on.
     fn create_as(
         file: &File,
         name: &str,
@@ -1123,8 +1110,8 @@ mod uinput {
         Ok(file)
     }
 
-    /// The device a checked-in profile describes: real hardware's identity and
-    /// capabilities, on this seat (`phys` stays the seat so udev tags it for it).
+    /// The device a checked-in profile describes: real hardware's identity and capabilities, on
+    /// this seat (`phys` stays the seat so udev tags it for it).
     pub fn profile(seat: &str, device: &DeviceProfile) -> std::io::Result<File> {
         let mut kinds = vec![EV_KEY];
         for (present, kind) in [

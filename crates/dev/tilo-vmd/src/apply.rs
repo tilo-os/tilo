@@ -1,9 +1,6 @@
-//! Turning a generation into running sessions.
-//!
-//! The decisions (what restarts, which drop-ins, in which order) live here
-//! and are unit-tested against [`RecordingApply`]. The side effects sit
-//! behind [`Apply`]; [`crate::systemd::SystemdApply`] performs them on a real
-//! dev image.
+//! Turning a generation into running sessions. The decisions — what restarts, which
+//! drop-ins, in which order — live here and are unit-tested against
+//! [`RecordingApply`]; the side effects sit behind [`Apply`].
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -25,29 +22,27 @@ pub fn session_unit(slot: &str) -> String {
     format!("tilo-vm-session@{slot}.service")
 }
 
-/// Where a slot session's control socket is: the `RuntimeDirectory=` of
-/// `tilo-vm-session@<slot>`.
+/// Where a slot session's control socket is: the `RuntimeDirectory=` of `tilo-vm-session@<slot>`.
 pub fn control_socket(slot: &str) -> PathBuf {
     std::path::Path::new("/run/tilo-vm")
         .join(slot)
         .join("control.sock")
 }
 
-/// The session a slot's layers reach: its unit, user and control socket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub slot: String,
     pub unit: String,
     pub user: String,
-    /// Units besides `unit` and the user manager that run the session's
-    /// processes; they get the layers too.
+    /// Units besides `unit` and the user manager that run the session's processes; they get the
+    /// layers too.
     pub units: Vec<String>,
     pub control_socket: PathBuf,
-    /// A slot's session stands in for a greetd login and is checked to be
-    /// equivalent to one; the device's own session is the production one.
+    /// A slot's session stands in for a greetd login and is checked to be equivalent to one; the
+    /// device's own session is the production one.
     pub stand_in: bool,
-    /// The owner's greetd login on a laptop: layers merge system-wide and a
-    /// restart restarts its desktop, never the login.
+    /// The owner's greetd login on a laptop: layers merge system-wide, and a restart restarts its
+    /// desktop, never the login.
     pub login: Option<Login>,
 }
 
@@ -101,8 +96,8 @@ impl SlotRecord {
 pub struct MachineIdentity {
     /// A person's identity holds the machine (`user-identity/pubkey.bin`).
     pub person: bool,
-    /// The machine's device key is certified (`device/cert.bin`), which is
-    /// what starts `fs.service`.
+    /// The machine's device key is certified (`device/cert.bin`), which is what starts
+    /// `fs.service`.
     pub certified: bool,
 }
 
@@ -110,8 +105,8 @@ pub fn user_unit(uid: u32) -> String {
     format!("user@{uid}.service")
 }
 
-/// Side effects on the guest. Each method is idempotent and reports a
-/// failed side effect as [`DaemonError::Apply`] or [`DaemonError::Io`].
+/// Side effects on the guest. Each method is idempotent and reports a failed side effect as
+/// [`DaemonError::Apply`] or [`DaemonError::Io`].
 #[expect(
     clippy::missing_errors_doc,
     reason = "the trait documents its single error contract once"
@@ -165,9 +160,8 @@ pub trait Apply {
     fn validate_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
     /// Restart a declared component unit only if it is already running.
     fn try_restart_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
-    /// Restart a login's desktop in place: ask its `tilo-session` (SIGUSR1)
-    /// and wait until the old compositor has exited. The login, its user
-    /// manager and its services stay.
+    /// Restart a login's desktop in place: ask its `tilo-session` (SIGUSR1) and wait until the old
+    /// compositor has exited. The login, its user manager and its services stay.
     fn restart_desktop(&mut self, session: &Session) -> Result<(), DaemonError>;
     /// Reload the running user manager and try-restart an existing component unit.
     fn restart_user_unit(&mut self, user: &str, unit: &str) -> Result<(), DaemonError>;
@@ -175,18 +169,16 @@ pub trait Apply {
     fn unit_state(&mut self, unit: &str) -> String;
     /// Give a staged layer the `SELinux` labels its files get under `/`.
     fn label_layer(&mut self, layer: &std::path::Path) -> Result<(), DaemonError>;
-    /// Point the VM-wide sysext set at exactly `layers`; `true` when a link
-    /// was added, replaced or removed (so `/usr` needs a refresh to match).
+    /// Point the VM-wide sysext set at exactly `layers`; `true` when a link was added, replaced or
+    /// removed, so `/usr` needs a refresh to match.
     fn link_sysext(&mut self, layers: &[PathBuf]) -> Result<bool, DaemonError>;
     fn sysext_refresh(&mut self) -> Result<(), DaemonError>;
-    /// Put the notice `name` where the owner's desktop reads it
-    /// (`/run/tilo-vm/<name>`, world-readable), or take it away (`None`).
+    /// Put the notice `name` where the owner's desktop reads it (`/run/tilo-vm/<name>`,
+    /// world-readable), or take it away.
     fn publish_notice(&mut self, name: &str, contents: Option<&str>) -> Result<(), DaemonError>;
-    /// Create a vkms card with `connectors` connected outputs and a logind
-    /// seat for it; return the seat name.
+    /// Create a vkms card with `connectors` connected outputs and a logind seat for it; return the
+    /// seat name.
     fn allocate_seat(&mut self, slot: &str, connectors: u32) -> Result<String, DaemonError>;
-    /// Give the running session's outputs these modes and scales through
-    /// the display settings, as `user` (`tilo-vmd display-apply`).
     fn apply_display(
         &mut self,
         slot: &str,
@@ -194,12 +186,11 @@ pub trait Apply {
         outputs: &[OutputSpec],
     ) -> Result<String, DaemonError>;
     fn release_seat(&mut self, slot: &str, seat: &str) -> Result<(), DaemonError>;
-    /// Remove `user`'s desktop layout (`~/.config/tilo/state.json` and the
-    /// document, meta and invocation records beside it). The session must
-    /// be stopped, or it writes the layout back.
+    /// Remove `user`'s desktop layout (`~/.config/tilo/state.json` and the document, meta and
+    /// invocation records beside it). The session must be stopped, or it writes the layout back.
     fn reset_desktop_state(&mut self, user: &str) -> Result<(), DaemonError>;
-    /// The last `lines` journal entries matching any of `matches`
-    /// (journalctl `FIELD=value` terms, `OR`ed).
+    /// The last `lines` journal entries matching any of `matches` (journalctl `FIELD=value` terms,
+    /// `OR`ed).
     fn journal(&mut self, matches: &[String], lines: u32) -> Result<String, DaemonError>;
     /// Run the in-VM `tilo-control` against this session.
     fn control(&mut self, session: &Session, args: &[String])
@@ -220,8 +211,8 @@ pub trait Apply {
     /// Capabilities and `SELinux` domain of the running session process,
     /// or `None` when it is not running as the slot user (yet).
     fn session_process(&mut self, session: &Session) -> Option<SessionProcess>;
-    /// The main process of the running session unit, whose mount
-    /// namespace has the slot's layers over `/usr`.
+    /// The main process of the running session unit, whose mount namespace has the slot's layers
+    /// over `/usr`.
     fn session_pid(&mut self, _session: &Session) -> Option<u32> {
         None
     }
@@ -230,20 +221,16 @@ pub trait Apply {
     fn session_environment(&mut self, _session: &Session) -> Vec<(String, String)> {
         Vec::new()
     }
-    /// Wait until the session unit is up and stays up.
-    ///
-    /// # Errors
-    /// The unit's state when it never settled (a start that fails and
-    /// restarts looks `active` for a moment, so one sample is not enough).
+    /// Wait until the session unit is up and stays up; the error is the unit's state when it never
+    /// settled, since a start that fails and restarts looks `active` for a moment.
     fn wait_session_ready(&mut self, _session: &Session) -> Result<(), String> {
         Ok(())
     }
     /// `(free, total)` bytes of the filesystem holding `path`, when known.
     fn disk_space(&mut self, path: &std::path::Path) -> Option<(u64, u64)>;
-    /// Send input through `seat`'s uinput devices, creating them on first
-    /// use; returns the number of kernel events written. `geometry` gives
-    /// the coordinate spaces of a slot with several outputs (`None`: every
-    /// device spans the seat's first output).
+    /// Send input through `seat`'s uinput devices, creating them on first use; returns the number
+    /// of kernel events written. `geometry` gives the coordinate spaces of a slot with several
+    /// outputs, and `None` means every device spans the seat's first output.
     fn input(
         &mut self,
         slot: &str,
@@ -253,21 +240,21 @@ pub trait Apply {
     ) -> Result<u64, DaemonError>;
     /// Remove the slot's uinput devices (they follow its seat).
     fn stop_input(&mut self, slot: &str) -> Result<(), DaemonError>;
-    /// `tilo-install install --allow-self-signed --force <tapp>` as `user`;
-    /// returns what it printed.
+    /// `tilo-install install --allow-self-signed --force <tapp>` as `user`; returns what it
+    /// printed.
     fn install_app(
         &mut self,
         session: &Session,
         tapp: &std::path::Path,
     ) -> Result<String, DaemonError>;
-    /// The packages in `session` user's own store (`registry.toml` of
+    /// The packages in the session user's own store (`registry.toml` of
     /// `~/.local/share/tilo-apps`); none when it has no registry.
     fn user_packages(
         &mut self,
         session: &Session,
     ) -> Result<Vec<package_store::registry::InstalledPackage>, DaemonError>;
-    /// Whether the image itself, below any merged layer, ships the native
-    /// toolkit `/usr/lib/tilo-runtime/<version>`.
+    /// Whether the image itself, below any merged layer, ships the native toolkit
+    /// `/usr/lib/tilo-runtime/<version>`.
     fn image_has_runtime(&mut self, version: &str) -> bool;
     /// Select an authenticated development-cohort package, preserving holds.
     fn install_cohort_app(
@@ -281,8 +268,8 @@ pub trait Apply {
         session: &Session,
         layers: &[PathBuf],
     ) -> Result<(), DaemonError>;
-    /// Read the canonical selected rows in the exact candidate namespace,
-    /// before changing any selection or refreshing the owner desktop.
+    /// Read the canonical selected rows in the exact candidate namespace, before changing any
+    /// selection or refreshing the owner desktop.
     fn cohort_selected_apps(
         &mut self,
         session: &Session,
@@ -302,9 +289,9 @@ pub trait Apply {
         tapp: &std::path::Path,
         layers: &[PathBuf],
     ) -> Result<String, DaemonError>;
-    /// Make the kernel in `layer` (already merged into `/usr`) the next boot,
-    /// or with `None` put the image's own kernel back (see [`crate::boot`]).
-    /// Returns what the next boot starts, and warnings.
+    /// Make the kernel in `layer` (already merged into `/usr`) the next boot, or with `None` put
+    /// the image's own kernel back (see [`crate::boot`]). Returns what the next boot starts, and
+    /// warnings.
     fn boot_kernel(
         &mut self,
         layer: Option<&std::path::Path>,
@@ -315,8 +302,8 @@ pub trait Apply {
         &mut self,
         expect_version: Option<&str>,
     ) -> Result<BootConfirmResult, DaemonError>;
-    /// Make sure [`crate::awake::AWAKE_UNIT`] runs, holding the machine
-    /// awake until the deadline in the lease file `lease`.
+    /// Start [`crate::awake::AWAKE_UNIT`], holding the machine awake until the deadline in the
+    /// lease file `lease`.
     fn hold_awake(&mut self, lease: &std::path::Path) -> Result<(), DaemonError>;
     /// Stop holding the machine awake.
     fn release_awake(&mut self) -> Result<(), DaemonError>;
@@ -331,9 +318,9 @@ pub struct SessionProcess {
     pub context: Option<String>,
 }
 
-/// Why `process` differs from a greetd session, if it does. A greetd
-/// session has no ambient or effective capabilities and runs in a user
-/// domain (`expected_domain`, the type field of the `SELinux` context).
+/// Why `process` differs from a greetd session: such a session has no ambient or effective
+/// capabilities and runs in a user domain (`expected_domain`, the type field of the `SELinux`
+/// context).
 pub fn parity_problem(process: &SessionProcess, expected_domain: &str) -> Option<String> {
     let mut problems = Vec::new();
     if process.cap_amb != 0 {
@@ -354,7 +341,6 @@ pub fn parity_problem(process: &SessionProcess, expected_domain: &str) -> Option
 }
 
 /// Refuse components whose scope does not fit the slot they are going into.
-///
 /// # Errors
 /// [`DaemonError::ScopeMismatch`].
 pub fn check_scope(
@@ -389,14 +375,13 @@ pub fn check_scope(
 /// The units a change restarts besides the session itself.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Restarts {
-    /// System units of changed components: every long-running service whose
-    /// binary a new layer set or VM `/usr` replaces.
+    /// System units of changed components: every long-running service whose binary a new layer set
+    /// or VM `/usr` replaces.
     pub units: Vec<String>,
-    /// User units of changed VM or session components, which a login that keeps
-    /// its user manager restarts one by one.
+    /// User units of changed VM or session components, which a login that keeps its user manager
+    /// restarts one by one.
     pub user_units: Vec<String>,
-    /// A changed VM-wide component runs inside sessions, so a VM refresh
-    /// restarts them.
+    /// A changed VM-wide component runs inside sessions, so a VM refresh restarts them.
     pub sessions: bool,
 }
 
@@ -431,8 +416,7 @@ impl Restarts {
     }
 }
 
-/// What moving from `from` to `to` requires, and which units the change
-/// restarts.
+/// What moving from `from` to `to` requires, and which units the change restarts.
 pub fn policy(
     record: &SlotRecord,
     from: &Generation,
@@ -479,9 +463,9 @@ pub fn layers_dropin(slot: &str, generation: u64, layers: &[PathBuf]) -> String 
     text
 }
 
-/// Seat selection for the session unit. `None` leaves the template's
-/// headless default in place. `pam_systemd` takes the seat from `XDG_SEAT`;
-/// seat0 additionally needs VT 1, which greetd gives up for the claim.
+/// Seat selection for the session unit; `None` leaves the template's headless default in place.
+/// `pam_systemd` takes the seat from `XDG_SEAT`, and seat0 additionally needs VT 1, which greetd
+/// gives up for the claim.
 pub fn seat_dropin(record: &SlotRecord) -> Option<String> {
     let header = format!(
         "# Written by tilo-vmd: slot {}. Do not edit.\n",
@@ -503,20 +487,13 @@ pub fn seat_dropin(record: &SlotRecord) -> Option<String> {
     }
 }
 
-/// Encode a slot-private identity root in a systemd service environment.
-/// The real account home comes from passwd; no manager `%h` expansion is used.
-/// # Errors
-/// Relative, non-UTF-8 or control-character home directories are refused.
-/// Keeps first use for this VM's person's session (the compositor's
-/// `TILO_TEST_CONTROL_FIRST_USE`, which `tilo-session` sets for a dev
-/// image's own login).
+/// Encode a slot-private identity root in a systemd service environment; the real account home
+/// comes from passwd, so no manager `%h` expansion is used. Relative, non-UTF-8 or
+/// control-character home directories are refused.
 const DEVICE_FIRST_USE_ENVIRONMENT: &str = "Environment=TILO_TEST_CONTROL_FIRST_USE=keep\n";
 
-/// The identity a stand-in slot's session runs on, as its drop-in says it:
-/// the same whether the slot was just made or is brought back at boot.
-///
-/// # Errors
-/// The slot's account has no usable home.
+/// The identity a stand-in slot's session runs on, as its drop-in says it: the same whether the
+/// slot was just made or is brought back at boot.
 pub fn identity_environment(
     apply: &mut dyn Apply,
     record: &SlotRecord,
@@ -525,16 +502,15 @@ pub fn identity_environment(
     if !session.stand_in {
         return Ok(String::new());
     }
-    // This VM's person runs on the machine's identity tree, as a device's
-    // first login does; every other stand-in gets a private, removable one.
+    // This VM's person runs on the machine's identity tree, as a device's first login does; every
+    // other stand-in gets a private, removable one.
     if !record.device_identity {
         return apply.slot_identity_environment(&session.user);
     }
-    // A compositor with a control socket skips first use unless told to keep
-    // it, and the slot unit hands every session that socket, so tilo-session
-    // does not add the marker it gives a dev image's own login. This VM's
-    // person is that login: its first session goes through onboarding,
-    // which tilo-vmd then presses through.
+    // A compositor with a control socket skips first use unless told to keep it, and the slot unit
+    // hands every session that socket, so `tilo-session` does not add the marker it gives a dev
+    // image's own login. This VM's person is that login: its first session goes through onboarding,
+    // which `tilo-vmd` then presses through.
     Ok(DEVICE_FIRST_USE_ENVIRONMENT.to_owned())
 }
 
@@ -659,13 +635,11 @@ pub fn activate(
     Ok(actions)
 }
 
-/// [`activate`] for a board's own session. Its seat supervisor starts the
-/// compositor as a system transient unit in the host's mount namespace, and a
-/// transient unit neither reads a drop-in nor can be reached by the view a
-/// drop-in binds. So the layers merge into the host `/usr` with
-/// `systemd-sysext`, the one set a laptop's login gets, and a drop-in an
-/// earlier activation bound into these units is removed so it cannot hide the
-/// merge.
+/// [`activate`] for a board's own session. Its seat supervisor starts the compositor as a system
+/// transient unit in the host's mount namespace, and a transient unit neither reads a drop-in nor
+/// can be reached by the view a drop-in binds. So the layers merge into the host `/usr` with
+/// `systemd-sysext`, and a drop-in an earlier activation bound into these units is removed so it
+/// cannot hide the merge.
 fn activate_board(
     apply: &mut dyn Apply,
     session: &Session,
@@ -701,11 +675,9 @@ fn activate_board(
     Ok(actions)
 }
 
-/// [`activate`] for the owner's greetd login on a laptop. greetd runs the
-/// login in the host's mount namespace, so `layers` (this slot's and the
-/// `vm` slot's: one system-wide set) merge with `systemd-sysext`, and a
-/// restart restarts the changed user units and then the desktop in place;
-/// the owner stays logged in.
+/// [`activate`] for the owner's greetd login on a laptop: greetd runs the login in the host's mount
+/// namespace, so this slot's layers and the `vm` slot's merge as one system-wide set, and a restart
+/// restarts the changed user units and then the desktop in place, leaving the owner logged in.
 fn activate_login(
     apply: &mut dyn Apply,
     session: &Session,
@@ -718,7 +690,7 @@ fn activate_login(
     apply.sysext_refresh()?;
     let mut actions = vec![Action::SysextRefresh];
     match change {
-        // A login is started by its owner at the greeter, never by tilo-vmd.
+        // A login is started by its owner at the greeter, never by `tilo-vmd`.
         SessionChange::Ensure => {}
         SessionChange::Keep | SessionChange::Stage => actions.push(Action::Deferred {
             reason:
@@ -737,18 +709,18 @@ fn activate_login(
     Ok(actions)
 }
 
-/// Restart the changed system units that outlive a session. A unit's mount
-/// namespace freezes `/usr` when it starts, so a merged layer set or a
-/// refreshed VM `/usr` reaches a long-running service only through a restart.
+/// Restart the changed system units that outlive a session: a unit's mount namespace freezes `/usr`
+/// when it starts, so a merged layer set or a refreshed VM `/usr` reaches a long-running service
+/// only through a restart.
 pub fn restart_units(
     apply: &mut dyn Apply,
     restarts: &Restarts,
     actions: &mut Vec<Action>,
 ) -> Result<(), DaemonError> {
     for unit in &restarts.units {
-        // The greeter component is VM-wide, but its manager also owns the
-        // active login. Re-query the host's verified session rather than using
-        // a saved slot record or caller-supplied identity.
+        // The greeter component is VM-wide, but its manager also owns the active login: re-query
+        // the host's verified session rather than trusting a saved slot record or caller-supplied
+        // identity.
         if unit == GREETER_UNIT
             && apply.device_session().is_some_and(|device| {
                 device.login.is_some_and(|login| {
@@ -788,13 +760,11 @@ pub fn restart_user_units(
     Ok(())
 }
 
-/// A normal session restart: log out, then a fresh login. Each unit's mount
-/// namespace freezes `/usr` when it starts, so both the session and the user
-/// manager must restart to see a new layer set or a refreshed VM `/usr`; a
-/// daemon-reload or reexec keeps the old view.
-///
-/// The owner's greetd login is never logged out: its desktop restarts in
-/// place, and while the owner is logged out the next login takes the change.
+/// A normal session restart: log out, then a fresh login. Each unit's mount namespace freezes
+/// `/usr` when it starts, so both the session and the user manager must restart to see a new layer
+/// set; a daemon-reload or reexec keeps the old view. The owner's greetd login is never logged out:
+/// its desktop restarts in place, and while the owner is logged out the next login takes the
+/// change.
 pub fn restart_session(
     apply: &mut dyn Apply,
     session: &Session,
@@ -829,8 +799,8 @@ pub fn restart_session(
     ])
 }
 
-/// The uid the session runs as: a slot's own user, created when missing,
-/// or the existing account of the device's session, left untouched.
+/// The uid the session runs as: a slot's own user, created when missing, or the existing account of
+/// the device's session, left untouched.
 pub fn session_uid(apply: &mut dyn Apply, session: &Session) -> Result<u32, DaemonError> {
     if session.stand_in {
         apply.ensure_user(&session.user)
@@ -839,18 +809,17 @@ pub fn session_uid(apply: &mut dyn Apply, session: &Session) -> Result<u32, Daem
     }
 }
 
-/// Every unit whose mount namespace must show the slot's layers: the user
-/// manager (it starts the session's user services), the session unit and
-/// the units that unit starts for the session.
+/// Every unit whose mount namespace must show the slot's layers: the user manager, the session
+/// unit, and the units that unit starts for the session.
 pub fn layered_units(session: &Session, uid: u32) -> Vec<String> {
     let mut units = vec![user_unit(uid), session.unit.clone()];
     units.extend(session.units.iter().cloned());
     units
 }
 
-/// Undo everything [`activate`] did for a user slot. The session stops
-/// before its seat is released: a vkms card removed under a live session
-/// leaves the unit running with a dead device and `Restart=` never fires.
+/// Undo everything [`activate`] did for a user slot. The session stops before its seat is released:
+/// a vkms card removed under a live session leaves the unit running with a dead device and
+/// `Restart=` never fires.
 pub fn deactivate(apply: &mut dyn Apply, record: &SlotRecord) -> Result<Vec<Action>, DaemonError> {
     let mut actions = Vec::new();
     let Some(Session {
@@ -895,8 +864,8 @@ pub fn deactivate(apply: &mut dyn Apply, record: &SlotRecord) -> Result<Vec<Acti
     Ok(actions)
 }
 
-/// An [`Apply`] that performs nothing and records every call. Used by unit
-/// tests and by `tilo-vmd rpc --apply record` for protocol tests.
+/// An [`Apply`] that performs nothing and records every call, used by unit tests and by `tilo-vmd
+/// rpc --apply record` for protocol tests.
 #[derive(Debug, Default)]
 pub struct RecordingApply {
     pub calls: Vec<String>,
@@ -907,12 +876,11 @@ pub struct RecordingApply {
     pub prepared_session_layers: Vec<(String, Vec<PathBuf>)>,
     /// The kernel layer the next boot runs; `None` for the image's.
     pub next_kernel: Option<PathBuf>,
-    /// Answers for the next `control` calls, in order; past them the call
-    /// is answered by its op (see [`RecordingApply::control`]).
+    /// Answers for the next `control` calls, in order; past them the call is answered by its op
+    /// (see [`RecordingApply::control`]).
     pub control_replies: std::collections::VecDeque<ControlResult>,
-    /// The controls a session lists, page by page: a press on a control of
-    /// the current page moves to the next, and the last page stands for the
-    /// desktop past onboarding.
+    /// The controls a session lists, page by page: a press on a control of the current page moves
+    /// to the next, and the last page stands for the desktop past onboarding.
     pub pages: std::collections::VecDeque<Vec<String>>,
     /// Scripted readiness observations, consumed once per restarted session.
     pub readiness_replies: std::collections::VecDeque<Result<(), String>>,
@@ -951,8 +919,8 @@ impl RecordingApply {
         }
     }
 
-    /// A laptop whose owner `account` is logged in through greetd, in
-    /// logind session 3 with `tilo-session` as pid 4242.
+    /// A laptop whose owner `account` is logged in through greetd, in logind session 3 with
+    /// `tilo-session` as pid 4242.
     pub fn with_login(account: &str) -> Self {
         Self {
             device: Some(DeviceSession {
@@ -978,8 +946,8 @@ impl RecordingApply {
         self.calls.push(text);
     }
 
-    /// What an unscripted `control` call answers, from its op: the controls a
-    /// session lists, a settled desktop, and a press that turns the page.
+    /// What an unscripted `control` call answers, from its op: the controls a session lists, a
+    /// settled desktop, and a press that turns the page.
     fn answer_control(&mut self, args: &[String]) -> String {
         let request: Option<serde_json::Value> =
             args.iter().find_map(|arg| serde_json::from_str(arg).ok());
@@ -1056,8 +1024,8 @@ impl Apply for RecordingApply {
     fn slot_identity_environment(&mut self, user: &str) -> Result<String, DaemonError> {
         slot_identity_environment(std::path::Path::new(&format!("/home/{user}")))
     }
-    /// Pressing onboarding's last control makes the user the machine's person
-    /// and certifies its device key, as the session's onboarding would.
+    /// Pressing onboarding's last control makes the user the machine's person and certifies its
+    /// device key, as the session's onboarding would.
     fn machine_identity(&mut self) -> MachineIdentity {
         if self
             .calls
@@ -1118,8 +1086,8 @@ impl Apply for RecordingApply {
     }
     fn try_restart_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
         self.call(format!("try-restart {unit}"));
-        // An inactive or failed service remains stopped. The actual manager
-        // validates installed units; this recorder has no installed-unit DB.
+        // An inactive or failed service remains stopped; the actual manager validates installed
+        // units, while this recorder has no installed-unit DB.
         Ok(())
     }
     fn restart_desktop(&mut self, session: &Session) -> Result<(), DaemonError> {
@@ -1135,7 +1103,7 @@ impl Apply for RecordingApply {
         if unit.starts_with("session-") || unit == GREETER_UNIT {
             return "active".into();
         }
-        // fs-identity.path starts fs once the device key is certified.
+        // `fs-identity.path` starts `fs` once the device key is certified.
         if unit == "fs.service" && !self.units.contains_key(unit) {
             return if self.machine_identity().certified {
                 "active"

@@ -1,5 +1,3 @@
-//! Request handling: one [`Daemon`] per RPC connection.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write as _;
@@ -27,35 +25,28 @@ use crate::locks::{Guard, Locks};
 use crate::slots::{self, Generation, SlotRecord, SlotStore};
 use crate::targets::TargetStore;
 
-/// The domain of a greetd session unless the image says otherwise.
 pub const DEFAULT_DOMAIN: &str = "unconfined_t";
 
 mod runtime_retention;
-/// Layers and uploads younger than this survive gc: they may belong to a
-/// swap that is still in flight on another connection.
+/// Layers and uploads younger than this survive gc: they may belong to a swap still in flight on
+/// another connection.
 mod userspace;
 
 const GC_MIN_AGE: Duration = Duration::from_secs(3600);
 
-/// How long a started session may take to bind its control socket.
 const CONTROL_SOCKET_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long a person's onboarding may take once its session is up, identity
-/// creation included. A first-login session binds its control socket only
-/// after it has set up onboarding (47 s after its unit started on a loaded
-/// builder, against 10 s for a session without onboarding), so waiting for
-/// the socket is part of this bound, not of [`CONTROL_SOCKET_TIMEOUT`].
+/// How long a person's onboarding may take once its session is up, identity creation included. A
+/// first-login session binds its control socket only after it has set up onboarding (47 s on a
+/// loaded builder, against 10 s without), so waiting for the socket is part of this bound, not of
+/// [`CONTROL_SOCKET_TIMEOUT`].
 const ONBOARDING_TIMEOUT: Duration = Duration::from_secs(180);
-/// How long `fs` may take to start once the device key is certified.
 const FS_START_TIMEOUT: Duration = Duration::from_secs(60);
 const FS_UNIT: &str = "fs.service";
 
-/// Which identity `slot create` gives the slot's user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdentityRequest {
     None,
-    /// A throwaway in a private root (`--identity`).
     Throwaway,
-    /// This VM's person, through onboarding (`--identity device`).
     Device,
 }
 
@@ -72,7 +63,6 @@ impl IdentityRequest {
     }
 }
 
-/// The `onboarding.*` names in a `list_targets` answer.
 fn onboarding_target_names(reply: &str) -> Vec<String> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(reply) else {
         return Vec::new();
@@ -92,8 +82,8 @@ fn onboarding_target_names(reply: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether a `state_dump` answer says the desktop is between two
-/// arrangements; an answer that does not say counts as settled.
+/// Whether a `state_dump` answer says the desktop is between two arrangements; an answer that does
+/// not say counts as settled.
 fn desktop_in_transition(reply: &str) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(reply) else {
         return false;
@@ -107,12 +97,11 @@ fn desktop_in_transition(reply: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// A slot's session, as the onboarding walk sees it: its controls listed
-/// and pressed by name through the control socket.
+/// A slot's session as the onboarding walk sees it: its controls listed and pressed by name through
+/// the control socket.
 struct OnboardingScreen<'a> {
     daemon: &'a mut Daemon,
     session: &'a apply::Session,
-    /// Until when a control socket the session has not bound yet is waited for.
     deadline: Instant,
 }
 
@@ -138,7 +127,6 @@ impl onboarding_walk::Screen for OnboardingScreen<'_> {
         Ok(())
     }
 
-    /// The state dump's `chrome.in_transition`, the fact a press is refused with.
     fn settled(&mut self) -> Result<bool, DaemonError> {
         let request = serde_json::json!({ "op": "state_dump" });
         let reply = self
@@ -160,7 +148,6 @@ impl onboarding_walk::Screen for OnboardingScreen<'_> {
     }
 }
 
-/// In-VM build dirs `gc` keeps by default, most recently used first.
 pub const DEFAULT_KEEP_TARGETS: u32 = 2;
 
 pub struct Daemon {
@@ -176,15 +163,13 @@ pub struct Daemon {
     client_protocol: Option<u32>,
     pub(crate) root: PathBuf,
     expected_domain: String,
-    /// The wall clock the keep-awake lease is read against: the process's,
-    /// unless a test hands the daemon a clock of its own to hold still.
+    /// The wall clock the keep-awake lease is read against: the process's, unless a test hands the
+    /// daemon one of its own.
     clock: fn() -> u64,
-    /// Problems found re-creating vkms seats when this process started.
     seat_issues: Option<Vec<Issue>>,
 }
 
-/// Is `tool` on `PATH` (or in `/usr/local/bin`, which a non-login SSH
-/// shell may lack)?
+/// Is `tool` on `PATH`, or in `/usr/local/bin`, which a non-login SSH shell may lack?
 pub fn on_path(tool: &str) -> bool {
     let paths = std::env::var_os("PATH").unwrap_or_default();
     std::env::split_paths(&paths)
@@ -192,7 +177,6 @@ pub fn on_path(tool: &str) -> bool {
         .any(|dir| dir.join(tool).is_file())
 }
 
-/// What this VM can build and pull with.
 pub fn detect_tools() -> VmTools {
     VmTools {
         cargo: on_path("cargo"),
@@ -203,9 +187,9 @@ pub fn detect_tools() -> VmTools {
     }
 }
 
-/// Re-create the vkms card of every headful slot. configfs is empty after
-/// a reboot, and a slot whose card is missing cannot start its session.
-/// Slots another command is changing are left to that command.
+/// Re-create the vkms card of every headful slot: configfs is empty after a reboot, and a slot
+/// whose card is missing cannot start its session. Slots another command is changing are left to
+/// it.
 pub fn reconcile_seats(slots: &SlotStore, locks: &Locks, apply: &mut dyn Apply) -> Vec<Issue> {
     let mut issues = Vec::new();
     for record in slots.list().unwrap_or_default() {
@@ -233,15 +217,11 @@ fn layer_paths(layers: &LayerStore, generation: &Generation) -> Result<Vec<PathB
     layers.merged_paths(&generation.layers)
 }
 
-/// The merge that reaches the machine's `/usr`.
-///
-/// The `vm` slot's layers come first, then the `device` slot's. A board's own
-/// session and a laptop's login both run in the host's mount namespace, so
-/// their layers and the `vm` slot's are one `systemd-sysext` set
-/// ([`crate::apply::activate`] merges them for a board, a login and a VM-wide
-/// component alike): whichever of the two slots applies, the other's layers
-/// stay merged. A slot of any other kind stacks its own layers over that
-/// machine set, in a view only its own session sees.
+/// The merge that reaches the machine's `/usr`: the `vm` slot's layers first, then the `device`
+/// slot's. A board's own session and a laptop's login both run in the host's mount namespace, so
+/// their layers and the `vm` slot's are one `systemd-sysext` set: whichever of the two slots
+/// applies, the other's layers stay merged. A slot of any other kind stacks its own layers over
+/// that set, in a view only its own session sees.
 fn system_layers(
     slots: &SlotStore,
     layers: &LayerStore,
@@ -299,19 +279,18 @@ fn prepare_slot_session(
         system_layers(slots, layers, record, own)?
     };
     if record.kind == SlotKind::Device && session.login.is_none() {
-        // A board's supervisor starts the compositor as a system transient
-        // unit in the host's mount namespace: no drop-in can bind a view under
-        // it, so the layers merge into the host `/usr` instead. Those links
-        // survive a reboot, so `systemd-sysext` has already merged them here
-        // and only a set that changed is refreshed.
+        // A board's supervisor starts the compositor as a system transient unit in the host's mount
+        // namespace, and no drop-in can bind a view under a transient unit, so the layers merge
+        // into the host `/usr` instead. Those links survive a reboot, so `systemd-sysext` has
+        // already merged them here and only a changed set is refreshed.
         if apply.link_sysext(&paths)? {
             apply.sysext_refresh()?;
         }
         return Ok(());
     }
     let mut dropin = apply.session_layer_dropin(&record.name, generation.number, &paths)?;
-    // The drop-in `apply::activate` wrote: the VM's person keeps running on
-    // the machine's identity tree after a reboot, not on a private one.
+    // The drop-in `apply::activate` wrote: the VM's person keeps running on the machine's identity
+    // tree after a reboot.
     dropin.push_str(&apply::identity_environment(apply, record, &session)?);
     let uid = apply::session_uid(apply, &session)?;
     for unit in apply::layered_units(&session, uid) {
@@ -320,13 +299,10 @@ fn prepare_slot_session(
     apply.reload()
 }
 
-/// Link and merge the VM-wide sysext set, the `vm` slot's layers and the
-/// owner's login's (the `device` slot), as their current generations name
-/// them. `systemd-sysext.service` merges at boot whatever links
-/// `/var/lib/extensions` holds; when those are not exactly this set (a
-/// transition cut short, a link lost or left behind) they are put right and
-/// `/usr` is refreshed, so the device slot always comes up on its current
-/// generation. A set that is already linked is left merged as it is.
+/// Link and merge the VM-wide sysext set as the `vm` and `device` slots' current generations name
+/// it. `systemd-sysext.service` merges at boot whatever `/var/lib/extensions` holds, so a set a
+/// transition cut short is put right and `/usr` refreshed; a set already linked is left merged as
+/// it is.
 pub fn merge_system_layers(
     slots: &SlotStore,
     layers: &LayerStore,
@@ -341,10 +317,9 @@ pub fn merge_system_layers(
     Ok(())
 }
 
-/// Bring every slot back after the VM boots: re-create headful slots' vkms
-/// seats, then start each slot's session on its current generation. Run
-/// once at boot by `tilo-vm-restore.service`; a slot that cannot come back
-/// is reported, and the others still start.
+/// Bring every slot back after the VM boots: re-create headful slots' vkms seats, then start each
+/// slot's session on its current generation. A slot that cannot come back is reported, and the
+/// others still start.
 pub fn restore_slots(
     slots: &SlotStore,
     layers: &LayerStore,
@@ -370,8 +345,6 @@ pub fn restore_slots(
         let Some(session) = record.session() else {
             continue;
         };
-        // The owner starts a login at the greeter; its layers merged at boot
-        // with systemd-sysext.
         if failed.contains(&record.name) || session.login.is_some() {
             continue;
         }
@@ -382,8 +355,6 @@ pub fn restore_slots(
                 continue;
             }
         };
-        // A board's device slot is the machine's session, which only the
-        // machine names; its record alone does not.
         let device = (record.name == DEVICE_SLOT)
             .then(|| apply.device_session())
             .flatten();
@@ -394,8 +365,8 @@ pub fn restore_slots(
                 continue;
             }
         };
-        // A board's own session is enabled and may have started on the bare
-        // image before this ran: it restarts onto the merged `/usr`.
+        // A board's own session is enabled and may have started on the bare image before this ran:
+        // it restarts onto the merged `/usr`.
         let started = |apply: &mut dyn Apply| {
             if !session.stand_in && apply.unit_state(&session.unit) == "active" {
                 let uid = apply::session_uid(apply, &session)?;
@@ -420,7 +391,6 @@ pub fn restore_slots(
     issues
 }
 
-/// `installed: <id> <version>` from tilo-install's output.
 pub fn parse_installed(output: &str) -> (Option<String>, Option<String>) {
     output
         .lines()
@@ -448,16 +418,13 @@ fn unchanged(record: SlotRecord) -> ApplyResult {
     }
 }
 
-/// Refuse layers the VM cannot run; warn about differences it can.
-///
-/// Refused: another CPU architecture or target triple, another builder
-/// image, or another `Cargo.lock` than the VM's image was built from (the
-/// swapped component and the rest of the image would disagree on shared
-/// crates). Each is compared only when both sides record it. A dev image
-/// records no builder image (it is its own builder), so there the target,
-/// toolchain and `Cargo.lock` identify the builder instead.
+/// Refuse layers the VM cannot run and warn about differences it can. Refused: another CPU
+/// architecture or target triple, another builder image, or another `Cargo.lock` than the image was
+/// built from, each compared only when both sides record it; a dev image records no builder image,
+/// so there the target, toolchain and lock identify the builder.
 ///
 /// # Errors
+///
 /// [`DaemonError::AbiMismatch`] naming the first field that differs.
 pub fn abi_check(
     provenance: &Provenance,
@@ -479,7 +446,6 @@ pub(crate) fn abi_check_verified(
         vm: vm.into(),
     };
     if let Some(target) = &provenance.target {
-        // The image's full triple when base.json has it, else the architecture.
         let foreign = match base.target.as_deref() {
             Some(vm) => vm != target,
             None => target.split('-').next() != Some(arch),
@@ -492,17 +458,15 @@ pub(crate) fn abi_check_verified(
             ));
         }
     }
-    // Compared only when both name one. A dev image's base.json names none:
-    // the image built itself.
     if let (Some(layer), Some(vm)) = (&provenance.builder_image_digest, &base.builder_image_digest)
         && layer != vm
     {
         return Err(mismatch("builder image", layer, vm));
     }
     let mut warnings = Vec::new();
-    // Thin apps link the image's libruntime_dylib.so, whose symbols carry
-    // crate hashes: another Cargo.lock breaks them. Statically linked
-    // components only drift from the image's dependency set.
+    // Thin apps link the image's `libruntime_dylib.so`, whose symbols carry crate hashes, so
+    // another `Cargo.lock` breaks them; statically linked components only drift from the image's
+    // dependency set.
     if let (Some(layer), Some(vm)) = (&provenance.cargo_lock_hash, &base.cargo_lock_hash)
         && layer != vm
     {
@@ -547,8 +511,8 @@ pub(crate) fn abi_check_verified(
 /// The component that carries the native toolkit and the thin apps built on it.
 const COHORT_COMPONENT: &str = "apps+runtime";
 
-/// The `<version>` of a `tilo-runtime/<version>` runtime, the directory
-/// it occupies under `/usr/lib/tilo-runtime`; `None` for any other runtime.
+/// The version of a `tilo-runtime/<version>` runtime, the directory it occupies under
+/// `/usr/lib/tilo-runtime`; `None` for any other runtime.
 fn native_toolkit(runtime: &str) -> Option<&str> {
     let version = runtime.strip_prefix("tilo-runtime/")?;
     let mut parts = Path::new(version).components();
@@ -564,9 +528,8 @@ fn short(hash: &str) -> &str {
 }
 
 impl Daemon {
-    /// Where a verified apps+runtime cohort writes the archives it derives:
-    /// beside the layer store's staging, which garbage collection clears of
-    /// anything a dropped swap left.
+    /// Where a verified apps+runtime cohort writes the archives it derives: beside the layer
+    /// store's staging, which gc clears of anything a dropped swap left.
     fn cohort_staging(&self) -> Result<PathBuf, DaemonError> {
         let staging = self.root.join("staging");
         fs::create_dir_all(&staging).map_err(DaemonError::io("create the cohort staging"))?;
@@ -597,8 +560,8 @@ impl Daemon {
         }
     }
 
-    /// Read the keep-awake lease against `clock` instead of the process's
-    /// wall clock, so a test can hold it still.
+    /// Read the keep-awake lease against `clock` instead of the process's wall clock, so a test can
+    /// hold it still.
     #[cfg(test)]
     pub(crate) fn with_clock(mut self, clock: fn() -> u64) -> Self {
         self.clock = clock;
@@ -612,8 +575,8 @@ impl Daemon {
         self
     }
 
-    /// How a slot's session differs from a greetd login; the device's own
-    /// session is the production one and is not compared.
+    /// How a slot's session differs from a greetd login; the device's own session is the production
+    /// one and is not compared.
     fn parity(&mut self, session: &Session) -> Option<String> {
         if !session.stand_in {
             return None;
@@ -622,8 +585,8 @@ impl Daemon {
         apply::parity_problem(&process, &self.expected_domain)
     }
 
-    /// After starting sessions: refuse to report success for one that did
-    /// not come up, or is not equivalent to a production greetd session.
+    /// After starting sessions: refuse to report success for one that did not come up, or is not
+    /// equivalent to a production greetd session.
     fn verify_parity(
         &mut self,
         sessions: impl IntoIterator<Item = Session>,
@@ -681,9 +644,8 @@ impl Daemon {
             .collect())
     }
 
-    /// Every slot on disk, with the machine's own session found again for
-    /// the `device` slot: a login's session and processes change with every
-    /// login.
+    /// Every slot on disk, with the machine's own session found again for the `device` slot: a
+    /// login's session and processes change with every login.
     fn stored_slots(&mut self) -> Result<Vec<SlotRecord>, DaemonError> {
         let mut records = self.slots.list()?;
         if let Some(record) = records.iter_mut().find(|r| r.name == DEVICE_SLOT) {
@@ -699,8 +661,7 @@ impl Daemon {
         Ok(records)
     }
 
-    /// Every slot on disk, and the `device` slot wherever the machine runs
-    /// its own session, swapped into or not.
+    /// Every slot on disk, and the `device` slot wherever the machine runs its own session.
     fn listed_slots(&mut self) -> Result<Vec<SlotRecord>, DaemonError> {
         let mut records = self.stored_slots()?;
         if !records.iter().any(|r| r.name == DEVICE_SLOT)
@@ -712,10 +673,9 @@ impl Daemon {
         Ok(records)
     }
 
-    /// The layers to merge system-wide for `record`: the `vm` slot and a
-    /// laptop's `device` slot (the owner's login runs in the host's mount
-    /// namespace) share one `systemd-sysext` set, the `vm` slot's layers
-    /// first. Other slots merge that system-wide set with their own.
+    /// The layers to merge system-wide for `record`: the `vm` slot and a laptop's `device` slot
+    /// share one `systemd-sysext` set, the `vm` slot's first. Other slots merge that set with their
+    /// own.
     fn system_layers(
         &self,
         record: &SlotRecord,
@@ -724,7 +684,6 @@ impl Daemon {
         system_layers(&self.slots, &self.layers, record, own)
     }
 
-    /// Load a slot, finding the machine's own session for the `device` slot.
     fn load_slot(&mut self, name: &str) -> Result<SlotRecord, DaemonError> {
         let device = if name == DEVICE_SLOT {
             self.apply.device_session()
@@ -734,8 +693,8 @@ impl Daemon {
         self.slots.load_with(name, device)
     }
 
-    /// Record `booted` as the image the slots run on; see [`crate::image`].
-    /// Never changes a slot or deletes a layer.
+    /// Record `booted` as the image the slots run on (see [`crate::image`]); never changes a slot
+    /// or deletes a layer.
     pub fn reconcile_image(&mut self, booted: &str) -> Result<Option<ImageChange>, DaemonError> {
         image::ensure_root(&self.root)?;
         let _vm = self.locks.vm_exclusive()?;
@@ -747,11 +706,8 @@ impl Daemon {
         image::reconcile(&self.root, &self.slots, &self.layers, &booted)
     }
 
-    /// Bring every slot back after the VM boots. First the booted image is
-    /// recorded (when the early-boot unit has not done so already), then
-    /// the VM-wide layers are merged as the slots' current generations name
-    /// them ([`merge_system_layers`]), then every slot session starts
-    /// ([`restore_slots`]).
+    /// Bring every slot back after the VM boots: record the booted image when the early-boot unit
+    /// has not, merge the VM-wide layers, then start every slot session.
     pub fn restore(&mut self, booted: Option<&str>) -> Vec<Issue> {
         let mut issues = Vec::new();
         if let Some(booted) = booted
@@ -763,7 +719,6 @@ impl Daemon {
                 hint: "tilo-vm doctor; the next boot tries again".into(),
             });
         }
-        // The person is told which layers are held, and why.
         let notice = image::held_notice(&self.root);
         if let Err(error) = self
             .apply
@@ -799,7 +754,6 @@ impl Daemon {
     }
 
     /// Handle one request.
-    ///
     /// # Errors
     /// Whatever the method reports; see [`DaemonError::hint`].
     #[expect(
@@ -838,8 +792,8 @@ impl Daemon {
             }
             Some(_) => {}
         }
-        // A long session (an upload, a build) is activity as much as a new
-        // connection is; `awake` sets the lease itself.
+        // A long session (an upload, a build) is activity as much as a new connection is; `awake`
+        // sets the lease itself.
         if !matches!(request, Request::Awake(_))
             && awake::renewal(
                 awake::read(&self.lease_path()),
@@ -1023,8 +977,8 @@ impl Daemon {
                     .as_ref()
                     .is_some_and(|device| device.login.is_some()) =>
             {
-                // A greetd device login already owns the physical seat; it
-                // does not need the lease used by a developer's headful slot.
+                // A greetd device login already owns the physical seat and does not need the lease
+                // a developer's headful slot uses.
                 "seat0".to_owned()
             }
             (None, SlotKind::Headful, Some(seat)) => seat.clone(),
@@ -1047,8 +1001,8 @@ impl Daemon {
         })
     }
 
-    /// Install a `.tapp` into the slot user's app store. Not a generation:
-    /// the user store shadows the image's apps, live at their next launch.
+    /// Install a `.tapp` into the slot user's app store. Not a generation: the user store shadows
+    /// the image's apps, live at their next launch.
     pub fn install_app(
         &mut self,
         slot: &str,
@@ -1082,9 +1036,9 @@ impl Daemon {
         self.root.join(awake::LEASE_FILE)
     }
 
-    /// Renew (or release) the keep-awake lease and make the lock follow it.
-    /// A failure is reported in the lease, never as the request's error:
-    /// a machine that cannot be held awake can still be driven.
+    /// Renew (or release) the keep-awake lease and make the lock follow it. A failure is reported
+    /// in the lease, never as the request's error: a machine that cannot be held awake can still be
+    /// driven.
     fn renew_awake(&mut self, change: awake::Change) -> AwakeLease {
         let path = self.lease_path();
         let now = (self.clock)();
@@ -1112,7 +1066,6 @@ impl Daemon {
         }
     }
 
-    /// The keep-awake lease as it stands.
     fn awake_lease(&mut self) -> AwakeLease {
         let now = (self.clock)();
         let lease = awake::read(&self.lease_path()).filter(|lease| lease.active(now));
@@ -1252,8 +1205,8 @@ impl Daemon {
         Ok(LayerImportResult { hash, existed })
     }
 
-    /// VM-wide work on the `vm` slot excludes everything; slot work shares
-    /// the VM and excludes other work on the same slot.
+    /// VM-wide work on the `vm` slot excludes everything; slot work shares the VM and excludes
+    /// other work on the same slot.
     pub(crate) fn slot_locks(&self, name: &str) -> Result<(Guard, Option<Guard>), DaemonError> {
         if name == VM_SLOT {
             Ok((self.locks.vm_exclusive()?, None))
@@ -1283,7 +1236,6 @@ impl Daemon {
         }
     }
 
-    /// Reconcile recorded state with what is running.
     fn issues(&mut self) -> Result<Vec<Issue>, DaemonError> {
         let mut issues = self.seat_issues.clone().unwrap_or_default();
         for record in self.stored_slots()? {
@@ -1364,8 +1316,6 @@ impl Daemon {
         })
     }
 
-    /// Run `args` as slot `name` sees the system (see [`crate::exec`]),
-    /// streaming to this process's stdout and stderr.
     pub fn exec(
         &mut self,
         name: &str,
@@ -1389,7 +1339,6 @@ impl Daemon {
         .map_err(DaemonError::io(format!("run {}", args.join(" "))))
     }
 
-    /// The slot and every file its current generation's layers add.
     fn show(&mut self, name: &str) -> Result<SlotShowResult, DaemonError> {
         let record = self.load_slot(name)?;
         let generation = self.slots.generation(name, record.current)?;
@@ -1478,8 +1427,8 @@ impl Daemon {
             }
             IdentityRequest::None => None,
         };
-        // Every create applies the layout again, so a create that failed
-        // here is repaired by running it once more.
+        // Every create applies the layout again, so a create that failed here is repaired by
+        // running it once more.
         if !record.outputs.is_empty() && record.seat0.is_none() {
             let user = record.user().unwrap_or_default();
             self.apply
@@ -1503,8 +1452,8 @@ impl Daemon {
         })
     }
 
-    /// Only one slot can be this VM's person, and only while the machine's
-    /// identity tree holds nobody else's identity: never replace or adopt one.
+    /// Only one slot can be this VM's person, and only while the machine's identity tree holds
+    /// nobody else's identity: never replace or adopt one.
     fn admit_device_identity(&mut self, name: &str) -> Result<(), DaemonError> {
         let refuse = |detail: String| DaemonError::DeviceIdentity {
             slot: name.to_owned(),
@@ -1531,13 +1480,10 @@ impl Daemon {
         Ok(())
     }
 
-    /// Make the slot's user this VM's person the way a device's first login
-    /// does: its session shows onboarding (it has no identity and no private
-    /// root), and onboarding's own controls create the identity, which
-    /// certifies the machine's device key; that certificate starts `fs`.
-    /// The controls are pressed by name through the control socket, the way
-    /// a person's clicks reach them; nothing here mints or writes identity
-    /// files.
+    /// Make the slot's user this VM's person the way a device's first login does: the session shows
+    /// onboarding (it has no identity and no private root), and onboarding's own controls create
+    /// the identity, which certifies the machine's device key; that certificate starts `fs`. The
+    /// controls are pressed by name through the control socket, as a person's clicks reach them.
     fn complete_onboarding(
         &mut self,
         record: &SlotRecord,
@@ -1572,8 +1518,8 @@ impl Daemon {
                 }
             })?;
             actions.push(Action::CompleteOnboarding { created: true });
-            // As after a throwaway: a layout made before the identity
-            // belongs to the Unix user and hides every app launch.
+            // As after a throwaway: a layout made before the identity belongs to the Unix user and
+            // hides every app launch.
             self.apply.stop_unit(&session.unit)?;
             actions.push(Action::StopUnit {
                 unit: session.unit.clone(),
@@ -1587,7 +1533,7 @@ impl Daemon {
         } else {
             actions.push(Action::CompleteOnboarding { created: false });
         }
-        // fs-identity.path starts fs once the certificate exists.
+        // `fs-identity.path` starts `fs` once the certificate exists.
         let started = Instant::now();
         loop {
             let state = self.apply.unit_state(FS_UNIT);
@@ -1612,9 +1558,8 @@ impl Daemon {
         ))
     }
 
-    /// The onboarding controls the session shows, by name; empty once
-    /// onboarding is gone. Waits, until `deadline`, for a control socket a
-    /// starting session has not bound yet.
+    /// The onboarding controls the session shows, by name; empty once onboarding is gone. Waits,
+    /// until `deadline`, for a control socket a starting session has not bound yet.
     fn onboarding_targets(
         &mut self,
         session: &apply::Session,
@@ -1623,7 +1568,6 @@ impl Daemon {
         let args = ["raw".to_owned(), r#"{"op":"list_targets"}"#.to_owned()];
         let reply = loop {
             let reply = self.apply.control(session, &args)?;
-            // tilo-control exits 2 when it cannot reach the socket.
             if reply.exit_code != 2 || Instant::now() >= deadline {
                 break reply;
             }
@@ -1638,10 +1582,9 @@ impl Daemon {
         Ok(onboarding_target_names(reply.stdout.trim()))
     }
 
-    /// Have the slot's running session give its user a throwaway test
-    /// identity. A newly minted one comes with fresh desktop state: a
-    /// workspace made before the identity is owned by the Unix user, not
-    /// the identity, and hides every app launch.
+    /// Have the slot's running session give its user a throwaway test identity. A newly minted one
+    /// comes with fresh desktop state: a workspace made before the identity is owned by the Unix
+    /// user and hides every app launch.
     fn provision_test_identity(
         &mut self,
         record: &SlotRecord,
@@ -1663,8 +1606,8 @@ impl Daemon {
         let asked = Instant::now();
         let reply = loop {
             let reply = self.apply.control(&session, &args)?;
-            // tilo-control exits 2 when it cannot reach the socket, which a
-            // session that has only just started has not bound yet.
+            // `tilo-control` exits 2 when it cannot reach the socket, which a session that has only
+            // just started has not bound yet.
             if reply.exit_code != 2 || asked.elapsed() >= CONTROL_SOCKET_TIMEOUT {
                 break reply;
             }
@@ -1779,7 +1722,6 @@ impl Daemon {
                 .map(|c| c.info.clone())
         })
         .unwrap_or_else(|| {
-            // Unknown components take the scope of the slot they are swapped into.
             let scope = if record.kind == SlotKind::Vm {
                 Scope::Vm
             } else {
@@ -1799,7 +1741,6 @@ impl Daemon {
     ) -> Result<ApplyResult, DaemonError> {
         let mut record = self.load_slot(name)?;
         let layer_path = self.layers.require(layer)?;
-        // Naming a held layer in a swap brings it back deliberately.
         image::release(&self.root, layer)?;
         let provenance = self
             .layers
@@ -1839,7 +1780,6 @@ impl Daemon {
         apply::check_scope(&record, component, &info)?;
         let mut result = match self.slots.prepare_swap(&record, component, layer, info)? {
             Some((from, to)) => {
-                // The cohort reselects its own applications for the new toolkit.
                 let reselected = cohort
                     .as_ref()
                     .map(|cohort| cohort.ids().collect())
@@ -1890,19 +1830,16 @@ impl Daemon {
         self.transition(&mut record, &from, &to)
     }
 
-    /// Refuse generation `to` of slot `record` when a component of the
-    /// matched session set, its own layer's or the image's, was built for
-    /// another system-interface declaration than the one `to` leaves the slot
-    /// reading, or a VM-wide runtime service (fs) serves another runtime
-    /// version. For the `vm` slot, refuse when its runtime services would
-    /// leave any slot reading another runtime version
-    /// ([`crate::interfaces`]); `partner` names a slot whose next generation
-    /// moves together with this swap, which is judged instead of the
-    /// generation it runs. Checked before anything is activated.
+    /// Refuse generation `to` of slot `record` when a component of the matched session set, its own
+    /// layer's or the image's, was built for another system-interface declaration than the one `to`
+    /// leaves the slot reading, or when a VM-wide runtime service serves another runtime version.
+    /// For the `vm` slot, refuse when its runtime services would leave any slot reading another
+    /// version. `partner` names a slot whose next generation moves with this swap, which is judged
+    /// instead of the one it runs. Checked before anything is activated.
     ///
     /// # Errors
-    /// [`DaemonError::InvalidParams`] naming what to swap together; a
-    /// missing layer.
+    ///
+    /// [`DaemonError::InvalidParams`] naming what to swap together; a missing layer.
     pub(crate) fn check_interfaces(
         &self,
         record: &SlotRecord,
@@ -1911,8 +1848,8 @@ impl Daemon {
     ) -> Result<(), DaemonError> {
         let image = image::recorded_declaration(&self.root);
         let conflict = if record.name == VM_SLOT {
-            // Only a change of a runtime service is judged against the
-            // slots: a vmd or greeter swap never waits on fs.
+            // Only a change of a runtime service is judged against the slots: a vmd or greeter swap
+            // never waits on fs.
             let current = (record.current != 0)
                 .then(|| self.slots.generation(VM_SLOT, record.current))
                 .transpose()?;
@@ -1958,7 +1895,6 @@ impl Daemon {
         }
     }
 
-    /// Each component of `generation` as the interface check sees it.
     fn interface_members(
         &self,
         generation: &Generation,
@@ -1971,8 +1907,6 @@ impl Daemon {
         self.interface_members_of(&components)
     }
 
-    /// `components` (name to layer) as the interface check sees them, for a
-    /// generation that is not stored yet.
     fn interface_members_of(
         &self,
         components: &BTreeMap<String, String>,
@@ -1995,13 +1929,11 @@ impl Daemon {
         Ok(members)
     }
 
-    /// Refuse a transition that takes away a native toolkit the slot user's
-    /// own packages run on: one the apps+runtime layer of `from` ships
-    /// (`/usr/lib/tilo-runtime/<version>`) and neither the layers `to`
-    /// merges nor the image itself ship. Packages in `reselected` are
-    /// installed again for the new toolkit. A package that names no
-    /// runtime never blocks; runtime-kind packages are among them, since
-    /// a runtime may not declare one.
+    /// Refuse a transition that takes away a native toolkit the slot user's own packages run on:
+    /// one the apps+runtime layer of `from` ships and neither the layers `to` merges nor the image
+    /// ships. Packages in `reselected` are installed again for the new toolkit; a package that
+    /// names no runtime never blocks, and runtime-kind packages are among them since a runtime may
+    /// not declare one.
     fn check_cohort_users(
         &mut self,
         record: &SlotRecord,
@@ -2069,8 +2001,8 @@ impl Daemon {
         from: &Generation,
         to: &Generation,
     ) -> Result<ApplyResult, DaemonError> {
-        // Boot changes have a separate boot-confirmation lifecycle. Runtime
-        // transitions recover once, without recursively retrying a broken build.
+        // Boot changes have their own boot-confirmation lifecycle; runtime transitions recover
+        // once, without recursively retrying a broken build.
         let (policy, _) = apply::policy(record, from, to)?;
         match self.activate_generation(record, from, to) {
             Ok(result) => Ok(result),
@@ -2124,8 +2056,8 @@ impl Daemon {
                 self.slots.set_current(record, to.number)?;
             }
             Policy::Reboot => {
-                // The kernel's modules are merged now; its boot entry is next.
-                // Sessions restart with the reboot the client runs.
+                // The kernel's modules are merged now; its boot entry is next, and sessions restart
+                // with the reboot the client runs.
                 let kernel = to
                     .components
                     .values()
@@ -2170,8 +2102,8 @@ impl Daemon {
         })
     }
 
-    /// Slot sessions snapshot `/usr` when they start, so a refreshed VM
-    /// `/usr` reaches them only through a restart.
+    /// Slot sessions snapshot `/usr` when they start, so a refreshed VM `/usr` reaches them only
+    /// through a restart.
     fn restart_all_sessions(
         &mut self,
         user_units: &[String],
@@ -2213,17 +2145,15 @@ impl Daemon {
     fn journal_matches(&mut self, record: &SlotRecord) -> Result<Vec<String>, DaemonError> {
         let mut matches = Vec::new();
         if let Some(session) = record.session() {
-            // PAM moves the session into session-N.scope, so its output is
-            // found by the unit's SyslogIdentifier, not by the unit name.
-            // The device's session runs its compositor in units it starts:
-            // everything its account runs is the session's.
+            // PAM moves the session into `session-N.scope`, so its output is found by the unit's
+            // `SyslogIdentifier`, not by the unit name. The device's session runs its compositor in
+            // units it starts, so everything its account runs is the session's.
             let uid = apply::session_uid(self.apply.as_mut(), &session)?;
             if session.stand_in {
                 matches.push(format!("SYSLOG_IDENTIFIER=tilo-session-{}", record.name));
             } else {
                 matches.push(format!("_SYSTEMD_UNIT={}", session.unit));
             }
-            // A login's output reaches the journal through greetd's stream.
             if session.login.is_some() && session.unit != GREETER_UNIT {
                 matches.push(format!("_SYSTEMD_UNIT={GREETER_UNIT}"));
             }
@@ -2244,8 +2174,8 @@ impl Daemon {
         Ok(matches)
     }
 
-    /// Re-activate a slot's current generation with a session restart,
-    /// after its seat assignment changed.
+    /// Re-activate a slot's current generation with a session restart, after its seat assignment
+    /// changed.
     fn reseat(&mut self, record: &mut SlotRecord) -> Result<Vec<Action>, DaemonError> {
         let generation = self.slots.generation(&record.name, record.current)?;
         let layers = self.layer_paths(&generation)?;
@@ -2353,8 +2283,8 @@ impl Daemon {
         if !records.iter().any(|r| r.name == VM_SLOT) {
             records.push(self.slots.load(VM_SLOT)?);
         }
-        // The device slot's generations that carry a held layer are the
-        // person's system waiting on a deliberate choice: gc keeps them.
+        // The device slot's generations that carry a held layer are the person's system waiting on
+        // a deliberate choice: gc keeps them.
         let held = image::held_hashes(&self.root);
         for record in &records {
             let also_keep: BTreeSet<u64> = if record.name == DEVICE_SLOT {
@@ -2393,7 +2323,6 @@ impl Daemon {
             })
             .collect();
         if !dry_run {
-            // Uploads and staging dirs left by dropped connections.
             for dir in [&self.uploads_dir, &self.root.join("staging")] {
                 for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
                     let old = entry
@@ -2412,7 +2341,6 @@ impl Daemon {
                 }
             }
         }
-        // Build dirs, least recently used first; never one mid-build.
         let free = self
             .apply
             .disk_space(&self.root)

@@ -1,13 +1,9 @@
-//! `tilo-vmd display-apply`: give a headful slot's monitors the modes and
-//! scales `--outputs` asked for, the way the Settings app does.
-//!
-//! It runs as the slot's user, reads the monitors the slot's compositor
-//! published (`$XDG_RUNTIME_DIR/tilo/display-state.json`), stages the layout
-//! as a display transaction in the user's settings, waits for the
-//! compositor to apply it, and confirms it, after which the compositor
-//! remembers it for that set of monitors. Nothing here talks to the
-//! compositor directly, so the display path under test is the production
-//! one.
+//! `tilo-vmd display-apply`: give a headful slot's monitors the modes and scales
+//! `--outputs` asked for, the way the Settings app does. It runs as the slot's
+//! user, reads the monitors the slot's compositor published, stages the layout as a
+//! display transaction in the user's settings, waits for the compositor to apply it
+//! and confirms it. Nothing here talks to the compositor directly, so the display
+//! path is the production one.
 
 use std::time::{Duration, Instant};
 
@@ -22,9 +18,9 @@ use tilo_vm_protocol::display::format_outputs;
 /// Refresh rate vkms modes run at; the closest one wins among equal sizes.
 const PREFERRED_REFRESH_MHZ: u32 = 60_000;
 
-/// The layout for `outputs` on `specs`: the n-th connector (in connector
-/// order, as vkms numbers them) gets the n-th spec; they sit left to right,
-/// top-aligned, edge to edge in logical pixels, the first one primary.
+/// The layout for `outputs` on `specs`: the n-th connector, in connector order as vkms numbers
+/// them, gets the n-th spec; they sit left to right, top-aligned, edge to edge in logical pixels,
+/// the first one primary.
 pub fn plan(
     outputs: &[DisplayOutputSnapshot],
     specs: &[OutputSpec],
@@ -78,9 +74,8 @@ pub fn plan(
     Ok(config)
 }
 
-/// The combined logical desktop `specs` make when laid out by [`plan`].
-/// An absolute pointer spans exactly this, so `tilo-vm input move X Y`
-/// lands on desktop pixel X, Y.
+/// The combined logical desktop `specs` make when laid out by [`plan`]. An absolute pointer spans
+/// exactly this, so `tilo-vm input move X Y` lands on desktop pixel X, Y.
 pub fn desktop_extent(specs: &[OutputSpec]) -> (u32, u32) {
     specs.iter().fold((0, 0), |(width, height), spec| {
         let (w, h) = logical_extent(
@@ -122,8 +117,8 @@ fn sizes(modes: &[OutputMode]) -> String {
         .join(", ")
 }
 
-/// Stage, wait for and confirm the layout for `specs`. Runs as the slot's
-/// user with its `HOME` and `XDG_RUNTIME_DIR`.
+/// Stage, wait for and confirm the layout for `specs`, as the slot's user with its `HOME` and
+/// `XDG_RUNTIME_DIR`.
 pub fn apply(specs: &[OutputSpec], timeout: Duration) -> Result<String, String> {
     let started = Instant::now();
     let left = || timeout.saturating_sub(started.elapsed());
@@ -158,8 +153,8 @@ pub fn apply(specs: &[OutputSpec], timeout: Duration) -> Result<String, String> 
         })
     })
     .ok_or("the compositor did not pick up the display change")?;
-    // A change that cannot darken a screen (a scale alone, or the layout the
-    // monitors already have) is kept at once, with nothing to confirm.
+    // A change that cannot darken a screen (a scale alone, or the layout the monitors already have)
+    // is kept at once, with nothing to confirm.
     if transaction.state == DisplayTransactionState::Confirmed {
         return Ok(format!("outputs set to {}", format_outputs(specs)));
     }

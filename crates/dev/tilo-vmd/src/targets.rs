@@ -1,13 +1,7 @@
 //! In-VM build dirs: one synced source tree per host worktree under
-//! `<root>/src/<worktree>/`, whose `target/` is that worktree's own cargo
-//! build dir. Build dirs are never shared and are disposable: `gc` evicts
-//! them least recently used first. The shared cache is sccache.
-//!
-//! ```text
-//! src/<worktree>/          rsync of the worktree (respects .gitignore)
-//! src/<worktree>/target/   its cargo target dir (rsync never touches it)
-//! src/<worktree>.json      owner, last use, bytes after the last build
-//! ```
+//! `<root>/src/<worktree>/`, whose `target/` is that worktree's own cargo build
+//! dir. Build dirs are never shared and are disposable: `gc` evicts them least
+//! recently used first, and the shared cache is sccache.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -134,9 +128,9 @@ impl TargetStore {
             .fold(0, u64::saturating_add)
     }
 
-    /// Which build dirs to evict: beyond the `keep` most recent, and then,
-    /// oldest first, as many more as it takes to reach `free_goal` given
-    /// `free` bytes free now. `busy` dirs (a build is running) are skipped.
+    /// Which build dirs to evict: beyond the `keep` most recent, then, oldest first, as many more
+    /// as it takes to reach `free_goal` given `free` bytes free now. Dirs of a running build are
+    /// skipped.
     pub fn plan_eviction(
         &self,
         keep: u32,
@@ -262,8 +256,8 @@ mod tests {
             store.touch("wt-1", Owner::default()).unwrap();
             fs::create_dir_all(store.src("wt-1").join("target")).unwrap();
             fs::write(store.src("wt-1").join("target/big"), vec![1_u8; 8192]).unwrap();
-            // What the file occupies depends on the filesystem (compression,
-            // delayed allocation), so only check the measurement is recorded.
+            // What the file occupies depends on the filesystem (compression, delayed allocation),
+            // so a test only checks that the measurement is recorded.
             let bytes = store.measure("wt-1").unwrap();
             assert_eq!(store.load("wt-1").unwrap().bytes, bytes);
             let measured = TargetRecord {
