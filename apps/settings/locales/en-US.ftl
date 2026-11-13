@@ -616,6 +616,7 @@ mesh-status-revoked = Revoked
 mesh-status-this-device = This device
 mesh-status-home-server = Home server
 mesh-status-trusted = Trusted
+mesh-status-nearby = Nearby
 mesh-no-target = No other device
 mesh-allow-continuity = Share with your other devices
 mesh-allow-continuity-desc = Turn off to stop sharing everything at once.

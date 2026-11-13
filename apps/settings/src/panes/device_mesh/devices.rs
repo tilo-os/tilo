@@ -191,6 +191,9 @@ impl Page<'_> {
         if entry.personal.is_some_and(|device| device.revoked) {
             return t("mesh-status-revoked");
         }
+        if self.nearby.contains(&entry.key.to_ascii_lowercase()) {
+            return t("mesh-status-nearby");
+        }
         if let Some(peer) = entry.peer {
             return self.peer_health(peer);
         }

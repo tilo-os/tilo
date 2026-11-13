@@ -330,6 +330,7 @@ mod tests {
             ed25519_dalek::SigningKey::from_bytes(&[7; 32]),
             crate::platform::fabric::Continuity::default(),
             None,
+            tilo_endpoint_reachability::Nearby::new(std::sync::Arc::new(|| {})),
         )
     }
 

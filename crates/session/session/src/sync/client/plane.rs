@@ -182,15 +182,23 @@ pub(crate) struct Beside {
 pub(crate) struct Bound {
     pub(crate) endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
     pub(crate) relays: tilo_endpoint_reachability::EndpointRelays,
+    /// What it hears on the local network.
+    pub(crate) lan: tilo_endpoint_reachability::Nearby,
 }
 
 impl Bound {
-    /// The endpoint to bind, filled in once it is, holding back `relays`.
+    /// The endpoint to bind, filled in once it is, holding back `relays` and hearing the local
+    /// network into `lan`.
     pub(crate) fn new(
         endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
         relays: tilo_endpoint_reachability::EndpointRelays,
+        lan: tilo_endpoint_reachability::Nearby,
     ) -> Self {
-        Self { endpoint, relays }
+        Self {
+            endpoint,
+            relays,
+            lan,
+        }
     }
 }
 
@@ -460,7 +468,7 @@ async fn listening(
     bound: &Bound,
 ) -> Option<Listening> {
     let lookup = iroh::address_lookup::memory::MemoryLookup::new();
-    let (builder, deferred_relays) = match endpoint_for(identity, &bound.relays) {
+    let (builder, deferred_relays) = match endpoint_for(identity, &bound.relays, &bound.lan) {
         Ok(building) => building,
         Err(error) => {
             let _ = ready.send(Err(error));

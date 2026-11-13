@@ -1229,6 +1229,9 @@ impl Client {
         let (enrollments, enrolled) = std::sync::mpsc::channel();
         let (ready, bound) = std::sync::mpsc::channel();
         let (user, device) = certified_as(identity.as_ref());
+        // What this device hears on its local network wakes the session, which shows which of the
+        // person's devices are nearby.
+        let lan = tilo_endpoint_reachability::Nearby::new(Arc::clone(&wake));
         let host_outbox = HostOutbox {
             commands: commands.clone(),
         };
@@ -1239,6 +1242,7 @@ impl Client {
             host_outbox,
             entry.continuity,
             entry.fabric,
+            lan.clone(),
         );
         // What the actor serves is installed before it starts: every actor built after answers it.
         let versions = crate::network::install(fabric.as_ref(), questions);
@@ -1249,7 +1253,7 @@ impl Client {
         let device_actions = Arc::new(std::sync::OnceLock::new());
         let serving = Arc::clone(&device_actions);
         let endpoint_handle = Arc::new(std::sync::OnceLock::new());
-        let binding = plane::Bound::new(Arc::clone(&endpoint_handle), entry.relays);
+        let binding = plane::Bound::new(Arc::clone(&endpoint_handle), entry.relays, lan);
         // The live plane's relay role, when this device may serve one, is one more protocol on the
         // endpoint this session binds.
         let mut live = engine
@@ -1951,6 +1955,7 @@ fn restored_fabric(
     outgoing: HostOutbox,
     continuity: Continuity,
     state: Option<std::path::PathBuf>,
+    lan: tilo_endpoint_reachability::Nearby,
 ) -> Option<Arc<SessionFabric>> {
     let identity = identity?;
     let device = (
@@ -1974,6 +1979,7 @@ fn restored_fabric(
         ed25519_dalek::SigningKey::from_bytes(&identity.signer.endpoint_secret()?),
         continuity,
         kept,
+        lan,
     ))
 }
 
@@ -1992,6 +1998,7 @@ pub(crate) fn fabric_checkpoint(state: &std::path::Path, device: &DeviceId) -> s
 fn endpoint_for(
     identity: Option<&HostIdentity>,
     relays: &tilo_endpoint_reachability::EndpointRelays,
+    lan: &tilo_endpoint_reachability::Nearby,
 ) -> Result<(iroh::endpoint::Builder, iroh::RelayMap), String> {
     let Some(identity) = identity else {
         let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -2010,12 +2017,13 @@ fn endpoint_for(
     // The relays are held back ([`tilo_endpoint_reachability`]): binding with an empty relay map
     // keeps net report, address discovery and port mapping off the network until a workspace this
     // session shows has someone else in it. A peer's key also resolves on the local network
-    // ([`tilo_endpoint_reachability::lan`]), so two of the person's devices that share one find
+    // ([`tilo_endpoint_reachability::Nearby`]), so two of the person's devices that share one find
     // each other while their relays rest, and with their own relay (or none) that is what finds
-    // them.
+    // them. The lookup only answers for a key this device already dials: hearing an endpoint there
+    // dials nobody.
     let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(key)
-        .address_lookup(tilo_endpoint_reachability::lan())
+        .address_lookup(lan.lookup())
         .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::empty()));
     if relays.n0_dns {
         builder = builder

@@ -49,6 +49,10 @@ pub struct PersonalDevice {
     pub label: String,
     /// It has a live session with this device now.
     pub online: bool,
+    /// It is heard on this device's local network, so the two reach each
+    /// other directly, without a relay.
+    #[serde(default)]
+    pub nearby: bool,
     /// This machine.
     pub local: bool,
     /// It shows, so where its display stands beside this one's is arranged in
@@ -96,6 +100,8 @@ pub fn device_rows(
                 title: device.label.clone(),
                 detail: crate::i18n::t(if takes_sound {
                     "qs-devices-send-here"
+                } else if device.nearby {
+                    "qs-devices-nearby"
                 } else if device.online {
                     "qs-devices-online"
                 } else {

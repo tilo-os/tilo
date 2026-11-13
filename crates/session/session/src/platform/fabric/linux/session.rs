@@ -106,6 +106,9 @@ pub(crate) struct SessionFabric {
     nearby: Mutex<Option<Arc<crate::nearby_transfer::NearbyTransfer>>>,
     /// Where this device's fabric is kept for its next run, if anywhere.
     kept: Option<std::path::PathBuf>,
+    /// The endpoints heard on this device's local network, of which the person's devices are
+    /// reachable without a relay.
+    lan: tilo_endpoint_reachability::Nearby,
 }
 
 impl std::fmt::Debug for SessionFabric {
@@ -124,6 +127,7 @@ impl SessionFabric {
         device_signing_key: ed25519_dalek::SigningKey,
         continuity: Continuity,
         kept: Option<std::path::PathBuf>,
+        lan: tilo_endpoint_reachability::Nearby,
     ) -> Arc<Self> {
         Arc::new(Self {
             runtime: Arc::new(Mutex::new(runtime)),
@@ -133,6 +137,7 @@ impl SessionFabric {
             continuity,
             nearby: Mutex::new(None),
             kept,
+            lan,
         })
     }
 
@@ -334,6 +339,11 @@ impl FabricLink for SessionFabric {
 
     fn online_device_ids(&self) -> BTreeSet<DeviceId> {
         self.runtime.lock_recover().online_device_ids()
+    }
+
+    fn nearby_device_ids(&self) -> BTreeSet<DeviceId> {
+        let heard = self.lan.heard();
+        self.runtime.lock_recover().nearby_device_ids(&heard)
     }
 
     fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {

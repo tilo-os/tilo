@@ -616,6 +616,7 @@ mesh-status-revoked = Widerrufen
 mesh-status-this-device = Dieses Gerät
 mesh-status-home-server = Heimserver
 mesh-status-trusted = Vertrauenswürdig
+mesh-status-nearby = In der Nähe
 mesh-no-target = Kein anderes Gerät
 mesh-allow-continuity = Mit deinen anderen Geräten teilen
 mesh-allow-continuity-desc = Ausschalten, um alles auf einmal zu beenden.

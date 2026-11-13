@@ -70,7 +70,7 @@ fn permitted() -> Continuity {
 
 /// One of the person's devices, certified by `person` , on its own key.
 fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
-    kept_device(person, seed, label, None)
+    kept_device(person, seed, label, None, test_relay::loopback())
 }
 
 /// [`device`], keeping its fabric under `kept` between runs as a session does.
@@ -79,6 +79,7 @@ fn kept_device(
     seed: u8,
     label: &str,
     kept: Option<&std::path::Path>,
+    relays: tilo_endpoint_reachability::EndpointRelays,
 ) -> Device {
     let key = test_relay::signing_key(seed);
     let cert = test_relay::certified(person, &key, label, DeviceCapabilities::member());
@@ -90,7 +91,7 @@ fn kept_device(
             continuity: permitted(),
             wake: Arc::new(|| {}),
             fabric: kept.map(std::path::Path::to_path_buf),
-            relays: test_relay::loopback(),
+            relays,
         },
         None,
         None,
@@ -185,7 +186,13 @@ fn a_device_that_starts_again_continues_its_own_revisions() {
     let person = person();
     let kept = tempfile::tempdir().expect("a state directory");
     let desk = device(&person, 2, "Desk");
-    let laptop = kept_device(&person, 1, "Laptop", Some(kept.path()));
+    let laptop = kept_device(
+        &person,
+        1,
+        "Laptop",
+        Some(kept.path()),
+        test_relay::loopback(),
+    );
     let id = laptop.id.clone();
     laptop.client.connect(desk.client.endpoint_addr());
     assert!(
@@ -202,7 +209,13 @@ fn a_device_that_starts_again_continues_its_own_revisions() {
     let before = held(&desk).expect("the desk holds what the laptop said");
     drop(laptop);
 
-    let laptop = kept_device(&person, 1, "Laptop", Some(kept.path()));
+    let laptop = kept_device(
+        &person,
+        1,
+        "Laptop",
+        Some(kept.path()),
+        test_relay::loopback(),
+    );
     laptop.client.connect(desk.client.endpoint_addr());
     assert!(
         until(&[&laptop, &desk], || {
@@ -211,11 +224,85 @@ fn a_device_that_starts_again_continues_its_own_revisions() {
         "the desk took what the laptop said after starting again: it still holds {before:?}"
     );
 
-    let copy = kept_device(&person, 3, "Branch", Some(kept.path()));
+    let copy = kept_device(
+        &person,
+        3,
+        "Branch",
+        Some(kept.path()),
+        test_relay::loopback(),
+    );
     assert!(
         !copy.fabric().device_fabric().snapshots().contains_key(&id),
         "a machine with a key of its own does not take up the laptop's kept fabric"
     );
+}
+
+/// Two of the person's devices on one local network, whose relay is unreachable and which ask no
+/// directory: each is told only the other's key, finds it on the network, and what is copied on one
+/// reaches the other. Each lists the other as nearby; a device of someone else's, heard on the same
+/// network, is neither dialled nor named.
+#[test]
+fn the_persons_devices_on_one_network_sync_without_a_relay() {
+    let unreachable = || {
+        tilo_endpoint_reachability::EndpointRelays::for_choice(&settings_store::relay::Relays::Own(
+            "http://127.0.0.1:1".into(),
+        ))
+    };
+    let person = person();
+    let laptop = kept_device(&person, 1, "Laptop", None, unreachable());
+    let desk = kept_device(&person, 2, "Desk", None, unreachable());
+    let stranger = kept_device(
+        &ed25519_dalek::SigningKey::from_bytes(&[22; 32]),
+        3,
+        "Stranger",
+        None,
+        unreachable(),
+    );
+    laptop
+        .client
+        .connect(iroh::EndpointAddr::new(desk.client.publisher()));
+
+    assert!(
+        until(&[&laptop, &desk, &stranger], || both_online(&laptop, &desk)),
+        "the two devices found each other on the local network"
+    );
+    let now = tilo_clock::unix_now_ms();
+    let text = "copied with no relay";
+    let copy = ClipboardEntry::shareable(
+        ClipboardPayload::Text(text.to_owned()),
+        laptop.id.clone(),
+        now,
+        FabricStamp {
+            counter: now,
+            device: laptop.id.clone(),
+        },
+    )
+    .expect("a shareable copy");
+    laptop.fabric().share_clipboard(vec![copy]);
+    assert!(
+        until(&[&laptop, &desk, &stranger], || {
+            desk.fabric()
+                .device_fabric()
+                .merged_clipboard()
+                .entries()
+                .any(|entry| entry.payload == ClipboardPayload::Text(text.to_owned()))
+        }),
+        "the copy reached the desk over the local network"
+    );
+    assert!(
+        until(&[&laptop, &desk, &stranger], || {
+            laptop.fabric().nearby_device_ids().contains(&desk.id)
+                && desk.fabric().nearby_device_ids().contains(&laptop.id)
+        }),
+        "each lists the other as nearby"
+    );
+    for device in [&laptop, &desk] {
+        assert!(
+            !device.fabric().nearby_device_ids().contains(&stranger.id)
+                && !device.fabric().online_device_ids().contains(&stranger.id),
+            "someone else's device on the network is nobody here"
+        );
+    }
 }
 
 #[test]

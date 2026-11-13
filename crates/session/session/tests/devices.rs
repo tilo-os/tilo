@@ -139,6 +139,8 @@ struct FakeLink {
     media: Arc<Mutex<bool>>,
     /// The person's devices this session has a live session with.
     online: Arc<Mutex<BTreeSet<DeviceId>>>,
+    /// The person's devices heard on this machine's local network.
+    nearby: Arc<Mutex<BTreeSet<DeviceId>>>,
     /// The wake routes this machine offered its devices.
     routes: Arc<Mutex<Vec<WakeRoute>>>,
 }
@@ -309,6 +311,10 @@ impl FabricLink for FakeLink {
 
     fn online_device_ids(&self) -> BTreeSet<DeviceId> {
         self.online.lock().expect("the online devices").clone()
+    }
+
+    fn nearby_device_ids(&self) -> BTreeSet<DeviceId> {
+        self.nearby.lock().expect("the nearby devices").clone()
     }
 
     fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
@@ -594,6 +600,38 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
             .collect::<Vec<_>>(),
         [("this-pc", true, true), ("laptop", true, false)],
         "this device is listed too, and says it is this one"
+    );
+}
+
+/// A device of the person's heard on this machine's local network says so on its row: the two reach
+/// each other there without a relay.
+#[test]
+fn a_device_on_the_local_network_is_listed_as_nearby() {
+    let _settled = ui::motion::testing::settled();
+    let link = FakeLink::joined(false);
+    link.nearby
+        .lock()
+        .expect("the nearby devices")
+        .insert(laptop());
+    let mut harness = session(&link, Rc::new(Host::default()));
+    for _ in 0..40 {
+        harness.step();
+        if harness.rows().iter().any(|row| row.key == "laptop") {
+            break;
+        }
+    }
+    let reading = harness
+        .reading()
+        .expect("the session publishes its devices");
+    assert_eq!(
+        reading
+            .rows()
+            .iter()
+            .filter(|row| !row.key.starts_with(SOUND_KEY))
+            .map(|row| (row.key.as_str(), row.detail.as_str()))
+            .collect::<Vec<_>>(),
+        [("laptop", "Nearby")],
+        "the laptop's row says it is on this network"
     );
 }
 

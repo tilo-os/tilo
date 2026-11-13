@@ -677,6 +677,11 @@ pub struct DeviceMeshModel {
     home_peer_last_seen: HashMap<String, u64>,
     personal_devices: Vec<crate::device_fleet::DeviceView>,
     personal_devices_unavailable: bool,
+    /// The session's reading of the person's devices, which says which of them it hears on this
+    /// device's local network.
+    session_devices: Option<ui::collaboration::SessionResource>,
+    /// The person's devices reachable without a relay, by key in lowercase hex.
+    nearby: std::collections::BTreeSet<String>,
     device_rows: DisclosureGroup,
     removing: Option<String>,
     roaming_provenance_path: Option<PathBuf>,
@@ -922,6 +927,36 @@ pub(crate) struct MeshRead {
     home_peer_last_seen: HashMap<String, u64>,
     roaming_provenance_path: Option<PathBuf>,
     roaming_provenance: ProvenanceRead,
+    session_devices: Option<ui::collaboration::SessionResource>,
+}
+
+/// The session's reading of the person's devices, as far as this pane reads it.
+const SESSION_DEVICES: &str = "session:devices";
+
+#[derive(serde::Deserialize)]
+struct SessionDevices {
+    #[serde(default)]
+    devices: Vec<SessionDevice>,
+}
+
+#[derive(serde::Deserialize)]
+struct SessionDevice {
+    id: String,
+    #[serde(default)]
+    nearby: bool,
+}
+
+/// The devices `reading` says are nearby, by key in lowercase hex.
+fn nearby_in(reading: &str) -> Option<std::collections::BTreeSet<String>> {
+    let reading: SessionDevices = serde_json::from_str(reading).ok()?;
+    Some(
+        reading
+            .devices
+            .into_iter()
+            .filter(|device| device.nearby)
+            .map(|device| device.id.to_ascii_lowercase())
+            .collect(),
+    )
 }
 
 impl MeshRead {
@@ -987,6 +1022,19 @@ impl MeshRead {
             },
             roaming_provenance_path,
             roaming_provenance,
+            session_devices: devices
+                .then(|| {
+                    ui::collaboration::SessionResource::open(SESSION_DEVICES)
+                        .inspect_err(|error| {
+                            tracing::debug!(
+                                target: "tilo::settings",
+                                %error,
+                                "the session's devices are not read here"
+                            );
+                        })
+                        .ok()
+                })
+                .flatten(),
         }
     }
 }
@@ -1015,6 +1063,10 @@ impl DeviceMeshModel {
             home_peer_last_seen: read.home_peer_last_seen,
             personal_devices: Vec::new(),
             personal_devices_unavailable: false,
+            session_devices: read.session_devices.inspect(|resource| {
+                resource.attach(ui::WakeHandle::new());
+            }),
+            nearby: std::collections::BTreeSet::new(),
             device_rows: DisclosureGroup::new(),
             removing: None,
             roaming_provenance_path: read.roaming_provenance_path,
@@ -1915,8 +1967,24 @@ impl DeviceMeshModel {
         held
     }
 
+    /// Take in what the session last said of which devices are nearby.
+    fn take_nearby(&mut self) {
+        let Some(Ok(reading)) = self
+            .session_devices
+            .as_ref()
+            .and_then(ui::collaboration::SessionResource::latest)
+        else {
+            return;
+        };
+        if let Some(nearby) = nearby_in(&reading).filter(|nearby| *nearby != self.nearby) {
+            self.nearby = nearby;
+            self.changed = true;
+        }
+    }
+
     fn poll(&mut self) -> bool {
         self.poll_background_tasks();
+        self.take_nearby();
         if let Some(follow) = self.following.upgrade() {
             self.take_followed(&follow);
         } else if ui::time::now() >= self.next_status_refresh {
@@ -2626,6 +2694,37 @@ mod tests {
             .unwrap(),
         ];
         pane
+    }
+
+    /// A device the session hears on this device's network says so on its row; the others keep
+    /// what they are.
+    #[test]
+    fn a_device_the_session_hears_nearby_says_so() {
+        let _settled = ui::motion::testing::settled();
+        let dir = tempfile::tempdir().unwrap();
+        let mut pane = devices_and_a_home_server(dir.path());
+        pane.nearby = nearby_in(
+            &serde_json::json!({"devices": [
+                {"id": PHONE.to_ascii_uppercase(), "nearby": true},
+                {"id": THIS_DEVICE, "nearby": false},
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let mut app = window_on(pane);
+        let shown = provider_settings_ui::widgets::announced_text(app.harness().root_widget());
+        assert!(
+            shown
+                .iter()
+                .any(|line| line.starts_with("Ada's Phone, Nearby")),
+            "{shown:#?}"
+        );
+        assert!(
+            !shown
+                .iter()
+                .any(|line| line.starts_with("Ada's Laptop, Nearby")),
+            "{shown:#?}"
+        );
     }
 
     #[test]

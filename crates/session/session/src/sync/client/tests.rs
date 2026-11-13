@@ -925,11 +925,12 @@ fn this_devices_endpoint_holds_back_the_relays_its_person_chose() {
     let own = tilo_endpoint_reachability::EndpointRelays::for_choice(
         &settings_store::relay::Relays::Own("https://relay.example.com.".into()),
     );
-    let held = endpoint_for(Some(&identity), &own)
+    let lan = tilo_endpoint_reachability::Nearby::new(std::sync::Arc::new(|| {}));
+    let held = endpoint_for(Some(&identity), &own, &lan)
         .expect("an endpoint to bind")
         .1;
     assert_eq!(held.urls::<Vec<_>>(), own.relays.urls::<Vec<_>>());
-    let nobody = endpoint_for(None, &own)
+    let nobody = endpoint_for(None, &own, &lan)
         .expect("a loopback endpoint to bind")
         .1;
     assert!(

@@ -35,23 +35,74 @@ const PROVENANCE: &str = "tilo-lan";
 
 const LOOKUP_FOR: Duration = Duration::from_secs(10);
 
-/// The local-network lookup a session's endpoint takes beside number 0's:
-/// it advertises this endpoint's direct addresses on every network it is on
-/// and resolves another device's key to the address it advertises.
-#[must_use]
-pub fn lan() -> Lan {
-    Lan
+/// The endpoints this device hears on its local network, kept by the lookup
+/// a session's endpoint takes ([`Nearby::lookup`]): what says which of the
+/// person's devices are reachable here without a relay. Cloning shares it.
+#[derive(Clone)]
+pub struct Nearby {
+    shared: Arc<Shared>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Lan;
+impl std::fmt::Debug for Nearby {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Nearby")
+            .field("heard", &self.heard())
+            .finish()
+    }
+}
+
+impl Nearby {
+    /// Nothing heard yet; `changed` is told each time an endpoint is first
+    /// heard or its announcement lapses, from the discovery's own thread.
+    #[must_use]
+    pub fn new(changed: Arc<dyn Fn() + Send + Sync>) -> Self {
+        let (news, _) = broadcast::channel(64);
+        Self {
+            shared: Arc::new(Shared {
+                heard: Mutex::default(),
+                news,
+                changed,
+            }),
+        }
+    }
+
+    /// The lookup to bind the endpoint with: it advertises this endpoint's
+    /// direct addresses on every network it is on, resolves another device's
+    /// key to the address it advertises, and keeps what it heard here.
+    #[must_use]
+    pub fn lookup(&self) -> Lan {
+        Lan {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+
+    /// The endpoints heard on the local network now, this one aside. Only
+    /// a key and its addresses are heard: whose device it is, the caller
+    /// decides from what it already knows.
+    #[must_use]
+    pub fn heard(&self) -> BTreeSet<EndpointId> {
+        self.shared.heard.lock_recover().keys().copied().collect()
+    }
+}
+
+/// The local-network lookup of a [`Nearby`].
+#[derive(Clone)]
+pub struct Lan {
+    shared: Arc<Shared>,
+}
+
+impl std::fmt::Debug for Lan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Lan").finish_non_exhaustive()
+    }
+}
 
 impl AddressLookupBuilder for Lan {
     fn into_address_lookup(
         self,
         endpoint: &Endpoint,
     ) -> Result<impl AddressLookup, AddressLookupBuilderError> {
-        LanLookup::spawn(endpoint.id())
+        LanLookup::spawn(endpoint.id(), self.shared)
     }
 }
 
@@ -64,6 +115,7 @@ pub struct LanLookup {
 struct Shared {
     heard: Mutex<HashMap<EndpointId, EndpointData>>,
     news: broadcast::Sender<(EndpointId, EndpointData)>,
+    changed: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl std::fmt::Debug for LanLookup {
@@ -113,12 +165,7 @@ fn networks(addrs: &BTreeMap<u16, Vec<IpAddr>>) -> BTreeSet<Ipv4Addr> {
 }
 
 impl LanLookup {
-    fn spawn(id: EndpointId) -> Result<Self, AddressLookupBuilderError> {
-        let (news, _) = broadcast::channel(64);
-        let shared = Arc::new(Shared {
-            heard: Mutex::default(),
-            news,
-        });
+    fn spawn(id: EndpointId, shared: Arc<Shared>) -> Result<Self, AddressLookupBuilderError> {
         let hearing = Arc::clone(&shared);
         let discoverer = Discoverer::new_interactive(SERVICE_NAME.to_owned(), peer_name(&id))
             .with_ip_class(IpClass::Auto)
@@ -131,15 +178,19 @@ impl LanLookup {
                     return;
                 }
                 if peer.is_expiry() {
-                    hearing.heard.lock_recover().remove(&from);
+                    if hearing.heard.lock_recover().remove(&from).is_some() {
+                        (hearing.changed)();
+                    }
                     return;
                 }
                 let data = advertised(peer);
-                let changed =
-                    hearing.heard.lock_recover().insert(from, data.clone()) != Some(data.clone());
-                if changed {
+                let before = hearing.heard.lock_recover().insert(from, data.clone());
+                if before.as_ref() != Some(&data) {
                     tracing::debug!(%from, ?data, "lan: heard an endpoint");
                     let _ = hearing.news.send((from, data));
+                    if before.is_none() {
+                        (hearing.changed)();
+                    }
                 }
             })
             .spawn(&tokio::runtime::Handle::current())
@@ -222,7 +273,7 @@ mod tests {
     use iroh::{Endpoint, RelayMode, SecretKey};
     use tokio::time::{Duration, timeout};
 
-    use super::{endpoint_of, lan, networks, peer_name};
+    use super::{Nearby, endpoint_of, networks, peer_name};
 
     const ALPN: &[u8] = b"tilo/lan-discovery-test";
 
@@ -234,7 +285,7 @@ mod tests {
             Endpoint::builder(presets::Minimal)
                 .relay_mode(RelayMode::Disabled)
                 .alpns(vec![ALPN.to_vec()])
-                .address_lookup(lan())
+                .address_lookup(Nearby::new(std::sync::Arc::new(|| {})).lookup())
         };
         let host = binding().bind().await.expect("the host endpoint binds");
         let guest = binding().bind().await.expect("the guest endpoint binds");

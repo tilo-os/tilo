@@ -161,6 +161,7 @@ qs-clipboard-unpin = Unpin item
 qs-devices-fabric-unavailable = Personal device fabric is unavailable
 qs-devices-offline = Offline
 qs-devices-online = Online
+qs-devices-nearby = Nearby
 qs-devices-play-here = Play { $media } here
 qs-devices-wake = Wake
 qs-devices-action-dismiss = Dismiss
