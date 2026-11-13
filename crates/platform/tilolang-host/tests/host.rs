@@ -1334,6 +1334,65 @@ fn the_instance_offers_an_action_directory_the_door_and_agents_browse() {
     }
 }
 
+/// The app's root record is listed at the directory's top level to an agent as to a person: its
+/// `open` changes only the caller's own window, so it discloses the record under the caller's
+/// policy rather than keeping it, and every action on it, the publisher's alone. Its level lists
+/// the actions an agent takes there.
+#[test]
+fn an_agent_lists_the_apps_root_record_and_its_actions() {
+    let directory = Rc::new(RefCell::new(Directory::default()));
+    let (mut host, mut window, _sent, _inbox, _route) =
+        running_with("ada", APP, counter(), Rc::clone(&directory));
+    settle(&mut host, &mut window);
+    let top = page(&mut host, &mut window, &directory, query());
+    let prefix = format!("tl:{APP}:root-");
+    let root = top
+        .rows
+        .iter()
+        .find(|row| row.resource.starts_with(&prefix) && row.action.is_none())
+        .unwrap_or_else(|| panic!("the root record is at the top: {:?}", top.rows))
+        .clone();
+    let visibility = root
+        .visibility
+        .as_ref()
+        .expect("a listed resource names its visibility");
+    assert!(
+        visibility.contract.discloses_resource(),
+        "the root record is disclosed only to its publisher through `{}`",
+        visibility.action
+    );
+    let level = page(
+        &mut host,
+        &mut window,
+        &directory,
+        ActionDirectoryQuery {
+            parent_resource: root.resource.clone(),
+            ..query()
+        },
+    );
+    // The broker refuses a page whose action row names another contract than its descriptor's.
+    for row in level.rows.iter().filter(|row| row.action.is_some()) {
+        let descriptor = row
+            .descriptor
+            .as_ref()
+            .expect("an action row carries its action");
+        let visibility = row
+            .visibility
+            .as_ref()
+            .expect("an action row names its visibility");
+        assert_eq!(visibility.contract, descriptor.contract, "{row:?}");
+    }
+    for action in ["open", "increment", "decrement"] {
+        assert!(
+            level.rows.iter().any(|row| {
+                row.resource == root.resource && row.action.as_deref() == Some(action)
+            }),
+            "{action} is on the root's level: {:?}",
+            level.rows
+        );
+    }
+}
+
 const NOTES: &str = "so.tilo.lang.notes";
 
 /// Where the shipped tilolang packages are.

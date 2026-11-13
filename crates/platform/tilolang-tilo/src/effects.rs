@@ -85,7 +85,7 @@ pub enum OpenEffect {
     /// Open.
     ///
     /// Show this resource in the window: its app, with it selected.
-    #[effect(view, row)]
+    #[effect(view, row, participant)]
     Open {
         #[param("The resource's id")]
         anchor: String,
@@ -95,7 +95,7 @@ pub enum OpenEffect {
     /// Show this resource in the window through one of the views that show it (`open(r, with:
     /// v)`). Each published view other than the type's default opens through its own binding
     /// of it, so a view and the action that opens it name each other.
-    #[effect(view, row)]
+    #[effect(view, row, participant)]
     OpenWith {
         #[param("The resource's id")]
         anchor: String,
