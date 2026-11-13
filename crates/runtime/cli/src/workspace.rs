@@ -138,43 +138,47 @@ mod tests {
         env
     }
 
-    #[test]
-    fn resolve_rejects_absolute_paths_and_parent_traversal() {
-        for (path, want) in [
-            ("/etc/passwd", "relative"),
-            ("notes/../../etc/passwd", ".."),
-        ] {
-            let _env = without_tilo_env();
-            let e = resolve_workspace_path(path).unwrap_err();
-            assert!(format!("{e}").contains(want), "case {path}: {e}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn workspace_paths_resolve_from_the_environment;
 
-    #[test]
-    fn the_workspace_root_env_drives_resolution_and_availability() {
+        phase resolve_rejects_absolute_paths_and_parent_traversal;
         {
-            let mut env = without_tilo_env();
-            env.set(TILO_WORKSPACE_ROOT_ENV, "/tmp/tilo-ws");
-            let p = resolve_workspace_path("notes/inbox.md").unwrap();
-            assert_eq!(p, PathBuf::from("/tmp/tilo-ws/notes/inbox.md"));
+            for (path, want) in [
+                ("/etc/passwd", "relative"),
+                ("notes/../../etc/passwd", ".."),
+            ] {
+                let _env = without_tilo_env();
+                let e = resolve_workspace_path(path).unwrap_err();
+                assert!(format!("{e}").contains(want), "case {path}: {e}");
+            }
         }
+
+        phase the_workspace_root_env_drives_resolution_and_availability;
         {
-            let mut env = without_tilo_env();
-            let tmp = tempfile::tempdir().unwrap();
-            env.set("XDG_DATA_HOME", tmp.path())
-                .set("TILO_PACKAGE_ID", "dev.example.notes");
-            let p = resolve_workspace_path("inbox.md").unwrap();
-            assert!(p.starts_with(tmp.path().join("dev.example.notes")));
-            assert!(
-                p.parent().unwrap().exists(),
-                "parent dir should be pre-created"
-            );
-        }
-        {
-            let mut env = without_tilo_env();
-            assert!(!is_workspace_available());
-            env.set(TILO_WORKSPACE_ROOT_ENV, "/tmp/xxx");
-            assert!(is_workspace_available());
+            {
+                let mut env = without_tilo_env();
+                env.set(TILO_WORKSPACE_ROOT_ENV, "/tmp/tilo-ws");
+                let p = resolve_workspace_path("notes/inbox.md").unwrap();
+                assert_eq!(p, PathBuf::from("/tmp/tilo-ws/notes/inbox.md"));
+            }
+            {
+                let mut env = without_tilo_env();
+                let tmp = tempfile::tempdir().unwrap();
+                env.set("XDG_DATA_HOME", tmp.path())
+                    .set("TILO_PACKAGE_ID", "dev.example.notes");
+                let p = resolve_workspace_path("inbox.md").unwrap();
+                assert!(p.starts_with(tmp.path().join("dev.example.notes")));
+                assert!(
+                    p.parent().unwrap().exists(),
+                    "parent dir should be pre-created"
+                );
+            }
+            {
+                let mut env = without_tilo_env();
+                assert!(!is_workspace_available());
+                env.set(TILO_WORKSPACE_ROOT_ENV, "/tmp/xxx");
+                assert!(is_workspace_available());
+            }
         }
     }
 }
