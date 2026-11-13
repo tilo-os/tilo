@@ -139,7 +139,10 @@ fn assert_palette_shows(scale: f64, size: (u32, u32)) {
     desk.relayout();
     host.relayout();
     host.prepare_frame();
-    assert!(handle.search_open(), "the chord opened the palette");
+    assert!(
+        handle.search_open(),
+        "the chord opened the palette at scale {scale}"
+    );
     let card = {
         let search = handle.search_palette();
         let search = search.borrow();
@@ -178,7 +181,7 @@ fn assert_palette_shows(scale: f64, size: (u32, u32)) {
     }
     assert!(
         samples > 100,
-        "the card is {card:?}, large enough to sample"
+        "at scale {scale} the card is {card:?}, large enough to sample"
     );
     assert!(
         differing.saturating_mul(2) > samples,
@@ -187,14 +190,14 @@ fn assert_palette_shows(scale: f64, size: (u32, u32)) {
     );
 }
 
+/// At one pixel a point and at twice the pixels, each on a compositor, an output and a desk of its
+/// own: nothing of one density's session is there for the next.
 #[test]
 fn the_open_palettes_card_reaches_the_composited_output() {
     let _settled = ui::motion::testing::settled();
-    assert_palette_shows(1.0, (1280, 800));
-}
-
-#[test]
-fn the_open_palettes_card_reaches_the_composited_output_at_twice_the_pixels() {
-    let _settled = ui::motion::testing::settled();
-    assert_palette_shows(2.0, (2560, 1600));
+    for (scale, size) in [(1.0, (1280, 800)), (2.0, (2560, 1600))] {
+        // Said before the row runs, so a failure anywhere in it names its density.
+        println!("the palette's card at scale {scale}, on an output of {size:?}");
+        assert_palette_shows(scale, size);
+    }
 }
