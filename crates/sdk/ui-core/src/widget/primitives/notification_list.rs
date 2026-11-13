@@ -1,15 +1,5 @@
-//! `NotificationList`: retained notifications under headings, as a hosted
-//! stack (`docs/architecture/ui-inventory.md`, "Notification centre list").
-//!
-//! The notification centre used to lay out its groups, its rows, its
-//! severity rails, its per-row controls, its pager and its "cleared" band by
-//! itself. A notification list is that whole shape as one component, built
-//! from the toolkit's own parts: a group's heading is a
-//! [`SectionHeaderFace`], a row is a [`ListRowFace`] with a leading glyph
-//! and its trailing controls, the empty state is [`EmptyState`], and the
-//! pager is two quiet buttons. What it shows of each notification is the
-//! caller's; it hands its layout back for hit-testing and for the
-//! accessibility tree.
+//! The notification centre's list: rows grouped under app headings, with paging, an empty
+//! state and an undo band after clearing.
 
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Fill;
@@ -23,62 +13,52 @@ use crate::widget::{
     RowLeading, SectionHeaderFace, Tone,
 };
 
-/// What the person asked of the list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotificationListControl {
-    /// A group's heading was pressed: fold or unfold its rows.
+    /// Fold or unfold the group.
     Fold(usize),
-    /// A row's dismiss control.
     Dismiss(usize),
-    /// A row's hand-to-agent control.
     HandToAgent(usize),
-    /// A row was pressed: open it.
+    /// Row pressed.
     Open(usize),
-    /// The previous page.
+    /// Previous page.
     Newer,
-    /// The next page.
+    /// Next page.
     Older,
-    /// Undo the clear just made.
+    /// Undo the last clear.
     Undo,
 }
 
-/// One row of the list.
 #[derive(Clone, Debug, PartialEq)]
 pub enum NotificationListRow {
-    /// A group's heading over the notifications under it.
+    /// An app's heading.
     Group {
-        /// The group's stable key: an app's verified id.
+        /// The app's verified id.
         key: String,
-        /// What the heading says: the app's display name.
+        /// The app's display name.
         label: String,
-        /// How many notifications the group holds.
         count: usize,
-        /// Whether the group shows its rows; a folded group shows none.
         expanded: bool,
     },
-    /// One notification.
     Item {
-        /// A key that stays the same while the row is on screen.
+        /// Stable while the row is shown.
         key: String,
-        /// The notification's headline.
         title: String,
-        /// What sent it, or the system part that asked.
+        /// The app or system component that sent it.
         source: String,
         /// How long ago it arrived.
         age: String,
-        /// The notification's own body, as the row shows it.
         body: String,
-        /// A severity the row marks with a rail beside its text.
+        /// Adds a rail beside the text.
         severity: Option<Tone>,
-        /// The row stands under a group's heading, one step in.
+        /// Indented under a group heading.
         grouped: bool,
-        /// The notification offers hand-to-agent, so the row carries its control.
+        /// Shows the hand-to-agent control.
         agent: bool,
     },
 }
 
 impl NotificationListRow {
-    /// The row's stable key.
     #[must_use]
     pub fn key(&self) -> &str {
         match self {
@@ -91,34 +71,27 @@ impl NotificationListRow {
     }
 }
 
-/// A row's trailing controls, where they stand.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct NotificationRowControls {
-    /// The dismiss control.
     pub dismiss: Rect,
-    /// Hand-to-agent, when the row offers it.
+    /// `None` without a hand-to-agent control.
     pub agent: Option<Rect>,
 }
 
-/// Where a painted notification list put its parts.
+/// Hit-test rects from the last paint.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NotificationListLayout {
-    /// The row that stood at each index of the page, in order.
+    /// One per row on the page.
     pub rows: Vec<Rect>,
-    /// Each painted row's trailing controls.
     pub controls: Vec<NotificationRowControls>,
-    /// The pager's "newer" button, zero when the list does not page.
+    /// Zero when the list does not page.
     pub newer: Rect,
-    /// The pager's "older" button.
     pub older: Rect,
-    /// The "cleared" band, when the list was just cleared.
+    /// Zero unless the list was just cleared.
     pub cleared: Rect,
-    /// The band's undo control.
     pub undo: Rect,
 }
 
-/// What the list paints and hit-tests: its rows, its paging, its empty
-/// state and the host's cursor.
 #[derive(Clone, Copy, Debug)]
 pub struct NotificationListView<'a> {
     rows: &'a [NotificationListRow],
@@ -135,7 +108,7 @@ pub struct NotificationListView<'a> {
 }
 
 impl<'a> NotificationListView<'a> {
-    /// The list showing `rows` from `start`.
+    /// Shows `rows` from index `start`.
     #[must_use]
     pub fn new(rows: &'a [NotificationListRow], start: usize) -> Self {
         Self {
@@ -153,49 +126,45 @@ impl<'a> NotificationListView<'a> {
         }
     }
 
-    /// How many rows one page holds (`usize::MAX` unless said).
+    /// Rows per page; `usize::MAX` by default.
     #[must_use]
     pub fn capacity(mut self, capacity: usize) -> Self {
         self.capacity = capacity.max(1);
         self
     }
 
-    /// The pointer, for hover on rows and controls.
     #[must_use]
     pub fn cursor(mut self, cursor: Option<Point>) -> Self {
         self.cursor = cursor;
         self
     }
 
-    /// The selected row, which shows the keyboard ring.
+    /// Draws the focus ring on this row.
     #[must_use]
     pub fn focused(mut self, index: Option<usize>) -> Self {
         self.focused = index;
         self
     }
 
-    /// The control the keyboard is on.
     #[must_use]
     pub fn action_focus(mut self, control: Option<NotificationListControl>) -> Self {
         self.action_focus = control;
         self
     }
 
-    /// The "cleared" band, its label saying what was cleared.
+    /// Shows the cleared band with this label.
     #[must_use]
     pub fn cleared(mut self, label: Option<&'a str>) -> Self {
         self.cleared = label;
         self
     }
 
-    /// What the list says when it holds nothing.
     #[must_use]
     pub fn empty(mut self, message: &'a str) -> Self {
         self.empty = Some(message);
         self
     }
 
-    /// The pager's two labels.
     #[must_use]
     pub fn pager_labels(mut self, newer: &'a str, older: &'a str) -> Self {
         self.newer_label = newer;
@@ -203,21 +172,18 @@ impl<'a> NotificationListView<'a> {
         self
     }
 
-    /// The undo control's label.
     #[must_use]
     pub fn undo_label(mut self, label: &'a str) -> Self {
         self.undo_label = label;
         self
     }
 
-    /// The page's rows: `start` to the page's end, or all of them.
     fn page(&self) -> std::ops::Range<usize> {
         let start = self.start.min(self.rows.len());
         start..self.rows.len().min(start.saturating_add(self.capacity))
     }
 
-    /// Where a row's trailing controls stand: dismiss on the trailing edge,
-    /// hand-to-agent one related step inboard of it.
+    /// Dismiss at the trailing edge, hand-to-agent next to it.
     fn controls_in(row: Rect, theme: &Theme, with_agent: bool) -> NotificationRowControls {
         let size = f64::from(theme.tokens.metrics.icon_control);
         let related = f64::from(theme.tokens.spacing.rhythm.related);
@@ -231,8 +197,6 @@ impl<'a> NotificationListView<'a> {
         NotificationRowControls { dismiss, agent }
     }
 
-    /// Paint the list in `rect`, which holds the page's rows and the band
-    /// under them, and hand back where its parts landed.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) -> NotificationListLayout {
         let theme = ctx.theme;
         let mut layout = NotificationListLayout::default();
@@ -301,8 +265,6 @@ impl<'a> NotificationListView<'a> {
                     if let Some(tone) = severity {
                         face = face.mark_tone(*tone).mark(icon_for(*tone));
                     }
-                    // A row is as tall as its own content: a title that wraps
-                    // or a source line that elides does not move it.
                     let height = face.height(ctx.text, theme);
                     let row_rect = Rect::new(rect.x0, y, rect.x1, y + height);
                     let controls = Self::controls_in(row_rect, theme, *agent);
@@ -328,8 +290,7 @@ impl<'a> NotificationListView<'a> {
         }
         let shown = layout.rows.len();
         if self.rows.len() > shown {
-            // The pager: two quiet buttons at the band's ends, the pager's
-            // page position between them when it fits.
+            // Newer and older at the ends, the page position between them when it fits.
             let band_h = ButtonFace::height(ControlSize::Small, theme);
             let band = Rect::new(rect.x0, y, rect.x1, y + band_h);
             layout.newer = Rect::new(band.x0, band.y0, band.x0 + band.width() / 2.0, band.y1);
@@ -370,8 +331,7 @@ impl<'a> NotificationListView<'a> {
         layout
     }
 
-    /// The "cleared" band: a quiet lift of the panel, its sentence, and Undo
-    /// on the trailing edge. Returns the band's rect.
+    /// Returns the band's rect.
     fn paint_cleared_band(&self, ctx: &mut PaintCtx<'_>, rect: Rect, y: f64) -> Rect {
         let theme = ctx.theme;
         let label = self.cleared.unwrap_or_default();
@@ -400,7 +360,6 @@ impl<'a> NotificationListView<'a> {
             None,
             &style,
         );
-        // The undo control at the band's trailing end.
         let undo_face = ButtonFace::new(band, self.undo_label)
             .role(ButtonRole::Secondary)
             .control_size(ControlSize::Small);
@@ -420,12 +379,10 @@ impl<'a> NotificationListView<'a> {
                 .hovered(self.cursor.is_some_and(|p| undo.contains(p)))
                 .focused(self.action_focus == Some(NotificationListControl::Undo)),
         );
-        // The band is one target: undo stands inside it, so `control_at` reads
-        // the undo where it is and the band elsewhere.
+        // The band is one hit target; `control_at` checks undo first.
         undo
     }
 
-    /// The control under `point`, from the layout the list painted.
     #[must_use]
     pub fn control_at(
         &self,
@@ -468,8 +425,6 @@ impl<'a> NotificationListView<'a> {
     }
 }
 
-/// The glyph that leads a row of a severity: a failure's, a warning's, or
-/// plain information's own.
 fn icon_for(severity: Tone) -> Icon {
     match severity {
         Tone::Danger => Icon::CircleAlert,
@@ -479,7 +434,7 @@ fn icon_for(severity: Tone) -> Icon {
     }
 }
 
-/// The rail a warning or a failure keeps beside its text.
+/// Only warnings and errors get a rail.
 fn paint_severity_rail(ctx: &mut PaintCtx<'_>, row: Rect, tone: Tone) {
     let related = f64::from(ctx.theme.tokens.spacing.rhythm.related);
     let rail = Rect::new(row.x0, row.y0 + related, row.x0 + 3.0, row.y1 - related);
@@ -492,8 +447,6 @@ fn paint_severity_rail(ctx: &mut PaintCtx<'_>, row: Rect, tone: Tone) {
     );
 }
 
-/// A row's trailing icon buttons: quiet glyphs, and the toolkit's button
-/// when one is pointed at or focused.
 fn paint_row_controls(
     ctx: &mut PaintCtx<'_>,
     controls: NotificationRowControls,
@@ -646,7 +599,6 @@ mod tests {
             *severity = Some(Tone::Warning);
         }
         let rows = [warning];
-        // The rail is painted only for a status: the row is still a row.
         let painted = layout(NotificationListView::new(&rows, 0));
         assert_eq!(painted.rows.len(), 1);
     }

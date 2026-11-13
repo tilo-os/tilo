@@ -1275,9 +1275,6 @@ fn a_reply_can_be_given_up_and_is_only_offered_when_it_can_be_carried() {
     );
 }
 
-/// An agent's own notice ("Claude Code finished: 8 changes in Workspace", sent in its name) leads
-/// with its face and says nothing over its title repeating that name; an app's notice about a
-/// person keeps the app as its source line.
 #[test]
 fn a_notice_in_its_senders_own_name_has_no_source_line_repeating_it() {
     let own = Notification::new(
