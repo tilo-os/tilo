@@ -679,7 +679,11 @@ fn hidden_canonical_component_updates_once_per_ordinary_host_pass() {
     let (probe, handles) = retained_lifecycle_probe("canonical-component", "component");
     component.root = Some(Box::new(probe));
     component.register_document_history(&BOUND).unwrap();
+    let record = component.callback_binding().checkout.id.clone();
     let root = crate::widget::TileHost::from_component(component);
+    // A save that lands inside a counted pass syncs the component again to show the new status, so
+    // store the record's save before the passes this test counts.
+    host.records.try_flush_record(&record).unwrap();
     let mut driver = FrameHarness::new(State::new(), Box::new(root), (900, 650));
 
     let live = (handles.updates.get(), handles.syncs.get());
