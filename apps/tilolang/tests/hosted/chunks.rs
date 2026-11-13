@@ -4,7 +4,7 @@
 
 use super::*;
 
-use super::cost::{number_of, seeded_tasks};
+use super::cost::{number_of, own, seeded_tasks};
 use tilolang_tilo::chunk::{self, ChunkNo, Chunks};
 
 /// Tasks enough to fill the first chunk the list's run is kept in and spill into a second.
@@ -93,11 +93,9 @@ fn lists_every_task_in_order(session: &mut Session, n: usize) {
 /// A window over a workspace whose tasks fill one chunk and spill into the next lists every
 /// task in order: the instance reads both chunks it was handed, and the list does not stop where
 /// the first chunk ends.
-#[test]
-fn a_list_whose_tasks_span_two_chunks_shows_every_task_in_order() {
+fn a_list_whose_tasks_span_two_chunks_shows_every_task_in_order(n: usize, seeded: &Chunks) {
     let _motion = ui::motion::testing::settled();
-    let n = spanning();
-    let chunks = seeded_tasks(n);
+    let chunks = own(seeded);
     assert_eq!(
         task_chunks(&chunks).len(),
         2,
@@ -113,12 +111,12 @@ fn a_list_whose_tasks_span_two_chunks_shows_every_task_in_order() {
 /// A window opened while a chunk of the workspace has not reached this device lists the tasks it
 /// has and rests; when a peer sends the chunk, the window lists the tasks it holds too, in their
 /// place, without being opened again.
-#[test]
-fn a_chunk_that_arrives_after_the_window_opened_shows_without_opening_it_again() {
+fn a_chunk_that_arrives_after_the_window_opened_shows_without_opening_it_again(
+    n: usize,
+    whole: &Chunks,
+) {
     let _motion = ui::motion::testing::settled();
-    let n = spanning();
-    let whole = seeded_tasks(n);
-    let [first, away] = task_chunks(&whole)[..] else {
+    let [first, away] = task_chunks(whole)[..] else {
         panic!("the tasks span two chunks");
     };
     // This device holds the record and the first chunk of tasks; the second is a peer's.
@@ -184,4 +182,15 @@ fn delivered(route: &RouteSpec, me: &str, mutation: &DocumentMutation) -> Collab
         from_user_id: me.to_owned(),
         decrypted_payload: None,
     }
+}
+
+/// The workspace whose tasks span two chunks is seeded once for both windows: the one handed
+/// both chunks opens a copy of its own, and the one a chunk reaches later holds its own copies
+/// of the record and the first chunk and is sent a snapshot of the second.
+#[test]
+fn tasks_that_span_two_chunks_are_listed_whole_with_both_here_and_when_one_arrives_later() {
+    let n = spanning();
+    let whole = seeded_tasks(n);
+    a_list_whose_tasks_span_two_chunks_shows_every_task_in_order(n, &whole);
+    a_chunk_that_arrives_after_the_window_opened_shows_without_opening_it_again(n, &whole);
 }
