@@ -6,6 +6,7 @@
 //! `tools/regenerate.py`. Only toneless base forms are listed; toned forms come
 //! from [`Catalogue::with_skin_tone`], and [`Catalogue::lookup`] resolves
 //! either.
+//!
 //! ```
 //! use emoji::{Catalogue, SkinTone};
 //!
