@@ -413,6 +413,7 @@ impl Checker<'_> {
         let ident = ast::Ident {
             name: name.to_string(),
             span,
+            from_template_of: None,
         };
         self.construct_variant(&shape, &state.ty, &ident, None, span)
     }
@@ -1001,7 +1002,11 @@ impl Checker<'_> {
             ExprKind::Field { base, name } if self.names_import(base) => {
                 let path = dotted(base)?.join(".");
                 let import = self.env.find_import(&path)?;
-                self.env.foreign_callable(&import.app, &name.name)
+                self.env.foreign_callable_marked(
+                    &import.app,
+                    &name.name,
+                    name.from_template_of.as_deref(),
+                )
             }
             _ => None,
         }?;

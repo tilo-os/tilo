@@ -646,6 +646,7 @@ impl Checker<'_> {
                 let map = ast::Ident {
                     name: "map".to_owned(),
                     span: name.span,
+                    from_template_of: None,
                 };
                 let keys =
                     self.higher_order(Ex::local(held, held_ty.clone()), elem, &map, args, span);

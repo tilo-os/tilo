@@ -245,7 +245,9 @@ impl Checker<'_> {
             return ex;
         }
         let env = self.env;
-        if let Some(c) = env.foreign_callable(&import.app, &name.name) {
+        if let Some(c) =
+            env.foreign_callable_marked(&import.app, &name.name, name.from_template_of.as_deref())
+        {
             let c = c.clone();
             return self.call_callable(&c, args, span);
         }
@@ -1244,7 +1246,7 @@ impl Checker<'_> {
             [one] => self.own_callable(one)?,
             [prefix @ .., last] => {
                 let import = self.env.find_import(&prefix.join("."))?;
-                self.env.foreign_callable(&import.app, last)?
+                self.env.foreign_callable_marked(&import.app, last, None)?
             }
             [] => return None,
         };
@@ -1456,6 +1458,7 @@ impl Checker<'_> {
                 &ast::Ident {
                     name: f.name.clone(),
                     span: name.span,
+                    from_template_of: None,
                 },
             );
             let field = f.id.clone();
@@ -1498,6 +1501,7 @@ impl Checker<'_> {
                 &ast::Ident {
                     name: f.name.clone(),
                     span: name.span,
+                    from_template_of: None,
                 },
             );
             return self.value_method(r, name, args, span);
@@ -1687,11 +1691,13 @@ impl Checker<'_> {
             &ast::Ident {
                 name: f.name.clone(),
                 span: name.span,
+                from_template_of: None,
             },
         );
         let filter = ast::Ident {
             name: "filter".into(),
             span: name.span,
+            from_template_of: None,
         };
         let gone = self.higher_order(read, t, &filter, args, span);
         if gone.ty.is_error() {

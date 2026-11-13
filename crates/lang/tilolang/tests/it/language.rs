@@ -601,16 +601,33 @@ fn compile_against(lib: &str, app: &str) -> Result<(), Vec<tilolang::Diagnostic>
 /// template's `View` parameter: a template is the language's way to take a block, so a package
 /// that imports it calls it as its own does (`shell.desk_style(a, false) { ... }`).
 ///
-/// The template's body reaches only what a plain name resolves to; the body here calls nothing
-/// of its own package, so this holds the import and the block. A body that names its package's
-/// own helpers (`desk_lists`) needs the importer to resolve a plain name in the template's
-/// package, which is the next step toward a style that draws the desk.
+/// The template's body resolves in its own package: it calls that package's helper (`helper`),
+/// which the importer's own names cannot shadow.
 #[test]
 fn a_template_view_called_from_another_package_takes_its_block() {
-    let lib = "template view frame(body: View) {\n    stack {\n        text(\"head\")\n        body\n    }\n}";
+    let lib = "fn helper(n: Int) -> Int {\n    n + 1\n}\n\
+               template view frame(body: View) {\n    stack {\n        text(\"head {helper(1)}\")\n        body\n    }\n}";
     let app = "use probe.lib as lib\n\
                view mine() {\n    text(\"mine\")\n}\n\
                view sheet() {\n    lib.frame {\n        mine()\n    }\n}";
+    if let Err(diags) = compile_against(lib, app) {
+        panic!("{diags:#?}");
+    }
+}
+
+/// The template's body resolves in its **own package**: a name the caller happens to have too
+/// (`helper`, declared by the consumer with a different meaning) is not what the template calls.
+/// The template's `helper(1)` is its package's, so the compiled text reads that fn's export and
+/// never the caller's.
+#[test]
+fn a_callers_name_does_not_shadow_what_a_template_calls() {
+    let lib = "fn helper(n: Int) -> Int {\n    n + 1\n}\n\
+               template view frame(body: View) {\n    stack {\n        text(\"head {helper(1)}\")\n        body\n    }\n}";
+    let app = "use probe.lib as lib\n\
+               fn helper(n: Int) -> Text {\n    \"caller {n}\"\n}\n\
+               view sheet() {\n    lib.frame {\n        text(helper(1))\n    }\n}";
+    // The template's `helper(1)` is `probe.lib`'s (a number); the caller's own `helper(1)` is
+    // `probe.consumer`'s (text). Both compile, each against its own package's fn.
     if let Err(diags) = compile_against(lib, app) {
         panic!("{diags:#?}");
     }

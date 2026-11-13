@@ -1297,6 +1297,7 @@ impl Checker<'_> {
         let ident = ast::Ident {
             name: name.to_owned(),
             span,
+            from_template_of: None,
         };
         self.construct_variant(&shape, ty, &ident, None, span)
     }
