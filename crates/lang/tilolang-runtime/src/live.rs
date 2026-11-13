@@ -19,7 +19,7 @@ use crate::handles::Retained;
 use crate::ids::Principal;
 use crate::render::{Boundaries, LoopRows, Offer, Rendered, Scoped, Stub, ViewTarget, VirtualRows};
 use crate::space::Space;
-use crate::store::{ANY_FIELD, ChangeSummary, Splice, doc_of};
+use crate::store::{ANY_FIELD, ChangeSummary, FieldKey, Splice, doc_of};
 use crate::value::Value;
 use crate::view::{Patch, UiNode, VirtualLists, diff_at};
 
@@ -126,6 +126,33 @@ fn item_in(core: &Core, resource: &str) -> Option<(String, String, String)> {
     let item = at.item.clone()?;
     let (holder, field) = core.store.borrow().container(&at).ok()??;
     Some((holder.id_string(), field, item))
+}
+
+/// What the change `change` put into the collection `field` of `resource` that was in none of
+/// its filtered views before: every item, when putting items in is all it did to it, or `item`
+/// alone, when it put that in. `None` when the store did not say how the collection moved.
+fn joined_items<'a>(
+    change: &'a ChangeSummary,
+    (resource, field): (&str, &str),
+    item: Option<&'a str>,
+) -> Option<BTreeSet<&'a str>> {
+    let key = FieldKey {
+        resource: resource.to_owned(),
+        field: field.to_owned(),
+    };
+    let splices = change.listing(&key)?;
+    let put = |wanted: &str, insert: bool| {
+        splices.iter().any(|splice| {
+            matches!(splice, Splice::Insert { .. }) == insert && splice.item() == wanted
+        })
+    };
+    match item {
+        Some(item) => (put(item, true) && !put(item, false)).then(|| BTreeSet::from([item])),
+        None => splices
+            .iter()
+            .map(|splice| matches!(splice, Splice::Insert { .. }).then(|| splice.item()))
+            .collect(),
+    }
 }
 
 /// Which boundaries read what.
@@ -370,9 +397,42 @@ struct CollChecks {
     /// Whether what each boundary saw of a collection, by the boundary and where it is among
     /// what it saw, no longer holds.
     seen: HashMap<(BoundId, usize), bool>,
+    /// The fields of items read to check filters, by the item and the field: each read once
+    /// however many views filter by it (`None` for one the store could not read).
+    read: HashMap<(String, String), Option<crate::store::Lit>>,
 }
 
 impl CollChecks {
+    /// Whether the filter of `coll` holds of none of `items`, read as the store holds them now:
+    /// items that were not in its collection before are then not in it either. A filter that
+    /// reads the time or the person looking, or that cannot be read of an item, is not answered
+    /// here.
+    fn none_held(
+        &mut self,
+        core: &Core,
+        coll: &crate::value::CollRef,
+        items: &BTreeSet<&str>,
+    ) -> bool {
+        let Some(pred) = coll.filter.as_deref() else {
+            return false;
+        };
+        if coll.item.is_empty() || pred.reads_clock() || pred.reads_viewer() {
+            return false;
+        }
+        let store = core.store.borrow();
+        items.iter().all(|item| {
+            let target = coll.target.item(item, coll.item.clone());
+            let mut lit = |read: &crate::store::FieldRead| {
+                self.read
+                    .entry((target.id_string(), read.spec.id.clone()))
+                    .or_insert_with(|| store.field_lit(&target, read).ok())
+                    .clone()
+                    .ok_or_else(|| crate::store::StoreError::Invalid(read.spec.id.clone()))
+            };
+            matches!(pred.eval(&mut lit), Ok(false))
+        })
+    }
+
     /// Whether `seen`, what the boundary `id` saw of a collection at `at` among what it saw, no
     /// longer holds in the store.
     fn stale(&mut self, core: &Core, id: (BoundId, usize), seen: &CollSeen) -> bool {
@@ -697,7 +757,14 @@ impl Live {
             reach
                 .hit
                 .extend(self.index.readers(&key.resource, &key.field));
-            self.reach_colls(core, (&key.resource, &key.field), None, checked, &mut reach);
+            let joined = joined_items(change, (&key.resource, &key.field), None);
+            self.reach_colls(
+                core,
+                (&key.resource, &key.field),
+                (None, joined.as_ref()),
+                checked,
+                &mut reach,
+            );
             for (id, field) in self.index.loop_holders(&key.resource, &key.field) {
                 let held = self.bound(id).into_iter().flat_map(|b| &b.loops);
                 for rows in held.filter(|rows| rows.coll.field == field) {
@@ -757,42 +824,67 @@ impl Live {
             // view of it, and where in a sorted one: the readers of those views look again,
             // and the rows of a virtual list over one find where the item is now.
             if let Some((parent, coll, item)) = item_in(core, &key.resource) {
-                let (parent, coll) = (parent.as_str(), coll.as_str());
-                self.reach_colls(core, (parent, coll), Some(&key.field), checked, &mut reach);
-                for (id, field) in self.index.loop_holders(parent, coll) {
-                    let held = self.bound(id).into_iter().flat_map(|b| &b.loops);
-                    for rows in held
-                        .filter(|rows| rows.coll.field == field)
-                        .filter(|rows| rows.coll.reads_field(&key.field))
-                    {
-                        if rows.coll.derived() && self.lists.contains_key(&rows.parent) {
-                            reach.steps.push(Pending {
-                                holder: id,
-                                rows: Rc::clone(rows),
-                                steps: Steps::Moved(BTreeSet::from([item.clone()])),
-                                mine,
-                            });
-                        } else {
-                            reach.hit.push(id);
-                        }
-                    }
-                }
+                let at = (parent.as_str(), coll.as_str(), item.as_str());
+                self.reach_item(core, (change, &key.field, mine), at, checked, &mut reach);
             }
         }
         reach
     }
 
+    /// What a change of the field `field_of_item` of `item`, an item of the collection `coll` of
+    /// `parent`, reaches of the views of that collection: those that filter or order it by that
+    /// field ([`Self::reach_colls`]), and the rows of loops over it.
+    fn reach_item(
+        &self,
+        core: &Core,
+        (change, field_of_item, mine): (&ChangeSummary, &str, bool),
+        (parent, coll, item): (&str, &str, &str),
+        checked: &mut CollChecks,
+        reach: &mut Reach,
+    ) {
+        // An item that came into the collection with this change was in none of its
+        // filtered views before, whatever its fields were.
+        let joined = joined_items(change, (parent, coll), Some(item));
+        self.reach_colls(
+            core,
+            (parent, coll),
+            (Some(field_of_item), joined.as_ref()),
+            checked,
+            reach,
+        );
+        for (id, held_field) in self.index.loop_holders(parent, coll) {
+            let held = self.bound(id).into_iter().flat_map(|b| &b.loops);
+            for rows in held
+                .filter(|rows| rows.coll.field == held_field)
+                .filter(|rows| rows.coll.reads_field(field_of_item))
+            {
+                if rows.coll.derived() && self.lists.contains_key(&rows.parent) {
+                    reach.steps.push(Pending {
+                        holder: id,
+                        rows: Rc::clone(rows),
+                        steps: Steps::Moved(BTreeSet::from([item.to_owned()])),
+                        mine,
+                    });
+                } else {
+                    reach.hit.push(id);
+                }
+            }
+        }
+    }
+
     /// The boundaries that saw something of the collection `field` of `resource` (or of any
     /// collection of it, for [`ANY_FIELD`]) that no longer holds. When only the field
     /// `item_field` of one of its items changed, of the views of it whose filter or order reads
-    /// that field alone: no other view of it holds other items or orders them otherwise. What
+    /// that field alone: no other view of it holds other items or orders them otherwise. When
+    /// what changed is items `joined` that were not in the collection before, of the filtered
+    /// views of it whose filter holds of one of them now: no other one lists them. What
     /// `checked` holds was checked against the store as it is now by an earlier field of the same
     /// changes, and is not checked again.
     fn reach_colls(
         &self,
         core: &Core,
         (resource, field): (&str, &str),
-        item_field: Option<&str>,
+        (item_field, joined): (Option<&str>, Option<&BTreeSet<&str>>),
         checked: &mut CollChecks,
         reach: &mut Reach,
     ) {
@@ -808,7 +900,10 @@ impl Live {
                 .filter(|(_, seen)| {
                     item_field.is_none_or(|read| seen.coll.derived() && seen.coll.reads_field(read))
                 })
-                .any(|(at, seen)| checked.stale(core, (id, at), seen));
+                .any(|(at, seen)| {
+                    !joined.is_some_and(|items| checked.none_held(core, &seen.coll, items))
+                        && checked.stale(core, (id, at), seen)
+                });
             if stale {
                 reach.hit.push(id);
             }
@@ -825,6 +920,11 @@ impl Live {
             self.pending.extend(reach.steps);
             self.mine_items.extend(reach.mine);
         }
+    }
+
+    /// Whether a view state moved since the boundaries' states were last checked.
+    pub fn states_moved(&self, core: &Core) -> bool {
+        core.view_states.borrow().clock() != self.state_clock
     }
 
     /// Mark the boundaries whose view state moved since they read it.

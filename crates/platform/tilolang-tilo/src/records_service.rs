@@ -950,7 +950,7 @@ impl Service for RecordService {
             .host
             .packages()
             .into_iter()
-            .map(|package| package.meta.app)
+            .map(|package| package.meta.app.clone())
             .collect();
         apps.extend(self.shared.keys().cloned());
         apps.sort();

@@ -217,6 +217,18 @@ impl ViewInstance {
         (now >= at).then_some(now)
     }
 
+    /// Whether anything reached the view since it last ran: the store told of a change to a
+    /// document it reads, a view state moved, the time it waits for came, or boundaries are
+    /// marked to run. A view nothing reached is not looked at again, however often its host
+    /// asks.
+    #[must_use]
+    pub fn woken(&self) -> bool {
+        !self.changes.borrow().is_empty()
+            || self.live.is_dirty()
+            || self.live.states_moved(&self.core)
+            || self.time_passed().is_some()
+    }
+
     /// Whether a field or view state some boundary read has changed since it last ran, or the
     /// time one read has moved on: what changed is taken in, marking the boundaries to run
     /// again, so the run that follows does not work it out a second time.

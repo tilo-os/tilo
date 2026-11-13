@@ -251,7 +251,11 @@ impl Instance {
         let names = Rc::clone(&self.names);
         let mut changed = false;
         for lane in [Lane::Root, Lane::Detail] {
-            if self.unheld(&host, lane) {
+            if !self
+                .lane(lane)
+                .is_some_and(|shown| shown.view.borrow().woken())
+                || self.unheld(&host, lane)
+            {
                 continue;
             }
             let Some(view) = self.lane_mut(lane) else {

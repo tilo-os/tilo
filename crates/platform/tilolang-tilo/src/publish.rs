@@ -679,6 +679,7 @@ impl Moved {
         const WHOLE: &str = tilolang_runtime::ANY_FIELD;
         let changed = match self {
             Self::Everything => return true,
+            Self::These(changed) if changed.is_empty() => return false,
             Self::These(changed) => changed,
         };
         if changed.get(resource).is_some_and(|fields| {
@@ -686,11 +687,16 @@ impl Moved {
         }) {
             return true;
         }
-        let under = format!("{resource}/");
+        // The ids that start with the resource's stand together in the order, its items'
+        // among them.
         if changed
-            .range(under.clone()..)
-            .next()
-            .is_some_and(|(inner, _)| inner.starts_with(&under))
+            .range::<str, _>((
+                std::ops::Bound::Excluded(resource.as_str()),
+                std::ops::Bound::Unbounded,
+            ))
+            .map(|(inner, _)| inner)
+            .take_while(|inner| inner.starts_with(resource.as_str()))
+            .any(|inner| inner.as_bytes().get(resource.len()) == Some(&b'/'))
         {
             return true;
         }

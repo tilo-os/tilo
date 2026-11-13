@@ -858,9 +858,12 @@ impl Instance {
             // Without the record, a window opens over the indexes it keeps or not at all.
             (None, _, _) => return None,
         };
+        // The chunks are the host's from here on: a copy kept here would hold the record's
+        // documents as they were, and make every write to them copy the document first.
+        let chunks = self.record_chunks.take();
         let opening = Opening {
             record: doc,
-            chunks: self.record_chunks.as_ref(),
+            chunks: chunks.as_ref(),
             index_dir,
             device: self.device.as_deref(),
         };
@@ -1745,8 +1748,14 @@ impl Instance {
         let Some(meta) = host
             .packages()
             .into_iter()
-            .map(|package| package.meta)
-            .find(|meta| meta.actions.iter().any(|action| action.id == aref.action))
+            .find(|package| {
+                package
+                    .meta
+                    .actions
+                    .iter()
+                    .any(|action| action.id == aref.action)
+            })
+            .map(|package| package.meta.clone())
         else {
             return false;
         };
@@ -1791,8 +1800,10 @@ impl Instance {
         let Some(meta) = host
             .packages()
             .into_iter()
-            .map(|package| package.meta)
-            .find(|meta| crate::publish::app_of(&address.resource) == Some(meta.app.as_str()))
+            .find(|package| {
+                crate::publish::app_of(&address.resource) == Some(package.meta.app.as_str())
+            })
+            .map(|package| package.meta.clone())
         else {
             return false;
         };
@@ -2337,19 +2348,11 @@ impl Instance {
         let members = self.follow_members();
         // The time a view read moved on: the frame its embedder woke for it.
         let timed = self.wakes_in().is_some_and(|wait| wait.is_zero());
-        let changed = received
-            || door
-            || opened
-            || pulled
-            || settled
-            || lenses
-            || person
-            || members
-            || timed
-            || self.views_stale();
-        if changed {
-            self.poll_views();
-        }
+        let changed =
+            received || door || opened || pulled || settled || lenses || person || members || timed;
+        // A view runs where something reached it: what a change told its store, a state it
+        // read, the time it waits for ([`crate::runtime::ViewInstance::woken`]).
+        let changed = self.poll_views() || changed;
         if person {
             // A name, a word and how a day or a time of day reads go into a node's value when it
             // is sent: every tree is sent again.
@@ -2687,7 +2690,7 @@ fn sort(patches: Vec<Patch>, lists: &[(String, Vec<String>)]) -> Sorted {
 }
 
 /// The other packages of the workspace whose records the package `app` holds references to.
-fn used_packages(host: &Host, app: &str) -> Vec<Package> {
+fn used_packages(host: &Host, app: &str) -> Vec<Rc<Package>> {
     let Some(own) = host.package(app) else {
         return Vec::new();
     };

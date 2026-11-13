@@ -299,7 +299,7 @@ impl Host {
                 .type_of(&probe)
                 .map_err(|error| error.to_string())?;
             return Ok(OpenPlan {
-                app: package.meta.app,
+                app: package.meta.app.clone(),
                 target: Some(ResourceRef { ty, ..probe }),
                 view: Some(view.to_owned()),
             });
@@ -326,7 +326,7 @@ impl Host {
             }
         }
         Ok(OpenPlan {
-            app: package.meta.app,
+            app: package.meta.app.clone(),
             target,
             view: None,
         })

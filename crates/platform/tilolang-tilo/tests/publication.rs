@@ -599,4 +599,17 @@ fn a_change_reaches_what_read_it() {
         field("tl:tasks:tasks/1", "done"),
         &field(list, "done")
     ));
+    // An item under the list is found past ids that sort between the list's and its items'.
+    let moved = Moved::These(BTreeMap::from([
+        (
+            "tl:tasks:task-a".to_owned(),
+            std::collections::BTreeSet::from(["done".to_owned()]),
+        ),
+        (
+            "tl:tasks:task/2".to_owned(),
+            std::collections::BTreeSet::from(["done".to_owned()]),
+        ),
+    ]));
+    assert!(moved.reaches(&field(list, "done")));
+    assert!(!Moved::These(BTreeMap::new()).reaches(&field(list, "*")));
 }

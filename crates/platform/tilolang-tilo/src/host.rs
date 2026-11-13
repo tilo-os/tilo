@@ -170,7 +170,7 @@ pub(crate) struct HostInner {
     store: TiloStore,
     authority: TiloAuthority,
     viewer: Principal,
-    packages: RefCell<Vec<Package>>,
+    packages: RefCell<Vec<Rc<Package>>>,
     /// Suggestions an agent's code raised on the door, waiting for the window to ask a person.
     pub(crate) suspended: RefCell<std::collections::VecDeque<tilolang_runtime::Suggestion>>,
     /// The resource the last action planned for the person at the window returned, with the
@@ -311,7 +311,7 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
             let owner = if key.app == meta.app {
                 meta.clone()
             } else {
-                host.package_of(&key.app)?.meta
+                host.package_of(&key.app)?.meta.clone()
             };
             let declared = owner
                 .type_named(&key.name)
@@ -570,7 +570,7 @@ impl HostInner {
             .admit_agent(&caller.actor, caller.on_behalf_of.as_deref());
     }
 
-    pub(crate) fn package_of(&self, app: &str) -> Result<Package, String> {
+    pub(crate) fn package_of(&self, app: &str) -> Result<Rc<Package>, String> {
         self.packages
             .borrow()
             .iter()
@@ -599,7 +599,7 @@ impl HostInner {
         value: &Value,
     ) -> Result<Json, String> {
         argument_json(
-            &|app| self.package_of(app).map(|package| package.meta),
+            &|app| self.package_of(app).map(|package| package.meta.clone()),
             meta,
             value,
             &parse_ty(&param.ty, &meta.app)?,
@@ -1308,22 +1308,22 @@ impl Host {
         crate::schema::register_package(&meta, &id);
         self.inner.store.open_index(&meta.app, &meta.schema_text());
         self.inner.authority.load(&id, &meta);
-        let package = Package {
+        let package = Rc::new(Package {
             meta,
             id,
             ids,
             wasm: std::sync::Arc::from(wasm),
-        };
+        });
         self.inner.triggers.forget();
         let mut packages = self.inner.packages.borrow_mut();
         match packages
             .iter_mut()
             .find(|loaded| loaded.meta.app == package.meta.app)
         {
-            Some(loaded) => *loaded = package.clone(),
-            None => packages.push(package.clone()),
+            Some(loaded) => *loaded = Rc::clone(&package),
+            None => packages.push(Rc::clone(&package)),
         }
-        Ok(package)
+        Ok(Package::clone(&package))
     }
 
     /// Load the package of an app this host does not run, trusted: its views draw resources of
@@ -1361,7 +1361,7 @@ impl Host {
 
     /// Every loaded package.
     #[must_use]
-    pub fn packages(&self) -> Vec<Package> {
+    pub fn packages(&self) -> Vec<Rc<Package>> {
         self.inner.packages.borrow().clone()
     }
 
@@ -1380,14 +1380,21 @@ impl Host {
     /// The loaded package `app`.
     #[must_use]
     pub fn package(&self, app: &str) -> Option<Package> {
-        self.inner.package_of(app).ok()
+        self.inner
+            .package_of(app)
+            .ok()
+            .map(|package| Package::clone(&package))
     }
 
     /// The first thing `find` finds in a loaded package, read where the packages are kept: what
     /// a frame looks up (an action's meta, an enum's cases) without copying every package.
     /// `find` must not load or drop a package.
-    pub fn find_in_packages<R>(&self, find: impl FnMut(&Package) -> Option<R>) -> Option<R> {
-        self.inner.packages.borrow().iter().find_map(find)
+    pub fn find_in_packages<R>(&self, mut find: impl FnMut(&Package) -> Option<R>) -> Option<R> {
+        self.inner
+            .packages
+            .borrow()
+            .iter()
+            .find_map(|package| find(package))
     }
 
     /// Bring the runtime's view of the workspace record up to date: its own chunk
@@ -1667,7 +1674,7 @@ impl Host {
 
     /// The published records of the workspace: each resource of a loaded package with its type name.
     #[must_use]
-    pub fn records(&self) -> Vec<(Package, String, String)> {
+    pub fn records(&self) -> Vec<(Rc<Package>, String, String)> {
         let mut out = Vec::new();
         for package in self.packages() {
             for declared in &package.meta.types {
@@ -1676,7 +1683,7 @@ impl Host {
                     .store
                     .resources_of(&package.meta.app, &declared.id)
                 {
-                    out.push((package.clone(), declared.name.clone(), doc));
+                    out.push((Rc::clone(&package), declared.name.clone(), doc));
                 }
             }
         }
@@ -1763,7 +1770,7 @@ pub fn builtin_surface(packages: &[(&str, &str)]) -> Result<Vec<u8>, String> {
     let metas: Vec<Meta> = host
         .packages()
         .into_iter()
-        .map(|package| package.meta)
+        .map(|package| package.meta.clone())
         .collect();
     let refs: Vec<&Meta> = metas.iter().collect();
     crate::surface::surface_toml(&refs).map_err(|error| error.to_string())

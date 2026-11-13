@@ -132,8 +132,8 @@ pub fn reads_of(standing: &Standing, people: &People, host: &Host) -> Rc<Reads> 
         .packages()
         .into_iter()
         .flat_map(|package| {
-            let meta = package.meta;
-            let own = crate::own_record(&meta, standing.person_id().unwrap_or_default());
+            let meta = &package.meta;
+            let own = crate::own_record(meta, standing.person_id().unwrap_or_default());
             meta.types
                 .iter()
                 .map(|ty| {
