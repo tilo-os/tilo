@@ -265,6 +265,20 @@ pub enum FrameDemand {
     Deadline,
 }
 
+/// The pace a capture presents frames at, and so the length of one frame of a
+/// capture's bound ([`capture_frames`]): a live window's 60 Hz, so a bound
+/// reads as the motion a person would have seen by then.
+pub const CAPTURE_FRAME_INTERVAL: crate::time::Duration = crate::time::Duration::from_millis(16);
+
+/// The frames a capture bound of `bound` allows: the bound is counted in
+/// frames at [`CAPTURE_FRAME_INTERVAL`], never in the time the machine takes
+/// to draw them, so a loaded machine gets the frames an idle one does.
+#[must_use]
+pub fn capture_frames(bound: crate::time::Duration) -> u32 {
+    let interval = CAPTURE_FRAME_INTERVAL.as_micros().max(1);
+    u32::try_from(bound.as_micros() / interval).unwrap_or(u32::MAX)
+}
+
 /// Borrowed paint input without constructing an accessibility snapshot.
 pub struct FrameRenderInput<'a> {
     pub scene: &'a Scene,
@@ -4215,25 +4229,23 @@ impl FrameHarness {
     /// Run production frames until the window has settled, as a person sees
     /// it a moment after it opened: no animation running (a tab's entrance, a
     /// panel sliding in) and no image load the frame asked for still in
-    /// flight. Waits at most `bound` and returns whether it settled. A
-    /// capture calls this before it writes, so shots match the live window.
+    /// flight. Presents at most `bound`'s frames ([`capture_frames`]) and
+    /// returns whether it settled. A capture calls this before it writes, so
+    /// shots match the live window.
     ///
     /// The frame runs only when something asks for one, exactly as a live
     /// window draws none between two interactions; a window already at rest
     /// costs an idle pass, never a frame.
     ///
-    /// Animations run on the toolkit's clock ([`crate::time::now`]), so the
-    /// bound is measured on it too: an executor with a virtual clock (a
-    /// pumped test) cannot run the bound out before an entrance has ended. A
-    /// window at rest has settled whatever the bound, however long the frames
-    /// before it took: the bound says how long to wait for it, so a loaded
-    /// machine does not read as a motion that never ends.
+    /// The bound counts frames, not the time they take: the capture presents
+    /// them at the pace a live window does ([`CAPTURE_FRAME_INTERVAL`]), so a
+    /// loaded machine gets the frames an idle one does. A window whose motions
+    /// are all done at frame N has settled however long its frames took, and a
+    /// window still asking for a frame after the bound's frames is the
+    /// finding.
     pub fn settle_for_capture(&mut self, bound: crate::time::Duration) -> bool {
         self.invalidate_local();
-        const CAPTURE_IDLE_SLICE: crate::time::Duration = crate::time::Duration::from_millis(16);
-        let Some(deadline) = crate::time::now().checked_add(bound) else {
-            return false;
-        };
+        let mut frames = capture_frames(bound);
         loop {
             if self.frame_schedule_demands_frame() {
                 self.relayout();
@@ -4246,32 +4258,13 @@ impl FrameHarness {
             if self.capture_is_ready() {
                 return true;
             }
-            if crate::time::now() > deadline {
+            if frames == 0 {
                 return false;
             }
-            let slice = crate::time::now()
-                .checked_add(CAPTURE_IDLE_SLICE)
-                .map_or(deadline, |slice| slice.min(deadline));
-            if !self.wait_until_deadline(slice, crate::time::now, |driver| {
-                crate::time::now() <= deadline && driver.capture_is_ready()
-            }) {
-                if self.capture_is_ready() {
-                    return true;
-                }
-                if crate::time::now() >= deadline {
-                    return false;
-                }
-                continue;
-            }
-            if self.frame_schedule_demands_frame() && self.try_relayout().is_err() {
-                return false;
-            }
-            if self.capture_is_ready() {
-                return true;
-            }
-            if crate::time::now() >= deadline {
-                return false;
-            }
+            frames = frames.saturating_sub(1);
+            let background = crate::background::Background::current();
+            let now = background.now();
+            background.park(now.checked_add(CAPTURE_FRAME_INTERVAL).unwrap_or(now));
         }
     }
 
@@ -8417,8 +8410,6 @@ fn write_spec_outputs(spec: &Spec, driver: &mut FrameHarness) -> Result<(), Stri
     Ok(())
 }
 
-const CAPTURE_SETTLE_BOUND: crate::time::Duration = crate::time::Duration::from_secs(3);
-
 /// Take one [`Capture`]: switch theme and size when it names them, let the window settle as a person
 /// would see it, and write the frame as a PNG.
 fn write_capture(capture: &Capture, driver: &mut FrameHarness) -> Result<(), String> {
@@ -8432,7 +8423,7 @@ fn write_capture(capture: &Capture, driver: &mut FrameHarness) -> Result<(), Str
             .resize(driver.content_viewport(viewport))
             .map_err(|error| format!("capture {}: layout failed: {error}", capture.path))?;
     }
-    driver.settle_for_capture(CAPTURE_SETTLE_BOUND);
+    driver.settle_for_capture(crate::launch::CAPTURE_SETTLE_BOUND);
     let path = std::path::Path::new(&capture.path);
     if let Some(parent) = path
         .parent()

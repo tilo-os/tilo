@@ -90,8 +90,8 @@ fn capture_awaits_visual_work_started_by_the_final_frame() {
     draws.set(0);
     assert!(harness.settle_for_capture(tilo_test_env::hang_bound()));
     assert!(
-        draws.get() > 3,
-        "capture drew the completed final-frame job"
+        draws.get() >= 3,
+        "capture drew the frames the window asked for, the last of which started the job"
     );
     assert!(!pending.load(std::sync::atomic::Ordering::SeqCst));
 }
@@ -142,7 +142,7 @@ fn capture_bound_includes_the_initial_frame_pipeline() {
 }
 
 #[test]
-fn capture_final_frame_work_cannot_reset_the_original_deadline() {
+fn capture_final_frame_work_cannot_extend_the_frames_the_bound_allows() {
     let draws = std::rc::Rc::new(std::cell::Cell::new(usize::MAX));
     let pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut harness = FrameHarness::new(
@@ -156,11 +156,16 @@ fn capture_final_frame_work_cannot_reset_the_original_deadline() {
         (200, 100),
     );
     draws.set(0);
-    let bound = crate::time::Duration::from_millis(30);
-    let started = crate::time::now();
-    assert!(!harness.settle_for_capture(bound));
-    assert!(crate::time::now().duration_since(started) >= bound);
-    assert!(pending.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(!harness.settle_for_capture(crate::time::Duration::from_millis(200)));
+    assert_eq!(
+        draws.get(),
+        3,
+        "the capture draws the frames the window asked for, and none after them"
+    );
+    assert!(
+        pending.load(std::sync::atomic::Ordering::SeqCst),
+        "the work the last frame started is still owed, which is what the capture reports"
+    );
 }
 
 /// Animates for `length` from the first time it is asked whether it animates; `until` records when that
@@ -312,13 +317,28 @@ fn a_capture_settles_animations_and_lands_on_the_window_ground() {
     }
 
     {
+        // A pumped executor's own clock runs ahead of the capture's; the bound counts frames, so it
+        // cannot end before the frames the window asked for were drawn.
         let pumped = crate::background::Pumped::new();
         let _entered = pumped.background().enter();
-        let (entrance, until) = Entrance::new();
-        let mut harness = FrameHarness::new(State::new(), Box::new(entrance), (200, 100));
-        assert!(harness.settle_for_capture(tilo_test_env::hang_bound()));
-        let until = until.get().expect("the entrance started");
-        assert!(crate::time::now() >= until, "it ran the animation out");
+        let drawn = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut harness = FrameHarness::new(
+            State::new(),
+            Box::new(CountedFrames {
+                frames: 12,
+                drawn: std::rc::Rc::clone(&drawn),
+            }),
+            (200, 100),
+        );
+        assert!(
+            harness.settle_for_capture(crate::time::Duration::from_millis(200)),
+            "the window's frames are drawn, whatever its executor's clock says"
+        );
+        assert!(
+            drawn.get() >= 12,
+            "it drew every frame the window asked for"
+        );
+        assert!(!harness.frame_schedule().needs_animation_frame);
     }
 
     {

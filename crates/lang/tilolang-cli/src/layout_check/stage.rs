@@ -17,6 +17,11 @@ use tilolang_tilo::tilolang::Compiled;
 use ui::headless::FrameHarness;
 use ui::interaction::InteractionEnvironment;
 
+/// The motion a read window is allowed before it is a finding: two seconds of frames at the pace a
+/// live window presents them, counted in frames so a loaded machine reads the same window a quiet
+/// one does ([`ui::headless::capture_frames`]).
+const SETTLE_BOUND: ui::time::Duration = ui::time::Duration::from_secs(2);
+
 /// The compiled packages an instance loads: the app and what it uses, the app last; and the
 /// packages it uses as metadata: the native apps' it calls (`use so.tilo.session as session`),
 /// whose actions run at their own doors, and the platform's (the device's, Settings') whose
@@ -749,9 +754,7 @@ impl Staged {
             self.harness.relayout();
         }
         if self.harness.frame_schedule().needs_animation_frame
-            && !self
-                .harness
-                .settle_for_capture(ui::time::Duration::from_secs(2))
+            && !self.harness.settle_for_capture(SETTLE_BOUND)
         {
             // A frame a widget asks for is named by the widget; one a motion asks for is named
             // where the motion was started; and what else the window is owed — a frame at rest, an
@@ -759,9 +762,10 @@ impl Staged {
             // those is a motion that never ends.
             let now = ui::time::now();
             return Err(format!(
-                "the window still moves after two seconds: {:?} asked, {:?} started motions, \
+                "the window still moves after {} frames: {:?} asked, {:?} started motions, \
                  {:?} waiting on an answer, the frame held until {:?}, \
                  the schedule {:?} with {} images on their way",
+                ui::headless::capture_frames(SETTLE_BOUND),
                 self.harness.frame_requesters(),
                 ui::motion::frames_wanted_by(now),
                 self.harness.pending_visual_work(),
