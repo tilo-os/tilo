@@ -662,7 +662,6 @@ fn every_scenario_stages_and_renders_an_accessible_frame() {
 #[test]
 fn resource_provider_sends_for_real_and_resolves_exact_records() {
     resource_send_performs_a_real_http_round_trip();
-    resource_send_reports_worker_completion_instead_of_queue_success();
     resource_provider_resolves_a_late_record_without_scanning_the_workspace();
 }
 
@@ -677,6 +676,8 @@ fn open(app: &mut TestApp<ApiTesterShell>, request: &Request) {
     }
 }
 
+/// A send is admitted, answered by its worker and delivered once: queueing it is not its
+/// success.
 #[expect(
     clippy::too_many_lines,
     reason = "end-to-end scenario that reads top-to-bottom"
@@ -801,12 +802,6 @@ fn resource_send_performs_a_real_http_round_trip() {
             .all(|sent| !sent.route.0.contains("Gr%C3%BCn")),
         "a sent request is named without its query values"
     );
-}
-
-fn resource_send_reports_worker_completion_instead_of_queue_success() {
-    // The hosted HTTP scenario asserts admission, worker completion and exactly one
-    // terminal delivery.
-    resource_send_performs_a_real_http_round_trip();
 }
 
 #[test]
