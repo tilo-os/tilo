@@ -117,6 +117,7 @@ impl Device {
 }
 
 tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
     fn a_device_reached_as_its_owner_is_driven_through_sudo_and_reuses_what_it_verified;
 
     phase a_device_reached_as_its_owner_runs_everything_through_sudo;

@@ -1270,6 +1270,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
         fn touch_and_pen_contacts_are_reported_as_a_screen_reports_them;
 
         phase a_tap_is_one_contact_down_then_up;
@@ -1591,6 +1592,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
         fn touchpad_gestures_move_fingers_on_a_plugged_pad;
 
         phase a_touchpad_gesture_needs_a_plugged_touchpad;

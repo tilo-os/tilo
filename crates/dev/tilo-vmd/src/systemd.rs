@@ -1834,6 +1834,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
         fn session_commands_run_in_the_sessions_own_namespace;
 
         phase control_runs_the_sessions_own_client_in_its_namespace;
@@ -1959,6 +1960,7 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
         fn component_restarts_validate_reload_and_keep_manager_failures;
 
         phase changed_user_unit_is_reloaded_before_restart_and_reload_failure_stops_it;
@@ -2308,6 +2310,7 @@ mod userspace_tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
         fn the_cohort_store_and_installer_use_the_admitted_session;
 
         phase cohort_store_environment_is_read_from_the_admitted_process;
