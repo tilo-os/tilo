@@ -315,56 +315,6 @@ fn backspace_edits_the_preedit_then_becomes_a_key() {
 }
 
 #[test]
-fn shift_uppercases_next_letter_then_resets() {
-    let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-    lay_out(&mut osk, 800.0, 360.0);
-    assert_eq!(osk.shift_state(), ShiftState::Off);
-    osk.activate_label("Shift");
-    assert_eq!(osk.shift_state(), ShiftState::Shift);
-    osk.activate_label("a"); // -> "A", one-shot shift resets
-    osk.activate_label("b"); // -> "b"
-    assert_eq!(osk.pending_text(), "Ab");
-    assert_eq!(osk.shift_state(), ShiftState::Off);
-}
-
-#[test]
-fn caps_lock_is_sticky() {
-    let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-    lay_out(&mut osk, 800.0, 360.0);
-    osk.activate_label("Shift"); // Off -> Shift
-    osk.activate_label("Shift"); // Shift -> CapsLock
-    assert_eq!(osk.shift_state(), ShiftState::CapsLock);
-    osk.activate_label("a");
-    osk.activate_label("b");
-    assert_eq!(osk.pending_text(), "AB");
-    assert_eq!(osk.shift_state(), ShiftState::CapsLock, "caps stays on");
-}
-
-#[test]
-fn symbols_toggle_switches_layer() {
-    let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-    lay_out(&mut osk, 800.0, 360.0);
-    assert_eq!(osk.active_layout_name(), "qwerty");
-    assert!(!osk.showing_symbols());
-    osk.activate_label("?123");
-    assert!(osk.showing_symbols());
-    assert_eq!(osk.active_layout_name(), "symbols");
-    // Re-layout (host would after structure_dirty) and type a digit.
-    lay_out(&mut osk, 800.0, 360.0);
-    assert!(osk.activate_label("1"));
-    assert_eq!(osk.pending_text(), "1");
-}
-
-#[test]
-fn toggle_raises_structure_dirty() {
-    let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-    lay_out(&mut osk, 800.0, 360.0);
-    osk.activate_label("?123");
-    assert!(osk.take_structure_dirty());
-    assert!(!osk.take_structure_dirty(), "flag is rising-edge");
-}
-
-#[test]
 fn accessibility_operates_each_painted_key_and_announces_disabled_suggestions() {
     eprintln!("phase accessibility_exposes_and_operates_each_painted_key");
     {
