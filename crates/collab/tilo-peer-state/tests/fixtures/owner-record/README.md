@@ -1,8 +1,8 @@
 # Owner record fixtures
 
-Captured on 2026-11-02 from the production writer before the record was split
-into an index and one file per workspace: a real owner record as one JSON file,
-exactly as a device's `state.owner.json` held it.
+Written on 2026-11-13 by the production writer, as one file, the way a record
+that predates the split into an index and one file per workspace sits on disk:
+a real owner record exactly as a device's `state.owner.json` held it.
 
 - `single-file.owner.json.hex`: one record written as one file, at revision 3,
   holding two workspaces this device founded — `Founders`
@@ -13,16 +13,16 @@ exactly as a device's `state.owner.json` held it.
   them.
 
 The identity is a test one: root seed `[11;32]`, device seed `[12;32]`, device
-label `A's desktop`; founding and enrollment ran at the fixed time
-`testing::raw_fixture_at` returns. The generator was a temporary ignored test
-over the real `create_workspace` and `prepare_enrollment_into` paths; it was
-removed after capture. Tests decode the hex to bytes and read them through the
-production reader, which splits them once and never again: changing the file
-means re-checking that an old record still reads, not re-encoding it.
+label `A's desktop`; founding and enrollment ran at `2025-10-09T08:53:20Z`.
+`examples/regenerate_owner_fixture.rs` writes this file again from the real
+paths (`create_workspace`, `prepare_enrollment_into` and `raw_fixture_at`) for
+when the record's format changes. Tests decode the hex to bytes and read
+them through the production reader, which splits them once and never again, so
+the file they came from stays readable by the build that wrote it.
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `single-file.owner.json.hex` | 18122 | `4f30990e5350dde42d7a79fd1bf720326679ec90e77ba2516d51419f727a73ec` |
+| `single-file.owner.json.hex` | 18015 | `97769029cec09af1ff8e19d7b9d20e8e8e5ccfa33ecc11e26787338e2f924b4c` |
 
 Persisted byte fixtures are stored as `.hex` files: two lowercase hexadecimal
 digits per byte, separated by spaces, with 16 bytes per LF line. The decoded
