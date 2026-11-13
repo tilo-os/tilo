@@ -457,6 +457,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: clippy exempts a test function's body, not a phase's closure"
+        )]
         fn compact_values_read_back_as_written;
 
         phase appearance_keys_are_known_words;

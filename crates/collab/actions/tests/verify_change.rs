@@ -193,6 +193,10 @@ fn typed(doc: &mut AutoCommit, transport: &mut LocalTransport, text: &str) {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: clippy exempts a test function's body, not a phase's closure"
+    )]
     fn a_recorded_change_is_verified_against_its_action;
 
     phase a_received_change_its_action_produces_is_reproduced;

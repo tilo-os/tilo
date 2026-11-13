@@ -427,6 +427,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: clippy exempts a test function's body, not a phase's closure"
+        )]
         fn a_selection_names_its_place_and_travels_bounded;
 
         phase a_selection_is_in_its_resource_under_a_window_alias_too;

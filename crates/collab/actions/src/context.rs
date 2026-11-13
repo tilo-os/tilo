@@ -1561,6 +1561,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: clippy exempts a test function's body, not a phase's closure"
+        )]
         fn a_context_reads_back_from_its_change_message;
 
         phase an_appearance_round_trips_through_the_change_message;
