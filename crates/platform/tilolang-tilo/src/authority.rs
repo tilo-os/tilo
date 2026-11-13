@@ -266,7 +266,7 @@ impl Authority for TiloAuthority {
             .cloned()
             .unwrap_or_else(|| format!("tl.{}", action.app));
         let node = TreePath::workspace(workspace)
-            .app(&action.app.to_string())
+            .app(action.app.to_string())
             .kind(kind);
         // An app whose records are each member's own acts on the record of the person at the
         // window: whoever else invokes is decided as on anyone's own record, refused.
