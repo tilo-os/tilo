@@ -21,7 +21,7 @@ use tilo_desktop::desk_edges::{self, DockEdge, EdgeDrag, Item};
 use tilo_desktop::here::Screen;
 use tilo_desktop::launchpad::LaunchpadAppAction;
 use tilo_desktop::profile_card::{
-    OtherPerson, ProfileAction, ProfileCard, ProfileChoice, ProfileGroup, ProfileModel,
+    LazyProfileCard, OtherPerson, ProfileAction, ProfileChoice, ProfileGroup, ProfileModel,
 };
 use tilo_desktop_model::DesktopTree;
 use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, DeskEffect};
@@ -593,7 +593,7 @@ pub fn mount(
         intents: given.intents,
         invitable: given.invitable,
         asks: Rc::clone(&asks),
-        profile: ProfileCard::default(),
+        profile: LazyProfileCard::default(),
         card_node: None,
         live_card: Cell::new(false),
         chats: RefCell::default(),
@@ -665,7 +665,7 @@ struct Panel {
     /// What the card asked of the session.
     asks: Rc<RefCell<Vec<PeopleAsk>>>,
     /// The one card of a person, as any host of it shows them.
-    profile: ProfileCard,
+    profile: LazyProfileCard,
     /// Where the card stands among this panel's children, while it is open.
     card_node: Option<NodeId>,
     /// Someone else's card no longer says what the rows say of them: the next layout builds it
@@ -792,6 +792,7 @@ impl Panel {
         presence: &ui::presence::PresenceCtx,
     ) -> bool {
         if self.profile.is_open() {
+            self.profile.draw_waiting(scene, transform, text, theme);
             self.profile
                 .draw_overlay(scene, transform, text, theme, presence);
         }

@@ -881,53 +881,34 @@ impl SessionSearch {
     }
 }
 
+impl SessionSearch {
+    /// The apps installed here, which the palette offers as an app's row of its own: the machine's
+    /// own apps are one of the session's sources instead.
+    fn installed_applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
+        self.apps_lists
+            .as_ref()
+            .map(|lists| lists.applications())
+            .unwrap_or_default()
+    }
+}
+
 impl SearchHost for SessionSearch {
     fn applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
         Self::applications(self)
     }
 
     fn feed(&self, workspace: &str, scope: &Scope) -> SearchHostFeed {
-        let (mut sources, published) = self.sources(workspace, scope);
-        // A question typed by the person is answered here, by the model their AI settings choose:
-        // never by a tool that searches. A host that runs no gateway asks nothing, and its palette
-        // offers no question. A window's search is about the window: what it holds and what can be
-        // done in it, never a question of its own.
-        if self.models.is_some() && !matches!(scope, Scope::InApp(_)) {
-            sources.push(Held::new(crate::search_ask::Ask::new(
-                Arc::clone(&self.ask),
-                workspace,
-                self.wake.clone(),
-                self.models.clone(),
-            )));
-        }
-        // What the person types, handed to their agent: the one send a window's box and the canvas
-        // run. A host that sends nothing (the page) offers no such row.
-        #[cfg(target_os = "linux")]
-        if !matches!(scope, Scope::InApp(_))
-            && let Some(agents) = self.agents.borrow().as_ref()
-        {
-            let kept = agents
-                .iter()
-                .find(|agent| agent.workspace == workspace)
-                .map(|agent| (agent.id.clone(), agent.name.clone()));
-            sources.push(Held::new(crate::search_agent::AskAgent::new(
-                workspace,
-                crate::agents::agent_recipient(kept),
-            )));
-        }
-        SearchHostFeed {
-            // The apps installed here, which the palette offers as an app's row of its own: the
-            // machine's own apps are one of the sources below instead.
-            applications: self
-                .apps_lists
-                .as_ref()
-                .map(|lists| lists.applications())
-                .unwrap_or_default(),
-            published,
-            sources,
-            preferences: self.preferences.borrow().clone(),
-            now: ui::time::unix_now(),
-            usage: self.usage.borrow().clone(),
+        match SEARCH_FEED.get() {
+            Some(code) => (code.feed)(self, workspace, scope),
+            // The sources load with the desktop's search engine, which a search waits for: until
+            // then the host lists its apps and what the person chose before.
+            None => SearchHostFeed {
+                applications: self.installed_applications(),
+                preferences: self.preferences.borrow().clone(),
+                now: ui::time::unix_now(),
+                usage: self.usage.borrow().clone(),
+                ..SearchHostFeed::default()
+            },
         }
     }
 
@@ -953,6 +934,68 @@ impl SearchHost for SessionSearch {
             | Target::Command { .. }
             | Target::Copy { .. } => false,
         }
+    }
+}
+
+/// The session's search sources: the providers over what the session keeps and publishes, and the
+/// code reading them. A desktop that fetches its search engine on first use (`lazy-search-feed`)
+/// fetches these with it, so they never stand in its start.
+#[derive(Clone, Copy)]
+pub struct SearchFeedCode {
+    feed: fn(&SessionSearch, &str, &Scope) -> SearchHostFeed,
+}
+
+/// The search sources this build links.
+#[must_use]
+pub fn builtin_search_feed() -> SearchFeedCode {
+    SearchFeedCode { feed }
+}
+
+ui::lazy_code! {
+    /// The session's search sources: linked, or with `lazy-search-feed` handed over with the
+    /// desktop's search engine.
+    pub static SEARCH_FEED: SearchFeedCode = builtin_search_feed, feature = "lazy-search-feed";
+}
+
+/// What a search over `workspace` finds beyond the desktop's own: the session's sources over what
+/// it keeps and what is published ([`SessionSearch::sources`]), its question to a model, and its
+/// send to an agent.
+fn feed(search: &SessionSearch, workspace: &str, scope: &Scope) -> SearchHostFeed {
+    let (mut sources, published) = search.sources(workspace, scope);
+    // A question typed by the person is answered here, by the model their AI settings choose:
+    // never by a tool that searches. A host that runs no gateway asks nothing, and its palette
+    // offers no question. A window's search is about the window: what it holds and what can be
+    // done in it, never a question of its own.
+    if search.models.is_some() && !matches!(scope, Scope::InApp(_)) {
+        sources.push(Held::new(crate::search_ask::Ask::new(
+            Arc::clone(&search.ask),
+            workspace,
+            search.wake.clone(),
+            search.models.clone(),
+        )));
+    }
+    // What the person types, handed to their agent: the one send a window's box and the canvas
+    // run. A host that sends nothing (the page) offers no such row.
+    #[cfg(target_os = "linux")]
+    if !matches!(scope, Scope::InApp(_))
+        && let Some(agents) = search.agents.borrow().as_ref()
+    {
+        let kept = agents
+            .iter()
+            .find(|agent| agent.workspace == workspace)
+            .map(|agent| (agent.id.clone(), agent.name.clone()));
+        sources.push(Held::new(crate::search_agent::AskAgent::new(
+            workspace,
+            crate::agents::agent_recipient(kept),
+        )));
+    }
+    SearchHostFeed {
+        applications: search.installed_applications(),
+        published,
+        sources,
+        preferences: search.preferences.borrow().clone(),
+        now: ui::time::unix_now(),
+        usage: search.usage.borrow().clone(),
     }
 }
 

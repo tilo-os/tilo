@@ -207,6 +207,15 @@ struct Page {
     /// The doors this page asks the host's actions through, one per workspace: one session path,
     /// shared by the page's Rust and its JavaScript.
     doors: RefCell<HashMap<u64, SessionActions>>,
+    /// Opens a door: the session's remote actions (their wire and the pump answering them) load
+    /// with the peer's code, which registers the page, and not with the start module, which only
+    /// asks for a door once a peer is in.
+    open_door: fn(&Link, u64, [u8; 32]) -> SessionActions,
+}
+
+/// A door to `workspace`'s host actions over `handle`, with the host `host`.
+fn open_door(handle: &Link, workspace: u64, host: [u8; 32]) -> SessionActions {
+    SessionActions::new(handle, workspace, host)
 }
 
 thread_local! {
@@ -279,6 +288,7 @@ pub(crate) fn register(id: u32, handle: &Link, cert: &DeviceCert, host: &DeviceC
                 waved: None,
                 interactions: HashMap::new(),
                 doors: RefCell::default(),
+                open_door,
             },
         );
     });
@@ -316,7 +326,7 @@ pub(crate) fn actions_of(id: u32, workspace: u64) -> Option<SessionActions> {
         Some(
             doors
                 .entry(workspace)
-                .or_insert_with(|| SessionActions::new(&page.handle, workspace, page.host))
+                .or_insert_with(|| (page.open_door)(&page.handle, workspace, page.host))
                 .clone(),
         )
     })

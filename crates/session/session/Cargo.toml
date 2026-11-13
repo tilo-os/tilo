@@ -51,6 +51,10 @@ dev-overrides = []
 # `#[view]` declares, never the live worker. A shot of a Rust app's view on the canvas builds
 # with it (`--features dev-rust-views`); a production image never does.
 dev-rust-views = ["dep:tube", "chat/samples"]
+# The session's search sources (`search::SEARCH_FEED`) are handed over by the
+# bundling crate, with the desktop's search engine, rather than linked: the
+# browser desktop fetches them as their own module.
+lazy-search-feed = []
 
 [dependencies]
 # A window's page reaches this session as the paint stream its app encoded.

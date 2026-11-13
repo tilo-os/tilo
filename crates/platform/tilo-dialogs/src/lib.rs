@@ -190,6 +190,9 @@ struct SystemOpener;
 
 impl UriOpener for SystemOpener {
     fn open(&self, uri: &str) -> std::io::Result<()> {
+        // A browser reads the URI with its own parser as it opens it, and refuses one it cannot
+        // read: a page carries no second one.
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         if let Err(error) = url::Url::parse(uri) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,

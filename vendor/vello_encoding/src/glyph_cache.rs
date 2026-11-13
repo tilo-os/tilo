@@ -206,7 +206,7 @@ impl GlyphCacheSession<'_> {
         let n_path_segments = if self.embolden.amount != peniko::kurbo::Diagonal2::new(0.0, 0.0) {
             self.outline_buf.truncate(0);
             let mut path = BezPathOutline(&mut self.outline_buf);
-            outline.draw(draw_settings, &mut path).ok()?;
+            crate::draw_outline(&outline, draw_settings, &mut path).ok()?;
             let path = peniko::kurbo::expand_path(
                 &self.outline_buf,
                 self.embolden.amount,
@@ -219,7 +219,7 @@ impl GlyphCacheSession<'_> {
             encoder.finish(false)
         } else {
             let mut path = encoding_ptr.encode_path(is_fill);
-            outline.draw(draw_settings, &mut path).ok()?;
+            crate::draw_outline(&outline, draw_settings, &mut path).ok()?;
             path.finish(false)
         };
         if n_path_segments == 0 {
