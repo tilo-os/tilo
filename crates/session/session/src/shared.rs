@@ -390,6 +390,7 @@ impl Shared {
             &self.workspace_settings_feed(),
         );
         self.follow_invite();
+        self.follow_pair_device();
         self.follow_delete_workspace();
         self.follow_owner_deletions();
         self.follow_boot_join();

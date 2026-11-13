@@ -37,6 +37,11 @@ pub const ISSUE_INVITATION: &str = "issue-invitation";
 /// sheet.
 pub const SHOW_INVITE: &str = "show-invite";
 
+/// The desk's action opening its Add a device sheet: the link a new device of the person's becomes
+/// one of theirs, shown as a code its camera reads. An app that lists what acts as the person
+/// (Settings' Devices) offers adding to it this way.
+pub const SHOW_PAIR_DEVICE: &str = "show-pair-device";
+
 /// The resource the person's arrangement is published as: the desk itself, which a place is put
 /// on, brought forward and closed through, and which carries the system's `open`.
 pub const ARRANGEMENT_RESOURCE: &str = "shell:arrangement";

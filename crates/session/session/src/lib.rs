@@ -285,7 +285,11 @@ mod owner_session;
 #[cfg(target_os = "linux")]
 mod page_track;
 #[cfg(target_os = "linux")]
+mod pair_device;
+#[cfg(target_os = "linux")]
 mod pairing;
+#[cfg(target_os = "linux")]
+mod pairing_link;
 #[cfg(target_os = "linux")]
 mod panels;
 #[cfg(target_os = "linux")]

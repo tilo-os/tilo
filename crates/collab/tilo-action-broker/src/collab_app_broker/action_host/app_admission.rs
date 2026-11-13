@@ -53,14 +53,16 @@ pub(super) fn invitation_request(request: &tilo_actions::remote::InvokeRequest) 
 }
 
 /// Whether `request` asks the session's desk to show how an agent or a computer connects as the
-/// person (`show-connect`): the setup their own card opens, shown to them on their own screen. An
-/// app listing what acts as the person offers adding to it this way; it grants nothing, and the
-/// person still signs anything in themselves.
+/// person (`show-connect`), or for the link another of their own devices joins with
+/// (`show-pair-device`): what their own card opens, shown to them on their own screen. An app
+/// listing what acts as the person offers adding to it this way; it grants nothing, and the person
+/// still signs anything in themselves.
 pub(super) fn connect_request(request: &tilo_actions::remote::InvokeRequest) -> bool {
     use tilo_actions::remote::session_actions;
+    let action = request.target.address.action.as_str();
     request.target.provider == tilo_actions::remote::SESSION_ACTIONS_PROVIDER
         && request.target.address.resource == session_actions::DESK_RESOURCE
-        && request.target.address.action == session_actions::SHOW_CONNECT
+        && (action == session_actions::SHOW_CONNECT || action == session_actions::SHOW_PAIR_DEVICE)
 }
 
 #[cfg(test)]
@@ -245,6 +247,10 @@ mod invitation_request_tests {
         assert!(
             super::connect_request(&desk(session_actions::SHOW_CONNECT)),
             "an app offers the person's own connect setup"
+        );
+        assert!(
+            super::connect_request(&desk(session_actions::SHOW_PAIR_DEVICE)),
+            "an app offers the person's own code for another of their devices"
         );
         for other in [
             "invitations",

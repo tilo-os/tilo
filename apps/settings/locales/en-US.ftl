@@ -2778,6 +2778,7 @@ settings-billing-invoice-void = Void
 settings-paste-code = Paste the code
 settings-access-intro = Everything that can act as you. Remove anything you don't recognize.
 settings-access-connect = Connect an agent or computer
+settings-access-add-device = Add a device
 settings-access-requests = Requests
 settings-access-agents = Agents
 settings-access-browsers-computers = Browsers and computers

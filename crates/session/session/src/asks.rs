@@ -63,6 +63,7 @@ impl Shared {
                 }
                 // How an agent or a computer of theirs connects: Console's Connect place, which
                 // the app opens (or comes forward with) in the workspace in front.
+                people::PeopleAsk::PairDevice => self.open_pair_device(),
                 people::PeopleAsk::ConnectAgent => {
                     self.invoke_app_action(LaunchpadAppAction::connect_agent());
                 }
@@ -230,6 +231,9 @@ impl Shared {
             // wherever it was asked for — the bar's invite button, the roster's footer, workspace
             // settings or the launchpad's own verb.
             ChromeIntent::Invite => self.open_invite(),
+            // Another of the person's devices: the code its camera reads, in the session's own
+            // sheet, wherever it was asked for — their own card or Settings' Devices.
+            ChromeIntent::PairDevice => self.open_pair_device(),
             // A secondary press on the desk asks the chrome for the menu of the
             // place it pressed: the same menu the bar's workspace name opens,
             // and the chrome is where it is drawn.

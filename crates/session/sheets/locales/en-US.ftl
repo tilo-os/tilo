@@ -729,3 +729,25 @@ so-tilo-workspace-settings-change-set-agent-spend-limit = Set the daily limit
 so-tilo-workspace-settings-change-set-role = Change a role
 so-tilo-workspace-settings-change-show-tab = Show a tab
 so-tilo-workspace-settings-change-toggle-device = Show on a device
+
+## Add a device
+
+pair-device = Device pairing
+so-tilo-pair-device-link-copy = Copy the link
+so-tilo-pair-device-link-done = Close
+pair-device-title = Add a device
+pair-device-description = Make the link your next device uses to become one of yours: scan the code with a phone, open the link in a browser, or paste it into Tilo on another computer.
+pair-device-close = Close
+pair-device-link-label = The link
+pair-device-copy = Copy link
+pair-device-copied = Copied
+pair-device-code-alt = The pairing link as a code to scan
+pair-device-way-phone = Phone or tablet
+pair-device-way-phone-how = Scan the code with the camera
+pair-device-way-browser = Browser
+pair-device-way-browser-how = Open the link
+pair-device-way-tilo = Another computer
+pair-device-way-tilo-how = Paste the link into Join a workspace
+pair-device-lasting = The code works once, and stops working { $left }.
+pair-device-note = This computer asks you first, and shows the code your new device shows. A new code is made here when this one runs out.
+pair-device-refused = No link can be made here: { $reason }

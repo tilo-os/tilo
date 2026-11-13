@@ -64,6 +64,8 @@ pub enum PeopleAsk {
     /// Show how an agent or a computer of theirs connects: Console's Connect place, where the
     /// commands that add Tilo to an agent are.
     ConnectAgent,
+    /// Add another of their own devices: the session's sheet with the link its camera reads.
+    PairDevice,
     /// Do the host action this person's own card offers, as the palette and a banner hand theirs
     /// back: the choice the ask on their avatar waits for is answered here too.
     HostAction(String),
@@ -961,7 +963,6 @@ impl Panel {
         match id {
             "identities" => Some("settings://users"),
             "identity-backup" => Some("settings://about"),
-            "pair-device" => Some("settings://devices_sync"),
             DEVICES_ACCESS => Some("settings://devices_access"),
             _ => None,
         }
@@ -1043,7 +1044,11 @@ impl Panel {
                     self.asks.borrow_mut().push(PeopleAsk::Colour(id));
                 }
                 ProfileChoice::Action(id) => {
-                    if let Some(link) = Self::own_settings_link(&id) {
+                    // Another of their devices: the code its camera reads is the session's own
+                    // sheet, beside the card they pressed.
+                    if id == "pair-device" {
+                        self.asks.borrow_mut().push(PeopleAsk::PairDevice);
+                    } else if let Some(link) = Self::own_settings_link(&id) {
                         self.asks
                             .borrow_mut()
                             .push(PeopleAsk::Settings(link.to_owned()));

@@ -426,6 +426,7 @@ so-tilo-session-desk-invitations = List invitations
 so-tilo-session-desk-issue-invitation = Make an invitation link
 so-tilo-session-desk-show-invite = Invite people
 so-tilo-session-desk-show-connect = Connect an agent or computer
+so-tilo-session-desk-show-pair-device = Add a device
 so-tilo-session-desk-notify = Post a notification
 so-tilo-session-desk-cancel-invitation = Cancel invitation
 so-tilo-session-desk-show-surface = Show or hide a panel

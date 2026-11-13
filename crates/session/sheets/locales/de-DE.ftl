@@ -729,3 +729,25 @@ so-tilo-workspace-settings-change-set-agent-spend-limit = Das Tageslimit setzen
 so-tilo-workspace-settings-change-set-role = Eine Rolle ändern
 so-tilo-workspace-settings-change-show-tab = Einen Tab zeigen
 so-tilo-workspace-settings-change-toggle-device = Auf einem Gerät zeigen
+
+## Add a device
+
+pair-device = Gerätekopplung
+so-tilo-pair-device-link-copy = Den Link kopieren
+so-tilo-pair-device-link-done = Schließen
+pair-device-title = Gerät hinzufügen
+pair-device-description = Erstelle den Link, mit dem dein nächstes Gerät zu einem deiner Geräte wird: Scanne den Code mit dem Handy, öffne den Link im Browser oder füge ihn in Tilo auf einem anderen Computer ein.
+pair-device-close = Schließen
+pair-device-link-label = Der Link
+pair-device-copy = Link kopieren
+pair-device-copied = Kopiert
+pair-device-code-alt = Der Kopplungslink als Code zum Scannen
+pair-device-way-phone = Handy oder Tablet
+pair-device-way-phone-how = Den Code mit der Kamera scannen
+pair-device-way-browser = Browser
+pair-device-way-browser-how = Den Link öffnen
+pair-device-way-tilo = Anderer Computer
+pair-device-way-tilo-how = Den Link in „Arbeitsbereich beitreten“ einfügen
+pair-device-lasting = Der Code funktioniert einmal und läuft { $left } ab.
+pair-device-note = Dieser Computer fragt dich zuerst und zeigt denselben Code wie dein neues Gerät. Läuft dieser Code ab, wird hier ein neuer erstellt.
+pair-device-refused = Hier lässt sich kein Link erstellen: { $reason }

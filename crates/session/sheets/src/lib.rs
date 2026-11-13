@@ -17,6 +17,7 @@ pub mod file_picker;
 pub mod invite;
 pub mod keyboard_shortcuts;
 pub mod lock;
+pub mod pair_device;
 pub mod portal;
 pub mod power;
 mod presentation;

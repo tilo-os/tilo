@@ -2778,6 +2778,7 @@ settings-billing-invoice-void = Storniert
 settings-paste-code = Code einfügen
 settings-access-intro = Alles, was als du handeln kann. Entferne alles, was du nicht kennst.
 settings-access-connect = Agent oder Computer verbinden
+settings-access-add-device = Gerät hinzufügen
 settings-access-requests = Anfragen
 settings-access-agents = Agenten
 settings-access-browsers-computers = Browser und Computer

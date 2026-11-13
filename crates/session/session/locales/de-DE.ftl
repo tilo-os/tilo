@@ -430,6 +430,7 @@ so-tilo-session-desk-invitations = Einladungen auflisten
 so-tilo-session-desk-issue-invitation = Einladungslink erstellen
 so-tilo-session-desk-show-invite = Personen einladen
 so-tilo-session-desk-show-connect = Agent oder Computer verbinden
+so-tilo-session-desk-show-pair-device = Gerät hinzufügen
 so-tilo-session-desk-notify = Benachrichtigung senden
 so-tilo-session-desk-cancel-invitation = Einladung zurückziehen
 so-tilo-session-desk-show-surface = Bereich ein- oder ausblenden

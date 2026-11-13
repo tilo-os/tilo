@@ -131,6 +131,10 @@ pub(crate) enum DeskEffect {
     /// "Connect an agent or computer" opens. An app that lists what acts as them offers adding to
     /// it this way.
     ShowConnect,
+    /// Open the Add a device sheet: the link a new device of the person's becomes one of theirs,
+    /// shown as a code its camera reads. An app that lists what acts as the person offers adding
+    /// to it this way.
+    ShowPairDevice,
     /// Cancel the invitation `invite` of a workspace: its link admits nobody from now on
     CancelInvitation {
         /// The invitation's id, 64 hex characters, as listing invitations reports it
@@ -1139,6 +1143,12 @@ impl Service for Desk {
         }
         if let DeskEffect::ShowInvite { workspace } = &effect {
             return self.show_invite(workspace.as_deref());
+        }
+        if matches!(effect, DeskEffect::ShowPairDevice) {
+            self.asks
+                .borrow_mut()
+                .push(DesktopAsk::Intent(ChromeIntent::PairDevice));
+            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if matches!(effect, DeskEffect::ShowConnect) {
             self.handle

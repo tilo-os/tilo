@@ -222,6 +222,14 @@ impl QrWidget {
         self.error.as_deref()
     }
 
+    /// Whether the code carries exactly `payload`: how a test proves a sheet
+    /// draws the link it was handed, without taking the secret out of the
+    /// widget.
+    #[must_use]
+    pub fn carries(&self, payload: &[u8]) -> bool {
+        self.payload.as_slice() == payload
+    }
+
     /// `(x, y)` within the matrix, no quiet-zone offset. Used by tests to
     /// inspect the encoded pattern without poking `matrix` directly.
     pub fn module(&self, x: usize, y: usize) -> bool {

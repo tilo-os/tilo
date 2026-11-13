@@ -14,6 +14,7 @@ use tilo_sheets::displays::DisplaysSeat;
 use tilo_sheets::file_picker::FilePickerSeat;
 use tilo_sheets::invite::InviteSeat;
 use tilo_sheets::lock::LockSeat;
+use tilo_sheets::pair_device::AddDeviceSeat;
 use tilo_sheets::portal::PortalSeat;
 use tilo_sheets::power::PowerSeat;
 use tilo_sheets::shortcut_guide::GuideSeat;
@@ -29,6 +30,7 @@ pub(crate) struct Sheets {
     pub(crate) workspace_settings: Option<WorkspaceSettingsSeat>,
     pub(crate) directory: Option<DirectorySeat>,
     pub(crate) invite: Option<InviteSeat>,
+    pub(crate) pair_device: Option<AddDeviceSeat>,
     pub(crate) delete_workspace: Option<DeleteWorkspaceSeat>,
     pub(crate) portal: Option<PortalSeat>,
     pub(crate) file_picker: Option<FilePickerSeat>,
@@ -97,6 +99,14 @@ pub(crate) fn mount_sheets(
         who,
         options,
     );
+    let pair_device = mount_sheet(
+        compositor,
+        doors,
+        tilo_sheets::pair_device::definition(),
+        AddDeviceSeat::default(),
+        who,
+        options,
+    );
     // The question deleting a workspace asks: over whatever the person was looking at, whichever
     // surface asked it.
     let delete_workspace = mount_sheet(
@@ -139,6 +149,7 @@ pub(crate) fn mount_sheets(
         workspace_settings,
         directory,
         invite,
+        pair_device,
         delete_workspace,
         portal,
         file_picker,

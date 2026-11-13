@@ -998,6 +998,7 @@ impl Session {
             file_picker,
             directory,
             invite,
+            pair_device,
             delete_workspace,
             display_confirm,
             displays: display_seat,
@@ -1458,6 +1459,9 @@ impl Session {
                 wake: Some(options.wake.handle()),
             })
         });
+        let adding = crate::pair_device::Adding::new(
+            Rc::clone(&clipboard) as Rc<dyn crate::platform::clipboard::Clipboard>
+        );
         let landings = Rc::new(crate::landing::Landings::new(options.wake.handle()));
         let inviting = crate::invite::Invite::new(
             Rc::new(crate::platform::invite::DeskWorkspace {
@@ -1534,6 +1538,8 @@ impl Session {
             directory,
             invite,
             inviting,
+            pair_device,
+            adding,
             delete_workspace,
             delete_workspace_ask: RefCell::default(),
             directory_store,

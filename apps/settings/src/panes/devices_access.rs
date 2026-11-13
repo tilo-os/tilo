@@ -75,6 +75,9 @@ pub enum DevicesAccessEffect {
     /// Show how an agent or another computer connects as the person.
     #[effect(view, label = "settings-access-connect")]
     ShowConnect,
+    /// Show the link another of your own devices joins with, as a code its camera reads.
+    #[effect(view, label = "settings-access-add-device")]
+    ShowPairDevice,
 }
 
 #[expect(
@@ -488,6 +491,11 @@ impl AccessModel {
                 InvokeArgument::Json(serde_json::Map::new()),
                 None,
             ),
+            DevicesAccessEffect::ShowPairDevice => remote.invoke(
+                session_actions::target(session_actions::SHOW_PAIR_DEVICE),
+                InvokeArgument::Json(serde_json::Map::new()),
+                None,
+            ),
         };
         self.pending.push(Pending {
             calls: vec![call],
@@ -713,9 +721,18 @@ impl AccessModel {
     }
 
     fn intro_section(cx: &ViewCx<Settings>) -> SettingsSection {
+        let add_device = cx.actions().bind_effect_invocation(
+            Button::new(
+                "settings.access.add-device",
+                &t("settings-access-add-device"),
+            )
+            .role(ButtonRole::Primary)
+            .with_icon(Icon::MonitorSmartphone),
+            &SettingsEffect::from(DevicesAccessEffect::ShowPairDevice),
+        );
         let connect = cx.actions().bind_effect_invocation(
             Button::new("settings.access.connect", &t("settings-access-connect"))
-                .role(ButtonRole::Primary)
+                .role(ButtonRole::Secondary)
                 .with_icon(Icon::Plus),
             &SettingsEffect::from(DevicesAccessEffect::ShowConnect),
         );
@@ -723,6 +740,8 @@ impl AccessModel {
             note(&t("settings-access-intro")),
             block(Box::new(
                 Row::new()
+                    .with_rhythm(ui::tokens::Rhythm::Tight)
+                    .push(Box::new(add_device))
                     .push(Box::new(connect))
                     .push(Box::new(Spacer::new())),
             )),
