@@ -780,6 +780,7 @@ d-p4bqyuzt = Name the style
 
 d-7j7tzynq = Show as
     .doc = Shows the desk through the style `shown`: a package and a view (`so.tilo.shell:strips`).
+    .w-it-is-shown-that-way-already = It is shown that way already
 
 d-dkylvhw4 = In front
     .doc = Makes the strip `strip` the one in front: what a press on a column's header does.
@@ -798,12 +799,14 @@ d-eanbdi6l = Use this layout
 
 d-rpbpwrcy = Show the app's menus
     .doc = Puts the focused app's menus on the bar, after the system's: what the app in front can do now, on its resource.
+    .w-the-app-s-menus-are-on = The app's menus are on the bar already
 
 d-7jggsdfm = Hide the app's menus
     .doc = Takes the focused app's menus off the bar.
 
 d-2k74oe7b = Back to the preset
     .doc = Returns the shell to the preset it was based on, dropping the person's tuning.
+    .w-nothing-was-changed-from-the-preset = Nothing was changed from the preset
 
 d-jqwkinjd = Bar on
     .doc = Puts the bar on `edge`.
@@ -844,6 +847,7 @@ d-z2w4wlev = Magnify the dock
 
 d-vurzkuat = Move
     .doc = Puts a bar part with the one it comes before, wherever the part stands now: the one action a drag commits, and the same change from the settings, a shortcut or an agent.
+    .w-a-part-cannot-come-before-itself = A part cannot come before itself
 
 d-4ljvsals = Move
     .doc = Puts a bar part at the place `at`, counted from the leading edge: what a drag that names a place gives.
@@ -853,12 +857,14 @@ d-5esgamkb = Shown on the bar
 
 d-hphul6cv = Move
     .doc = Puts a dock item with the one it comes before: the one action a drag commits.
+    .w-an-item-cannot-come-before-itself = An item cannot come before itself
 
 d-tv7bsor6 = Move
     .doc = Puts a dock item at the place `at`, counted from the leading edge: what a drag that names a place gives.
 
 d-utk4ewgf = Pin to the dock
     .doc = Pins a resource or an app to the dock, before `next` (or at the end when no neighbour is named): what dragging one onto the dock does, and what the person does from a menu.
+    .w-is-on-the-dock-already = { $title } is on the dock already
 
 d-5yz5iwzs = Remove from the dock
     .doc = Takes an item off the dock.
@@ -899,6 +905,7 @@ d-pvl6wwx6 = Bar part
     .w-tilo = Tilo
 
 d-vidcax4k = Workspace menu
+    .w-workspaces = Workspaces
     .w-new-workspace = New workspace
     .w-join-a-workspace = Join a workspace
     .w-workspace-settings = Workspace settings
@@ -909,10 +916,20 @@ d-hac3p23j = Volume status
     .w-volume = Volume, { $percent }%
 
 d-iwv7cd5i = Network status
+    .w-wi-fi = Wi-Fi, { $called }
+    .w-wi-fi-2 = Wi-Fi
+    .w-wired = Wired, { $called }
+    .w-wired-2 = Wired
+    .w-offline = Offline
 
 d-agni63m4 = Battery status
+    .w-charging = { $percentage }%, charging
 
 d-moh3hzne = Bell
+    .w-notifications-silenced = Notifications silenced
+    .w-notifications = Notifications
+    .w-1-unread = { $name }, 1 unread
+    .w-unread = { $name }, { $waiting } unread
 
 d-fniigjed = Viewing settings
     .w-desk = Desk
@@ -972,6 +989,7 @@ d-lwre5gd7 = Dock run
 d-fr6w4hgp = Dock running tiles
 
 d-lwt7iwsj = Dock tile
+    .w-new = { $title }, { $badge } new
 
 d-dpqvjh2f = Launcher
     .w-search-apps-windows-actions-and-files = Search apps, windows, actions and files
@@ -1039,6 +1057,7 @@ d-t3ywtwqj = Notice row
 d-yyk2izra = Banner
 
 d-gke2gvrj = Banner full
+    .w-open = Open
 
 d-wh7n4fhq = Banner row
     .w-dismiss = Dismiss
@@ -1097,6 +1116,9 @@ d-fehlcpo5 = Hung window
 
 d-uhzjvuan = People button
     .w-people = People
+    .w-is-here = { $name } is here
+    .w-and-are-here = { $name } and { $name2 } are here
+    .w-and-others-are-here = { $name } and { $others } others are here
 
 d-uvwnwa4d = Agent chip
     .w-stop = Stop
@@ -1105,6 +1127,7 @@ d-teccuwja = Quick settings
     .w-quick-settings = Quick settings
 
 d-yxl6yq2r = Wifi tile
+    .w-wi-fi = Wi-Fi
 
 d-d5wzqn37 = Bluetooth tile
     .w-bluetooth = Bluetooth
@@ -1176,6 +1199,7 @@ d-oyjbbzbk = Place content
 d-43am22do = Place view
 
 d-fziuz57n = Switcher
+    .w-of = { $at } of { $count }
     .w-no-windows = No windows
     .w-open-something-to-switch-to-it = Open something to switch to it
 

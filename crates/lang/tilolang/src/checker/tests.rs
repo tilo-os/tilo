@@ -1374,10 +1374,10 @@ fn the_words_a_let_keeps_are_the_views_messages() {
         "{WORDY}view todo(ts: Tasks) {{\n    let empty = \"No tasks yet\"\n    let tail = \"{{ts.items.len()}}\"\n    stack {{\n        text(empty)\n        text(tail)\n    }}\n}}"
     ));
     let todo = ids.get("todo").expect("the view's id");
-    assert!(says(&m, &todo, "No tasks yet"), "{:#?}", messages(&m));
+    assert!(says(&m, todo, "No tasks yet"), "{:#?}", messages(&m));
     // A literal of no words is text, kept in a `let` as it is written anywhere else.
     assert!(
-        !says(&m, &todo, "{ts.items.len()}"),
+        !says(&m, todo, "{ts.items.len()}"),
         "a literal of no words is text: {:#?}",
         messages(&m)
     );
@@ -1393,7 +1393,7 @@ fn the_words_a_branch_chose_are_the_views_messages() {
     ));
     let todo = ids.get("todo").expect("the view's id");
     for want in ["Nothing to do", "Your day", "Inbox"] {
-        assert!(says(&m, &todo, want), "{want} in {:#?}", messages(&m));
+        assert!(says(&m, todo, want), "{want} in {:#?}", messages(&m));
     }
     // One text is one message of the view, however many branches and sites write it.
     let heading = messages(&m)
@@ -1413,13 +1413,13 @@ fn the_words_a_component_parameter_shows_are_the_callers() {
     ));
     let todo = ids.get("todo").expect("the view's id");
     let chip = ids.get("chip").expect("the chip view's id");
-    assert!(says(&m, &todo, "All tasks"), "{:#?}", messages(&m));
+    assert!(says(&m, todo, "All tasks"), "{:#?}", messages(&m));
     assert!(
-        !says(&m, &chip, "All tasks"),
+        !says(&m, chip, "All tasks"),
         "the words are the caller's: {:#?}",
         messages(&m)
     );
-    assert!(says(&m, &todo, "Chip says"), "{:#?}", messages(&m));
+    assert!(says(&m, todo, "Chip says"), "{:#?}", messages(&m));
 }
 
 /// A literal that reaches no prop of words is data: a tag a piece of code compares, an address a
