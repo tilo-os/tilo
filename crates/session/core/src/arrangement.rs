@@ -360,8 +360,9 @@ const TURN_WIDTH: i64 = 520;
 /// How tall a turn stands when the person only clicked, and the most of a dragged rectangle it
 /// takes at its top: the rest is the room the agent's views fill.
 const TURN_HEIGHT: i64 = 240;
-/// The gap between a turn standing at a rectangle's top and the room left under it.
-const TURN_GAP: i64 = 16;
+/// The gap between a turn standing at a rectangle's top and the room left under it: the canvas's
+/// own gap between places, so a place filling the room stands where the canvas would keep it.
+const TURN_GAP: i64 = tilo_desktop_model::CANVAS_GAP as i64;
 /// The least room under a turn that the agent's views fill: a rectangle shorter than this is
 /// filled whole, and the turn's own view keeps its band over it.
 const LEAST_ROOM: i64 = 160;
