@@ -1,20 +1,16 @@
-//! `tilo-oci-images` — environment images from the OCI registry CI
-//! publishes them to.
+//! `tilo-oci-images`: environment images from the OCI registry CI publishes them to.
 //!
-//! CI seals `env-runtime` and catalog `tool` images into signed tapps and
-//! publishes them as OCI images whose layers hold the `.tapp` files
-//! (`registry.tilo.so/tilo/env-runtime:set-<fingerprint>`,
-//! `registry.tilo.so/tilo/env-tools:<tag>`). They are not in the app
-//! registry: they are not apps, and its review would cap and list them.
-//! [`OciImages`] is a [`PackageFetcher`] over those repositories, for a node
-//! that did not ship the images in its system store — a relay, or a node of
-//! another architecture.
+//! CI seals `env-runtime` and catalog `tool` images into signed tapps and publishes them as OCI
+//! images whose layers hold the `.tapp` files (`registry.tilo.so/tilo/env-runtime:set-<fingerprint>`,
+//! `registry.tilo.so/tilo/env-tools:<tag>`). They are not in the app registry: they are not apps, and
+//! its review would cap and list them. [`OciImages`] is a [`PackageFetcher`] over those repositories,
+//! for a node that did not ship the images in its system store, such as a relay or a node of another
+//! architecture.
 //!
-//! Nothing here is trusted. A layer is checked against its digest, the
-//! tapps in it are cached by the id their header claims, and the package
-//! store that asked checks the package hashes to the id it wanted and is
-//! signed by a publisher it trusts. Manifests already scanned are
-//! remembered, so each published set is downloaded once.
+//! Nothing here is trusted: a layer is checked against its digest, the tapps in it are cached by the
+//! id their header claims, and the package store that asked checks the package hashes to the id it
+//! wanted and is signed by a publisher it trusts. Manifests already scanned are remembered, so each
+//! published set is downloaded once.
 
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
@@ -26,10 +22,9 @@ use tilo_app_package::{BlobFetcher, BlobHash, BlobSink, PackageFetcher, PackageI
 
 /// No published layer is larger than this.
 const MAX_LAYER_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-/// The most bytes one `.tapp` may occupy once unpacked, and the most a cached
-/// one may be when it is read back whole. The compressed layer is bounded by
-/// `MAX_LAYER_BYTES`, but what it inflates to is the registry's word, and a
-/// cached package is read into memory before anything verifies it.
+/// The most bytes one `.tapp` may occupy once unpacked, and the most a cached one may be when read
+/// back whole: the compressed layer is bounded by `MAX_LAYER_BYTES`, but what it inflates to is the
+/// registry's word, and a cached package is read into memory before anything verifies it.
 const MAX_TAPP_BYTES: u64 = 1024 * 1024 * 1024;
 /// Manifests and token responses are small.
 const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
@@ -41,7 +36,6 @@ const MANIFEST_TYPES: &str = "application/vnd.oci.image.index.v1+json, \
      application/vnd.oci.image.manifest.v1+json, \
      application/vnd.docker.distribution.manifest.v2+json";
 
-/// One OCI repository, optionally pinned to a tag.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OciSource {
     /// Registry host, e.g. `registry.tilo.so`.
@@ -75,7 +69,6 @@ impl OciSource {
     }
 }
 
-/// Environment images fetched from OCI repositories, cached on disk.
 #[derive(Clone, Debug)]
 pub struct OciImages {
     sources: Vec<OciSource>,
