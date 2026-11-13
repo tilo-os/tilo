@@ -41,10 +41,11 @@ const UPLOAD_PIECE: usize = 8 * 1024 * 1024;
 /// The most one request fetches of a file: a download of a large file reads
 /// it a piece at a time, so the whole of it is never held at once.
 const DOWNLOAD_PIECE: usize = 32 * 1024 * 1024;
-/// How many pieces in a row may fail in transport before an upload gives up.
+/// How many pieces in a row may fail in transport before an upload or a
+/// download gives up.
 /// Each failure is resumed from wherever the server says the upload stands,
 /// so the bytes already sent are never sent again.
-const UPLOAD_TRIES: usize = 5;
+const PIECE_TRIES: usize = 5;
 
 /// A request's method, as the routes of the API take them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -416,7 +417,7 @@ impl Client {
                         .unwrap_or(offset);
                     told(offset, size);
                 }
-                Err(why) if failed < UPLOAD_TRIES => {
+                Err(why) if failed < PIECE_TRIES => {
                     failed = failed.saturating_add(1);
                     // Where does it stand now? The server keeps an upload a
                     // lost connection cut, so the rest continues it.
@@ -426,7 +427,7 @@ impl Client {
                         .and_then(Value::as_u64)
                         .unwrap_or(offset);
                     told(offset, size);
-                    if failed == UPLOAD_TRIES {
+                    if failed == PIECE_TRIES {
                         return Err(why.context(format!(
                             "{} stopped {failed} times, the last at {offset} of {size} bytes",
                             path.display()
@@ -489,14 +490,36 @@ impl Client {
             encode_path(content)
         );
         let mut written = 0_u64;
+        let mut failed = 0_usize;
         loop {
+            // The same range asked again answers the same bytes: a piece the
+            // host was too busy to answer is asked for again, and a file of
+            // hundreds of megabytes is not lost to one slow answer.
             let end = written
                 .saturating_add(DOWNLOAD_PIECE as u64)
                 .saturating_sub(1);
             let headers = [("range", format!("bytes={written}-{end}"))];
-            let answer = self
+            let answer = match self
                 .call(Method::Get, &path, &[], &headers, Waiting::Busy)
-                .await?;
+                .await
+            {
+                Ok(answer) => {
+                    failed = 0;
+                    answer
+                }
+                Err(why) if failed < PIECE_TRIES => {
+                    failed = failed.saturating_add(1);
+                    tokio::time::sleep(Duration::from_millis(
+                        250_u64.saturating_mul(u64::try_from(failed).unwrap_or(1)),
+                    ))
+                    .await;
+                    if failed == PIECE_TRIES {
+                        return Err(why.context(format!("the download stopped at {written} bytes")));
+                    }
+                    continue;
+                }
+                Err(why) => return Err(why),
+            };
             if !answer.ok() {
                 return Err(answer.refused());
             }
