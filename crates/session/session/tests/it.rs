@@ -107,6 +107,8 @@ mod fabric;
 mod file_clipboard;
 #[path = "files_tree.rs"]
 mod files_tree;
+#[path = "find_records.rs"]
+mod find_records;
 #[path = "firstboot.rs"]
 mod firstboot;
 #[path = "float_windows.rs"]
