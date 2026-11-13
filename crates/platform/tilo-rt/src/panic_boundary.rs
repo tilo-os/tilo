@@ -1,23 +1,15 @@
 //! Which panics a process survives.
 //!
-//! Release builds unwind, but a Tilo process still ends on the first panic
-//! on any thread: [`abort_outside_boundaries`] installs a panic hook that
-//! aborts once every earlier hook (a crash log) has run. This crate installs
-//! it as soon as a process starts a runtime or a thread through it, so code
-//! keeps the abort-on-panic contract it is written against: state shared
-//! with a thread that unwound halfway is not trusted anywhere else, and a
-//! task's panic is never swallowed by its runtime.
+//! Release builds unwind, but a Tilo process still ends on the first panic: on
+//! starting a runtime or a thread through this crate, it installs a hook that aborts
+//! once every earlier hook (a crash log) has run, so code keeps the abort-on-panic
+//! contract it is written against and a task's panic is never swallowed by its
+//! runtime.
 //!
-//! The one exception is a thread running inside [`isolate`]. There the hook
-//! returns, the panic unwinds to the boundary, and the helper's owner decides
-//! what happens next (typically: release what the helper held and start it
-//! again). The compositor isolates its helpers this way, since its death ends
-//! the person's session. The boundary is opt-in per call, never per thread
-//! name.
-//!
-//! Debug and test builds keep unwinding everywhere, as they always have:
-//! a test that expects a panic must not abort its whole binary. Under
-//! `panic = "abort"` [`isolate`] only runs its body: nothing unwinds.
+//! The one exception is a thread inside [`isolate`], where the panic unwinds to the
+//! boundary and the helper's owner decides what happens next — the compositor
+//! isolates its helpers this way. Debug and test builds keep unwinding everywhere;
+//! under `panic = "abort"` [`isolate`] only runs its body.
 
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
