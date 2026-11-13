@@ -435,8 +435,10 @@ fn step_9_a_theme_switch_changes_looks_only() {
     }
 
     // Where the desk's own parts stand, and what the screen looks like.
+    // The canvas is the whole screen: its bar keeps the notices and the person's own menu, and it
+    // has no dock (`canvas.md` §7).
     let menu = preset_menu(&session).expect("the desk's preset menu");
-    let controls = [menu.as_str(), "Notifications", "Launcher"];
+    let controls = [menu.as_str(), "Notifications"];
     let before: Vec<(String, (f64, f64, f64, f64))> = controls
         .iter()
         .filter_map(|name| {

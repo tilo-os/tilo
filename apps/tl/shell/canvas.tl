@@ -25,8 +25,16 @@
 /// and a rectangle dragged on free space puts the caret inside it, and what is typed at the caret
 /// is placed there: what it finds fills the rectangle, and what it asks stands as the turn's
 /// answer there (`session.place_found`). The map reports both in canvas pixels (`press`,
-/// `frame`), and a press on a place stays the place's. Escape takes the caret away. Nothing
-/// stands on an empty canvas but its ground.
+/// `frame`), and a press on a place stays the place's. Escape takes the caret away.
+///
+/// Free space invites writing (`canvas.md` §7): over it the pointer is a text cursor, its ground
+/// has a grain so faint it only says "surface", and until the person has asked once the empty
+/// canvas says at its middle what it is for. That it has been said is the person's record
+/// (`Shell.canvas_asked`), so it is said once, never on every empty canvas.
+///
+/// An answer arrives from where it was asked: each place grows out of the caret or the rectangle
+/// the person pointed at (`grows`), and a turn hugs its words up to the rectangle it was asked in
+/// (`hug`), where a find fills it.
 view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
     state typed: Text = ""
     // Where the person pointed, in canvas pixels: a point (`x`, `y`) for a click, a rectangle
@@ -35,7 +43,13 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
     // The place a right press pointed at, by its key: what the words said there are about.
     // Empty for free space and for a click.
     state pointed_at: Text = ""
-    ui.Map(name: name, ground: true, outline: pointed, fill) {
+    ui.Map(
+        name: name,
+        ground: true,
+        outline: pointed,
+        hint: if shell.canvas_asked { "" } else { "Click anywhere and say what you want" },
+        fill,
+    ) {
         on drop(target: host.Resource, at: List<Int>): place_dropped(target, at)
         on press(at: List<Int>): set(pointed, at).then(set(pointed_at, ""))
         on frame(at: List<Int>): set(pointed, at).then(set(pointed_at, ""))
@@ -54,6 +68,8 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
                         width: pin_width(s),
                         height: pin_height(s),
                         band: framed and composed(p),
+                        hug: hugs(p),
+                        grows: true,
                     ) {
                         // A place's handle shows in a band over its view: the pin stands that
                         // much higher, so the view's top is where the place was put.
@@ -92,11 +108,25 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
                         )
                         .then(set(typed, ""))
                         .then(set(pointed, []))
+                        .then(asked_on_canvas(shell))
                     on cancel: set(typed, "").then(set(pointed, []))
                 }
             }
         }
     }
+}
+
+/// Whether the place `p` hugs what it holds up to its box rather than filling it: a turn, whose
+/// answer is as long as its words (`canvas.md` §7, "The card hugs what it holds"). What a find
+/// placed in a rectangle fills it.
+fn hugs(p: ArrangementPlace) -> Bool {
+    p.shown_as == "turn"
+}
+
+/// The person asked on the canvas: the hint the empty canvas says until then has been said
+/// (`Shell.canvas_asked`), and stays away from now on.
+action asked_on_canvas(s: Shell) (label: "Asked on the canvas") {
+    s.canvas_asked = true
 }
 
 /// How wide the caret's line stands, in canvas pixels: the rectangle's width when the person
@@ -220,7 +250,7 @@ fn pin_x(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace) -> Int {
 view canvas_place(a: Arrangement, p: ArrangementPlace, lists: Bool) {
     if composed(p) {
         ui.Place(
-            name: place_title(p),
+            name: content_title(p),
             carries: p.record,
             subject: placed_resource(p.record),
             fill,
@@ -235,6 +265,14 @@ view canvas_place(a: Arrangement, p: ArrangementPlace, lists: Bool) {
     } else {
         framed_place(a, p, lists)
     }
+}
+
+/// What a place on the canvas is called on its handle: what it shows, by its own title (an
+/// answer by its question, an inbox as Inbox). It is content, not a window, so its app's name is
+/// not joined to it as a window's title is (`place_title`); a place with no title of its own goes
+/// by that one.
+fn content_title(p: ArrangementPlace) -> Text {
+    if p.title != "" { p.title } else { place_title(p) }
 }
 
 /// Whether the place `p` draws its view itself — its resource's view, or the query it stands for

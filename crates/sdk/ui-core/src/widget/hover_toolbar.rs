@@ -53,6 +53,8 @@ pub struct HoverToolbar {
     /// The person uses a touchscreen: nothing hovers, so only focus shows the toolbar (a long
     /// press offers the same on the row's menu).
     touch: bool,
+    /// Where its controls stand, which says what focus shows them.
+    stands: Stands,
 }
 
 impl HoverToolbar {
@@ -138,6 +140,25 @@ impl HoverToolbar {
             hovered: false,
             focused: false,
             touch: false,
+            stands,
+        }
+    }
+
+    /// Whether focus is where it shows the controls. Over a row (a message), focus anywhere in
+    /// the row does, as hover does. Over content of its own in a band (a place on a canvas), only
+    /// focus in the controls does: the content's own focus — a field, a list, a text being read —
+    /// is the content's, and a handle shown for it would stand over a place at rest. The pointer
+    /// shows them, and Tab reaches them, which shows them too.
+    fn focus_shows(&self) -> bool {
+        match self.stands {
+            Stands::Straddling => focus_within(&self.layers),
+            Stands::Above(_) => self
+                .layers
+                .children()
+                .into_iter()
+                .next()
+                .and_then(|column| column.children().into_iter().next())
+                .is_some_and(focus_within),
         }
     }
 
@@ -205,7 +226,7 @@ impl Decorator for HoverToolbar {
             _ => {}
         }
         self.layers.handle_event(event, ctx);
-        self.focused = focus_within(&self.layers);
+        self.focused = self.focus_shows();
         self.follow(None);
     }
 
@@ -217,7 +238,7 @@ impl Decorator for HoverToolbar {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.focused = focus_within(&self.layers);
+        self.focused = self.focus_shows();
         self.follow(Some(theme));
         self.layers
             .draw_child(scene, transform, text, theme, presence);

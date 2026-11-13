@@ -204,6 +204,8 @@ fn a_right_press_reports_the_place_under_it_and_the_canvas_point() {
             width: 240.0,
             height: Some(200.0),
             band: 0.0,
+            hug: false,
+            grows: false,
         },
         Box::new(crate::widget::Spacer::new()),
     );
@@ -288,6 +290,8 @@ fn a_right_press_on_content_with_its_own_menu_is_the_contents() {
             width: 240.0,
             height: Some(200.0),
             band: 0.0,
+            hug: false,
+            grows: false,
         },
         Box::new(TakesRightPress {
             inner: crate::widget::Spacer::new(),
@@ -324,6 +328,8 @@ fn a_press_on_a_place_is_not_pointing_at_the_canvas() {
             width: 240.0,
             height: Some(200.0),
             band: 0.0,
+            hug: false,
+            grows: false,
         },
         Box::new(crate::widget::Spacer::new()),
     );
@@ -483,6 +489,8 @@ fn dragging_a_places_corner_reports_its_new_size() {
             width: 200.0,
             height: Some(150.0),
             band: 0.0,
+            hug: false,
+            grows: false,
         },
         // A place as the canvas stands it: its view on the surface, its handle and its menu.
         Box::new(crate::widget::CanvasPlace::from_props(

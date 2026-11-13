@@ -36,6 +36,9 @@ pub struct DisclosureRowProps {
     pub trailing: Option<Element>,
     /// Whether the row is open. Unless given, the row keeps it.
     pub expanded: Option<bool>,
+    /// One quiet line among content rather than a row of a list: the caption's size and ink,
+    /// as tall as that line (an answer's steps, folded under it).
+    pub dense: bool,
     /// The pace its body unfolds at, and the pace a view's open or close takes: the theme's
     /// unless it says otherwise.
     pub motion: Option<crate::motion::Feel>,
@@ -86,6 +89,7 @@ impl Described for DisclosureRow {
             body,
             trailing,
             expanded,
+            dense,
             motion,
             toggle,
         } = props;
@@ -110,6 +114,9 @@ impl Described for DisclosureRow {
         if expanded == Some(true) {
             row = row.opened();
         }
+        if dense {
+            row = row.dense();
+        }
         row.with_feel(motion.unwrap_or(crate::motion::Feel::Standard))
     }
 
@@ -126,9 +133,13 @@ impl Described for DisclosureRow {
             body: _,
             trailing: _,
             expanded,
+            dense,
             motion,
             toggle: _,
         } = props;
+        if dense != self.is_dense() {
+            return false;
+        }
         self.set_feel(motion.unwrap_or(crate::motion::Feel::Standard));
         self.title = title;
         self.secondary = secondary.unwrap_or_default();

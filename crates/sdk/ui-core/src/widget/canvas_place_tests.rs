@@ -35,6 +35,8 @@ fn a_places_surface_stands_where_it_was_put() {
             width: 400.0,
             height: Some(300.0),
             band: PLACE_BAND,
+            hug: false,
+            grows: false,
         },
         Box::new(place),
     );

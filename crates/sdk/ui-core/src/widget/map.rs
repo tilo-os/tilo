@@ -80,6 +80,11 @@ pub struct PinPlace {
     /// stands that much higher and taller, so its view's own top stays at `y` (a place on a
     /// canvas, whose handle shows over it). Zero for a pin with nothing over it.
     pub band: f64,
+    /// Its height is the most it takes: its view is as tall as what it holds up to `height`, as
+    /// an answer hugs its words inside the rectangle the person dragged for it.
+    pub hug: bool,
+    /// Arriving, it grows out of where the person last pointed ([`MapPinProps::grows`]).
+    pub grows: bool,
 }
 
 /// The camera: which canvas point stands at the viewport's top-leading corner, and how many
@@ -181,6 +186,10 @@ pub struct MapProps {
     /// light outline a drag across the canvas draws: the rectangle the person dragged, kept while
     /// they say what fills it.
     pub outline: Vec<i64>,
+    /// What the empty map says once, quietly, at the middle of what it shows: what a person
+    /// does on it ("Click anywhere and say what you want"). Drawn only while it holds no pin,
+    /// and read to assistive technology as the map's description.
+    pub hint: Option<String>,
 }
 
 /// One pin of a map, as an instance gives it: its key, its place and the view it shows.
@@ -204,6 +213,13 @@ pub struct MapPinProps {
     /// ([`crate::widget::canvas_place::PLACE_BAND`]): the pin stands that much higher, so the
     /// view's own top is at `y`.
     pub band: bool,
+    /// `height` is the most it takes: its view hugs what it holds up to it (an answer in the
+    /// rectangle it was asked in), rather than filling it.
+    pub hug: bool,
+    /// It is an answer: arriving, it grows out of where the person last pointed on the map (the
+    /// caret or the rectangle it answers), rather than fading in where it stands. The pointing
+    /// itself (a caret) leaves it unset and stands at once.
+    pub grows: bool,
     /// What the pin stands for, as the view names it: what pointing at the pin (`context`) and
     /// sizing it (`resize`) report. Without it, the pin's key.
     #[component(data)]
@@ -397,6 +413,12 @@ pub struct Map {
     /// The pin whose view a change inside it is patching (`part_views`), by its index: `None`
     /// while the change is to the pins themselves.
     editing: Option<usize>,
+    /// What the empty map says at its middle, while it holds no pin.
+    hint: Option<String>,
+    /// Where the person last pointed on the map, in canvas pixels: the point a click reported,
+    /// the corner of a dragged rectangle, a right press's point, where a drop landed. What
+    /// arrives on the map after it is the answer to that pointing, and grows out of it.
+    asked: Option<Point>,
 }
 
 /// What a map leaves for the one a rebuild puts in its place ([`crate::motion::keep`]): the
@@ -410,6 +432,7 @@ struct Lens {
     placed: HashMap<String, crate::motion::Placed>,
     pins: Vec<String>,
     reveal: Option<String>,
+    asked: Option<Point>,
 }
 
 impl Drop for Map {
@@ -426,6 +449,7 @@ impl Drop for Map {
                 placed: std::mem::take(&mut *self.placed.borrow_mut()),
                 pins: self.pins.iter().map(|(key, _, _)| key.clone()).collect(),
                 reveal: self.reveal.take(),
+                asked: self.asked,
             },
         );
     }
@@ -477,6 +501,8 @@ impl Map {
             key: String::new(),
             items: HashMap::new(),
             editing: None,
+            hint: None,
+            asked: None,
         }
     }
 
@@ -527,6 +553,9 @@ impl Map {
         // it before this layout places it.
         self.rect = lens.rect;
         self.placed.borrow_mut().extend(lens.placed);
+        // What the person pointed at before the map was built again is still what an arriving
+        // place answers.
+        self.asked = self.asked.or(lens.asked);
         self.reveal = self
             .pins
             .iter()
@@ -559,9 +588,10 @@ impl Map {
 
     /// Report a right press at the pointer: the pin `pin` it pointed at (empty for free space)
     /// and the canvas point under it.
-    fn point_at_context(&self, pin: String) {
+    fn point_at_context(&mut self, pin: String) {
         let pin = self.item_of(pin);
         let at = self.camera.to_canvas(self.rect.origin(), self.cursor);
+        self.asked = Some(at);
         self.context.fire(Some(crate::component::Value::List(vec![
             crate::component::Value::Text(pin),
             crate::component::Value::List(vec![
@@ -883,12 +913,15 @@ impl Map {
                     continue;
                 };
                 let width = (place.width * camera.zoom).max(1.0);
+                // A pin that hugs is measured at its natural height and stands no taller than
+                // its own: an answer as tall as its words, inside the rectangle it was asked in.
+                let fixed = place.height.filter(|_| !place.hug);
                 let size = cx
                     .measure_child(
                         index,
                         Size {
                             width: MeasureConstraint::Exact(f32_of(width)),
-                            height: place.height.map_or(MeasureConstraint::Intrinsic, |height| {
+                            height: fixed.map_or(MeasureConstraint::Intrinsic, |height| {
                                 MeasureConstraint::Exact(f32_of(
                                     (height * camera.zoom).max(1.0) + place.band,
                                 ))
@@ -899,8 +932,14 @@ impl Map {
                 let left = (place.x - camera.origin.x) * camera.zoom;
                 // A band over the view stands above the pin's point, so the view's top is there.
                 let top = (place.y - camera.origin.y) * camera.zoom - place.band;
-                let height = place.height.map_or(f64::from(size.height), |height| {
-                    (height * camera.zoom).max(1.0) + place.band
+                let natural = f64::from(size.height);
+                let height = place.height.map_or(natural, |height| {
+                    let most = (height * camera.zoom).max(1.0) + place.band;
+                    if place.hug {
+                        natural.clamp(place.band + 1.0, most)
+                    } else {
+                        most
+                    }
                 });
                 let mut rect = Rect::from_origin_size((left, top), (width, height));
                 // The pin is laid out where its motion has come to this frame, so what stands
@@ -947,8 +986,10 @@ impl Described for Map {
             context,
             resize,
             outline,
+            hint,
         } = props;
         let mut map = Self::new();
+        map.hint = hint.filter(|hint| !hint.trim().is_empty());
         map.resize = resize;
         map.outline = outline_of(&outline);
         map.ground = ground;
@@ -965,6 +1006,8 @@ impl Described for Map {
                 width: (pin.width.unwrap_or(360) as f64).max(1.0),
                 height: pin.height.map(|height| (height as f64).max(1.0)),
                 band: band_of(pin.band),
+                hug: pin.hug && pin.height.is_some(),
+                grows: pin.grows,
             };
             if let Some(item) = pin.item.filter(|item| !item.is_empty()) {
                 map.items.insert(pin.key.clone(), item);
@@ -996,7 +1039,13 @@ impl Described for Map {
             context,
             resize,
             outline,
+            hint,
         } = props;
+        let hint = hint.filter(|hint| !hint.trim().is_empty());
+        if hint != self.hint {
+            self.hint = hint;
+            self.dirty = true;
+        }
         self.resize = resize;
         let outline = outline_of(&outline);
         if outline != self.outline {
@@ -1027,6 +1076,8 @@ impl Described for Map {
                 width: (pin.width.unwrap_or(360) as f64).max(1.0),
                 height: pin.height.map(|height| (height as f64).max(1.0)),
                 band: band_of(pin.band),
+                hug: pin.hug && pin.height.is_some(),
+                grows: pin.grows,
             };
         }
         // The region built before reads where the pins stand now at its next solve.
@@ -1101,6 +1152,8 @@ impl SlotViews for Map {
                     width: 360.0,
                     height: None,
                     band: 0.0,
+                    hug: false,
+                    grows: false,
                 },
                 Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0)),
             ),
@@ -1161,7 +1214,88 @@ impl Map {
     }
 }
 
+/// How far apart the ground's dots stand, in canvas pixels at zoom 1: the rhythm's group step, so
+/// the grid is the spacing a place's own content keeps.
+const GRAIN_PITCH: f64 = crate::tokens::Spacing::BASE.rhythm.group as f64;
+/// The closest the ground's dots stand on screen, in logical pixels: zoomed out further, every
+/// other one is left out, so the ground reads as a surface and never as a texture.
+const GRAIN_LEAST: f64 = 16.0;
+/// How wide a dot of the ground is on screen, in logical pixels, at any zoom.
+const GRAIN_DOT: f64 = 1.5;
+
 impl Map {
+    /// The ground's grain: a grid of dots in the theme's quietest veneer, so faint it only says
+    /// "surface" (`canvas.md` §7). The dots are canvas points, so they pan and zoom with the
+    /// ground and the person sees the ground move under their hand; on screen each is the same
+    /// size at every zoom. All of them are one path, filled once.
+    fn draw_grain(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let viewport = self.rect;
+        let camera = self.shown.get();
+        let zoom = camera.zoom.max(f64::EPSILON);
+        let mut pitch = GRAIN_PITCH;
+        while pitch * zoom < GRAIN_LEAST {
+            pitch *= 2.0;
+        }
+        let corner = viewport.origin();
+        let from = camera.to_canvas(corner, corner);
+        let to = camera.to_canvas(corner, Point::new(viewport.x1, viewport.y1));
+        let first_x = (from.x / pitch).floor() as i64;
+        let first_y = (from.y / pitch).floor() as i64;
+        let last_x = (to.x / pitch).ceil() as i64;
+        let last_y = (to.y / pitch).ceil() as i64;
+        let half = GRAIN_DOT / 2.0;
+        let mut dots = vello::kurbo::BezPath::new();
+        for row in first_y..=last_y {
+            for column in first_x..=last_x {
+                let at = camera.to_screen(
+                    corner,
+                    Point::new(column as f64 * pitch, row as f64 * pitch),
+                );
+                // Snapped to the pixel grid, so every dot is as sharp as the next.
+                let at = Point::new(at.x.round(), at.y.round());
+                if !viewport.contains(at) {
+                    continue;
+                }
+                let dot = Rect::new(at.x - half, at.y - half, at.x + half, at.y + half);
+                vello::kurbo::Shape::path_elements(&dot, 0.1).for_each(|element| {
+                    dots.push(element);
+                });
+            }
+        }
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.overlay_subtle,
+            None,
+            &dots,
+        );
+    }
+
+    /// What the empty map says at the middle of what it shows, in the theme's quiet ink at body
+    /// size: a sentence, not a control, gone once anything stands on the map.
+    fn draw_hint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(hint) = self.shown_hint() else {
+            return;
+        };
+        let style = theme.tokens.typography.style(crate::tokens::TextRole::Body);
+        let face = crate::widget::TextLineFace::styled(hint, &style, crate::tokens::TextRole::Body);
+        let mut ctx = crate::paint::PaintCtx::new(scene, transform, text, theme);
+        face.paint(&mut ctx, self.rect, theme.text_tertiary);
+    }
+
+    /// The hint the map shows now: its own while it holds no pin and nothing is being pointed at.
+    fn shown_hint(&self) -> Option<&str> {
+        (self.pins.is_empty() && self.free_press.is_none() && self.outline.is_none())
+            .then_some(self.hint.as_deref())
+            .flatten()
+    }
+
     /// The rectangle a drag across the empty canvas covers, as a light outline in the theme's
     /// focus colour (a theme role, never a colour of the map's own): what the person sees of the
     /// frame they are pointing at before they let go (`canvas.md` §1, §5). Nothing is drawn when
@@ -1245,19 +1379,34 @@ impl Map {
                 }
             }
             placed_pins.retain(|key, placed| keys.contains(key) || placed.is_visible(now));
-            // Each pin the region holds is drawn where it is laid out, arriving as it does.
+            // Where the person last pointed, on screen: an answer arriving grows out of it.
+            let corner = self.rect.origin().to_vec2();
+            let camera = self.shown.get();
+            let asked = self
+                .asked
+                .map(|at| camera.to_screen(self.rect.origin(), at));
+            // Each pin the region holds is drawn where it is laid out, arriving as it does. The
+            // region lays the pins out in the map's own coordinates and the pins draw where the
+            // map stands, so a pose is taken about the pin as it is drawn.
             keys.iter()
                 .filter_map(|key| {
                     let placed = placed_pins.get(key)?;
                     let rect = laid.get(key).copied()?;
                     let index = self.pins.iter().position(|(held, _, _)| held == key)?;
+                    let grows = self
+                        .pins
+                        .get(index)
+                        .is_some_and(|(_, place, _)| place.grows);
                     placed.is_visible(now).then(|| {
-                        let pose = crate::motion::WindowMotion::content_pose(
-                            placed.progress(now),
-                            rect,
-                            motion,
-                        );
-                        (index, rect, pose)
+                        let drawn = rect + corner;
+                        let progress = placed.progress(now);
+                        let pose = match asked {
+                            Some(from) if grows => crate::motion::WindowMotion::grown_pose(
+                                progress, drawn, from, motion,
+                            ),
+                            _ => crate::motion::WindowMotion::content_pose(progress, drawn, motion),
+                        };
+                        (index, drawn, pose)
                     })
                 })
                 .collect()
@@ -1527,6 +1676,7 @@ impl Map {
                         from.x.max(to.x),
                         from.y.max(to.y),
                     );
+                    self.asked = Some(rect.origin());
                     self.frame.fire(Some(crate::component::Value::List(vec![
                         crate::component::Value::Int(rect.x0.round() as i64),
                         crate::component::Value::Int(rect.y0.round() as i64),
@@ -1534,6 +1684,7 @@ impl Map {
                         crate::component::Value::Int(rect.height().round() as i64),
                     ])));
                 } else {
+                    self.asked = Some(from);
                     self.press.fire(Some(crate::component::Value::List(vec![
                         crate::component::Value::Int(from.x.round() as i64),
                         crate::component::Value::Int(from.y.round() as i64),
@@ -1583,25 +1734,39 @@ impl Widget for Map {
         crate::widget::redraw_or_children(self.dirty, self)
     }
 
-    /// Over a place's trailing or bottom edge the pointer shows the edge can be dragged.
+    /// Over a place's trailing or bottom edge the pointer shows the edge can be dragged; over
+    /// the free canvas it is a text cursor, since a click there puts a caret to write at
+    /// (`canvas.md` §7, "Free space invites writing"), and while a middle drag pans the canvas
+    /// it holds it. Over a place, what the place holds says.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         use winit::window::CursorIcon;
         if self.edge_drag.is_none() && !self.rect.contains(point) {
             return None;
         }
+        let local = point - self.rect.origin().to_vec2();
         let edges = self
             .edge_drag
             .as_ref()
             .map(|drag| (drag.trailing, drag.bottom))
             .or_else(|| {
-                self.edge_at(point - self.rect.origin().to_vec2())
+                self.edge_at(local)
                     .map(|(_, _, trailing, bottom)| (trailing, bottom))
-            })?;
-        Some(match edges {
-            (true, true) => CursorIcon::SeResize,
-            (true, false) => CursorIcon::EResize,
-            _ => CursorIcon::SResize,
-        })
+            });
+        if let Some(edges) = edges {
+            return Some(match edges {
+                (true, true) => CursorIcon::SeResize,
+                (true, false) => CursorIcon::EResize,
+                _ => CursorIcon::SResize,
+            });
+        }
+        if self.pan.is_some_and(|pan| pan.active) {
+            return Some(CursorIcon::Grabbing);
+        }
+        if self.over_pin(local) {
+            return None;
+        }
+        // Pointing on the free canvas: a click writes there, a drag frames where to write.
+        (!self.press.is_none()).then_some(CursorIcon::Text)
     }
 
     /// A finger on the canvas's free space points as the pointer does (`canvas.md` §2, "Touch"):
@@ -1718,6 +1883,7 @@ impl Widget for Map {
                 crate::widget::primitives::SurfaceLevel::Ground,
                 theme,
             );
+            self.draw_grain(scene, transform, theme);
         }
         if clips {
             scene.push_layer(
@@ -1728,6 +1894,7 @@ impl Widget for Map {
                 &viewport,
             );
         }
+        self.draw_hint(scene, transform, text, theme);
         self.draw_frame_outline(scene, transform, theme);
         self.draw_pins(scene, transform, text, theme, presence);
         if clips {
@@ -1757,7 +1924,8 @@ impl Widget for Map {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                .with_optional_name((!self.name.is_empty()).then(|| self.name.clone())),
+                .with_optional_name((!self.name.is_empty()).then(|| self.name.clone()))
+                .with_optional_description(self.shown_hint().map(str::to_owned)),
         )
     }
 
@@ -1869,6 +2037,7 @@ impl Widget for Map {
                 && !resource.is_empty()
             {
                 let at = self.camera.to_canvas(self.rect.origin(), landed.pointer);
+                self.asked = Some(at);
                 self.drop.fire(Some(crate::component::Value::List(vec![
                     crate::component::Value::Resource(resource),
                     crate::component::Value::List(vec![
@@ -1942,3 +2111,7 @@ mod motion_tests;
 #[cfg(test)]
 #[path = "map_pointing_tests.rs"]
 mod pointing_tests;
+
+#[cfg(test)]
+#[path = "map_canvas_tests.rs"]
+mod canvas_tests;

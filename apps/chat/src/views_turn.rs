@@ -1,8 +1,8 @@
 //! One turn of a conversation, as it stands on the canvas where it was asked (canvas.md §3).
 
 use super::{
-    Channel, Gap, Message, Node, Person, ResourceRef, ViewCx, ViewResource, attachment_row,
-    failed_row, is_agent, node, ui, view, writing_row,
+    Channel, Gap, Message, Node, Person, ResourceRef, Value, ViewCx, ViewResource, attachment_row,
+    failed_row, is_agent, node, sdk, ui, view,
 };
 
 /// One turn of a conversation with an agent (canvas.md §3): the message a person asked in, and
@@ -91,10 +91,14 @@ impl ViewResource for Turn {
     const APP: &'static str = "chat";
 }
 
-/// A turn, as it stands on the canvas where it was asked (canvas.md §3): the person's words as a
-/// quiet line, the agent's reply under it at reading size, and what the agent did folded under
-/// that. No byline, no avatars and no composer: it is one exchange, not a conversation, and the
-/// whole conversation opens from its foot.
+/// A turn, as it stands on the canvas where it was asked (canvas.md §3, §7 "An answer reads like
+/// an answer"): the person's words as a quiet line, the agent's reply under it as prose at body
+/// size with its Markdown set as text (never as its source), and what the agent did as one quiet
+/// line that unfolds. While the agent works, one live line says what it is doing now, from the
+/// step it took last, in place of a count. No byline, no avatars, no composer and no button: it
+/// is one exchange, and the whole conversation is reached from the place's handle.
+///
+/// The turn holds its words and nothing else, so its place hugs them (`canvas.tl`'s `hugs`).
 #[view(default)]
 pub(super) fn turn(t: &Turn, cx: &ViewCx) -> Node {
     let mut column: Vec<Node> = vec![
@@ -104,19 +108,20 @@ pub(super) fn turn(t: &Turn, cx: &ViewCx) -> Node {
             .into(),
     ];
     let mut steps: Vec<String> = Vec::new();
+    // What the agent is doing now, while it works: the line under the words it has so far.
+    let mut working: Option<String> = None;
     for reply in &t.replies {
         if let Some(work) = &reply.work {
             steps.extend(work.steps.iter().cloned());
             if work.writing() {
-                column.push(writing_row(reply, work, cx));
+                working = Some(live_line(work));
             }
         }
         if !reply.text.trim().is_empty() {
-            column.push(
-                ui::TextBuilder::new(&cx.key(format!("reply-{}", reply.id)), reply.text.trim())
-                    .role(ui::TextRole::Body)
-                    .into(),
-            );
+            column.push(prose(
+                &cx.key(format!("reply-{}", reply.id)),
+                reply.text.trim(),
+            ));
         }
         for (index, attachment) in reply.attachments.iter().enumerate() {
             column.push(attachment_row(
@@ -132,21 +137,28 @@ pub(super) fn turn(t: &Turn, cx: &ViewCx) -> Node {
         }
     }
     if t.replies.is_empty() {
-        // Asked, and nothing answered yet: the turn says it is waiting where the answer will
+        // Asked, and nothing answered yet: the turn says it is thinking where the answer will
         // stand, so the person sees where it lands.
-        let waiting: Node = ui::SpinnerBuilder::new(&cx.key("waiting"))
-            .label("Thinking…")
+        working = Some(THINKING.to_owned());
+    }
+    if let Some(line) = working {
+        let spinner: Node = ui::SpinnerBuilder::new(&cx.key("working-spinner"))
+            .label(line.clone())
             .beside(ui::TextRole::Caption)
             .into();
-        column.push(waiting);
-    }
-    if !steps.is_empty() {
-        let label = if steps.len() == 1 {
-            "1 step".to_owned()
-        } else {
-            format!("{} steps", steps.len())
-        };
-        let folded: Node = ui::DisclosureRowBuilder::new(&cx.key("steps"), label).into();
+        let said: Node = ui::TextBuilder::new(&cx.key("working"), &line)
+            .role(ui::TextRole::Caption)
+            .secondary(true)
+            .into();
+        column.push(ui::row(
+            &cx.key("working-row"),
+            Gap::Tight,
+            vec![spinner, said],
+        ));
+    } else if !steps.is_empty() {
+        let folded: Node = ui::DisclosureRowBuilder::new(&cx.key("steps"), steps_line(&steps))
+            .dense(true)
+            .into();
         let lines: Vec<Node> = steps
             .iter()
             .enumerate()
@@ -159,19 +171,63 @@ pub(super) fn turn(t: &Turn, cx: &ViewCx) -> Node {
             .collect();
         column.push(node::with(folded, lines));
     }
-    // The whole conversation is the channel underneath: it opens as content on request, beside
-    // the turn, through the system's open.
-    let whole: Node = ui::ButtonBuilder::new(&cx.key("conversation"), "Whole conversation")
-        .icon("message-square")
-        .role(ui::ButtonRole::Plain)
-        .into();
-    let opened = cx.open(&whole, "press", t.conversation(), None);
-    column.push(node::on(whole, "press", opened));
-    // The page's gutter on every side and its reading measure, as every page sets its blocks on:
-    // the turn stands on the canvas's surface with no frame, so its words keep the page's room
-    // from its edges. A page that filled would give the sides up to what it holds.
-    ui::page(
-        &cx.key("turn-page"),
-        vec![ui::stack(&cx.key("turn"), Gap::Related, column)],
-    )
+    // A card's padding on every side, as an object's card keeps it: the turn stands on the
+    // canvas's surface with no frame, so its words keep their room from its edges. Not a page:
+    // a page scrolls and takes the height its pane gives it, where the turn hugs its words.
+    let mut card = ui::stack(&cx.key("turn"), Gap::Related, column);
+    card.props
+        .insert("padding".to_owned(), Value::text("section"));
+    card
 }
+
+/// What a turn says while the agent has taken no step and said nothing of what it does.
+const THINKING: &str = "Thinking\u{2026}";
+
+/// The agent's reply as it reads: its Markdown as text, at body size (`**bold**` bold, a list a
+/// list, a heading a heading), through the toolkit's own reading of Markdown
+/// (`BlockEditor::reading_markdown`), shown read-only as a document is.
+pub(super) fn prose(key: &str, markdown: &str) -> Node {
+    let reading = sdk::widget::BlockEditor::reading_markdown(markdown);
+    let blocks: Vec<sdk::widget::BlockContent> = reading
+        .blocks()
+        .iter()
+        .map(sdk::widget::Block::content)
+        .collect();
+    let rich = sdk::widget::rich_doc::rich_of_blocks(&blocks, &Default::default());
+    ui::BlockEditorBuilder::new(key).value(rich).into()
+}
+
+/// What the agent is doing now, in one line: the step it dispatched last, as its app names it,
+/// still going; what the run said is under way when it took no step yet; else that it is
+/// thinking.
+pub(super) fn live_line(work: &super::Work) -> String {
+    if let Some(step) = work
+        .steps
+        .last()
+        .map(|step| step.trim().trim_end_matches('\u{2026}'))
+        .filter(|step| !step.is_empty())
+    {
+        return format!("{step}\u{2026}");
+    }
+    let detail = work.detail.trim();
+    if detail.is_empty() {
+        THINKING.to_owned()
+    } else {
+        detail.to_owned()
+    }
+}
+
+/// What the agent did, in one quiet line: its one step as its app names it, or the first and how
+/// many more, each of them listed when the line unfolds.
+pub(super) fn steps_line(steps: &[String]) -> String {
+    match steps {
+        [] => String::new(),
+        [one] => one.clone(),
+        [first, rest @ ..] if rest.len() == 1 => format!("{first} and 1 more step"),
+        [first, rest @ ..] => format!("{first} and {} more steps", rest.len()),
+    }
+}
+
+#[cfg(test)]
+#[path = "views_turn_tests.rs"]
+mod tests;

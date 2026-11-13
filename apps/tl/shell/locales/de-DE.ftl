@@ -937,6 +937,7 @@ d-fniigjed = Einstellungen der Sicht
 d-gapwwnqc = Stil zeigen~present
 
 d-s7yqm7cb = Fläche
+    .w-click-anywhere-and-say-what-you = Klicke irgendwo hin und sag, was du willst
     .w-caret = Schreibmarke
     .w-find-or-ask = Finden oder fragen
 
@@ -1326,6 +1327,7 @@ d-cejnvssb-filter-settings_open = Einstellungen offen
 d-cejnvssb-filter-strips_tabs = Reihen-Tabs
 
 d-cejnvssb-filter-frames_snap = Rahmen einrasten
+d-cejnvssb-filter-canvas_asked = Auf der Fläche gefragt
 
 d-7j7tzynq-shown = Gezeigt
 
@@ -1524,3 +1526,19 @@ d-mnbjennf = Einstellungen des Rahmenstils
 
 d-xwhxaimf = Einstellungen des Raumstils
     .w-spaces-shows-each-place-as-its = Räume zeigt jeden Platz als eigene Ansicht und hat nichts einzustellen.
+
+d-6bamt22e = Auf der Fläche gefragt
+    .doc = Die Fläche: ob die Person auf ihr schon gefragt hat.
+
+d-ukun4zmh = Auf der Fläche gefragt
+    .doc = Die Person hat auf der Fläche gefragt: der Hinweis, den die leere Fläche bis dahin sagt, ist gesagt (`Shell.canvas_asked`) und bleibt von nun an fort.
+
+d-dgtjjxex = Menü der Person
+    .w-you = Du
+    .w-desk-style-and-workspaces = { $me }: Schreibtischstil und Arbeitsbereiche
+    .w-settings-for = Einstellungen für { $style_title }
+    .w-new-workspace = Neuer Arbeitsbereich
+    .w-workspaces = Arbeitsbereiche
+    .w-join-a-workspace = Einem Arbeitsbereich beitreten
+    .w-workspace-settings = Einstellungen des Arbeitsbereichs
+    .w-overview = Übersicht

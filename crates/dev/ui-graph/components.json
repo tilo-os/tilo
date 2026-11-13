@@ -1414,6 +1414,13 @@
           "type": "bool"
         },
         {
+          "name": "faces",
+          "doc": "Whose menu it is, as their faces in place of the label and icon: the person's own menu on a bar is their face. The label names it to assistive technology.",
+          "type": {
+            "list": "text"
+          }
+        },
+        {
           "name": "role",
           "doc": "What kind of button it is: `secondary` unless said, `plain` for an icon-only one.",
           "type": {
@@ -2879,6 +2886,13 @@
           "type": {
             "list": "int"
           }
+        },
+        {
+          "name": "hint",
+          "doc": "What the empty map says once, quietly, at the middle of what it shows: what a person does on it (\"Click anywhere and say what you want\"). Drawn only while it holds no pin, and read to assistive technology as the map's description.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "slots": [
@@ -3756,6 +3770,11 @@
           "type": {
             "option": "bool"
           }
+        },
+        {
+          "name": "dense",
+          "doc": "One quiet line among content rather than a row of a list: the caption's size and ink, as tall as that line (an answer's steps, folded under it).",
+          "type": "bool"
         },
         {
           "name": "motion",
@@ -6901,6 +6920,16 @@
         {
           "name": "band",
           "doc": "Whether its view keeps a place's handle band over its top edge ([`crate::widget::canvas_place::PLACE_BAND`]): the pin stands that much higher, so the view's own top is at `y`.",
+          "type": "bool"
+        },
+        {
+          "name": "hug",
+          "doc": "`height` is the most it takes: its view hugs what it holds up to it (an answer in the rectangle it was asked in), rather than filling it.",
+          "type": "bool"
+        },
+        {
+          "name": "grows",
+          "doc": "It is an answer: arriving, it grows out of where the person last pointed on the map (the caret or the rectangle it answers), rather than fading in where it stands. The pointing itself (a caret) leaves it unset and stands at once.",
           "type": "bool"
         },
         {
