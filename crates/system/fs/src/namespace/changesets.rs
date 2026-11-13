@@ -1,14 +1,6 @@
-//! Changeset boundaries, so a peer applies one device's capture epoch as a
-//! whole (`storage.md` §10, V3).
-//!
-//! A device publishing an epoch opens its mark before the epoch's first
-//! operation and closes it after the last. Namespace changes are applied
-//! causally, and every operation of the epoch was made after the opening
-//! and before the closing: a peer that sees the mark closed has every
-//! operation of that epoch, and a peer that sees it open may have only
-//! some. The mark also names the span of version times the epoch
-//! published, so a peer waiting for one version of an epoch holds back
-//! the rest of that epoch rather than showing part of it.
+//! Changeset boundaries, so a peer applies one device's capture epoch as a whole:
+//! a closed mark means every operation of the epoch arrived, an open one that it
+//! may have only some.
 
 use automerge::transaction::Transactable;
 use automerge::{ROOT, ReadDoc, ScalarValue, Value};
@@ -18,24 +10,20 @@ use super::Namespace;
 
 const CHANGESET_PREFIX: &str = "changeset/";
 
-/// One device's latest changeset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangesetMark {
     pub epoch: u64,
-    /// Still being published.
     pub open: bool,
     /// Earliest and latest version time (Unix ms) the epoch publishes.
     pub first_ms: u64,
     pub last_ms: u64,
-    /// When the mark was last written, by the author's clock. A long
-    /// publication rewrites it, so a peer can tell progress from a crash
-    /// without comparing clocks.
+    /// When the mark was last written, by the author's clock; a long publication
+    /// rewrites it, so a peer can tell progress from a crash.
     pub at_ms: u64,
 }
 
 impl Namespace {
-    /// Records `device`'s changeset mark. The caller broadcasts the next
-    /// incremental save.
+    /// The caller broadcasts the next incremental save.
     pub fn put_changeset_mark(&mut self, device: [u8; 32], mark: &ChangesetMark) -> bool {
         let Ok(bytes) = postcard::to_allocvec(mark) else {
             return false;
@@ -46,7 +34,6 @@ impl Namespace {
             .is_ok()
     }
 
-    /// Every device's latest changeset mark.
     pub fn changeset_marks(&self) -> Vec<([u8; 32], ChangesetMark)> {
         self.doc
             .keys(&ROOT)
@@ -95,8 +82,6 @@ mod tests {
             },
         );
         let d3 = a.save_incremental();
-        // Delivered out of order: the closing is held until what precedes
-        // it has arrived.
         b.apply_incremental(&d3).unwrap();
         assert!(b.changeset_marks().is_empty());
         b.apply_incremental(&d1).unwrap();

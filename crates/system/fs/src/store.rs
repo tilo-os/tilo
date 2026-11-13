@@ -1,23 +1,15 @@
-//! The content plane: one content store with one hash space and two
-//! backings.
+//! The content plane: one content store with one hash space and two backings.
 //!
-//! - **Loose** blobs live in an iroh-blobs store (`FsStore` rooted at
-//!   `--cache-dir`, `MemStore` in tests): manifests, the chunks of small
-//!   files, legacy content, thumbnails, package payloads.
-//! - **File-backed** content ([`FileArea`]) is everything larger than
-//!   [`crate::content::FILE_BACKED_MIN`]: one sparse file per content id at
-//!   the file's own offsets, filled range by range, with a chunk index so a
-//!   chunk is served and deduplicated from where it lives. On a Tier 1
-//!   store volume the area sits next to the workspaces, so publishing a file
-//!   clones its extents instead of copying bytes.
+//! Loose blobs live in an iroh-blobs store (manifests, the chunks of small files, legacy content,
+//! thumbnails, package payloads). File-backed content ([`FileArea`]) is everything larger than
+//! [`crate::content::FILE_BACKED_MIN`]: one sparse file per content id at the file's own offsets,
+//! filled range by range, with a chunk index so a chunk is served and deduplicated where it lives.
+//! On a Tier 1 store volume the area sits next to the workspaces, so publishing a file clones its
+//! extents instead of copying bytes.
 //!
-//! The same area is the daemon's bounded cache: resident bytes of cached
-//! entries are kept under a byte budget, least recently used first, and
-//! pinned or local-only content is never evicted. A `moka` cache sits in
-//! front of loose blobs for hot reads, bounded by bytes
-//! ([`BLOB_CACHE_BYTES`]) and holding only small blobs
-//! ([`MAX_CACHED_BLOB`]). The provider serves both backings
-//! ([`ContentStore::blobs_protocol`]).
+//! The same area is the daemon's bounded cache: resident bytes are kept under a byte budget, least
+//! recently used first, and pinned or local-only content is never evicted. A `moka` cache in front
+//! of loose blobs bounds hot reads by bytes ([`BLOB_CACHE_BYTES`]).
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -72,9 +64,8 @@ pub const MAX_BLOB_LOOKUP_CHUNKS_PER_RECORD: usize = 100_000;
 
 const OWNED_BLOB_TAG_PREFIX: &str = "tilo/blob/v1/";
 
-/// Persistent stores sweep unreferenced blobs periodically. Explicit eviction
-/// does not wait for this interval; callers observe the queue to learn when a
-/// sweep has removed every requested hash.
+/// Persistent stores sweep unreferenced blobs periodically. Explicit eviction does not wait for this
+/// interval; callers observe the queue to learn when a sweep has removed every requested hash.
 pub const DEFAULT_BLOB_GC_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,8 +115,8 @@ pub enum BlobRecordLookupError {
     },
 }
 
-/// Explicit reclamation errors. iroh-blobs intentionally exposes deletion
-/// only through GC, so an unqueued plan remains insufficient authority.
+/// Explicit reclamation errors. iroh-blobs deletes only through GC, so an unqueued plan is not
+/// authority enough.
 #[derive(Debug, thiserror::Error)]
 #[cfg(feature = "filesystem")]
 pub enum StoreEvictionError {
@@ -141,8 +132,8 @@ pub enum StoreEvictionError {
     Sync(String),
 }
 
-/// Durable handoff from the eviction queue to the configured background GC.
-/// This is deliberately not a deletion receipt.
+/// Durable handoff from the eviction queue to the configured background GC, deliberately not a
+/// deletion receipt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg(feature = "filesystem")]
 pub struct BackendGcRelease {
@@ -151,7 +142,6 @@ pub struct BackendGcRelease {
     pub released_owned_tags: u64,
 }
 
-/// Either an on-disk or in-memory iroh-blobs store. Both `Deref` to `Store`.
 enum Backend {
     Mem(MemStore),
     Fs(FsStore),
@@ -160,34 +150,28 @@ enum Backend {
 pub struct ContentStore {
     backend: Backend,
     cache: Cache<Hash, Bytes>,
-    /// Serializes owned-tag installation and release. A concurrent ingest of
-    /// the same hash therefore wins either wholly before or wholly after an
-    /// eviction handoff, never between tag inspection and durable release.
+    /// Serializes owned-tag installation and release, so a concurrent ingest of the same hash wins
+    /// either wholly before or wholly after an eviction handoff.
     owned_tags: tokio::sync::Mutex<()>,
     /// Serializes publication with the legacy selective-GC API.
     mutation: tokio::sync::Mutex<()>,
     /// Exact live set supplied only for an authorized selective sweep.
     gc: GcGate,
-    /// Open deferred-durability groups, and whether a write inside one
-    /// still waits for its database sync; see [`ContentStore::defer_sync`].
+    /// Open deferred-durability groups, and whether a write inside one still waits for its database
+    /// sync; see [`ContentStore::defer_sync`].
     deferred: std::sync::Mutex<(usize, bool)>,
-    /// Database syncs writes have asked for; see [`ContentStore::write_syncs`].
     write_syncs: std::sync::atomic::AtomicU64,
-    /// Bytes read so far; see [`ContentStore::read_bytes`].
     read_bytes: std::sync::atomic::AtomicU64,
-    /// File-backed content and the daemon's bounded cache.
     files: Arc<FileArea>,
-    /// The directory of an ephemeral store's area, removed with it.
     _scratch: Option<tempfile::TempDir>,
-    /// The runtime the persistent store's actors run on (declared last, so
-    /// it outlives the store handle).
+    /// The runtime the persistent store's actors run on, declared last so it outlives the store
+    /// handle.
     runtime: Option<StoreRuntime>,
 }
 
-/// A runtime of the content store's own. The store's actors batch their
-/// database transactions on timers; on the daemon's runtime they stalled
-/// whenever a worker blocked on the namespace lock while the content pruner
-/// held that lock and waited for the store, and with them every timer and
+/// A runtime of the content store's own. The store's actors batch their database transactions on
+/// timers; on the daemon's runtime they stalled whenever a worker blocked on the namespace lock
+/// while the content pruner held that lock and waited for the store, and with them every timer and
 /// socket of the daemon.
 struct StoreRuntime(Option<tokio::runtime::Runtime>);
 
@@ -251,11 +235,9 @@ impl Drop for ContentStore {
 
 /// Flush and close a store's database, then let its background gc task go.
 ///
-/// The task parks in the gate holding a handle of its own, so it outlives
-/// every other handle and the store's actor outlives the task. Closed, its
-/// next pass runs into the closed store and fails, which ends the task; the
-/// last handle goes with it, the actor ends, and the runtime the actor built
-/// for the store shuts down with it.
+/// The task parks in the gate holding a handle of its own, so it outlives every other handle. Closed,
+/// its next pass runs into the closed store and fails, which ends the task; the last handle goes with
+/// it, the actor ends, and the runtime the actor built shuts down with it.
 async fn stop_store(backend: &Backend, gate: &GcGate) -> Result<()> {
     let stopped = match backend {
         Backend::Fs(store) => match store.sync_db().await {
@@ -268,30 +250,24 @@ async fn stop_store(backend: &Backend, gate: &GcGate) -> Result<()> {
     stopped
 }
 
-/// Heap the hot cache in front of loose blobs may hold, counting each
-/// entry's bookkeeping. It is for what is read again and again and is small:
-/// manifests, the chunks of small files, thumbnails.
+/// Heap the hot cache in front of loose blobs may hold, counting each entry's bookkeeping. For what
+/// is read again and again and is small: manifests, the chunks of small files, thumbnails.
 pub const BLOB_CACHE_BYTES: u64 = 32 * 1024 * 1024;
 
-/// Largest blob the hot cache admits. Anything larger is file-backed content
-/// ([`crate::content::FILE_BACKED_MIN`] is the same size) or document media,
-/// both read by range, and one such blob would take a large share of the
-/// budget for a single read.
+/// Largest blob the hot cache admits. Anything larger is file-backed content or document media, both
+/// read by range, and one such blob would take a large share of the budget for a single read.
 pub const MAX_CACHED_BLOB: usize = 1024 * 1024;
 
-/// What a cache entry costs beyond its bytes: the key, the `Bytes` handle
-/// and the cache's own node.
+/// What a cache entry costs beyond its bytes: the key, the `Bytes` handle and the cache's node.
 const CACHE_ENTRY_OVERHEAD: u32 = 256;
 
-/// An insert at least this large settles the cache at once. moka applies
-/// writes in batches of 64, so without this a run of large inserts could sit
-/// above the budget until the next batch; with it, what waits is at most 64
-/// inserts smaller than this.
+/// An insert at least this large settles the cache at once. moka applies writes in batches of 64, so
+/// a run of large inserts could otherwise sit above the budget until the next batch.
 const CACHE_SETTLE_AT: usize = 64 * 1024;
 
-/// The hot cache in front of loose blobs, bounded by bytes. Its admission
-/// weighs a newcomer's access frequency against that of every entry it would
-/// evict, so a run of cold large reads does not flush small hot entries.
+/// The hot cache in front of loose blobs, bounded by bytes. Its admission weighs a newcomer's access
+/// frequency against that of every entry it would evict, so a run of cold large reads does not flush
+/// small hot entries.
 fn blob_cache() -> Cache<Hash, Bytes> {
     Cache::builder()
         .max_capacity(BLOB_CACHE_BYTES)
@@ -303,11 +279,9 @@ fn blob_cache() -> Cache<Hash, Bytes> {
         .build()
 }
 
-/// Removes what imports left in the blob store's spill directory. A stream
-/// import spills to a file there and the store removes it only when the
-/// import succeeds, so an upload abandoned halfway leaves its part behind.
-/// Called right after the store loads, before anything imports, so every
-/// file there is from an earlier run.
+/// Removes what imports left in the blob store's spill directory. A stream import spills to a file
+/// there and is removed only when the import succeeds, so an abandoned upload leaves its part behind.
+/// Called right after the store loads, before anything imports.
 fn remove_import_spills(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -319,14 +293,12 @@ fn remove_import_spills(dir: &Path) {
     }
 }
 
-/// Where a persistent store at `cache_dir` keeps its file-backed content,
-/// unless opened with [`ContentStore::open_with_files`].
 fn files_dir(cache_dir: &Path) -> PathBuf {
     cache_dir.join("files")
 }
 
-/// Budget for cached file-backed content when the caller sets none: a
-/// quarter of the filesystem that holds it.
+/// Budget for cached file-backed content when the caller sets none: a quarter of the filesystem that
+/// holds it.
 fn default_budget(dir: &Path) -> u64 {
     const FALLBACK: u64 = 8 * 1024 * 1024 * 1024;
     #[cfg(all(target_os = "linux", feature = "filesystem"))]
@@ -361,25 +333,16 @@ fn default_budget(dir: &Path) -> u64 {
 
 impl ContentStore {
     /// Open the persistent store rooted at `cache_dir` (created if missing).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `cache_dir` cannot be created or the on-disk blob store fails to load.
     pub async fn open(cache_dir: impl AsRef<Path>) -> Result<Self> {
         Self::open_with_gc_interval(cache_dir, DEFAULT_BLOB_GC_INTERVAL).await
     }
 
-    /// [`Self::open`] with the file-backed content under `files_dir`, for
-    /// example on the store volume next to the workspaces.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if either directory or the stores cannot be opened.
+    /// [`Self::open`] with the file-backed content under `files_dir`, for example on the store volume
+    /// next to the workspaces.
     pub async fn open_with_files(cache_dir: impl AsRef<Path>, files_dir: &Path) -> Result<Self> {
         Self::open_inner(cache_dir.as_ref(), DEFAULT_BLOB_GC_INTERVAL, files_dir).await
     }
 
-    /// Open a persistent store with background garbage collection enabled.
     pub async fn open_with_gc_interval(
         cache_dir: impl AsRef<Path>,
         gc_interval: Duration,
@@ -388,20 +351,13 @@ impl ContentStore {
         Self::open_inner(dir, gc_interval, &files_dir(dir)).await
     }
 
-    /// The whole of file version `content` (its manifest hash) from the
-    /// persistent store at `cache_dir` ([`Self::open`]), read without
-    /// opening the store: for another process beside the one that has it
-    /// open, which must not take its database locks. Only file-backed
-    /// versions ([`crate::content::FILE_BACKED_MIN`]) live where such a
-    /// reader can find them; any other is `Ok(None)`, as is one longer than
-    /// `max_bytes`.
+    /// The whole of file version `content` from the persistent store at `cache_dir`, read without
+    /// opening it: for another process beside the one that has it open, which must not take its
+    /// database locks. Only file-backed versions live where such a reader can find them; any other is
+    /// `Ok(None)`, as is one longer than `max_bytes`.
     ///
-    /// Nothing is verified and the version may be only partly resident: the
-    /// caller checks the bytes against a hash it trusts.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the version's file exists but cannot be read.
+    /// Nothing is verified and the version may be only partly resident: the caller checks the bytes
+    /// against a hash it trusts.
     pub fn read_file_version_unlocked(
         cache_dir: &Path,
         content: [u8; 32],
@@ -418,11 +374,9 @@ impl ContentStore {
         let gc_ready = Arc::new(AtomicBool::new(false));
         let gc = GcGate::default();
         let mut options = iroh_blobs::store::fs::options::Options::new(dir);
-        // Selective eviction is an explicit user action and must not wait
-        // for the ordinary maintenance cadence. Unscoped passes wait in the
-        // callback, so the short interval only separates the sweeps of one
-        // authorized eviction and cannot collect anything until an exact
-        // live set is installed.
+        // Selective eviction is an explicit user action and must not wait for the ordinary
+        // maintenance cadence. Unscoped passes wait in the callback, so the short interval only
+        // separates the sweeps of one authorized eviction.
         options.gc = Some(gc.config(
             gc_interval.min(Duration::from_millis(50)),
             Some(Arc::clone(&gc_ready)),
@@ -452,8 +406,8 @@ impl ContentStore {
         })
     }
 
-    /// An ephemeral store (tests, and as a fallback): loose blobs in memory,
-    /// file-backed content in a temporary directory removed with the store.
+    /// An ephemeral store (tests, and as a fallback): loose blobs in memory, file-backed content in a
+    /// temporary directory removed with the store.
     #[allow(
         clippy::expect_used,
         reason = "an ephemeral store without a temporary directory cannot hold content at all"
@@ -487,25 +441,23 @@ impl ContentStore {
         }
     }
 
-    /// Shuts the store down and releases its databases, so the same
-    /// directory can be opened again in this process while handles to this
-    /// store remain; they fail from now on.
+    /// Shuts the store down and releases its databases, so the same directory can be opened again in
+    /// this process while handles to this store remain; they fail from now on.
     pub async fn shutdown(&self) -> Result<()> {
         let stopped = stop_store(&self.backend, &self.gc).await;
         self.files.close();
         stopped
     }
 
-    /// Flush and close the store so another process may open the same
-    /// directory, and end it: its background gc task stops, and the store's
-    /// actor ends with the runtime it built once this handle is gone.
+    /// Flush and close the store so another process may open the same directory, and end it: its
+    /// background gc task stops, and its actor ends with the runtime it built once this handle is
+    /// gone.
     pub async fn close(self) -> Result<()> {
         let stopped = stop_store(&self.backend, &self.gc).await;
         self.files.close();
         stopped
     }
 
-    /// The file-backed content and cache.
     pub const fn files(&self) -> &Arc<FileArea> {
         &self.files
     }
@@ -536,10 +488,8 @@ impl ContentStore {
         }
     }
 
-    /// The runtime the persistent store runs on, for a caller that must wait
-    /// on the store from a thread that holds a lock the daemon's own runtime
-    /// may be blocked on. `None` for the in-memory store, which runs on the
-    /// caller's runtime.
+    /// The runtime the persistent store runs on, for a caller that must wait on the store from a
+    /// thread holding a lock the daemon's runtime may be blocked on. `None` for the in-memory store.
     pub fn runtime(&self) -> Option<tokio::runtime::Handle> {
         self.runtime
             .as_ref()
@@ -555,27 +505,24 @@ impl ContentStore {
     }
 
     /// Opens a deferred-durability group: until the last open group ends
-    /// ([`Self::end_deferred_sync`]), writes skip their database sync and
-    /// the group's end syncs once. A changeset of many small files then
-    /// costs one sync instead of one per file. Callers end the group before
-    /// anything depending on the writes is made durable or announced.
+    /// ([`Self::end_deferred_sync`]), writes skip their database sync and the group's end syncs once,
+    /// so a changeset of many small files costs one sync instead of one per file. Callers end the group
+    /// before anything depending on the writes is made durable or announced.
     pub fn defer_sync(&self) {
         let mut deferred = self.deferred.lock_recover();
         deferred.0 = deferred.0.saturating_add(1);
     }
 
-    /// How many database syncs the writes to this store have made so far: one
-    /// per write outside a deferred-durability group, one per group that
-    /// wrote. Each is an fsync, so a caller writing many blobs can check that
-    /// it pays for one rather than one per blob.
+    /// How many database syncs writes to this store have made: one per write outside a
+    /// deferred-durability group, one per group that wrote. Each is an fsync, so a caller can check
+    /// that it pays for one rather than one per blob.
     pub fn write_syncs(&self) -> u64 {
         self.write_syncs.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// How many bytes reads of this store have taken so far: whole blobs
-    /// [`Self::local`] returned (cached or not), the verified leaves of
-    /// [`Self::read_blob_range`], and file-backed content. A ranged read pays
-    /// for its range, so a caller can check that it never loads whole blobs.
+    /// How many bytes reads of this store have taken: whole blobs from [`Self::local`], the verified
+    /// leaves of [`Self::read_blob_range`], and file-backed content. A ranged read pays for its range
+    /// only.
     pub fn read_bytes(&self) -> u64 {
         self.read_bytes
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -587,13 +534,8 @@ impl ContentStore {
             .fetch_add(bytes as u64, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Closes a group opened by [`Self::defer_sync`]; the last one syncs the
-    /// database if a write inside the groups skipped it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the database sync fails; the writes stay
-    /// pending for the next sync.
+    /// Closes a group opened by [`Self::defer_sync`]; the last one syncs the database if a write inside
+    /// the groups skipped it. The writes stay pending for the next sync when the sync fails.
     pub async fn end_deferred_sync(&self) -> Result<()> {
         let sync = {
             let mut deferred = self.deferred.lock_recover();
@@ -615,22 +557,21 @@ impl ContentStore {
         Ok(())
     }
 
-    /// Build a `BlobsProtocol` handler backed by this store (for the
-    /// router). It serves loose blobs and file-backed chunks alike.
+    /// Build a `BlobsProtocol` handler backed by this store, serving loose blobs and file-backed chunks
+    /// alike.
     pub fn blobs_protocol(&self, events: Option<EventSender>) -> BlobsProtocol {
         let store = serve::serving_store(self.store().clone(), &self.files);
         BlobsProtocol::new(&store, events)
     }
 
-    /// Ingest bytes and return their blake3 content hash. Warms the cache.
     pub async fn ingest(&self, data: impl Into<Bytes>) -> Result<Hash> {
         let _mutation = self.mutation.lock().await;
         let data = data.into();
         self.persist_owned(data).await
     }
 
-    /// Locally available bytes of blob `hash` (cache, loose store, or a
-    /// file-backed chunk, which is checked against its hash), or `None`.
+    /// Locally available bytes of blob `hash` (cache, loose store, or a file-backed chunk, which is
+    /// checked against its hash), or `None`.
     pub async fn local(&self, hash: Hash) -> Option<Bytes> {
         if let Some(b) = self.cache.get(&hash) {
             self.note_read(b.len());
@@ -646,8 +587,6 @@ impl ContentStore {
         }
     }
 
-    /// Keep `bytes` hot if they are small enough to be worth their share of
-    /// [`BLOB_CACHE_BYTES`].
     fn cache_insert(&self, hash: Hash, bytes: Bytes) {
         if bytes.len() > MAX_CACHED_BLOB {
             return;
@@ -659,25 +598,20 @@ impl ContentStore {
         }
     }
 
-    /// Import content that arrives as a stream of pieces, hashing and
-    /// writing each as it comes: a persistent store spills it to a file
-    /// after the first 16 KiB and builds the BAO outboard from that file, so
-    /// it never holds the whole content. Returns the content's hash and
-    /// length. Never fills the hot cache.
+    /// Import content that arrives as a stream of pieces, hashing and writing each as it comes: a
+    /// persistent store spills it to a file after the first 16 KiB and builds the BAO outboard from
+    /// that file, so it never holds the whole content. Returns the content's hash and length.
     ///
-    /// The stream is consumed before any lock is taken, so a slow producer
-    /// (an app uploading) holds up nothing else; the import is protected
-    /// from collection by its temporary tag until the owned tag is in
-    /// place, as for [`Self::ingest`]. A piece that is an error abandons the
-    /// import and stores nothing.
+    /// The stream is consumed before any lock is taken, so a slow producer holds up nothing else. The
+    /// import is protected from collection by its temporary tag until the owned tag is in place. A
+    /// piece that is an error abandons the import and stores nothing.
     pub async fn ingest_stream<S>(&self, pieces: S) -> Result<(Hash, u64)>
     where
         S: futures_util::Stream<Item = std::io::Result<Bytes>> + Send + Sync + 'static,
     {
-        // iroh-blobs' `add_stream` stops forwarding at an error but keeps
-        // the import open, waiting for an end that never comes. So an error
-        // is never handed to it: it abandons the import here instead, and
-        // dropping the import ends the store's side of it.
+        // iroh-blobs' `add_stream` stops forwarding at an error but keeps the import open, waiting for
+        // an end that never comes, so the error is never handed to it: the import is abandoned here and
+        // dropping it ends the store's side.
         let (abandon, abandoned) = tokio::sync::oneshot::channel::<std::io::Error>();
         let mut abandon = Some(abandon);
         let mut pieces = Box::pin(pieces);
@@ -723,10 +657,9 @@ impl ContentStore {
         Ok((hash, size))
     }
 
-    /// Read a clipped range and the whole length of a locally complete blob.
-    /// Loose data is BAO-verified over the requested chunk groups only; an
-    /// empty range needs just its status. Existing cached bytes and bounded,
-    /// hash-checked file chunks remain readable. Never fills the blob cache.
+    /// Read a clipped range and the whole length of a locally complete blob. Loose data is BAO-verified
+    /// over the requested chunk groups only; an empty range needs just its status. Existing cached bytes
+    /// and bounded, hash-checked file chunks stay readable. Never fills the blob cache.
     pub async fn read_blob_range(
         &self,
         hash: Hash,
@@ -782,32 +715,28 @@ impl ContentStore {
         self.cache.invalidate(&hash);
     }
 
-    /// Bytes the hot cache holds once its pending writes are applied.
     #[cfg(test)]
     pub(crate) fn cached_bytes(&self) -> u64 {
         self.cache.run_pending_tasks();
         self.cache.weighted_size()
     }
 
-    /// Persist + cache bytes that were fetched and verified from a peer.
     pub async fn store_fetched(&self, hash: Hash, data: Bytes) -> Result<()> {
         let actual = Hash::new(&data);
         anyhow::ensure!(
             actual == hash,
             "fetched blob hash mismatch: expected {hash}, got {actual}"
         );
-        // The temporary tag closes the window between import and installing
-        // the deterministic service-owned tag. Dropping it afterwards leaves
-        // no anonymous `auto-*` tag behind.
+        // The temporary tag closes the window between import and installing the deterministic
+        // service-owned tag; dropping it afterwards leaves no anonymous `auto-*` tag behind.
         let actual = self.persist_owned(data).await?;
         debug_assert_eq!(actual, hash);
         Ok(())
     }
 
-    /// [`Self::store_fetched`] for many blobs with one durability barrier:
-    /// a batch of small files costs one database sync instead of one per
-    /// blob. Every blob is checked against its hash before anything is
-    /// stored; a mismatch rejects the whole batch.
+    /// [`Self::store_fetched`] for many blobs with one durability barrier, so a batch of small files
+    /// costs one database sync. Every blob is checked against its hash before anything is stored; a
+    /// mismatch rejects the whole batch.
     pub async fn store_fetched_batch(&self, blobs: Vec<(Hash, Bytes)>) -> Result<()> {
         if blobs.is_empty() {
             return Ok(());
@@ -828,14 +757,12 @@ impl ContentStore {
         Ok(())
     }
 
-    /// Remove only selected physical blobs while preserving every other blob.
     pub async fn evict_blobs(&self, selected: &HashSet<Hash>) -> Result<u64> {
         if selected.is_empty() {
             return Ok(0);
         }
         let _mutation = self.mutation.lock().await;
-        // File-backed content goes with any of its hashes: its content id
-        // or one of its chunks.
+        // File-backed content goes with any of its hashes: its content id or one of its chunks.
         for hash in selected {
             let key = if self.files.entry(hash.as_bytes()).is_some() {
                 Some(*hash.as_bytes())
@@ -879,9 +806,8 @@ impl ContentStore {
                     self.gc.revoke();
                     anyhow::bail!("selected blobs remained after eviction deadline");
                 }
-                // Backends may stall a `has` query during a sweep. Bound the
-                // query itself so readiness cannot remain blocked forever or
-                // claim a completed prune without a physical verification.
+                // Backends may stall a `has` query during a sweep. Bound the query so readiness cannot
+                // block forever or claim a completed prune without a physical verification.
                 let present = tokio::time::timeout(remaining_time, self.store().blobs().has(*hash))
                     .await
                     .ok()
@@ -905,8 +831,8 @@ impl ContentStore {
         }
     }
 
-    /// Make the writes just made durable now or, inside a deferred-durability
-    /// group ([`Self::defer_sync`]), leave the one sync to the group's end.
+    /// Make the writes just made durable now or, inside a deferred-durability group, leave the one sync
+    /// to the group's end.
     async fn sync_unless_deferred(&self) -> Result<()> {
         let deferred = {
             let mut deferred = self.deferred.lock_recover();
@@ -932,9 +858,8 @@ impl ContentStore {
     }
 
     async fn persist_owned_batch(&self, data: Vec<Bytes>) -> Result<Vec<Hash>> {
-        /// Blob-store requests in flight at once: the store's actor serves
-        /// them in parallel, so a batch of small chunks is not a round trip
-        /// per chunk.
+        /// Blob-store requests in flight at once: the store's actor serves them in parallel, so a batch
+        /// of small chunks is not a round trip per chunk.
         const IN_FLIGHT: usize = 64;
 
         let _owned_tags = self.owned_tags.lock().await;
@@ -959,12 +884,10 @@ impl ContentStore {
             futures_util::StreamExt::buffered(futures_util::stream::iter(adds), IN_FLIGHT),
         )
         .await?;
-        // `FsStore` explicitly does not promise that dropping it flushes recent
-        // writes. Make the named protection durable before releasing the
-        // temporary protection. This is a no-op-compatible boundary for the
-        // in-memory backend. Inside a deferred-durability group the group's
-        // end syncs once instead; the owned tags are already installed, so
-        // nothing collects the blobs meanwhile.
+        // `FsStore` does not promise that dropping it flushes recent writes, so the named protection is
+        // made durable before the temporary one is released. Inside a deferred-durability group the
+        // group's end syncs once instead; the owned tags are already installed, so nothing collects the
+        // blobs meanwhile.
         self.sync_unless_deferred().await?;
         let hashes = protected
             .iter()
@@ -985,12 +908,11 @@ impl ContentStore {
             || self.files.find_chunk(hash.as_bytes()).is_some()
     }
 
-    /// Resolve a blob to every exact live stable record that currently
-    /// references it as a manifest root, manifest chunk, or thumbnail.
+    /// Resolve a blob to every exact live stable record that references it as a manifest root, manifest
+    /// chunk, or thumbnail.
     ///
-    /// The lookup is bounded and fail-closed. It never returns paths or other
-    /// records' metadata, and an unavailable/malformed live manifest prevents
-    /// a partial authorization result.
+    /// The lookup is bounded and fail-closed: it never returns paths or other records' metadata, and an
+    /// unavailable or malformed manifest prevents a partial authorization result.
     #[cfg(feature = "filesystem")]
     pub async fn live_record_ids_for_blob(
         &self,
@@ -1010,8 +932,6 @@ impl ContentStore {
             .await
     }
 
-    /// Variant for async protocol handlers: snapshot the minimal roots under
-    /// the namespace lock, release it, then perform backend reads here.
     #[cfg(feature = "filesystem")]
     pub(crate) async fn live_record_ids_for_blob_roots(
         &self,
@@ -1068,15 +988,9 @@ impl ContentStore {
         Ok(records.into_iter().collect())
     }
 
-    /// Inspect the exact locally resident graph for a version manifest.
-    ///
-    /// The manifest must itself be complete and decodable; chunk accounting is
-    /// read from the backend rather than inferred from namespace metadata.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the manifest or backend status cannot be read or
-    /// decoded.
+    /// Inspect the exact locally resident graph for a version manifest. The manifest must itself be
+    /// complete and decodable; chunk accounting is read from the backend rather than inferred from
+    /// namespace metadata.
     #[cfg(feature = "filesystem")]
     pub async fn inspect_version_payload(
         &self,
@@ -1115,9 +1029,8 @@ impl ContentStore {
         })
     }
 
-    /// Prove that an exact signed revision's manifest and every declared
-    /// content chunk are complete in the persistent backend. Hot cache entries
-    /// and partial blobs never satisfy this durability boundary.
+    /// Prove that an exact signed revision's manifest and every declared content chunk are complete in
+    /// the persistent backend. Hot cache entries and partial blobs never satisfy this boundary.
     #[cfg(feature = "filesystem")]
     pub async fn verify_durable_revision(
         &self,
@@ -1173,14 +1086,12 @@ impl ContentStore {
         Ok(())
     }
 
-    /// Freshly authorize a queued request and make exactly its approved blobs
-    /// collectible by releasing Tilo-owned named tags.
+    /// Freshly authorize a queued request and make exactly its approved blobs collectible by releasing
+    /// Tilo-owned named tags.
     ///
-    /// The caller must keep `registry` and `catalog` stable for this complete
-    /// call, as required by [`EvictionQueue::authorize_backend_gc`]. Other
-    /// applications' tags and temporary transfer tags are never touched. A
-    /// successful result proves only a durable GC handoff; use
-    /// [`Self::observe_eviction_request`] for exact completion.
+    /// The caller must keep `registry` and `catalog` stable for the complete call. Other applications'
+    /// tags and temporary transfer tags are never touched. A successful result proves only a durable GC
+    /// handoff; [`Self::observe_eviction_request`] is the completion path.
     #[cfg(feature = "filesystem")]
     pub async fn release_eviction_to_backend_gc(
         &self,
@@ -1194,9 +1105,8 @@ impl ContentStore {
         let _owned_tags = self.owned_tags.lock().await;
         let hashes = queue.authorize_backend_gc(id, registry, catalog, now_ms, requirements)?;
 
-        // All content written by this service is currently Raw, but checking
-        // both deterministic namespaces makes the ownership contract complete
-        // and keeps a future HashSeq writer safe without a tag scan.
+        // All content written by this service is Raw, but checking both deterministic namespaces keeps
+        // the ownership contract complete and a future HashSeq writer safe without a tag scan.
         let mut tags = Vec::with_capacity(hashes.len().saturating_mul(2));
         for &hash in &hashes {
             for format in [BlobFormat::Raw, BlobFormat::HashSeq] {
@@ -1232,15 +1142,12 @@ impl ContentStore {
             .await
             .map_err(|error| StoreEvictionError::Sync(error.to_string()))?;
 
-        // Main's store backend now aborts every unscoped background sweep.
-        // Supply the freshly authorized exact set to its selective-GC bridge
-        // before returning the durable handoff. Observation below remains the
-        // authority for completion: a timed-out or partial backend sweep is
-        // still reported as present, never as a deletion receipt.
+        // Unscoped background sweeps abort, so the freshly authorized exact set is installed for the
+        // selective-GC bridge before the durable handoff returns. Observation remains the authority for
+        // completion: a timed-out or partial sweep is still reported as present.
         let mut selected: HashSet<Hash> = hashes.iter().copied().collect();
-        // A remaining tag is foreign or temporary authority. Never make that
-        // blob collectible: the release above removes only our deterministic
-        // tags, and selective GC must preserve every other owner's reference.
+        // A remaining tag is foreign or temporary authority, so that blob is never made collectible:
+        // selective GC must preserve every other owner's reference.
         let mut remaining_tags = self.store().tags().list().await.map_err(|error| {
             StoreEvictionError::Sync(format!("listing tags before selective GC failed: {error}"))
         })?;
@@ -1263,9 +1170,8 @@ impl ContentStore {
         })
     }
 
-    /// Observe a durable eviction request against one coherent backend status
-    /// sample. Completion is persisted only when every requested hash is
-    /// `NotFound`; backend errors leave the queue unchanged.
+    /// Observe a durable eviction request against one coherent backend status sample. Completion is
+    /// persisted only when every requested hash is `NotFound`; backend errors leave the queue unchanged.
     #[cfg(feature = "filesystem")]
     pub async fn observe_eviction_request(
         &self,
@@ -1316,36 +1222,30 @@ fn owned_blob_tag(hash: Hash, format: BlobFormat) -> String {
     format!("{OWNED_BLOB_TAG_PREFIX}{format}/{hash}")
 }
 
-/// How long an eviction waits for the blob store's GC to delete the selected
-/// blobs. The wait ends as soon as the next pass removes them; a pass over a
-/// large store on a loaded disk can take seconds, so this bound only catches
-/// a GC that has stopped.
+/// How long an eviction waits for the blob store's GC to delete the selected blobs. The wait ends as
+/// soon as the next pass removes them; this bound only catches a GC that has stopped.
 const EVICTION_HANG_BOUND: Duration = Duration::from_secs(60);
 
-/// The blob store's background GC runs only while an authorized selective
-/// sweep holds an exact live set.
+/// The blob store's background GC runs only while an authorized selective sweep holds an exact live
+/// set.
 ///
-/// iroh-blobs polls its protect callback on a fixed interval and exposes no
-/// way to trigger a pass. Answering `Abort` to every idle poll costs a wakeup
-/// and an INFO log line per interval, forever; instead the callback's future
-/// stays pending until [`Self::authorize`] wakes it, so an idle store costs
+/// iroh-blobs polls its protect callback on a fixed interval and exposes no way to trigger a pass.
+/// Answering `Abort` to every idle poll would cost a wakeup and an INFO log line per interval forever,
+/// so the callback's future stays pending until [`Self::authorize`] wakes it, and an idle store costs
 /// nothing.
 #[derive(Clone, Default)]
 struct GcGate {
     live: Arc<RwLock<Option<HashSet<Hash>>>>,
     wake: Arc<tokio::sync::Notify>,
-    /// Set once the store behind the gate is closed for good.
     closed: Arc<AtomicBool>,
 }
 
 impl GcGate {
-    /// Let the next sweeps collect everything outside `live`.
     fn authorize(&self, live: HashSet<Hash>) {
         *self.live.write_recover() = Some(live);
         self.wake.notify_one();
     }
 
-    /// Park the GC again once the sweep this live set was installed for is over.
     fn revoke(&self) {
         *self.live.write_recover() = None;
     }
@@ -1354,9 +1254,8 @@ impl GcGate {
         self.live.read_recover().clone()
     }
 
-    /// Let the gc task go: its next pass runs into the closed store and fails,
-    /// which ends the task. The task holds a handle to the store, so until it
-    /// ends nothing can end the store's actor or its runtime.
+    /// Let the gc task go: its next pass runs into the closed store and fails, which ends it. Until then
+    /// it holds a handle, so nothing can end the store's actor or its runtime.
     fn close(&self) {
         self.closed.store(true, Ordering::Release);
         self.wake.notify_one();
@@ -1366,8 +1265,8 @@ impl GcGate {
         self.closed.load(Ordering::Acquire)
     }
 
-    /// A GC configuration whose passes wait for [`Self::authorize`] and, when
-    /// `ready` is given, for it to be set.
+    /// A GC configuration whose passes wait for [`Self::authorize`] and, when `ready` is given, for it to
+    /// be set.
     fn config(&self, interval: Duration, ready: Option<Arc<AtomicBool>>) -> GcConfig {
         let gate = self.clone();
         let protect: ProtectCb =
@@ -1534,8 +1433,6 @@ mod tests {
     async fn persistent_stores_migrate_tags_evict_selectively_and_survive_restart() {
         {
             let directory = tempfile::tempdir().unwrap();
-            // Exceed the backend's inline threshold so this also exercises native
-            // blob files, not just rows inside its metadata database.
             let kept_bytes = Bytes::from(vec![0x61; 1_048_576]);
             let (kept, selected) = {
                 let store = ContentStore::open(directory.path()).await.unwrap();
@@ -1690,8 +1587,6 @@ mod tests {
             )
             .await
             .unwrap();
-            // Larger than FsStore's inline threshold, so this also proves the
-            // physical data file is reclaimed rather than only a metadata row.
             let target_bytes = Bytes::from(vec![0x5a; 64 * 1024]);
             let target_only = store.ingest(target_bytes.clone()).await.unwrap();
             let target_data_path = temp
@@ -1781,8 +1676,6 @@ mod tests {
             assert_eq!(released.authorized_hashes, vec![target_only]);
             assert_eq!(released.released_owned_tags, 1);
 
-            // The tag release is a durable handoff, not process-local state. GC
-            // may therefore finish it after a clean service restart.
             store.store().shutdown().await.unwrap();
             drop(store);
             let store = ContentStore::open_with_gc_interval(
@@ -1907,7 +1800,6 @@ mod tests {
                     .await,
                 Err(StoreEvictionError::Authorization(_))
             ));
-            // The GC sweeps only an authorized live set: none, none deleted.
             assert!(
                 store.gc.snapshot().is_none(),
                 "a refused eviction authorized a sweep"
@@ -2206,7 +2098,6 @@ mod tests {
             .unwrap()
             .as_bytes();
 
-        // The store stays open, holding its databases, while it is read.
         let read = |content, max_bytes| {
             ContentStore::read_file_version_unlocked(directory.path(), content, max_bytes).unwrap()
         };
@@ -2217,7 +2108,6 @@ mod tests {
         assert_eq!(read(small, u64::MAX), None, "not file-backed");
         assert_eq!(read([7; 32], u64::MAX), None, "unknown");
 
-        // A link where an entry's file belongs is not followed.
         let elsewhere = directory.path().join("elsewhere");
         std::fs::write(&elsewhere, &large).unwrap();
         let linked = files_dir(directory.path())

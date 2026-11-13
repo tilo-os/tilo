@@ -1,5 +1,4 @@
-//! Read-only binding preflight. It never repairs a namespace, mints identity,
-//! contacts a peer, or prints the bearer ticket used by the existing daemon.
+//! Read-only binding preflight: never repairs a namespace, mints identity or contacts a peer.
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -9,9 +8,7 @@ use serde::Serialize;
 #[derive(Debug, Serialize)]
 pub(super) struct WorkspaceStatus {
     schema_version: u8,
-    /// A signed authority is what initialization, recovery and every owner
-    /// wrote: a mount's tree itself may only arrive with the first mount,
-    /// from the workspace's Files record.
+    /// A signed authority was saved by initialization, recovery or a mount.
     saved_authority: bool,
     saved_namespace: bool,
     local_workspace_id: Option<uuid::Uuid>,
@@ -73,8 +70,6 @@ pub(super) fn inspect(cache: &Path) -> Result<WorkspaceStatus> {
             "saved namespace and discovered workspace disagree; use a separate cache"
         );
     }
-    // A ticket alone cannot restore a local workspace. Discovery, unlike an
-    // old host ticket, supplies the authenticated endpoint to bootstrap from.
     Ok(WorkspaceStatus {
         schema_version: 1,
         saved_authority,
@@ -85,9 +80,8 @@ pub(super) fn inspect(cache: &Path) -> Result<WorkspaceStatus> {
     })
 }
 
-/// Reuse a validated, signed authority even when root custody is outside the
-/// daemon. A missing authority still requires the existing explicit signer;
-/// no empty policy or replacement authority is synthesized during recovery.
+/// Reuse a validated, signed authority even when root custody is outside the daemon. A missing
+/// authority still requires the explicit signer; no policy is synthesized during recovery.
 pub(super) fn owner_authority(
     cache: &Path,
     workspace: uuid::Uuid,
@@ -239,8 +233,6 @@ mod tests {
         .unwrap()
         .apply(envelope)
         .unwrap();
-        // The tree itself arrives with the first mount, from the workspace's
-        // Files record.
         assert!(!dir.path().join("namespace.bin").exists());
         inspect(dir.path()).unwrap().require_existing().unwrap();
         assert_eq!(inspect(dir.path()).unwrap().discovered_workspace_id, None);

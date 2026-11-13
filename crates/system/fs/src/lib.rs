@@ -84,8 +84,7 @@ pub mod sync_folder;
 pub mod thumbs;
 #[cfg(feature = "filesystem")]
 pub mod transport_gate;
-/// A workspace's tree as the Files app's person record: the writer on the
-/// session's record route, which the daemon that mounts the tree holds.
+/// The workspace tree as the Files app's person record.
 #[cfg(feature = "filesystem")]
 pub mod tree_record;
 #[cfg(feature = "filesystem")]
@@ -171,7 +170,6 @@ mod native_mount_selection_tests {
     }
 }
 
-/// Deterministic incompressible bytes for content tests.
 #[cfg(test)]
 mod test_bytes {
     pub(crate) fn pseudo(len: usize, seed: u64) -> Vec<u8> {

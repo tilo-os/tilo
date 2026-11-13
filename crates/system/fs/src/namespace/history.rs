@@ -1,16 +1,11 @@
-//! Immutable file versions and conflicts, held in the tree document.
+//! Immutable file versions and conflicts, held in the tree document. A version
+//! records one state a record was in: the content hash, the metadata hash, who made
+//! it, when, and which versions it descends from. History is keyed by
+//! [`FileRecordId`], never by path, and lives inside the namespace document, so it
+//! syncs with the tree and every device derives the same heads and conflicts.
 //!
-//! A version records one state a record was in: the content hash, the
-//! metadata hash, who made it, when, and which versions it descends from.
-//! History is keyed by [`FileRecordId`], never by path, and it lives inside
-//! the namespace document itself, so it syncs with the tree and every device
-//! derives the same heads and conflicts from the same versions. Nothing is
-//! stored beside the document: there is no second writer to fall out of step,
-//! and a peer's version is simply a peer's part of the document.
-//!
-//! Versions are never rewritten. A restore appends a version, it does not
-//! truncate: the graph only grows, so an eviction root or a restore target
-//! stays resolvable.
+//! Versions are never rewritten: a restore appends a version, so an eviction root or
+//! a restore target stays resolvable.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -30,7 +25,6 @@ use uuid::Uuid;
 
 use super::{Namespace, hash_from_hex, read_u64, str_at};
 
-/// Root key of the history the tree document carries.
 pub(crate) const HISTORY_KEY: &str = "history";
 const VERSIONS_KEY: &str = "versions";
 const CONFLICTS_KEY: &str = "conflicts";
@@ -59,7 +53,6 @@ pub struct RecordHistorySnapshot {
 }
 
 impl RecordHistorySnapshot {
-    /// The bounded metadata projection of this exact immutable snapshot.
     pub(crate) fn projection(self) -> HistoryProjectionV1 {
         let total_versions = self.versions.len() as u64;
         let versions_start = self.versions.len().saturating_sub(MAX_PROJECTED_VERSIONS);
@@ -136,7 +129,6 @@ fn scalar_bytes(value: Option<(Value<'_>, ObjId)>) -> Option<Vec<u8>> {
     }
 }
 
-/// The versions nothing supersedes.
 fn computed_heads(versions: &BTreeMap<FileVersionId, FileVersionV1>) -> BTreeSet<FileVersionId> {
     let mut heads: BTreeSet<_> = versions.keys().copied().collect();
     for version in versions.values() {
@@ -147,8 +139,8 @@ fn computed_heads(versions: &BTreeMap<FileVersionId, FileVersionV1>) -> BTreeSet
     heads
 }
 
-/// A conflict may only name versions the record has, and a resolution only a
-/// version that made that resolution.
+/// A conflict may only name versions the record has, and a resolution only a version
+/// that made that resolution.
 fn check_conflict(
     versions: &BTreeMap<FileVersionId, FileVersionV1>,
     conflict: &FileConflictV1,
@@ -176,14 +168,10 @@ fn check_conflict(
 }
 
 impl Namespace {
-    /// The document map holding every record's history, if the document has
-    /// one.
     pub(super) fn history_root(&self) -> Option<ObjId> {
         object(self.doc.get(&automerge::ROOT, HISTORY_KEY).ok().flatten())
     }
 
-    /// The document map holding every record's history, created when the
-    /// document has none yet.
     pub(crate) fn ensure_history_root(&mut self) -> Result<ObjId, HistoryError> {
         if let Some(root) = self.history_root() {
             return Ok(root);
@@ -193,10 +181,10 @@ impl Namespace {
             .put_object(&automerge::ROOT, HISTORY_KEY, ObjType::Map)?)
     }
 
-    /// Every document map holding record histories: one until two devices that each made their
-    /// own document meet, and one per device after, since a merge keeps both maps under the key
-    /// rather than choosing between them. A reader takes the maps together, or it would see the
-    /// versions of one device and none of the other's.
+    /// Every document map holding record histories: one until two devices that each
+    /// made their own document meet, and one per device after, since a merge keeps
+    /// both maps under the key. A reader takes the maps together, or it would see
+    /// the versions of one device and none of the other's.
     fn history_roots(&self) -> Vec<ObjId> {
         self.doc
             .get_all(&automerge::ROOT, HISTORY_KEY)
@@ -212,7 +200,6 @@ impl Namespace {
             .unwrap_or_default()
     }
 
-    /// Every map under `parent`'s `key`: more than one where two devices each wrote their own.
     fn sub_maps(&self, parent: &ObjId, key: &str) -> Vec<ObjId> {
         self.doc
             .get_all(parent, key)
@@ -225,8 +212,8 @@ impl Namespace {
             .collect()
     }
 
-    /// Every map `record_id`'s history has, for the same reason as [`Self::history_roots`]: two
-    /// devices that both wrote the record's history each made one.
+    /// Every map `record_id`'s history has: two devices that both wrote it each made
+    /// one.
     fn record_maps(&self, record_id: FileRecordId) -> Vec<ObjId> {
         let mut maps = Vec::new();
         for root in self.history_roots() {
@@ -235,7 +222,6 @@ impl Namespace {
         maps
     }
 
-    /// `record_id`'s versions, oldest first by version id.
     pub(crate) fn record_versions(
         &self,
         record_id: FileRecordId,
@@ -259,7 +245,6 @@ impl Namespace {
         versions
     }
 
-    /// `record_id`'s conflicts, by id.
     pub(crate) fn record_conflicts(
         &self,
         record_id: FileRecordId,
@@ -283,7 +268,6 @@ impl Namespace {
         conflicts
     }
 
-    /// The map one record's history lives in, created when absent.
     fn history_slot(&mut self, record_id: FileRecordId) -> Result<ObjId, HistoryError> {
         let root = self.ensure_history_root()?;
         let key = record_id.0.to_string();
@@ -324,7 +308,6 @@ impl Namespace {
         Ok(())
     }
 
-    /// The record's versions, heads and conflicts.
     pub fn record_history(&self, record_id: FileRecordId) -> Option<RecordHistorySnapshot> {
         let versions = self.record_versions(record_id);
         let conflicts = self.record_conflicts(record_id);
@@ -332,7 +315,6 @@ impl Namespace {
             return None;
         }
         let heads = computed_heads(&versions);
-        // The order a person reads history in: what happened, when.
         let mut versions: Vec<_> = versions.into_values().collect();
         versions.sort_by_key(|version| (version.timestamp_ms, version.id));
         Some(RecordHistorySnapshot {
@@ -343,7 +325,6 @@ impl Namespace {
         })
     }
 
-    /// The bounded history projection of `record_id`.
     pub fn record_history_projection(
         &self,
         record_id: FileRecordId,
@@ -352,14 +333,12 @@ impl Namespace {
             .map(RecordHistorySnapshot::projection)
     }
 
-    /// The versions nothing supersedes.
     pub fn record_history_heads(&self, record_id: FileRecordId) -> Vec<FileVersionId> {
         computed_heads(&self.record_versions(record_id))
             .into_iter()
             .collect()
     }
 
-    /// One version of `record_id`, and the record's current heads.
     pub fn record_version(
         &self,
         record_id: FileRecordId,
@@ -373,12 +352,8 @@ impl Namespace {
         )
     }
 
-    /// Check a batch of versions against the record's history without
-    /// writing it; the same checks [`Self::append_versions`] applies.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first history violation in the batch.
+    /// Check a batch of versions against the record's history without writing it; the
+    /// same checks [`Self::append_versions`] applies.
     pub fn check_versions(&self, versions: &[FileVersionV1]) -> Result<(), HistoryError> {
         let mut known: BTreeMap<FileRecordId, BTreeMap<FileVersionId, FileVersionV1>> =
             BTreeMap::new();
@@ -392,18 +367,11 @@ impl Namespace {
         Ok(())
     }
 
-    /// Append versions to their records. A version the record already holds
-    /// is a replay and appends nothing.
+    /// Append versions to their records. A version the record already holds is a
+    /// replay and appends nothing.
     ///
-    /// Versions arrive in any order: a version's parents may reach this
-    /// device later than the version itself, so the batch is not required to
-    /// carry them, and a child that arrives first simply has no head until
-    /// its parent does.
-    ///
-    /// # Errors
-    ///
-    /// Returns a history violation when a version is invalid or collides with
-    /// a different version of the same id.
+    /// Versions arrive in any order: parents may reach this device later than the
+    /// version itself, so a child that arrives first has no head until its parent does.
     pub fn append_versions(
         &mut self,
         versions: &[FileVersionV1],
@@ -431,10 +399,6 @@ impl Namespace {
     }
 
     /// Append one version, returning whether the record gained it.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::append_versions`].
     pub fn append_version(&mut self, version: FileVersionV1) -> Result<bool, HistoryError> {
         Ok(self
             .append_versions(&[version])?
@@ -444,12 +408,6 @@ impl Namespace {
     }
 
     /// Record a conflict between existing versions of its record.
-    ///
-    /// # Errors
-    ///
-    /// Returns a history violation when the conflict is invalid, names a
-    /// version its record does not have, or collides with a different
-    /// conflict of the same id.
     pub fn record_history_conflict(
         &mut self,
         conflict: &FileConflictV1,
@@ -471,11 +429,6 @@ impl Namespace {
     }
 
     /// Resolve a conflict with a version that made the resolution.
-    ///
-    /// # Errors
-    ///
-    /// Returns a history violation when the conflict or the resolving version
-    /// is unknown, or the resolution disagrees with that version.
     pub fn resolve_history_conflict(
         &mut self,
         record_id: FileRecordId,
@@ -511,8 +464,6 @@ impl Namespace {
         Ok(true)
     }
 
-    /// `record_id`'s version attributions, by version id: which agent wrote
-    /// a version, as the device that made the version said.
     pub(crate) fn record_attributions(
         &self,
         record_id: FileRecordId,
@@ -536,8 +487,6 @@ impl Namespace {
         attributions
     }
 
-    /// The attributions of versions of `record_id`, with the record's own
-    /// versions in the same order.
     pub fn version_attributions(&self, record_id: FileRecordId) -> Vec<FileVersionAttributionV1> {
         let mut versions = self.record_versions(record_id);
         self.record_attributions(record_id)
@@ -547,15 +496,9 @@ impl Namespace {
             .collect()
     }
 
-    /// Record which agent caused this device's `attributed` version of
-    /// `record_id`. The version must already be the record's, and the same
-    /// attribution again is a no-op.
-    ///
-    /// # Errors
-    ///
-    /// Returns a history violation when the attribution is not presentable,
-    /// its version is not the record's, or a different attribution is
-    /// already recorded for it.
+    /// Record which agent caused this device's `attributed` version of `record_id`.
+    /// The version must already be the record's, and the same attribution again is a
+    /// no-op.
     pub fn attribute_version(
         &mut self,
         record_id: FileRecordId,
@@ -606,13 +549,8 @@ impl Namespace {
         None
     }
 
-    /// Record the receipt of a checked-history restore under its intent, once
-    /// the restore's own changes are in this document.
-    ///
-    /// # Errors
-    ///
-    /// Returns a history violation when the intent already holds a different
-    /// record.
+    /// Record the receipt of a checked-history restore under its intent, once the
+    /// restore's own changes are in this document.
     pub(crate) fn record_restore(
         &mut self,
         intent: Uuid,
@@ -639,13 +577,9 @@ impl Namespace {
         Ok(true)
     }
 
-    /// `ino`'s content as a revision: the one the document records, or, for a
-    /// file whose content was written without one, the version that wrote the
-    /// bytes the node holds now.
-    ///
-    /// Restores, conflicts and reviews name the version whose content is
-    /// current; the tree document holds both the bytes' hash and the versions,
-    /// so the answer is derived, never installed beside it.
+    /// `ino`'s content as a revision: the one the document records, or, for a file
+    /// whose content was written without one, the version that wrote the bytes the
+    /// node holds now. The answer is derived from the document, never installed beside it.
     pub fn observed_content_revision(&self, ino: u64) -> Option<fs_protocol::ContentRevisionV1> {
         if let Some(revision) = self.content_revision_for(ino) {
             return Some(revision);
@@ -679,13 +613,11 @@ impl Namespace {
         })
     }
 
-    /// Whether `record_id` has any version.
     pub fn has_history(&self, record_id: FileRecordId) -> bool {
         !self.record_versions(record_id).is_empty()
     }
 }
 
-/// Whether `version` may join `current`; `Ok(false)` for an exact replay.
 fn check_version(
     current: &BTreeMap<FileVersionId, FileVersionV1>,
     version: &FileVersionV1,
@@ -781,7 +713,6 @@ mod tests {
         );
         assert_eq!(namespace.record_history(record).unwrap(), snapshot);
 
-        // A batch carrying a violation writes none of it.
         let other = FileRecordId::new();
         let good = version(other, vec![], FileProvenance::Create, 1);
         let mut collision = version(other, vec![], FileProvenance::Edit, 2);
@@ -793,8 +724,6 @@ mod tests {
         assert!(namespace.record_history(other).is_none());
     }
 
-    /// A device may receive a child before its parent; both are kept, and the
-    /// heads are what the graph says once the parent arrives.
     #[test]
     fn a_version_arriving_before_its_parent_is_kept() {
         let mut namespace = history();
@@ -811,9 +740,6 @@ mod tests {
         );
     }
 
-    /// A version is a change of the tree document, so a peer that takes the
-    /// document's changes takes the versions with it: nothing separate has to
-    /// travel for the other device to show or restore the version.
     #[test]
     fn a_peer_that_takes_the_document_changes_has_the_versions() {
         let mut here = history();
@@ -832,7 +758,6 @@ mod tests {
         );
         assert_eq!(there.record_history_heads(record), vec![edit.id]);
 
-        // The version taken from the peer restores its record's content here.
         let (found, heads) = there.record_version(record, root.id);
         assert_eq!(found, Some(root));
         assert_eq!(heads, vec![edit.id]);

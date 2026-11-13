@@ -1,8 +1,8 @@
 //! Signed, monotonic workspace-wide ACL state.
 //!
-//! This is intentionally separate from a host-local capability file: the
-//! envelope is verified against the workspace governor, persists its revision,
-//! and can only narrow or replace authority through a newer signed revision.
+//! Separate from a host-local capability file on purpose: the envelope is verified against the
+//! workspace governor, persists its revision, and can only narrow or replace authority through a
+//! newer signed revision.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -19,38 +19,31 @@ pub const TILO_FS_AUTHORITY_ALPN: &[u8] = b"tilo-fs-workspace-authority/1";
 const MAX_AUTHORITY_FRAME: usize = 256 * 1024;
 const CONTENT_PEERS_FILE: &str = "content-peers.json";
 const MAX_PERSISTED_CONTENT_PEERS: usize = 32;
-/// Local, group-restricted control socket used by the desktop authority
-/// publisher. It avoids self-dialling an Iroh node while the filesystem
-/// daemon owns that node's UDP socket.
+/// Local, group-restricted control socket used by the desktop authority publisher, so it need not
+/// self-dial an Iroh node whose UDP socket the filesystem daemon owns.
 pub const LOCAL_AUTHORITY_SOCKET: &str = "workspace-authority.sock";
 
 const LOCAL_AUTHORITY_SOCKET_PREFIX: &str = "workspace-authority-";
 const LOCAL_SOCKET_SUFFIX: &str = ".sock";
 
-/// `/run/tilo`, created root:tilo-identity by tmpfiles, unless
-/// `TILO_AUTHORITY_SOCKET_DIR` names another.
+/// `/run/tilo`, created root:tilo-identity by tmpfiles, unless `TILO_AUTHORITY_SOCKET_DIR` names
+/// another.
 fn local_socket_dir() -> PathBuf {
     std::env::var_os("TILO_AUTHORITY_SOCKET_DIR")
         .map_or_else(|| PathBuf::from("/run/tilo"), PathBuf::from)
 }
 
-/// The stable local control path for a workspace. `/run/tilo` is created
-/// root:tilo-identity by the service unit, so no root-owned cache directory is
-/// exposed to the desktop publisher.
+/// The stable local control path for a workspace. `/run/tilo` is created root:tilo-identity by the
+/// service unit, so no root-owned cache directory is exposed to the desktop publisher.
 pub fn local_authority_socket_path(workspace: uuid::Uuid) -> PathBuf {
     local_socket_dir().join(format!(
         "{LOCAL_AUTHORITY_SOCKET_PREFIX}{workspace}{LOCAL_SOCKET_SUFFIX}"
     ))
 }
 
-/// The workspace authority the filesystem daemon serves on this machine, and
-/// its socket. The workspace comes from the socket's name, so the desktop
-/// publisher learns it without reading the daemon's root-only cache.
-///
-/// # Errors
-///
-/// When the socket directory cannot be read, or not exactly one authority
-/// socket answers.
+/// The workspace authority the filesystem daemon serves on this machine, and its socket. The
+/// workspace comes from the socket's name, so the desktop publisher learns it without reading the
+/// daemon's root-only cache.
 #[cfg(unix)]
 pub async fn find_local_authority() -> anyhow::Result<(uuid::Uuid, PathBuf)> {
     find_local_authority_in(&local_socket_dir()).await
@@ -72,8 +65,8 @@ async fn find_local_authority_in(dir: &Path) -> anyhow::Result<(uuid::Uuid, Path
         else {
             continue;
         };
-        // A daemon that served another workspace before a rebind leaves its
-        // socket behind; only one that still answers is the authority.
+        // A daemon that served another workspace before a rebind leaves its socket behind; only one
+        // that still answers is the authority.
         let path = entry.path();
         if tokio::net::UnixStream::connect(&path).await.is_ok() {
             live.push((workspace, path));
@@ -93,33 +86,30 @@ async fn find_local_authority_in(dir: &Path) -> anyhow::Result<(uuid::Uuid, Path
     }
 }
 
-/// Stable, workspace-scoped handoff for a direct endpoint returned by the
-/// authenticated relay discovery ALPN.
+/// Stable, workspace-scoped handoff for a direct endpoint returned by the authenticated relay
+/// discovery ALPN.
 pub fn local_content_socket_path(workspace: uuid::Uuid) -> PathBuf {
     local_socket_dir().join(format!(
         "workspace-content-{workspace}{LOCAL_SOCKET_SUFFIX}"
     ))
 }
 
-/// Durable direct Files endpoints discovered through the authenticated relay.
-/// This file is written only by the root-owned filesystem daemon after its
-/// group-restricted control socket accepts the request.
+/// Durable direct Files endpoints discovered through the authenticated relay. Written only by the
+/// root-owned daemon after its group-restricted control socket accepts the request.
 pub fn content_peers_path(cache_dir: &Path) -> PathBuf {
     cache_dir.join(CONTENT_PEERS_FILE)
 }
 
-/// A discovered Files endpoint together with the namespace/record plane it
-/// serves.  `ticket` is absent only for entries written by older daemons; a
-/// legacy entry remains useful for blob hydration but is deliberately not
-/// treated as a record-plane bootstrap source.
+/// A discovered Files endpoint with the namespace and record plane it serves. `ticket` is absent
+/// only for entries written by older daemons; such an entry still serves blob hydration but is not a
+/// record-plane bootstrap source.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PersistedContentPeer {
     pub endpoint: iroh_base::EndpointAddr,
     #[serde(default)]
     pub ticket: Option<String>,
-    /// Enrolled relay service which authenticated this endpoint (provenance;
-    /// legacy entries have none).
+    /// Enrolled relay service which authenticated this endpoint; legacy entries have none.
     #[serde(default)]
     pub relay_service_id: Option<[u8; 32]>,
 }
@@ -127,29 +117,21 @@ pub struct PersistedContentPeer {
 impl PersistedContentPeer {
     fn validate(&self) -> anyhow::Result<()> {
         if let Some(ticket) = &self.ticket {
-            // The ticket names the shared namespace/record plane. Its node is
-            // commonly the originating owner, while `endpoint` is the
-            // authenticated always-on replica discovered through relay; those
-            // identities are intentionally distinct. Discovery authentication
-            // pins the endpoint to the enrolled host, so here we only verify
-            // the bounded ticket encoding and retain its workspace identity.
+            // The ticket names the shared namespace and record plane. Its node is commonly the
+            // originating owner while `endpoint` is the authenticated always-on replica discovered
+            // through relay; discovery authentication pins the endpoint to the enrolled host, so only
+            // the bounded ticket encoding and its workspace identity are checked here.
             let _ = Ticket::decode(ticket)?;
         }
         Ok(())
     }
 
-    /// Decode the bounded workspace ticket, when this endpoint has one.
     pub fn decoded_ticket(&self) -> anyhow::Result<Option<Ticket>> {
         self.ticket.as_deref().map(Ticket::decode).transpose()
     }
 }
 
 /// Load the bounded, de-duplicated direct content peers for a cache.
-///
-/// # Errors
-///
-/// Returns an error when the persisted peer file is unreadable, malformed, or
-/// exceeds its configured safety bound.
 pub fn load_persisted_content_peers(cache_dir: &Path) -> anyhow::Result<Vec<PersistedContentPeer>> {
     let path = content_peers_path(cache_dir);
     if !path.exists() {
@@ -180,9 +162,9 @@ fn persist_content_peer(cache_dir: &Path, peer: PersistedContentPeer) -> anyhow:
         .iter()
         .position(|known| known.endpoint.id == peer.endpoint.id)
     {
-        // A later authenticated discovery can upgrade a legacy address with
-        // the authoritative workspace ticket. Move every refresh to the back:
-        // vector order is a bounded, durable least-recently-discovered queue.
+        // A later authenticated discovery can upgrade a legacy address with the authoritative
+        // workspace ticket, so every refresh moves to the back: vector order is a bounded,
+        // least-recently-discovered queue.
         let previous = peers.remove(index);
         let mut refreshed = peer;
         if refreshed.ticket.is_none() {
@@ -211,10 +193,9 @@ pub struct WorkspaceAuthorityEnvelope {
     pub workspace: uuid::Uuid,
     pub revision: u64,
     pub capabilities: Vec<CapOverride>,
-    /// Who may reach each workspace a relay carries, by its relay workspace
-    /// id. Written under `room_members`, the key every signed and stored
-    /// revision was written under; one written while the field was named for
-    /// the workspace reads as the same map.
+    /// Who may reach each workspace a relay carries, by its relay workspace id. Written under
+    /// `room_members`, the key every signed and stored revision was written under; one written while
+    /// the field was named for the workspace reads as the same map.
     #[serde(default, rename = "room_members", alias = "workspace_members")]
     pub workspace_members: std::collections::BTreeMap<String, Vec<collab_types::WorkspaceMember>>,
     pub tombstoned: bool,
@@ -225,10 +206,6 @@ pub struct WorkspaceAuthorityEnvelope {
 
 impl WorkspaceAuthorityEnvelope {
     /// Sign one monotonic workspace authority revision.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the signed payload cannot be encoded.
     pub fn sign(
         workspace: uuid::Uuid,
         revision: u64,
@@ -246,14 +223,8 @@ impl WorkspaceAuthorityEnvelope {
         )
     }
 
-    /// [`Self::sign`] for a governor whose key this process cannot hold, such
-    /// as a person's identity record: `sign` receives the exact payload and
-    /// returns the governor's Ed25519 signature over it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the payload cannot be encoded, `sign` fails, or
-    /// its signature does not verify against `governor`.
+    /// [`Self::sign`] for a governor whose key this process cannot hold, such as a person's identity
+    /// record: `sign` receives the exact payload and returns the governor's signature over it.
     pub fn sign_with(
         workspace: uuid::Uuid,
         revision: u64,
@@ -280,7 +251,6 @@ impl WorkspaceAuthorityEnvelope {
         Ok(envelope)
     }
 
-    /// Verify this envelope's workspace, governor, and signature.
     pub fn verify(&self, expected_workspace: uuid::Uuid, governor: [u8; 32]) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.workspace == expected_workspace,
@@ -304,9 +274,9 @@ impl WorkspaceAuthorityEnvelope {
     }
 }
 
-/// Durable authority projection for one workspace. The ACL handle is shared
-/// with every filesystem protocol, so applying a newer envelope changes the
-/// verdict for the next request without restarting the home peer.
+/// Durable authority projection for one workspace. The ACL handle is shared with every filesystem
+/// protocol, so applying a newer envelope changes the verdict for the next request without
+/// restarting the home peer.
 pub struct WorkspaceAuthority {
     path: PathBuf,
     workspace: uuid::Uuid,
@@ -319,11 +289,6 @@ pub struct WorkspaceAuthority {
 
 impl WorkspaceAuthority {
     /// Open the durable authority projection for one workspace.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the persisted envelope cannot be read, decoded,
-    /// or verified.
     pub fn open(
         path: impl Into<PathBuf>,
         workspace: uuid::Uuid,
@@ -369,24 +334,17 @@ impl WorkspaceAuthority {
         self.current.lock().ok().and_then(|current| current.clone())
     }
 
-    /// Load an atomically-published signed revision written by the local
-    /// governor process. This is the bridge from a desktop capability change
-    /// into the already-running network authority service.
-    /// Reload and apply the latest atomically published signed revision.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the revision cannot be read, decoded, or applied.
+    /// Reload and apply the latest atomically published signed revision: the bridge from a desktop
+    /// capability change into the already-running authority service.
     pub fn reload(&self) -> anyhow::Result<bool> {
         let bytes = std::fs::read(&self.path)?;
         let envelope: WorkspaceAuthorityEnvelope = postcard::from_bytes(&bytes)?;
         self.apply(envelope)
     }
 
-    /// Verify, durably replace, and publish a strictly newer authority state.
-    /// Equal revisions are accepted only when byte-identical, making retries
-    /// idempotent while refusing equivocation at one revision.
-    /// Verify and atomically publish a monotonic authority revision.
+    /// Verify, durably replace and publish a strictly newer authority state. Equal revisions are
+    /// accepted only when byte-identical, so retries are idempotent while equivocation at one
+    /// revision is refused.
     pub fn apply(&self, next: WorkspaceAuthorityEnvelope) -> anyhow::Result<bool> {
         next.verify(self.workspace, self.governor)?;
         let mut current = self
@@ -416,15 +374,10 @@ impl WorkspaceAuthority {
     }
 }
 
-/// Keep `authority` in step with the host-local capability list at `path`:
-/// whenever the file's bytes change, sign them as the next revision with
-/// `governor` and apply it, on the file's change events. Bytes present when
-/// the task starts are taken as already applied; an unreadable or malformed
-/// file changes nothing, so a half-written list is never signed.
-///
-/// # Errors
-///
-/// The file's directory cannot be watched.
+/// Keep `authority` in step with the host-local capability list at `path`: whenever the file's bytes
+/// change, sign them as the next revision with `governor` and apply it. Bytes present when the task
+/// starts count as already applied; an unreadable or malformed file changes nothing, so a
+/// half-written list is never signed.
 pub fn spawn_capability_file_reload(
     path: PathBuf,
     authority: std::sync::Arc<WorkspaceAuthority>,
@@ -482,20 +435,17 @@ pub struct AuthorityResponse {
 #[serde(deny_unknown_fields)]
 pub struct ContentPeerRequest {
     pub endpoint: iroh_base::EndpointAddr,
-    /// Exact NAS ticket returned by authenticated relay discovery.  The
-    /// daemon validates that it names this endpoint before making it durable.
-    /// Omitted only by old clients, which preserve blob-only behaviour.
+    /// Exact NAS ticket returned by authenticated relay discovery; the daemon validates that it names
+    /// this endpoint before making it durable. Omitted only by old clients, which keep blob-only
+    /// behaviour.
     #[serde(default)]
     pub ticket: Option<String>,
-    /// Relay service that authenticated the endpoint discovery. Required for
-    /// newly discovered home-peer endpoints; omitted by legacy callers.
     #[serde(default)]
     pub relay_service_id: Option<[u8; 32]>,
 }
 
-/// Authenticated local Files-control requests. The Unix socket is owned by
-/// the daemon and group-restricted to the enrolled identity; callers cannot
-/// edit the cache directly.
+/// Authenticated local Files-control requests. The Unix socket is owned by the daemon and
+/// group-restricted to the enrolled identity; callers cannot edit the cache directly.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ContentPeerControlRequest {
     Register(ContentPeerRequest),
@@ -505,25 +455,19 @@ pub enum ContentPeerControlRequest {
 #[serde(deny_unknown_fields)]
 pub struct ContentPeerResponse {
     pub accepted: bool,
-    /// The endpoint was durably stored, but its ticket names a different
-    /// workspace from the currently-running `fs serve` record plane. The
-    /// daemon will restart itself after replying so it joins that plane.
+    /// The endpoint was durably stored, but its ticket names a different workspace from the
+    /// currently-running record plane; the daemon restarts itself after replying so it joins that
+    /// plane.
     #[serde(default)]
     pub rebind_required: bool,
-    /// A managed system service has scheduled that rebind after this response
-    /// was flushed. Ad-hoc `fs serve` callers receive the same durable
-    /// registration but must restart their daemon explicitly.
+    /// A managed system service has scheduled that rebind after this response was flushed. Ad-hoc
+    /// `fs serve` callers get the same durable registration but must restart their daemon themselves.
     #[serde(default)]
     pub restart_scheduled: bool,
 }
 
 #[cfg(unix)]
 /// Bind the local, group-restricted direct-content registration service.
-///
-/// # Errors
-///
-/// Returns an error when the existing socket cannot be replaced, bound, or
-/// permissioned.
 pub fn serve_local_content_peer(
     socket: &Path,
     hydrator: std::sync::Arc<crate::Hydrator>,
@@ -589,8 +533,8 @@ pub fn serve_local_content_peer(
                 )
                 .await
                 .is_ok();
-                // The client needs a successful acknowledgement before the
-                // service exits and systemd starts the joined record plane.
+                // The client needs a successful acknowledgement before the service exits and systemd
+                // starts the joined record plane.
                 if response_sent
                     && accepted
                     && restart_scheduled
@@ -629,17 +573,11 @@ pub async fn register_local_content_peer(
     Ok(response)
 }
 
-/// Start the local authority publisher service. The caller is responsible for
-/// placing the socket in a `root:tilo-identity` directory; the socket itself is
-/// group writable so an enrolled desktop can submit a governor-signed update
-/// without being able to alter the root-owned durable cache directly.
+/// Start the local authority publisher service. The caller places the socket in a
+/// `root:tilo-identity` directory; the socket is group writable so an enrolled desktop can submit a
+/// governor-signed update without reaching the root-owned durable cache directly.
 #[cfg(unix)]
 /// Bind the local, group-restricted workspace-authority publisher service.
-///
-/// # Errors
-///
-/// Returns an error when the existing socket cannot be replaced, bound, or
-/// permissioned.
 pub fn serve_local_authority(
     socket: &Path,
     authority: std::sync::Arc<WorkspaceAuthority>,
@@ -662,8 +600,8 @@ pub fn serve_local_authority(
                 let response = match request {
                     Ok(request) if request.workspace == authority.workspace() => {
                         if let Some(envelope) = request.publish {
-                            // `apply` verifies both the workspace governor and
-                            // strict revision monotonicity before replacing ACL.
+                            // `apply` verifies the workspace governor and strict revision monotonicity
+                            // before replacing the ACL.
                             let _ = authority.apply(envelope);
                         }
                         AuthorityResponse {
@@ -678,10 +616,9 @@ pub fn serve_local_authority(
     }))
 }
 
-/// Submit or query a local authority service.  The Unix permissions are the
-/// first gate; the signed envelope remains the authority gate.
+/// Submit or query a local authority service; the Unix permissions are the first gate, the signed
+/// envelope the authority gate.
 #[cfg(unix)]
-/// Submit or query a local workspace authority service.
 pub async fn local_authority_request(
     socket: &std::path::Path,
     request: AuthorityRequest,
@@ -691,12 +628,10 @@ pub async fn local_authority_request(
     read_frame(&mut stream).await
 }
 
-/// Each authority and content-peer control message, over the local socket
-/// and the peer protocol alike: a little-endian `u32` length, then the
-/// postcard encoding.
+/// Each authority and content-peer control message, over the local socket and the peer protocol
+/// alike: a little-endian `u32` length, then the postcard encoding.
 const AUTHORITY_FRAMING: Framing = Framing::little_endian(MAX_AUTHORITY_FRAME);
 
-/// Write one bounded authority control frame.
 pub async fn write_frame<W: tokio::io::AsyncWrite + Unpin + Send, T: Serialize + Sync>(
     writer: &mut W,
     value: &T,
@@ -705,7 +640,6 @@ pub async fn write_frame<W: tokio::io::AsyncWrite + Unpin + Send, T: Serialize +
     Ok(())
 }
 
-/// Read and decode one bounded authority control frame.
 pub async fn read_frame<R: tokio::io::AsyncRead + Unpin + Send, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> anyhow::Result<T> {
@@ -885,9 +819,9 @@ mod tests {
     use collab_types::{Access as CapAccess, Effect, Scope, Subject};
     use std::sync::Arc;
 
-    /// #4224. The workspace authority follows the host-local capability
-    /// list through its file watch: a revocation written to the list is signed, applied and
-    /// enforced, and a half-written list is never signed.
+    /// The workspace authority follows the host-local capability list through its file watch: a
+    /// revocation written to the list is signed, applied and enforced, and a half-written list is
+    /// never signed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_revoked_capability_leaves_the_workspace_authority_through_the_watch() {
         let temp = tempfile::tempdir().unwrap();
@@ -940,11 +874,8 @@ mod tests {
                 .unwrap();
         assert!(handle.permits(&subject, "/plans/b.md", Access::Read));
 
-        // What a reader sees if it catches an in-place rewrite midway. Were
-        // it signed, the complete list below would be revision 3, not 2.
         std::fs::write(&list, b"{\"capabilities\":[{\"subject\"").unwrap();
 
-        // Nothing but the watch can carry the revocation.
         std::fs::write(
             &list,
             serde_json::to_vec(&collab_types::FsAuthority::from(vec![grant("/docs")])).unwrap(),
@@ -987,7 +918,6 @@ mod tests {
             find_local_authority_in(&sockets).await.is_err(),
             "no daemon is serving yet"
         );
-        // What a daemon serving another workspace before a rebind leaves.
         let stale = sockets.join(format!(
             "{LOCAL_AUTHORITY_SOCKET_PREFIX}{}{LOCAL_SOCKET_SUFFIX}",
             uuid::Uuid::new_v4()
@@ -1062,9 +992,6 @@ mod tests {
             .unwrap();
             assert_eq!(first_response.authority, Some(first));
 
-            // Two desktop mutations raced after seeing revision 1. Exactly one
-            // may become revision 2; the loser receives the winning envelope and
-            // must retry from that revision rather than claiming success.
             let left = WorkspaceAuthorityEnvelope::sign(workspace, 2, Vec::new(), false, &governor)
                 .unwrap();
             let right = WorkspaceAuthorityEnvelope::sign(workspace, 2, Vec::new(), true, &governor)
@@ -1234,9 +1161,6 @@ mod tests {
         }
     }
 
-    /// An authority stored while its members' map was called a room's still
-    /// reads, verifies and enforces: only the stored key changed, and the
-    /// signature is over the members themselves, not the key.
     #[test]
     fn an_envelope_names_its_members_under_the_stored_key() {
         let governor = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);

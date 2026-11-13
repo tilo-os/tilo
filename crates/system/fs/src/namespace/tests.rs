@@ -131,9 +131,6 @@ fn signed_bindings_and_replacements_are_verified_exact_and_fail_closed() {
         let file_record = ns.record_id_for(file).unwrap();
         let occupied_record = ns.record_id_for(occupied).unwrap();
         assert_eq!(ns.apply_signed_binding(&occupied_binding), Ok(true));
-        // Two stable records asked for one name. The smaller record id
-        // keeps it; the other becomes a deterministic conflict sibling, so
-        // both survive and every replay order converges on the same tree.
         let (winner, loser_record) = if file_record < occupied_record {
             (file, occupied_record)
         } else {
@@ -151,12 +148,8 @@ fn signed_bindings_and_replacements_are_verified_exact_and_fail_closed() {
         assert_eq!(ns.apply_signed_binding(&deleted), Ok(true));
         assert_eq!(ns.apply_signed_binding(&deleted), Ok(false));
         assert!(ns.lookup(right, "after.txt").is_none());
-        // Deleting the winner releases the name the loser asked for.
         assert_eq!(ns.lookup(right, "occupied.txt").unwrap().ino.0, occupied);
     }
-    // Phase `complete_replacement_transaction_moves_source_tombstones_victim_and_replays`.
-    // This scenario intentionally covers every durable phase and replay of a
-    // two-record replacement transaction in one linear assertion trace.
     {
         use ed25519_dalek::SigningKey;
         use fs_protocol::{
@@ -683,7 +676,6 @@ fn concurrent_namespace_changes_merge_and_converge() {
         let snap = a.save();
         let mut b = Namespace::from_bytes("b", &snap).unwrap();
 
-        // A moves X under Y; B moves Y under X (concurrently).
         let a_y = a.lookup(ROOT_INO, "Y").unwrap().ino.0;
         a.rename(ROOT_INO, "X", a_y, "X", 5);
         let b_x = b.lookup(ROOT_INO, "X").unwrap().ino.0;
@@ -766,7 +758,6 @@ fn concurrent_namespace_changes_merge_and_converge() {
         assert_eq!(b.lookup(ROOT_INO, "delta.txt").unwrap().size, 7);
     }
     {
-        // Diverge from a shared base doc; each side's changes reach the other.
         let mut a = Namespace::new("a").unwrap();
         a.create_file(ROOT_INO, "base", Some(&h(1)), 1, 1).unwrap();
         let mut b = Namespace::from_bytes("b", &a.save()).unwrap();
@@ -814,7 +805,6 @@ fn documents_import_export_and_merge_semantically() {
         ));
         let before = ns.export_document(ino, &tilo_content::NoContent).unwrap();
 
-        // invalid UTF-8 is rejected by the markdown codec
         assert!(
             !ns.import_document(
                 ino,
@@ -831,7 +821,6 @@ fn documents_import_export_and_merge_semantically() {
         );
     }
     {
-        // The point of model B: concurrent edits to the same document merge at the text level, not a conflict copy.
         let mut a = Namespace::new("a").unwrap();
         let ino = a.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
         let bid = a.document_insert_block(ino, None, "paragraph").unwrap();
@@ -841,7 +830,6 @@ fn documents_import_export_and_merge_semantically() {
         let mut b = Namespace::from_bytes("b", &snap).unwrap();
         let bino = b.lookup(ROOT_INO, "doc.md").unwrap().ino.0;
 
-        // concurrent in-place edits to the same paragraph
         a.document_splice(ino, &bid, 5, 0, " dear");
         b.document_splice(bino, &bid, 11, 0, " (B)");
 
@@ -873,8 +861,6 @@ fn saving_a_document_keeps_its_block_ids() {
     let before = ids(&ns);
     assert!(!before.is_empty(), "the save must have written blocks");
 
-    // A second save of the same file: nothing changed, so nothing may be
-    // rewritten — every block keeps the id it had.
     assert!(ns.import_document(
         ino,
         b"# Title\n\nHello world\n",
@@ -904,11 +890,8 @@ fn saving_a_document_keeps_a_peer_concurrent_edit() {
     let snap = a.save();
     let mut b = Namespace::from_bytes("b", &snap).unwrap();
     let bino = b.lookup(ROOT_INO, "doc.md").unwrap().ino.0;
-    // B edits the second paragraph in place while A is away.
     b.document_splice(bino, &second, 6, 0, " paragraph");
 
-    // A saves the file again, from its own stale copy: the whole-document
-    // write must merge into B's edit rather than replace the document.
     assert!(a.import_document(
         ino,
         b"first\n\nsecond\n",
@@ -970,8 +953,6 @@ fn record_indexes_track_structure_and_page_tails_directly() {
         assert!(a.lookup(dir, "moved").is_some());
         assert!(a.lookup(ROOT_INO, "f2").is_none());
 
-        // Concurrent same-name creates on two replicas: the lowest id wins
-        // the name, exactly as the unindexed scan chose.
         let mut b = a.clone_doc();
         b.author = "b".into();
         a.create_file(ROOT_INO, "same", Some(&h(2)), 1, 9).unwrap();
@@ -999,11 +980,6 @@ fn record_indexes_track_structure_and_page_tails_directly() {
     }
 }
 
-/// The index and structural walk `ns` built incrementally equal the ones a
-/// from-scratch rebuild makes, after any local or merged placement change:
-/// every node's placement and record binding, every row with its path, their
-/// order, the digest and revision built from that order, and which record
-/// ids are ambiguous.
 pub(super) fn assert_indexes_match_rebuild(ns: &Namespace) {
     let mut rebuilt = ns.clone();
     rebuilt.rebuild_record_index();
@@ -1027,10 +1003,6 @@ pub(super) fn assert_indexes_match_rebuild(ns: &Namespace) {
     );
 }
 
-/// `inode_view` is the one-lock read FUSE `read` and `getattr` are served
-/// from. It must answer exactly what the separate accessors it replaced
-/// answer, through remote renames, moves, content changes and deletes
-/// applied by the production merge path.
 #[test]
 fn inode_view_matches_the_separate_accessors_after_remote_apply() {
     let mut source = Namespace::new("source").unwrap();
@@ -1119,7 +1091,6 @@ fn assert_view_matches_accessors(ns: &Namespace, ino: u64) {
     }
 }
 
-// test-only helper to merge using a fresh loaded copy
 impl Namespace {
     fn clone_doc(&mut self) -> Namespace {
         Namespace::from_bytes(self.author.clone(), &self.save()).unwrap()
@@ -1136,10 +1107,6 @@ fn signed_create_keeps_stable_identity_and_never_renames_unsigned_nodes() {
     let root_record = origin.record_id_for(ROOT_INO).unwrap();
     let root_binding = origin.signed_binding_for(ROOT_INO, actor, 1).unwrap();
 
-    // A log-only rebuild starts from an empty namespace whose provisional
-    // root identity is not the workspace's. The signed root binding adopts
-    // the established identity instead of refusing every child as an
-    // unknown parent.
     let mut rebuilt = Namespace::new("rebuilt").unwrap();
     assert_ne!(rebuilt.record_id_for(ROOT_INO), Some(root_record));
     assert_eq!(rebuilt.apply_signed_binding(&root_binding), Ok(true));
@@ -1165,8 +1132,6 @@ fn signed_create_keeps_stable_identity_and_never_renames_unsigned_nodes() {
     );
     assert_eq!(rebuilt.apply_signed_binding(&binding), Ok(false));
 
-    // A node with no stable record id is unsigned state. It keeps its name;
-    // the signed record that competes for it is the one that moves.
     let unsigned = rebuilt
         .create_file(ROOT_INO, "contested.txt", Some(&h(7)), 1, 3)
         .unwrap();
@@ -1194,8 +1159,6 @@ fn signed_create_keeps_stable_identity_and_never_renames_unsigned_nodes() {
         .into_iter()
         .filter(|(_, _, name)| name != "." && name != "..")
         .collect::<Vec<_>>();
-    // An unsigned node is not addressable by record identity, so it is
-    // observed through the tree listing. It keeps the contested name.
     let (contested_ino, _, _) = entries
         .iter()
         .find(|(_, _, name)| name.as_bytes() == b"contested.txt")
@@ -1209,8 +1172,6 @@ fn signed_create_keeps_stable_identity_and_never_renames_unsigned_nodes() {
         .expect("signed record keeps a conflict sibling");
     assert_eq!(*conflict_ino, signed_ino);
 
-    // The same record log creates the same node key on a second empty
-    // namespace, so the two projections merge rather than duplicate.
     let mut again = Namespace::new("again").unwrap();
     assert_eq!(again.apply_signed_binding(&root_binding), Ok(true));
     assert_eq!(again.apply_signed_binding(&binding), Ok(true));

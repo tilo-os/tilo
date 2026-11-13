@@ -11,7 +11,6 @@ struct Fixture {
     hydrator: Arc<Hydrator>,
     history: Arc<crate::history_fixture::History>,
     actor: FileActor,
-    /// Last, so the stores above close before their files are deleted.
     dir: tempfile::TempDir,
 }
 
@@ -38,8 +37,6 @@ impl Fixture {
         }
     }
 
-    /// A signed mount over the fixture's durable state, as after a
-    /// (re)start. `staging` attaches the unsaved-write store.
     fn mount(&self, staging: bool) -> QuickFS {
         let heuristics = Arc::new(Heuristics::new(self.hydrator.clone()));
         let fs = QuickFS::new(self.namespace.clone(), self.hydrator.clone(), heuristics)
@@ -69,8 +66,6 @@ impl Fixture {
     }
 }
 
-/// What the FUSE `create` callback leaves behind: a committed empty file
-/// with an empty buffer and one writable handle.
 fn create_open(fs: &QuickFS, name: &str) -> (u64, u64) {
     let ino = fs
         .create_empty_file(crate::namespace::ROOT_INO, name)
@@ -112,7 +107,6 @@ async fn committed_bytes(fs: &QuickFS, ino: u64) -> Vec<u8> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes() {
-    // Phase `a_failed_commit_fails_close_and_never_discards_the_bytes`.
     {
         let fixture = Fixture::new().await;
         let fs = fixture.mount(true);
@@ -143,7 +137,6 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
 
         *fs.commit_fault.lock().unwrap() = None;
 
-        // Any later close retries; success settles the retained buffer.
         let reader = open_handle(&fs, ino, false);
         assert_eq!(fs.flush_inode(ino), Ok(()));
         assert_eq!(fs.release_handle(ino, reader), Ok(()));
@@ -152,7 +145,6 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
         assert!(fixture.staged().is_empty());
         assert_eq!(fixture.versions(record_id), 2);
     }
-    // Phase `fsync_without_staging_commits_and_reports_failure`.
     {
         let fixture = Fixture::new().await;
         let fs = fixture.mount(false);
@@ -172,7 +164,6 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unacceptable_or_uncommitted_bytes_survive_as_copies_and_across_crashes() {
-    // Phase `bytes_a_record_cannot_take_are_kept_as_a_sibling_copy`.
     {
         let fixture = Fixture::new().await;
         let fs = fixture.mount(true);
@@ -194,7 +185,6 @@ async fn unacceptable_or_uncommitted_bytes_survive_as_copies_and_across_crashes(
         assert!(!fs.buffers().contains_key(&ino));
         assert!(fixture.staged().is_empty());
     }
-    // Phase `fsynced_bytes_survive_a_crash_before_close`.
     {
         let fixture = Fixture::new().await;
         let (ino, moved_on) = {
@@ -206,9 +196,7 @@ async fn unacceptable_or_uncommitted_bytes_survive_as_copies_and_across_crashes(
             fs.write_buffer(other, 0, b"synced before a later edit")
                 .unwrap();
             assert_eq!(fs.fsync_inode(other), Ok(()));
-            // Another version lands before the restart.
             fs.commit_content(other, b"later edit").unwrap();
-            // Dropped without close: the process died.
             (ino, other)
         };
         let fs = fixture.mount(true);
@@ -238,7 +226,6 @@ async fn unacceptable_or_uncommitted_bytes_survive_as_copies_and_across_crashes(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_backed_stage_syncs_commits_and_preserves_from_its_file() {
     let bytes: Vec<u8> = (0..2_500_000_u32).map(|i| (i % 253) as u8).collect();
-    // Phase `fsync_stages_the_file_and_close_commits_it`.
     {
         let fixture = Fixture::new().await;
         let fs = fixture
@@ -262,7 +249,6 @@ async fn a_file_backed_stage_syncs_commits_and_preserves_from_its_file() {
         assert_eq!(fixture.versions(record_id), 2);
         assert!(fixture.staged().is_empty());
     }
-    // Phase `bytes_a_record_cannot_take_are_copied_from_the_stage_file`.
     {
         let fixture = Fixture::new().await;
         let fs = fixture
@@ -294,15 +280,9 @@ async fn a_file_backed_stage_syncs_commits_and_preserves_from_its_file() {
     }
 }
 
-/// A file created, written and synced inside the persister's settle time is
-/// back under its own name after a crash: `fsync` makes the namespace that
-/// places it durable, not only its bytes. A namespace that cannot be written
-/// fails the `fsync`, and the staged bytes stay.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fsync_makes_the_name_durable_with_the_bytes_and_reports_when_it_cannot() {
     let mut fixture = Fixture::new().await;
-    // What the disk holds: the namespace from before the file existed, until
-    // the hook writes a newer one.
     let on_disk = Arc::new(Mutex::new(fixture.namespace.lock().unwrap().save()));
     let refuse = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let record_id = {
@@ -336,7 +316,6 @@ async fn fsync_makes_the_name_durable_with_the_bytes_and_reports_when_it_cannot(
             Some(b"never synced".as_slice())
         );
         fs.ns().record_id_for(ino).unwrap()
-        // Dropped without close or a final save: the process died.
     };
 
     let bytes = on_disk.lock().unwrap().clone();

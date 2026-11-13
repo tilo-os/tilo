@@ -65,14 +65,11 @@ pub fn detect(ns: &Namespace) -> Vec<ContentConflict> {
 /// What [`detect`] has found so far, over any number of steps.
 #[derive(Default)]
 struct Found {
-    /// Case (1), concurrent edits of a live file.
     edits: Vec<ContentConflict>,
-    /// Case (2), modify/delete.
     deletes: Vec<ContentConflict>,
 }
 
 impl Found {
-    /// Look for either case at node `id`.
     fn visit(&mut self, ns: &Namespace, id: &str) {
         if ns.is_visible(id) {
             concurrent_edits(ns, id, &mut self.edits);
@@ -102,7 +99,6 @@ fn has_marker(name: &FileNameV1) -> bool {
         .any(|window| window == MARKER)
 }
 
-/// (1) concurrent edits of the live file `id`.
 fn concurrent_edits(ns: &Namespace, id: &str, out: &mut Vec<ContentConflict>) {
     let Some((parent, name)) = ns.node_parent_name(id) else {
         return;
@@ -193,14 +189,10 @@ pub const SCAN_STEP_NODES: usize = 64;
 /// The work one [`NamespaceScan::due`] did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ConflictPassStats {
-    /// Nodes examined.
     pub nodes: usize,
-    /// Times the namespace lock was taken.
     pub lock_holds: usize,
-    /// The most nodes examined under one of those holds.
     pub max_nodes_per_hold: usize,
     pub longest_hold: Duration,
-    /// All of them together.
     pub total_hold: Duration,
 }
 
@@ -224,7 +216,6 @@ impl ConflictPassStats {
 pub struct NamespaceScan {
     /// The merge generation the last scan began at; `None` scans.
     scanned: Option<u64>,
-    /// Scans so far.
     scans: u64,
     last: ConflictPassStats,
 }
@@ -484,10 +475,9 @@ mod tests {
             .collect()
     }
 
-    /// #3985: the reconciliation loop asks for conflicts every pass.
-    /// With nothing merged it examines no node and holds the lock once; a
-    /// scan holds it a step at a time; a concurrent edit that arrives is
-    /// found on the next pass.
+    /// The reconciliation loop asks for conflicts every pass. With nothing merged
+    /// it examines no node and holds the lock once; a scan holds it a step at a
+    /// time; a concurrent edit that arrives is found on the next pass.
     #[test]
     fn scan_examines_nodes_only_after_a_merge_and_a_step_per_lock_hold() {
         let mut a = Namespace::new("A").unwrap();

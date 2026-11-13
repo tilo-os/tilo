@@ -92,7 +92,6 @@ async fn record_reference_tag(store: &ContentStore, tag: String, hash: Hash) -> 
     Ok(())
 }
 
-/// The daemon side of the document-media capability.
 pub struct DocumentMedia {
     store: Arc<ContentStore>,
     /// The public content this device keeps, where it keeps any.
@@ -106,7 +105,6 @@ pub struct DocumentMedia {
 }
 
 impl DocumentMedia {
-    /// Serve `store`.
     pub fn new(store: Arc<ContentStore>) -> Arc<Self> {
         Arc::new(Self {
             store,
@@ -273,12 +271,10 @@ impl DocumentMedia {
         }
     }
 
-    /// Readable through `scope` and resident here.
     pub async fn contains(&self, scope: &BlobScope, hash: Hash) -> bool {
         references(&self.store, scope, hash).await && self.store.has(hash).await
     }
 
-    /// Length of a readable, resident blob.
     pub async fn len_of(&self, scope: &BlobScope, hash: Hash) -> Option<u64> {
         if !references(&self.store, scope, hash).await {
             return None;

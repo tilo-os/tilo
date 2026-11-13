@@ -1,10 +1,9 @@
-//! The content plane: a mount's blobs served to the peers that hydrate from
-//! it, and the signed workspace ACL a joiner reads.
+//! The content plane: a mount's blobs served to the peers that hydrate from it, and the signed
+//! workspace ACL a joiner reads.
 //!
-//! A workspace's tree itself travels as the workspace's Files record
-//! ([`crate::tree_record`]); only file bytes and the ACL come over this
-//! plane, and every connection is authenticated as a certified device of a
-//! person before it is served.
+//! A workspace's tree travels as the workspace's Files record ([`crate::tree_record`]); only file
+//! bytes and the ACL come over this plane, and every connection is authenticated as a certified
+//! device of a person before it is served.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -32,8 +31,8 @@ use crate::workspace_authority::{
 };
 use tilo_lock::MutexRecover as _;
 
-/// Certified local identity and live revocation state required by every
-/// workspace-sync connection.
+/// Certified local identity and live revocation state required by every workspace-sync
+/// connection.
 #[derive(Clone)]
 pub struct FsTransportIdentity {
     credentials: PeerCredentials,
@@ -43,8 +42,7 @@ pub struct FsTransportIdentity {
 }
 
 impl FsTransportIdentity {
-    /// Create the authentication context installed on both outbound and
-    /// inbound workspace transports.
+    /// Create the authentication context installed on both outbound and inbound transports.
     pub fn new(credentials: PeerCredentials, revocations: Arc<RwLock<RevocationList>>) -> Self {
         Self {
             credentials,
@@ -74,12 +72,10 @@ impl FsTransportIdentity {
             .then_some(peer.user_public_key)
     }
 
-    /// Certified human root represented by this mount.
     pub fn user_public_key(&self) -> IdentityKey {
         self.credentials.user_public_key()
     }
 
-    /// Certified device key, also used as the Iroh endpoint identity.
     pub fn device_public_key(&self) -> IdentityKey {
         self.credentials.device_public_key()
     }
@@ -141,8 +137,8 @@ async fn authenticate_connection(
     Ok(peer)
 }
 
-/// A shareable invitation to join a workspace: how to reach a peer + the
-/// workspace's random 256-bit name.
+/// A shareable invitation to join a workspace: how to reach a peer, and the workspace's random
+/// 256-bit name.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ticket {
     pub node: EndpointAddr,
@@ -161,9 +157,8 @@ impl Ticket {
 
     /// Stable public identifier used by record-scoped grants and repositories.
     ///
-    /// Older workspace tickets predate record sharing and carry only the
-    /// random 256-bit topic. Deriving the UUID keeps those tickets compatible
-    /// while ensuring every participant computes the same record namespace.
+    /// Older tickets carry only the random 256-bit topic; deriving the UUID keeps them compatible
+    /// while every participant computes the same record namespace.
     pub fn workspace_id(&self) -> uuid::Uuid {
         Self::workspace_id_for_topic(self.workspace)
     }
@@ -175,14 +170,10 @@ impl Ticket {
     }
 }
 
-/// Bind an endpoint under this device's own key, with an in-memory
-/// address lookup (so sessions can dial peers we learn about by id).
-/// Returns both so callers can register peer addresses.
-///
-/// The `NodeId` this produces is the device's Ed25519 public key —
-/// iroh's secret key and the device key are the same 32 bytes, which is
-/// what makes the node id a *name* that still means the same thing after
-/// a restart.
+/// Bind an endpoint under this device's own key, with an in-memory address lookup, so sessions can
+/// dial peers they learn about by id. Returns both so callers can register peer addresses. The node
+/// id is the device's Ed25519 public key, which is what makes it a name that still means the same
+/// thing after a restart.
 pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint, MemoryLookup)> {
     let lookup = MemoryLookup::new();
     let relays = tilo_endpoint_reachability::relays();
@@ -190,12 +181,9 @@ pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint
     Ok((endpoint, lookup))
 }
 
-/// [`bind_endpoint_with_key`], with the person's relays held back until
-/// something may need to dial this device: no home relay, net report,
-/// address discovery or port mapping until the returned
-/// [`crate::reachability::Reachability`] is woken. For a daemon
-/// that waits to be dialled (`fs serve`); one that dials out at once has
-/// no reason to wait.
+/// [`bind_endpoint_with_key`], with the person's relays held back until something may need to dial
+/// this device: no home relay, net report, address discovery or port mapping until the returned
+/// [`crate::reachability::Reachability`] is woken. For a daemon that waits to be dialled.
 pub async fn bind_dormant_endpoint_with_key(
     secret: iroh::SecretKey,
 ) -> Result<(Endpoint, MemoryLookup, crate::reachability::Reachability)> {
@@ -214,40 +202,30 @@ pub async fn bind_dormant_endpoint_with_key(
     Ok((endpoint, lookup, reachability))
 }
 
-/// How long a connection, and each of its paths, may go without traffic
-/// before it sends a keep-alive. iroh's default is 5 s on every path, for
-/// quick failover on busy connections; a connection that carries traffic
-/// never sends one, so this only paces idle ones, such as a share
-/// recipient's held stream and its pooled blob connection, each of which
-/// cost both ends a wakeup per path every 5 s. 25 s keeps the NAT binding
-/// of a UDP flow (commonly 30 s or more) and stays below a relay path's
-/// 30 s idle timeout.
+/// How long a connection, and each of its paths, may go without traffic before it sends a
+/// keep-alive. iroh's default of 5 s costs both ends a wakeup per path on an idle connection, such
+/// as a share recipient's held stream. 25 s keeps the NAT binding of a UDP flow and stays below a
+/// relay path's 30 s idle timeout.
 pub(crate) const IDLE_KEEP_ALIVE: Duration = Duration::from_secs(25);
 
-/// How long a connection, or one of its paths, may hear nothing before it
-/// is given up, in milliseconds: room for a keep-alive and its
-/// retransmissions. A peer that vanished without closing is noticed within
-/// this. iroh's defaults are 30 s per connection and 15 s per path, which
-/// a 25 s keep-alive would not reliably beat.
+/// How long a connection, or one of its paths, may hear nothing before it is given up, in
+/// milliseconds: room for a keep-alive and its retransmissions. A peer that vanished without
+/// closing is noticed within this.
 pub(crate) const IDLE_TIMEOUT_MS: u32 = 60_000;
 
-/// The endpoint a mount or a `fs serve` reaches its peers on: the person's
-/// relays ([`tilo_endpoint_reachability::relays`]), and number 0's directory
-/// only as a reader — a filesystem peer is dialled by the devices that
-/// mounted it, which hold its address already, so publishing its key would
-/// only sign in for a lookup nothing makes. With a relay of the person's own
-/// (or none) number 0's directory is not read either.
+/// The endpoint a mount or `fs serve` reaches its peers on: the person's relays, and number 0's
+/// directory only as a reader, since a filesystem peer is dialled by the devices that mounted it
+/// and hold its address already. With a relay of the person's own, or none, that directory is not
+/// read either.
 fn endpoint_builder(
     secret: iroh::SecretKey,
     lookup: &MemoryLookup,
     relays: &tilo_endpoint_reachability::EndpointRelays,
 ) -> iroh::endpoint::Builder {
     use iroh::endpoint::{QuicTransportConfig, VarInt};
-    /// Unacknowledged bytes one stream, and one connection, may have in
-    /// flight. QUIC's defaults (1.25 MB per stream, 10 MB per connection)
-    /// cap a stream at about 30 MB/s and a connection at about 250 MB/s
-    /// over a 40 ms round trip; content transfer needs a window of a few
-    /// bandwidth-delay products.
+    /// Unacknowledged bytes one stream, and one connection, may have in flight. QUIC's defaults
+    /// cap a stream at about 30 MB/s and a connection at about 250 MB/s over a 40 ms round trip;
+    /// content transfer needs a few bandwidth-delay products.
     const STREAM_WINDOW: u32 = 16 * 1024 * 1024;
     const CONNECTION_WINDOW: u32 = 64 * 1024 * 1024;
     let transport = QuicTransportConfig::builder()
@@ -270,24 +248,20 @@ fn endpoint_builder(
     builder
 }
 
-/// Bind an endpoint under a freshly-generated key. **The node id differs
-/// on every call**, so nothing durable may be keyed on it — for tests
-/// and throwaway probes only; a real mount uses
-/// [`bind_endpoint_with_key`] so its identity is the device's.
+/// Bind an endpoint under a freshly generated key. The node id differs on every call, so nothing
+/// durable may be keyed on it: tests and throwaway probes only.
 pub async fn bind_ephemeral_endpoint() -> Result<(Endpoint, MemoryLookup)> {
     bind_endpoint_with_key(iroh::SecretKey::generate()).await
 }
 
-/// The policy the network planes serve through, or `None` for an
-/// unenforced mount — same opt-out as [`crate::QuickFS`]: a mount
-/// without `--acl` states no policy, and inventing one here would deny a
-/// single-user workspace its own devices. The handle is live, so a
-/// revocation lands on the next connection, not the next remount.
+/// The policy the network planes serve through, or `None` for an unenforced mount, the same
+/// opt-out as [`crate::QuickFS`]: a mount without `--acl` states no policy, and inventing one here
+/// would deny a single-user workspace its own devices. The handle is live, so a revocation lands on
+/// the next connection.
 pub type PeerPolicy = Option<AclHandle>;
 
-/// Does `peer` hold a read grant on *anything* here? `None` policy ⇒
-/// unenforced ⇒ yes; otherwise the ACL decides, `false` for anyone it
-/// has never heard of.
+/// Whether `peer` holds a read grant on anything here. `None` policy means unenforced, so yes;
+/// otherwise the ACL decides, false for anyone it has never heard of.
 fn peer_may_read_anything(policy: &PeerPolicy, peer: &IdentityKey) -> bool {
     match policy {
         None => true,
@@ -295,10 +269,9 @@ fn peer_may_read_anything(policy: &PeerPolicy, peer: &IdentityKey) -> bool {
     }
 }
 
-/// The monolithic namespace document names every live path, so it may only be
-/// served to a peer that reads the workspace root. A subtree grant is useful
-/// to FUSE and the blob plane, but cannot safely receive a filtered Automerge
-/// change graph; per-share projection documents are required for that.
+/// The monolithic namespace document names every live path, so it may only be served to a peer
+/// that reads the workspace root: a subtree grant cannot safely receive a filtered Automerge change
+/// graph.
 fn peer_may_read_whole_workspace(policy: &PeerPolicy, peer: &IdentityKey) -> bool {
     match policy {
         None => true,
@@ -314,17 +287,15 @@ fn authenticated_peer_may_read_whole_workspace(
         || peer_may_read_whole_workspace(policy, &peer.device_public_key)
 }
 
-/// An iroh endpoint id read as a Tilo identity — the same 32 bytes (see
-/// [`bind_endpoint_with_key`]), letting a capability written against a
-/// device key decide who may open a connection.
+/// An iroh endpoint id read as a Tilo identity, the same 32 bytes, so a capability written against
+/// a device key decides who may open a connection.
 fn identity_of(id: iroh::EndpointId) -> IdentityKey {
     *id.as_bytes()
 }
 
-/// The connect-time verdict for a blob-plane caller, and the identity to
-/// remember for requests riding the connection. `None` endpoint id means
-/// the transport couldn't name the caller: refuse, since an unnamed
-/// caller can't be checked.
+/// The connect-time verdict for a blob-plane caller, and the identity to remember for requests
+/// riding the connection. `None` endpoint id means the transport could not name the caller: refuse,
+/// since an unnamed caller cannot be checked.
 fn admit_blob_caller(
     policy: &PeerPolicy,
     endpoint_id: Option<iroh::EndpointId>,
@@ -341,18 +312,14 @@ fn admit_blob_caller(
         Err(AbortReason::Permission)
     }
 }
-/// Does `peer` currently read at least one live path naming `hash` as file
-/// content or thumbnail content? Hash knowledge alone is never authority.
-/// What one blob request asks for.
+/// Whether `peer` currently reads at least one live path naming `hash` as file content or thumbnail
+/// content. Hash knowledge alone is never authority.
 enum BlobAsk {
-    /// Whole blobs, with `context`: further hashes named in the same request
-    /// with nothing asked of them (the manifests of requested chunks).
     Blobs {
         wanted: Vec<iroh_blobs::Hash>,
         context: Vec<iroh_blobs::Hash>,
     },
-    /// Positions of a file version's manifest: the manifest itself (0) and
-    /// its chunks.
+    /// Positions of a file version's manifest: the manifest itself (0) and its chunks.
     Manifest {
         root: iroh_blobs::Hash,
         children: Vec<u64>,
@@ -368,9 +335,8 @@ impl BlobAsk {
     }
 }
 
-/// Whether the caller `(device, certified person)` may receive every blob
-/// in `wanted`; `context` are further hashes named in the same request with
-/// nothing asked of them (the manifests of requested chunks).
+/// Whether the caller `(device, certified person)` may receive every blob in `wanted`; `context`
+/// are further hashes named in the same request with nothing asked of them.
 async fn authorize_ask(
     policy: &PeerPolicy,
     index: &BlobAccessIndex,
@@ -399,13 +365,12 @@ async fn authorize_ask(
     }
 }
 
-/// Blob requests authorised at once; further requests wait for a slot,
-/// which pushes back on the requesting connections.
+/// Blob requests authorised at once; further requests wait for a slot, which pushes back on the
+/// requesting connections.
 const MAX_CONCURRENT_BLOB_AUTHORIZATIONS: usize = 64;
 
 type BlobCallers = HashMap<u64, (IdentityKey, Option<IdentityKey>)>;
 
-/// Everything one blob-request decision needs, shared by the guard's tasks.
 #[derive(Clone)]
 struct BlobGuard {
     policy: PeerPolicy,
@@ -452,8 +417,7 @@ impl BlobGuard {
         }
     }
 
-    /// Decides one request on its own task and answers on `reply`. Waits
-    /// for a free slot first, so a flood of requests is pushed back.
+    /// Decides one request on its own task and answers on `reply`, after waiting for a free slot.
     async fn decide<R, F>(&self, connection: u64, ask: BlobAsk, reply: R)
     where
         R: FnOnce(iroh_blobs::provider::events::EventResult) -> F + Send + 'static,
@@ -493,21 +457,13 @@ impl BlobGuard {
 /// Closed connections whose caller the blob guard still recognises.
 const RETAINED_CLOSED_CALLERS: usize = 256;
 
-/// Build the request interceptor iroh-blobs consults before serving
-/// anything, or `None` for an unenforced mount. `BlobsProtocol::new(store,
-/// None)` serves every blob to anyone who knows its hash, and
-/// [`EventSender`](iroh_blobs::provider::events::EventSender) is the
-/// protocol's only interception point, so the identity check goes here —
-/// nothing later still knows who is asking. Only the connect event names
-/// the peer (a request event carries just a connection id), so identity
-/// is recorded at connect and looked up per request. Pushes are refused
-/// outright: this is a *read* plane; content arrives via the FUSE write
-/// path where the write-side capability model is enforced.
-///
-/// Requests are authorised concurrently against a [`BlobAccessIndex`]: the
-/// live namespace, ACL and record grants decide every request, as before,
-/// but an unchanged namespace is not rescanned and no request waits for
-/// another's decision.
+/// Build the request interceptor iroh-blobs consults before serving anything, or `None` for an
+/// unenforced mount. `BlobsProtocol::new(store, None)` serves every blob to anyone who knows its
+/// hash, and [`EventSender`](iroh_blobs::provider::events::EventSender) is the protocol's only
+/// interception point, so the identity check goes here. Only the connect event names the peer, so
+/// identity is recorded at connect and looked up per request. Pushes are refused outright: this is
+/// a read plane, and content arrives through the FUSE write path where the write-side capability
+/// model applies.
 #[allow(
     clippy::too_many_lines,
     reason = "one protocol guard keeps all blob request variants under the same read-only authorization boundary"
@@ -542,7 +498,6 @@ fn blob_guard(
             MAX_CONCURRENT_BLOB_AUTHORIZATIONS,
         )),
     };
-    // The answer to one request, sent once its decision is made.
     macro_rules! reply {
         ($tx:expr) => {{
             let tx = $tx;
@@ -552,10 +507,9 @@ fn blob_guard(
         }};
     }
     tokio::spawn(async move {
-        // A connection's close can be reported before the requests it
-        // already carried, and its id can be reused by a later connection.
-        // A caller therefore stays registered after its last connection of
-        // that id closed, until a bounded number of later closes has passed.
+        // A connection's close can be reported before the requests it already carried, and its id
+        // can be reused by a later connection, so a caller stays registered for a bounded number of
+        // later closes.
         let mut open: HashMap<u64, usize> = HashMap::new();
         let mut closed: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
         // Revocation, rename, and deleting the last readable reference all
@@ -662,7 +616,6 @@ fn blob_guard(
     Some(sender)
 }
 
-/// A live, replicated workspace: a CRDT namespace kept in sync with peers.
 /// Exchange the current signed workspace authority with one authenticated peer.
 pub async fn submit_workspace_authority(
     endpoint: &Endpoint,
@@ -681,8 +634,8 @@ pub async fn submit_workspace_authority(
     Ok(response.authority)
 }
 
-/// A live workspace's content plane: the blobs this device holds, served to
-/// the peers its mount hydrates from.
+/// A live workspace's content plane: the blobs this device holds, served to the peers its mount
+/// hydrates from.
 pub struct Workspace {
     pub namespace: Arc<Mutex<Namespace>>,
     _router: Router,
@@ -736,8 +689,8 @@ impl ProtocolHandler for AuthorityProtocol {
     }
 }
 
-/// The authority exchange: the governor may publish a newer signed
-/// revision; the governor and workspace readers receive the current one.
+/// The authority exchange: the governor may publish a newer signed revision; the governor and
+/// workspace readers receive the current one.
 fn authority_response(
     authority: &WorkspaceAuthority,
     policy: &PeerPolicy,
@@ -761,9 +714,9 @@ fn authority_response(
     }
 }
 
-/// The local node a workspace's sync runs on: its endpoint and peer lookup,
-/// content store and hydrator, the namespace it projects, the transport
-/// identity it authenticates as and the [`PeerPolicy`] it serves through.
+/// The local node a workspace's sync runs on: its endpoint and peer lookup, content store and
+/// hydrator, the namespace it projects, its transport identity and the [`PeerPolicy`] it serves
+/// through.
 pub struct SyncNode {
     pub endpoint: Endpoint,
     pub lookup: MemoryLookup,
@@ -775,10 +728,9 @@ pub struct SyncNode {
 }
 
 impl Workspace {
-    /// Begin hosting a new workspace, returning a ticket to share with
-    /// peers. `policy` is what the content plane serves *through* (see
-    /// [`PeerPolicy`]); `None` hosts unenforced. `authority` is the signed
-    /// ACL state a joiner reads over the authority ALPN.
+    /// Begin hosting a new workspace, returning a ticket to share with peers. `policy` is what the
+    /// content plane serves through ([`PeerPolicy`]); `None` hosts unenforced. `authority` is the
+    /// signed ACL state a joiner reads.
     pub fn host(
         node: SyncNode,
         authority: Option<&Arc<WorkspaceAuthority>>,
@@ -792,8 +744,7 @@ impl Workspace {
         Ok((workspace, ticket))
     }
 
-    /// Join the workspace described by `ticket`. A joiner serves too (what
-    /// it hydrates, peers may hydrate from it), so it carries the same
+    /// Join the workspace described by `ticket`. A joiner serves too, so it carries the same
     /// `policy` a host does.
     pub fn join(
         node: SyncNode,
@@ -823,7 +774,6 @@ impl Workspace {
             identity,
             policy,
         } = node;
-        // Register bootstrap peers so the mount can hydrate from them.
         for address in bootstrap {
             lookup.add_endpoint_info(address.clone());
             hydrator.add_peer(address.clone());

@@ -22,7 +22,6 @@ fn truncated(bytes: &[u8]) -> Vec<u8> {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn corrupt_namespaces_stores_and_journals_are_preserved_and_fail_closed() {
-    // Phase `namespace_corruption_never_becomes_an_empty_workspace`.
     {
         let mut namespace = Namespace::new("corruption-source").unwrap();
         namespace
@@ -49,7 +48,6 @@ fn corrupt_namespaces_stores_and_journals_are_preserved_and_fail_closed() {
             );
         }
     }
-    // Phase `namespace_automatic_recovery_is_bounded_explicit_and_preserves_damage`.
     {
         let dir = tempdir().unwrap();
         let path = dir.path().join("namespace.bin");
@@ -91,7 +89,6 @@ fn corrupt_namespaces_stores_and_journals_are_preserved_and_fail_closed() {
             "recovery chooses the last completed generation; signed-record reconciliation replays later state"
         );
     }
-    // Phase `malformed_single_file_stores_are_preserved_and_fail_closed`.
     {
         let dir = tempdir().unwrap();
         let damaged = b"{\"schema_version\":";

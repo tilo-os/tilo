@@ -1,12 +1,6 @@
-//! What a change to the namespace means for the kernel's view of the mount.
-//!
-//! The kernel knows of a change made through the mount, and tells inotify.
-//! A change it did not make (one merged from a peer, or made over the
-//! control socket) reaches it only when the daemon says so
-//! ([`crate::change_signal`]). This
-//! reads which nodes those were, and which directories' entries they
-//! touched, from the document's own changes: the cost follows the size of
-//! the changes, not of the tree.
+//! What a change to the namespace means for the kernel's view of the mount: which
+//! nodes and directories changed, read from the document's own changes, so the
+//! cost follows the changes and not the tree.
 
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsStr;
@@ -17,33 +11,22 @@ use super::{Namespace, ROOT_ID};
 use automerge::legacy::Key;
 use automerge::{ChangeHash, Prop, ReadDoc, Value};
 
-/// What changed since some heads, as the kernel sees the mount.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct KernelChanges {
-    /// Inodes of the nodes that changed: their cached attributes and pages
-    /// are stale.
     pub nodes: BTreeSet<u64>,
-    /// Inodes of the directories whose entries changed: an entry was added,
-    /// removed, renamed, moved in or out, or itself changed.
     pub directories: BTreeSet<u64>,
 }
 
-/// Where an object of the document sits in the namespace.
 #[derive(Clone)]
 enum Owner {
-    /// The `nodes` map itself: an operation on it adds or removes the node
-    /// its key names.
+    /// An operation on the `nodes` map adds or removes the node its key names.
     Nodes,
-    /// Inside the node with this id.
     Node(String),
 }
 
 impl Namespace {
-    /// Which nodes and directories changed between `heads` and now,
-    /// limited to those the mount has given an inode: anything else, the
-    /// kernel has never been told of. Changes are read from the document's
-    /// operations since `heads`, so a change to a document's content counts
-    /// for the file that holds it.
+    /// Which nodes and directories changed since `heads`, limited to those the
+    /// mount has given an inode.
     pub fn kernel_changes_since(&mut self, heads: &[ChangeHash]) -> KernelChanges {
         let mut touched: BTreeSet<String> = BTreeSet::new();
         let mut owners: HashMap<String, Option<Owner>> = HashMap::new();
@@ -82,7 +65,6 @@ impl Namespace {
         changes
     }
 
-    /// The node an object of the document belongs to.
     fn owner_of(&self, object: &str) -> Option<Owner> {
         let object = self.doc.import_obj(object).ok()?;
         if object == self.nodes {
@@ -95,7 +77,6 @@ impl Namespace {
         })
     }
 
-    /// The parent node `id` had at `heads`.
     fn parent_at(&self, id: &str, heads: &[ChangeHash]) -> Option<String> {
         let (Value::Object(_), node) = self.doc.get_at(&self.nodes, id, heads).ok()?? else {
             return None;
@@ -104,9 +85,8 @@ impl Namespace {
         parent.as_str().map(str::to_owned)
     }
 
-    /// The path of `ino` below the mount as the kernel names it, from the
-    /// raw name bytes; empty for the root. `None` when it is unknown or does
-    /// not reach the root.
+    /// The path of `ino` below the mount, from its raw name bytes; empty for the
+    /// root, `None` when unknown or not reaching the root.
     #[must_use]
     pub fn kernel_path_for(&self, ino: u64) -> Option<PathBuf> {
         let mut cur = self.ino_to_id.get(&ino)?.as_str();

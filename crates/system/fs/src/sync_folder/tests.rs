@@ -12,7 +12,6 @@ use crate::namespace::Namespace;
 use crate::smart::Heuristics;
 use crate::store::ContentStore;
 
-/// A workspace with history, as the runtime keeps one, and its folder.
 struct Fixture {
     dir: tempfile::TempDir,
     fs: Arc<QuickFS>,
@@ -59,7 +58,6 @@ impl Fixture {
         self.folder_path().join(path)
     }
 
-    /// A write to the workspace made elsewhere (an app, a peer).
     fn write_remote(&self, path: &str, bytes: &[u8]) {
         let source = self.dir.path().join("remote-write");
         std::fs::write(&source, bytes).unwrap();
@@ -311,7 +309,6 @@ async fn watching_carries_changes_without_being_asked() {
 }
 
 impl Fixture {
-    /// `path` in the folder, with the folder created.
     fn local_parent_ready(&self, path: &str) -> std::path::PathBuf {
         std::fs::create_dir_all(self.folder_path()).unwrap();
         self.local(path)

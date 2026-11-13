@@ -1,18 +1,9 @@
-//! Placeholder bytes from the daemon's content plane.
+//! Placeholder bytes from the content plane. Filling a range makes it resident in
+//! the content store first, and on the store volume copying it into the
+//! placeholder clones extents instead of writing the bytes twice.
 //!
-//! A placeholder's content id is the record's content hash (the manifest
-//! the record plane published). Filling a range makes it resident in the
-//! content store first: file-backed content lands in the store's area and
-//! is then copied into the placeholder at the same offsets, which on the
-//! store volume clones extents instead of writing the bytes twice. Small
-//! content is read and written.
-//!
-//! The transfer runs as a task of its own on the daemon runtime, and the
-//! placeholder worker waits for it only while someone waits for the bytes:
-//! once the access it serves is answered (at its bound, when a peer went
-//! quiet) the worker returns to serve the next access. The transfer goes
-//! on without it, so a retry finds the bytes in the store, or joins the
-//! same transfer instead of starting another.
+//! The transfer runs as a task of its own, so a worker returns once the access it
+//! serves is answered; a retry finds the bytes in the store or joins the transfer.
 
 use std::fs::File;
 use std::io;
@@ -26,7 +17,6 @@ use iroh_blobs::Hash;
 
 use crate::hydration::{Hydrator, Priority};
 
-/// Chunks fetched concurrently for one fill of small content.
 pub const DEFAULT_PARALLEL_CHUNKS: usize = 16;
 
 pub struct ContentFetcher {
@@ -49,8 +39,8 @@ fn unavailable(error: &anyhow::Error) -> io::Error {
     io::Error::new(io::ErrorKind::TimedOut, error.to_string())
 }
 
-/// Waits for `transfer` until `cancel` fires. The transfer is a task of its
-/// own: given up on, it keeps going, and what it brings lands in the store.
+/// Wait for `transfer`, unless `cancel` fires: the transfer keeps going and what
+/// it brings lands in the store.
 async fn unless_cancelled<T: Send + 'static>(
     cancel: &Cancel,
     transfer: tokio::task::JoinHandle<anyhow::Result<T>>,
@@ -142,11 +132,8 @@ mod tests {
     use crate::store::ContentStore;
     use crate::test_bytes::pseudo;
 
-    /// A placeholder worker filling bytes only a quiet peer holds returns
-    /// as soon as the access it serves is answered, instead of after the
-    /// transfer layer's 30 s per peer, and serves another file's access
-    /// next. The transfer goes on without it. The bounds are far below the
-    /// 30 s and far above what a loaded test machine takes.
+    /// A fill of bytes only a quiet peer holds returns as soon as the access it
+    /// serves is answered, and serves another file's access next.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_given_up_fill_frees_its_worker_while_the_transfer_goes_on() {
         let len = 3 * 1024 * 1024;
@@ -159,8 +146,6 @@ mod tests {
         let store = Arc::new(ContentStore::memory());
         let here = pseudo(len, 22);
         let here_id = store.write_content(&here).await.unwrap().unwrap();
-        // The quiet file's manifest is here; its bytes only the quiet peer
-        // holds.
         let manifest = elsewhere.local(quiet_id).await.unwrap();
         assert_eq!(store.ingest(manifest).await.unwrap(), quiet_id);
         let quiet = crate::hydration::test_peers::silent().await;
@@ -173,8 +158,6 @@ mod tests {
         );
         let cancel = Cancel::default();
 
-        // One worker thread, as the placeholder hydrator runs it: the quiet
-        // fill, then the next file's.
         let worker = {
             let cancel = cancel.clone();
             std::thread::spawn(move || {

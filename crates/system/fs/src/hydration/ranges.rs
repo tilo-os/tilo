@@ -1,28 +1,13 @@
-//! Byte ranges of file-backed content, fetched straight into the content
-//! store's area.
+//! Byte ranges of file-backed content, fetched straight into the content store's
+//! area. A range becomes a few `GET` requests for exactly the chunks it overlaps;
+//! every verified group is written at its offset in the entry's file and recorded
+//! resident once durable, so a 10 GiB file costs no more memory than a 10 MiB one.
 //!
-//! A range of a large file becomes a few `GET` requests for its content id
-//! with a `RangeSpecSeq` naming exactly the chunks it overlaps, and within
-//! each chunk exactly the 1 KiB chunk numbers needed. The provider streams
-//! them BAO-verified in 16 KiB groups; every verified group is written at
-//! its offset in the entry's file, and the ranges written are recorded
-//! resident once they are durable. Nothing is assembled in memory, so a
-//! 10 GiB file costs no more memory than a 10 MiB one.
-//!
-//! - **Dedup.** A chunk this device already holds, in another entry or as a
-//!   loose blob, is copied locally (the kernel clones extents where it can)
-//!   instead of fetched.
-//! - **Resume.** Residency is persisted, so an interrupted transfer, or a
-//!   restarted daemon, asks only for what is still missing.
-//! - **One fetch per range.** Concurrent readers of overlapping ranges wait
-//!   for the fetch already under way instead of repeating it.
-//! - **Priorities.** A blocked read and the read-ahead of an active reader
-//!   are interactive: they are always sent at once. Pinned, predictive and
-//!   backfill work waits while interactive requests are in flight, so a
-//!   large background transfer delays a foreground read by at most the
-//!   requests already on the wire.
-//! - **Peers.** Requests are spread over every healthy peer, several in
-//!   flight per peer; what one peer fails to serve is asked of the next.
+//! A chunk this device already holds is copied locally instead of fetched, and
+//! residency is persisted, so an interrupted transfer asks only for what is
+//! missing. Concurrent readers of overlapping ranges wait for the fetch under way.
+//! A blocked read and read-ahead are interactive and always sent at once; pinned,
+//! predictive and backfill work waits while they are in flight.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -42,33 +27,22 @@ use crate::content::{self, Manifest, RangeSet};
 use crate::store::Retention;
 use tilo_lock::MutexRecover as _;
 
-/// Requested bytes per `GET` for background work and read-ahead.
 const REQUEST_BYTES: u64 = 16 * 1024 * 1024;
-/// Requested bytes per `GET` for a blocked read.
 const FOREGROUND_REQUEST_BYTES: u64 = 2 * 1024 * 1024;
-/// `GET` requests in flight per peer.
 const REQUESTS_PER_PEER: usize = 8;
-/// Connections per peer the requests of one transfer are spread over.
 const LANES_PER_PEER: usize = 4;
 /// A request that makes no progress for this long is abandoned for the
 /// next peer.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-/// Granularity of what is fetched: BAO verification works in 16 KiB
-/// groups, so a request never asks for less.
+/// BAO verification works in 16 KiB groups, so a request never asks for less.
 const GROUP: u64 = 16 * 1024;
 
-/// Why content is being fetched, from most to least urgent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Priority {
-    /// Replicating content nobody is waiting for.
     Backfill,
-    /// Content a reader is predicted to want.
     Predictive,
-    /// Content kept offline, or needed for a lease.
     Pinned,
-    /// Ahead of an active sequential reader.
     ReadAhead,
-    /// A reader is blocked on it.
     Foreground,
 }
 
@@ -85,15 +59,12 @@ impl Priority {
     }
 }
 
-/// Orders requests by priority: background requests wait while any
-/// interactive request is in flight.
 #[derive(Default)]
 pub(crate) struct Scheduler {
     interactive: AtomicUsize,
     idle: Notify,
 }
 
-/// Held while a request is on the wire.
 struct Admission<'a> {
     scheduler: &'a Scheduler,
     interactive: bool,
@@ -132,18 +103,14 @@ impl Scheduler {
         }
     }
 
-    /// Interactive requests on the wire right now.
     #[cfg(test)]
     fn interactive_in_flight(&self) -> usize {
         self.interactive.load(Ordering::Acquire)
     }
 }
 
-/// A wait for another reader's fetch to give its ranges back
-/// ([`Flights::claim`]).
 type Released = std::pin::Pin<Box<tokio::sync::futures::OwnedNotified>>;
 
-/// Ranges of each content id being fetched right now.
 #[derive(Default)]
 pub(crate) struct Flights {
     ranges: std::sync::Mutex<HashMap<Hash, (RangeSet, Arc<Notify>)>>,
@@ -154,11 +121,10 @@ impl Flights {
         self.ranges.lock_recover()
     }
 
-    /// Claims the parts of `wanted` nobody is fetching. Returns them, and,
-    /// when others hold the rest, a wait for them to give ranges back. The
-    /// wait is registered before the claim lets go of the lock, so a fetch
-    /// that fails and gives its ranges back before the caller waits still
-    /// wakes it.
+    /// Claims the parts of `wanted` nobody is fetching. Returns them, and, when
+    /// others hold the rest, a wait for them to give ranges back. The wait is
+    /// registered before the claim lets go of the lock, so a fetch that fails and
+    /// releases before the caller waits still wakes it.
     fn claim(&self, content: Hash, wanted: &[Range<u64>]) -> (Vec<Range<u64>>, Option<Released>) {
         let mut claimed = Vec::new();
         let mut blocked = false;
@@ -201,9 +167,8 @@ impl Flights {
     }
 }
 
-/// Ranges claimed from [`Flights`], given back when dropped: a fetch
-/// abandoned part way (a predictive prefetch cancelled when the policy
-/// changes) never leaves them claimed for readers to wait on forever.
+/// Ranges claimed from [`Flights`], given back when dropped: a fetch abandoned part
+/// way never leaves them claimed for readers to wait on forever.
 struct Claim<'a> {
     flights: &'a Flights,
     content: Hash,
@@ -211,7 +176,6 @@ struct Claim<'a> {
 }
 
 impl Claim<'_> {
-    /// Gives the ranges back and returns them.
     fn release(mut self) -> Vec<Range<u64>> {
         let ranges = std::mem::take(&mut self.ranges);
         self.flights.release(self.content, &ranges);
@@ -227,7 +191,6 @@ impl Drop for Claim<'_> {
     }
 }
 
-/// One chunk's share of a request: which bytes of it are wanted.
 #[derive(Clone, Debug)]
 struct ChunkWant {
     index: usize,
@@ -247,8 +210,8 @@ impl ChunkWant {
     }
 }
 
-/// The parts of the chunks of `manifest` that cover `ranges`, one entry per
-/// chunk, aligned to whole BAO groups.
+/// The parts of the chunks of `manifest` that cover `ranges`, one entry per chunk,
+/// aligned to whole BAO groups.
 fn chunk_wants(manifest: &Manifest, ranges: &[Range<u64>]) -> Vec<ChunkWant> {
     let mut wants: Vec<ChunkWant> = Vec::new();
     for range in ranges {
@@ -273,7 +236,6 @@ fn chunk_wants(manifest: &Manifest, ranges: &[Range<u64>]) -> Vec<ChunkWant> {
     wants
 }
 
-/// Splits wants into requests of about `max_bytes`, in order.
 fn requests(wants: Vec<ChunkWant>, max_bytes: u64) -> Vec<Vec<ChunkWant>> {
     let mut out = Vec::new();
     let mut current: Vec<ChunkWant> = Vec::new();
@@ -293,19 +255,17 @@ fn requests(wants: Vec<ChunkWant>, max_bytes: u64) -> Vec<Vec<ChunkWant>> {
 }
 
 impl Hydrator {
-    /// Bytes of file-backed content received from peers so far.
     pub fn fetched_range_bytes(&self) -> u64 {
         self.ranged_bytes.load(Ordering::Relaxed)
     }
 
-    /// Makes bytes `range` of file-backed `content` resident in the area,
-    /// fetching what no local entry holds. Returns once every byte of the
-    /// range is resident.
+    /// Makes bytes `range` of file-backed `content` resident in the area, fetching
+    /// what no local entry holds. Returns once every byte of the range is resident.
     ///
     /// # Errors
     ///
-    /// Returns an error when part of the range could not be fetched from
-    /// any peer, or the area cannot be written.
+    /// Part of the range could not be fetched from any peer, or the area cannot be
+    /// written.
     pub async fn ensure_range(
         &self,
         content: Hash,
@@ -364,9 +324,8 @@ impl Hydrator {
     ) -> Result<()> {
         let key = *content.as_bytes();
         let files = Arc::clone(self.store.files());
-        // What this call fetched itself: still missing afterwards, nobody
-        // served it. A range another reader's failed fetch released is
-        // fetched here instead.
+        // What this call fetched itself: still missing afterwards, nobody served it. A
+        // range another reader's failed fetch released is fetched here instead.
         let mut fetched: Vec<Range<u64>> = Vec::new();
         loop {
             let missing = files.missing(&key, &piece);
@@ -411,8 +370,6 @@ impl Hydrator {
         }
     }
 
-    /// Fills `claimed` of `content`: first from chunks held locally, then
-    /// from peers.
     async fn fetch_claimed(
         &self,
         content: Hash,
@@ -466,8 +423,6 @@ impl Hydrator {
         results.into_iter().find(Result::is_err).unwrap_or(Ok(()))
     }
 
-    /// Copies wanted chunks that are resident elsewhere on this device
-    /// (another area entry, or a loose blob) and returns the rest.
     async fn fill_from_local(
         &self,
         content: Hash,
@@ -546,8 +501,6 @@ impl Hydrator {
         Ok(rest)
     }
 
-    /// One request, from the peer `index` selects and then from the others
-    /// for whatever is still missing.
     async fn fetch_request_any(
         &self,
         content: Hash,
@@ -589,10 +542,9 @@ impl Hydrator {
         Err(last_error)
     }
 
-    /// One `GET` on `connection`. Every verified group is written to the
-    /// area as it arrives; what arrived is recorded resident even when the
-    /// request fails part way. Returns the chunk indexes completed and the
-    /// error, if any.
+    /// One `GET` on `connection`. Every verified group is written to the area as it
+    /// arrives, and what arrived is recorded resident even when the request fails
+    /// part way. Returns the chunk indexes completed and the error, if any.
     #[allow(
         clippy::too_many_lines,
         reason = "one response, read child by child as the protocol state machine hands it over"
@@ -632,7 +584,6 @@ impl Hydrator {
                 let child = match next {
                     ConnectedNext::StartChild(child) => child,
                     ConnectedNext::StartRoot(root) => {
-                        // Never asked for; skip it.
                         let end = root.next().drain().await.map_err(|e| anyhow!("{e}"))?;
                         match end.next() {
                             EndBlobNext::MoreChildren(child) => child,
@@ -744,7 +695,6 @@ mod tests {
             (0, 98_304..100_000)
         );
         assert_eq!((wants[1].index, wants[1].within.clone()), (1, 0..16_384));
-        // Two ranges in one chunk merge into one want.
         let wants = chunk_wants(&m, &[0..10, 60_000..60_010]);
         assert_eq!(wants.len(), 1);
         assert_eq!(wants[0].within, 0..65_536);
@@ -767,10 +717,6 @@ mod tests {
         assert_eq!(c, vec![0..100]);
     }
 
-    /// A reader waiting on another's fetch is woken when that fetch gives
-    /// its ranges back, even when it fails at once (no peer answers) and
-    /// gives them back before the waiter got round to waiting: nothing
-    /// became resident, so the waiter must wake to fetch them itself.
     #[tokio::test]
     async fn a_fetch_released_before_its_waiter_waits_still_wakes_it() {
         let flights = Flights::default();
@@ -785,7 +731,6 @@ mod tests {
 
     use crate::test_bytes::pseudo;
 
-    /// A peer serving `data` as one file version, and an empty client.
     async fn pair(
         data: &[u8],
     ) -> (
@@ -813,7 +758,6 @@ mod tests {
         assert!(content::is_file_backed(
             &server_store.manifest(id).await.unwrap()
         ));
-        // A range in the middle, across chunk boundaries.
         let got = hydrator.read(id, 3_000_000, 1_000_000).await.unwrap();
         assert_eq!(got, &data[3_000_000..4_000_000]);
         let files = hydrator.store.files();
@@ -821,11 +765,9 @@ mod tests {
         assert!(!entry.complete(), "only what was read is resident");
         assert!(entry.resident >= 1_000_000);
         assert!(entry.resident < 2_000_000, "{}", entry.resident);
-        // The rest follows, asking only for what is missing.
         let all = hydrator.read(id, 0, data.len() as u64).await.unwrap();
         assert_eq!(all, data);
         assert!(files.entry(id.as_bytes()).unwrap().complete());
-        // Chunks are now served from here too.
         let m = hydrator.manifest_index(id).await.unwrap();
         assert!(hydrator.store.has(Hash::from(m.chunks()[1].hash)).await);
     }
@@ -903,7 +845,6 @@ mod tests {
         let data = pseudo(3 * 1024 * 1024, 11);
         let (hydrator, id, server_store, _router) = pair(&data).await;
         let m = server_store.manifest(id).await.unwrap();
-        // Damage the server's copy behind the store's back.
         let path = server_store.files().path_of(id.as_bytes());
         let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
         file.write_all_at(&[0; 64], 100).unwrap();
@@ -926,10 +867,6 @@ mod tests {
         );
     }
 
-    /// A fetch abandoned while a quiet peer holds its ranges (a predictive
-    /// prefetch cancelled when the policy changes) gives them back, so the
-    /// next reader asks for them itself instead of waiting on a fetch that
-    /// no longer exists.
     #[tokio::test]
     async fn an_abandoned_fetch_gives_its_ranges_back() {
         let data = pseudo(3 * 1024 * 1024, 17);
@@ -940,7 +877,6 @@ mod tests {
             test_relay::direct_endpoint().await,
             Arc::new(crate::store::ContentStore::memory()),
         );
-        // The manifest is here; the bytes only the quiet peer holds.
         let manifest = source.local(id).await.unwrap();
         assert_eq!(hydrator.store.ingest(manifest).await.unwrap(), id);
         hydrator.add_peer(quiet.endpoint().addr());

@@ -1,9 +1,9 @@
 //! Fail-closed planning for local collaborative-file eviction.
 //!
-//! A file payload is a manifest plus content-defined chunks.  Chunks and even
-//! whole manifests may be shared by several records or retained versions, so
-//! deleting "the blobs for one file" requires a complete, version-bound
-//! reference catalog.  This module computes that set without mutating storage.
+//! A file payload is a manifest plus content-defined chunks, and chunks and manifests may be
+//! shared by several records or retained versions, so deleting "the blobs for one file" needs a
+//! complete, version-bound reference catalog. This module computes that set without mutating
+//! storage.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -26,20 +26,18 @@ use crate::{Hydrator, Namespace};
 use fs_protocol::{AvailabilityPolicy, Residency};
 use tilo_lock::MutexRecover as _;
 
-/// Bound catalog I/O so opening Settings does not serialize one backend
-/// status query per chunk across a large workspace.
+/// Bound catalog I/O so opening Settings does not serialize one backend status query per chunk
+/// across a large workspace.
 const MAX_CONCURRENT_CATALOG_INSPECTIONS: usize = 8;
 
-/// The one process-local bridge from durable eviction intent to backend GC.
-/// Both FUSE controls and Settings use this coordinator so no caller can
-/// silently replace exact-version receipts, retained-history checks, or the
-/// exact absence observation with a Hydrator-lifetime approximation.
+/// The one process-local bridge from durable eviction intent to backend GC, so no caller can
+/// silently replace exact-version receipts, retained-history checks, or the exact absence
+/// observation with a Hydrator-lifetime approximation.
 #[derive(Clone)]
 pub struct EvictionCoordinator {
     hydrator: Arc<Hydrator>,
     registry: Arc<Mutex<AvailabilityRegistry>>,
     queue: Arc<tokio::sync::Mutex<EvictionQueue>>,
-    /// Versions and their payload hashes, read from the tree document.
     namespace: Arc<Mutex<Namespace>>,
 }
 
@@ -58,12 +56,7 @@ impl EvictionCoordinator {
         }
     }
 
-    /// Produce the same fail-closed dry run used immediately before GC.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when policy, history, or payload inspection cannot
-    /// establish one coherent exact-version plan.
+    /// The same fail-closed dry run used immediately before GC.
     pub async fn plan(
         &self,
         record_id: FileRecordId,
@@ -85,13 +78,8 @@ impl EvictionCoordinator {
         Ok(plan)
     }
 
-    /// Build one coherent payload catalog for multiple Settings rows, then
-    /// evaluate each safe plan against that same captured registry generation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the registry changes during catalog inspection or
-    /// the history/payload catalog cannot be constructed safely.
+    /// Build one coherent payload catalog for multiple Settings rows, then evaluate each safe
+    /// plan against that same captured registry generation.
     pub async fn batch_safe_plans(
         &self,
         targets: &[FileRecordId],
@@ -112,14 +100,8 @@ impl EvictionCoordinator {
         Ok(plans)
     }
 
-    /// Enqueue and freshly authorize one safe request. `expected_hash`, when
-    /// supplied by Settings' snapshot token, binds the action to the exact
-    /// immutable manifest it previewed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the exact version, policy roots, queue, or backend
-    /// GC authorization cannot be verified and persisted.
+    /// Enqueue and freshly authorize one safe request. `expected_hash`, when supplied by
+    /// Settings' snapshot token, binds the action to the exact immutable manifest it previewed.
     pub async fn prepare(
         &self,
         record_id: FileRecordId,
@@ -153,10 +135,10 @@ impl EvictionCoordinator {
         .await
     }
 
-    /// The runtime a handoff waits on the store through. The handoff holds
-    /// the availability lock, which the daemon's workers take too; a worker
-    /// blocked on it can leave the daemon's timers undriven, and the backend
-    /// sweep waits on timers. The store's own runtime never takes that lock.
+    /// The runtime a handoff waits on the store through. The handoff holds the availability
+    /// lock, which the daemon's workers take too; a worker blocked on it can leave the daemon's
+    /// timers undriven, and the backend sweep waits on timers. The store's own runtime never
+    /// takes that lock.
     #[must_use]
     pub fn handoff_runtime(&self) -> tokio::runtime::Handle {
         self.hydrator
@@ -165,22 +147,13 @@ impl EvictionCoordinator {
             .unwrap_or_else(|| self.hydrator.runtime_handle.clone())
     }
 
-    /// As [`Self::prepare`], but makes the actual backend-GC handoff an
-    /// explicit caller-supplied critical section. Storage uses this to retain
-    /// its live namespace and dirty guards from validation through durable
-    /// enqueue and tag release.
+    /// As [`Self::prepare`], but makes the actual backend-GC handoff an explicit caller-supplied
+    /// critical section, so storage can keep its live namespace and dirty guards from validation
+    /// through durable enqueue and tag release.
     ///
-    /// The handoff deliberately runs while the availability and queue locks
-    /// are held. It is not a preview-time hint. Those are synchronous guards,
-    /// so the whole critical section runs on a blocking thread, where the
-    /// handoff may wait on async store work with
-    /// [`Self::handoff_runtime`]'s `block_on` — once, never nested.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same planning and persistence errors as [`Self::prepare`],
-    /// or an error from `handoff` when its live validation, persistence, or
-    /// backend release fails.
+    /// The handoff runs while the availability and queue locks are held. Those are synchronous
+    /// guards, so the whole section runs on a blocking thread, where the handoff may wait on
+    /// async store work with [`Self::handoff_runtime`]'s `block_on`, once and never nested.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "policy must remain stable from exact-plan revalidation through backend tag release"
@@ -253,13 +226,8 @@ impl EvictionCoordinator {
         .map_err(|_| anyhow::anyhow!("eviction handoff panicked"))?
     }
 
-    /// Observe exact backend state once and atomically project completed work
-    /// into durable local residency.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the request or backend observation cannot be
-    /// loaded/persisted. A newer record version is deliberately not changed.
+    /// Observe exact backend state once and atomically project completed work into durable local
+    /// residency. A newer record version is deliberately not changed.
     pub async fn observe_once(
         &self,
         record_id: FileRecordId,
@@ -407,15 +375,14 @@ fn plan_for_mode(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlobExtent {
     pub hash: Hash,
-    /// Distinguishes an absent blob from a partial blob whose stored byte
-    /// count the backend cannot currently determine.
+    /// Distinguishes an absent blob from a partial blob whose stored byte count the backend
+    /// cannot determine.
     pub locally_present: bool,
-    /// Bytes verified locally. For a present partial blob, `None` means the
-    /// byte count is unknown; consult `locally_present` to distinguish absence.
+    /// Bytes verified locally. For a present partial blob, `None` means the count is unknown;
+    /// `locally_present` tells absence from a partial blob.
     pub resident_bytes: Option<u64>,
 }
 
-/// The exact immutable payload graph for one file version.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VersionPayload {
     pub record_id: FileRecordId,
@@ -430,11 +397,10 @@ impl VersionPayload {
     }
 }
 
-/// Complete reference information supplied by the version/history index.
+/// Complete reference information supplied by the version and history index.
 ///
-/// Planning fails closed when any resident, pinned, or retained version is
-/// absent. That is essential: an incomplete catalog cannot prove that a chunk
-/// is unshared.
+/// Planning fails closed when any resident, pinned or retained version is absent: an incomplete
+/// catalog cannot prove that a chunk is unshared.
 #[derive(Clone, Debug, Default)]
 pub struct EvictionCatalog {
     payloads: HashMap<(FileRecordId, FileVersionId), VersionPayload>,
@@ -442,15 +408,13 @@ pub struct EvictionCatalog {
 }
 
 impl EvictionCatalog {
-    /// Build a catalog containing only non-empty immutable payloads.
     pub fn new(payloads: impl IntoIterator<Item = VersionPayload>) -> Result<Self, PlanError> {
         Self::with_empty_versions(payloads, [])
     }
 
-    /// Build a complete catalog including immutable versions that have no
-    /// manifest because their exact content is empty. Empty versions protect
-    /// no blobs, but naming them prevents fail-closed planning from confusing
-    /// an intentional empty payload with a missing history entry.
+    /// Build a complete catalog including versions that have no manifest because their exact
+    /// content is empty. Empty versions protect no blobs, but naming them keeps fail-closed
+    /// planning from reading an intentional empty payload as a missing history entry.
     pub fn with_empty_versions(
         payloads: impl IntoIterator<Item = VersionPayload>,
         empty_versions: impl IntoIterator<Item = (FileRecordId, FileVersionId)>,
@@ -497,7 +461,6 @@ pub enum EvictionMode {
 pub const EVICTION_QUEUE_SCHEMA_VERSION: u16 = 1;
 pub const MAX_EVICTION_REQUESTS: usize = 4_096;
 
-/// Stable idempotency key derived from the exact immutable eviction request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct EvictionRequestId(pub Uuid);
@@ -505,14 +468,14 @@ pub struct EvictionRequestId(pub Uuid);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "state")]
 pub enum EvictionRequestState {
-    /// Persisted intent, not a claim that backend deletion has started.
     AwaitingBackendGc,
-    /// Every requested hash was observed `NotFound` in one complete backend
-    /// observation. This is the only successful terminal state.
-    Completed { observed_at_ms: u64 },
+    /// Every requested hash was observed `NotFound` in one complete backend observation; the only
+    /// successful terminal state.
+    Completed {
+        observed_at_ms: u64,
+    },
 }
 
-/// Durable immutable request plus its monotonic observation state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EvictionRequest {
@@ -532,7 +495,6 @@ pub struct EnqueueResult {
     pub inserted: bool,
 }
 
-/// One authoritative status sample returned by the blob backend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ObservedBlobState {
     Absent,
@@ -557,10 +519,9 @@ struct EvictionQueueDocument {
 
 /// Crash-safe ledger for explicit eviction intent and observed completion.
 ///
-/// The ledger does not trigger deletion by itself. The content-store bridge
-/// freshly reauthorizes a pending request, releases only its deterministic
-/// service-owned tags, and lets iroh-blobs' configured background GC collect
-/// them. This ledger records completion only after exact backend observation.
+/// The ledger does not trigger deletion by itself: the content-store bridge reauthorizes a
+/// pending request, releases only its deterministic service-owned tags, and lets iroh-blobs'
+/// background GC collect them. Completion is recorded only after exact backend observation.
 pub struct EvictionQueue {
     path: PathBuf,
     requests: BTreeMap<EvictionRequestId, EvictionRequest>,
@@ -601,7 +562,6 @@ pub enum BackendGcAuthorizationError {
 }
 
 impl EvictionQueue {
-    /// Open and fully validate a durable eviction queue.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, EvictionQueueError> {
         let path = path.into();
         if !path.exists() {
@@ -638,8 +598,8 @@ impl EvictionQueue {
         self.requests.values()
     }
 
-    /// Durably enqueue only the blobs approved by an exact dry-run plan.
-    /// Repeating an identical request is idempotent across process restarts.
+    /// Durably enqueue only the blobs approved by an exact dry-run plan; repeating an identical
+    /// request is idempotent across restarts.
     pub fn enqueue(
         &mut self,
         plan: &EvictionPlan,
@@ -709,17 +669,12 @@ impl EvictionQueue {
         Ok(EnqueueResult { id, inserted: true })
     }
 
-    /// Reauthorize a queued request against a freshly computed exact plan.
+    /// Reauthorize a queued request against a freshly computed exact plan, immediately before its
+    /// hashes become collectible, while holding whatever lock keeps the availability registry and
+    /// version catalog stable through the handoff. A record version change, policy refusal, or
+    /// newly shared safety root changes the plan, so enqueue-time authority is never enough.
     ///
-    /// A backend GC bridge must call this immediately before making hashes
-    /// collectible, while holding whatever higher-level lock keeps the
-    /// availability registry and version catalog stable through that handoff.
-    /// A record version change, policy refusal, or newly shared safety root
-    /// either prevents construction of `fresh_plan` or changes its exact hash
-    /// set, so stale enqueue-time authority is never enough by itself.
-    ///
-    /// This method does not delete, unprotect, or mark anything complete.
-    /// Completion still requires one exact all-absent backend observation.
+    /// Deletes and unprotects nothing; completion still requires one all-absent observation.
     fn revalidate_for_backend_gc(
         &self,
         id: EvictionRequestId,
@@ -744,15 +699,10 @@ impl EvictionQueue {
 
     /// Recompute all policy and shared-root decisions before a backend handoff.
     ///
-    /// The returned hashes are authorized only while the caller keeps
-    /// `registry` and `catalog` stable. They are not evidence of deletion;
+    /// The returned hashes are authorized only while the caller keeps `registry` and `catalog`
+    /// stable; they are not evidence of deletion, and
     /// [`ContentStore::observe_eviction_request`](crate::store::ContentStore::observe_eviction_request)
-    /// remains the sole completion path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the request is unknown or no longer pending, the
-    /// fresh safety plan is denied, or its immutable request fields changed.
+    /// remains the only completion path.
     pub fn authorize_backend_gc(
         &self,
         id: EvictionRequestId,
@@ -774,8 +724,8 @@ impl EvictionQueue {
         Ok(self.revalidate_for_backend_gc(id, &fresh_plan)?)
     }
 
-    /// Record one all-or-nothing backend observation. Partial samples never
-    /// change durable state, and completed requests remain completed.
+    /// Record one all-or-nothing backend observation. Partial samples never change durable state,
+    /// and completed requests stay completed.
     pub(crate) fn record_observation(
         &mut self,
         id: EvictionRequestId,
@@ -916,21 +866,18 @@ fn validate_request(request: &EvictionRequest) -> Result<(), EvictionQueueError>
     Ok(())
 }
 
-/// An immutable dry-run result. No storage operation occurs while producing it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvictionPlan {
     pub record_id: FileRecordId,
     pub version_id: FileVersionId,
     pub mode: EvictionMode,
-    /// Locally present target blobs that no protected version references.
     pub reclaimable: Vec<BlobExtent>,
-    /// Target blobs kept because another resident/pinned/retained version uses them.
+    /// Target blobs kept because another resident, pinned or retained version uses them.
     pub shared_and_protected: Vec<BlobExtent>,
-    /// Target blobs that are already absent locally.
     pub already_absent: Vec<Hash>,
     pub reclaimable_bytes: u64,
-    /// Number of present reclaimable blobs omitted from `reclaimable_bytes`
-    /// because the backend reported an unknown partial size.
+    /// Number of present reclaimable blobs left out of `reclaimable_bytes` because the backend
+    /// reported an unknown partial size.
     pub unaccounted_reclaimable_blobs: usize,
     pub protected_shared_bytes: u64,
     pub unaccounted_protected_shared_blobs: usize,
@@ -971,9 +918,9 @@ pub enum PlanError {
 
 /// Plan a non-destructive eviction after all availability and reference checks.
 ///
-/// Nothing proves another device holds a copy since the tree became the
-/// record, so this mode currently always refuses; callers that mean to lose
-/// the bytes say so with [`plan_destructive_eviction`].
+/// Nothing proves another device holds a copy since the tree became the record, so this mode
+/// always refuses; callers that mean to lose the bytes say so with
+/// [`plan_destructive_eviction`].
 pub fn plan_safe_eviction(
     registry: &AvailabilityRegistry,
     catalog: &EvictionCatalog,
@@ -991,9 +938,9 @@ pub fn plan_safe_eviction(
     )
 }
 
-/// Plan an explicitly destructive removal. This bypasses replica/pin checks
-/// only for the target current version; it never bypasses shared/history
-/// reference protection or exact-version validation.
+/// Plan an explicitly destructive removal. It bypasses replica and pin checks only for the
+/// target current version; shared and retained references and exact-version validation always
+/// apply.
 pub fn plan_destructive_eviction(
     registry: &AvailabilityRegistry,
     catalog: &EvictionCatalog,
@@ -1112,9 +1059,8 @@ fn plan(
     })
 }
 
-/// Near-linear multi-target equivalent of repeated `plan_safe_eviction`.
-/// Protected roots are catalogued exactly once; each target then only walks
-/// its own immutable payload and subtracts its own current-root contribution.
+/// Near-linear multi-target equivalent of repeated `plan_safe_eviction`: protected roots are
+/// catalogued once, and each target then walks only its own immutable payload.
 fn batch_plan_safe(
     registry: &AvailabilityRegistry,
     catalog: &EvictionCatalog,
