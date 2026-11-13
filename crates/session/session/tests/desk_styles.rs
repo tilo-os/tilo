@@ -572,16 +572,16 @@ fn a_style_chosen_by_a_named_press_draws_within_a_frame_or_two() {
 #[test]
 fn the_desktops_dock_edge_setting_moves_the_dock() {
     let _settled = ui::motion::testing::settled();
-    common::app_store();
-    let root = common::private_home();
-    let mut session = common::seeded_session(root.path());
+    crate::common::app_store();
+    let root = crate::common::private_home();
+    let mut session = crate::common::seeded_session(root.path());
     until(&mut session, |session| {
-        common::preset_menu(session).is_some()
+        crate::common::preset_menu(session).is_some()
     });
     // The desktop, by the style switch's own action: `show_style` names the view the desk draws
     // (`Viewing.style`), through the shell's door as the switch's row runs. The desktop's own
     // bar drops the style menu, so a press on the bar cannot pick it back.
-    let mut repl = common::Repl::connect(&root.path().join("agent.sock"));
+    let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
     let (answer, failed) = repl.run(
         &mut session,
@@ -589,11 +589,11 @@ fn the_desktops_dock_edge_setting_moves_the_dock() {
     );
     assert!(!failed, "the desk shows the desktop: {answer}");
     until(&mut session, |session| {
-        common::preset_menu(session).is_none()
+        crate::common::preset_menu(session).is_none()
     });
     // The dock rides the foot before the setting: its control stands across the bottom edge.
-    let before = common::wait_for(&mut session, "the dock on the foot", |session| {
-        common::on_screen(session, "Dock")
+    let before = crate::common::wait_for(&mut session, "the dock on the foot", |session| {
+        crate::common::on_screen(session, "Dock")
     });
     assert!(
         before.1 > f64::from(HEIGHT) / 2.0,
@@ -604,8 +604,8 @@ fn the_desktops_dock_edge_setting_moves_the_dock() {
     session
         .run_shell_setting("dock_on", vec![serde_json::json!("left")])
         .unwrap_or_else(|why| panic!("the dock moves to the leading edge: {why}"));
-    let after = common::wait_for(&mut session, "the dock on the leading edge", |session| {
-        let held = common::on_screen(session, "Dock")?;
+    let after = crate::common::wait_for(&mut session, "the dock on the leading edge", |session| {
+        let held = crate::common::on_screen(session, "Dock")?;
         (held.0 < f64::from(WIDTH) / 4.0).then_some(held)
     });
     assert!(
@@ -625,13 +625,13 @@ fn the_desktops_dock_edge_setting_moves_the_dock() {
 #[test]
 fn the_repl_moves_the_desktops_dock_by_the_styles_own_action() {
     let _settled = ui::motion::testing::settled();
-    common::app_store();
-    let root = common::private_home();
-    let mut session = common::seeded_session(root.path());
+    crate::common::app_store();
+    let root = crate::common::private_home();
+    let mut session = crate::common::seeded_session(root.path());
     until(&mut session, |session| {
-        common::preset_menu(session).is_some()
+        crate::common::preset_menu(session).is_some()
     });
-    let mut repl = common::Repl::connect(&root.path().join("agent.sock"));
+    let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
     // The desktop, through the REPL's own door: the style is a view of the arrangement and the
     // switch is `show_style`, an action of the person's viewing record.
@@ -641,10 +641,10 @@ fn the_repl_moves_the_desktops_dock_by_the_styles_own_action() {
     );
     assert!(!failed, "the REPL shows the desktop: {answer}");
     until(&mut session, |session| {
-        common::preset_menu(session).is_none()
+        crate::common::preset_menu(session).is_none()
     });
-    let before = common::wait_for(&mut session, "the dock on the foot", |session| {
-        common::on_screen(session, "Dock")
+    let before = crate::common::wait_for(&mut session, "the dock on the foot", |session| {
+        crate::common::on_screen(session, "Dock")
     });
     assert!(
         before.1 > f64::from(HEIGHT) / 2.0,
@@ -657,8 +657,8 @@ fn the_repl_moves_the_desktops_dock_by_the_styles_own_action() {
         "shell.dock_on(shell.shell, edge: shell.Edge.left)",
     );
     assert!(!failed, "the REPL moves the dock: {answer}");
-    let after = common::wait_for(&mut session, "the dock on the leading edge", |session| {
-        let held = common::on_screen(session, "Dock")?;
+    let after = crate::common::wait_for(&mut session, "the dock on the leading edge", |session| {
+        let held = crate::common::on_screen(session, "Dock")?;
         (held.0 < f64::from(WIDTH) / 4.0).then_some(held.0)
     });
     assert!(
