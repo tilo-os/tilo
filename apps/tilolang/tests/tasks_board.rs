@@ -866,7 +866,8 @@ fn show_acting(
     assert!(faults.is_empty(), "the agent's tag: {faults:?}");
 }
 
-/// The id a task's title is kept under: what an edit of it and a caret in it name.
+/// The id a task's title is kept under: what a caret placed in it names, and where its window
+/// keys the field.
 fn title_field() -> String {
     let ids = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tl/tasks/app.ids"),
@@ -972,7 +973,8 @@ fn an_agent_editing_a_title_is_seen_writing_in_it() {
     let edit = action_id(&mut app, &task, "Edit a text field");
     let (agent, ambient) = crate::change_marks::run();
     let mut args = serde_json::Map::new();
-    args.insert("field".to_owned(), title_field().into());
+    // A caller names the field as the type declares it; the record keeps it under its id.
+    args.insert("field".to_owned(), "title".into());
     args.insert("value".to_owned(), "Buy oat milk and bread".into());
     let event = agent_acting(&mut app, &task, &edit);
     app.invoke(

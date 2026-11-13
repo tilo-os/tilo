@@ -78,7 +78,8 @@ pub trait MetaExt {
     fn register_schemas(&self);
 
     /// The action a caller at the door names `published`: actions are published by their name,
-    /// as a native verb is, while what is stored of one (its records, its words) keeps its id.
+    /// as a native verb is, while the code of one runs under the id its declaration keeps (and
+    /// its words are keyed by it).
     fn action_published_as(&self, published: &str) -> Option<&ActionMeta>;
 
     /// The resource kind of the type `type_name`: `tl.<app>.<Type>`.

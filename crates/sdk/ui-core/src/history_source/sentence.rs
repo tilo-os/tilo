@@ -178,7 +178,14 @@ pub fn learn_labels(resources: &[tilo_actions::ResourceSpec]) {
         labels: &mut std::collections::HashMap<String, Vec<(String, String)>>,
     ) {
         for action in &resource.actions {
-            let known = labels.entry(action.id.clone()).or_default();
+            // What a change of the action says it by: the id the app declares it under, where
+            // that is not the name it publishes it by.
+            let by = if action.declared.is_empty() {
+                action.id.clone()
+            } else {
+                action.declared.clone()
+            };
+            let known = labels.entry(by).or_default();
             match known.iter_mut().find(|(kind, _)| *kind == resource.kind) {
                 Some(entry) => entry.1.clone_from(&action.label),
                 None => known.push((resource.kind.clone(), action.label.clone())),
