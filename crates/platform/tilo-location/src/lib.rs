@@ -6,18 +6,10 @@
     )
 )]
 
-//! Device location: one API on Linux, macOS and the web.
-//!
-//! Apps call [`request_location`] and drain the returned channel once per
-//! frame; the UI thread never blocks. The platform mediates the permission
-//! prompt and nothing here fabricates a position: when none can be obtained
-//! the answer is an honest [`LocationOutcome::Unavailable`].
-//!
-//! | Target | Backend |
-//! |---|---|
-//! | Linux | the XDG Desktop Portal's `Location` (GeoClue, or the Tilo compositor) |
-//! | macOS | CoreLocation, for a bundle whose `Info.plist` has `NSLocationWhenInUseUsageDescription`; an unbundled binary is answered [`LocationOutcome::Unavailable`] |
-//! | Web | the Geolocation API, after the browser's prompt |
+//! Device location: one API on Linux, macOS and the web. Apps call
+//! [`request_location`] and drain the returned channel once per frame, so the
+//! UI thread never blocks. The platform mediates the permission prompt, and
+//! nothing here fabricates a position.
 
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, OnceLock};
@@ -32,33 +24,25 @@ mod web;
 
 pub use caps::{Availability, Feature, Unsupported, availability, available};
 
-/// The result of a location request, delivered back to the UI thread over a
-/// channel.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LocationOutcome {
-    /// A real fix from the platform's location service.
     Located {
         lat: f64,
         lon: f64,
         /// Reported horizontal accuracy in metres (0 when unknown).
         accuracy_m: f64,
     },
-    /// No position could be obtained: the service was missing, the user
-    /// denied permission, or no fix arrived. Carries a human-readable reason
-    /// so the UI can say *why* rather than inventing a location.
+    /// No position could be obtained: the service was missing, permission was
+    /// denied, or no fix arrived. The reason is for the UI to show.
     Unavailable(String),
 }
 
-/// A pending location request: the receiver the UI thread drains each frame.
 pub type LocationChannel = Receiver<LocationOutcome>;
 
-/// Host-provided device location.
 pub trait LocationProvider: Send + Sync {
-    /// Request one fix. Answers over the channel, never blocking the caller.
     fn locate(&self) -> LocationChannel;
 }
 
-/// Ask the current host for the device's location.
 pub fn request_location() -> LocationChannel {
     RESOLVER
         .get()
@@ -68,15 +52,10 @@ pub fn request_location() -> LocationChannel {
 
 static RESOLVER: OnceLock<fn() -> Arc<dyn LocationProvider>> = OnceLock::new();
 
-/// Install how [`request_location`] finds the current host's provider. The
-/// first call wins; `ui::host` installs one that resolves through its scoped
-/// `HostServices`. Without one, requests answer
-/// [`LocationOutcome::Unavailable`].
 pub fn install_resolver(resolve: fn() -> Arc<dyn LocationProvider>) {
     let _ = RESOLVER.set(resolve);
 }
 
-/// This target's location provider.
 pub fn system() -> Arc<dyn LocationProvider> {
     #[cfg(target_os = "linux")]
     return Arc::new(linux::PortalLocation);
@@ -88,7 +67,6 @@ pub fn system() -> Arc<dyn LocationProvider> {
     Arc::new(Refusing(Unsupported::of(Feature::Locate).reason))
 }
 
-/// A provider that never locates, for hosts that offer none.
 pub fn unavailable() -> Arc<dyn LocationProvider> {
     Arc::new(Refusing("Location isn't available here"))
 }
