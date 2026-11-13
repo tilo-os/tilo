@@ -6,8 +6,7 @@ For app automation, begin with `tilo-control actions list QUERY --json`, then
 invoke the chosen `(provider, id)`. The [search selection guide](../../docs/headless-testing.md#select-search-results-by-identity)
 explains how to distinguish same-named native and host apps and verify execution
 without opening the palette. Use the input examples below when testing input or
-rendering itself. `action-api-demo.py` starts its own
-isolated session and exercises semantic invocation.
+rendering itself.
 
 ## Proofs
 
@@ -72,7 +71,7 @@ Each script drives a running session: the socket path is its first argument, els
 | `click-and-snapshot.py` | Click a named widget, write a PNG of the post-click state. |
 | `keyboard-flow.py` | Ctrl+K opens the palette, type text, snapshot. |
 | `drag-demo.py` | Press-then-drag a tab handle between two coordinates. |
-| `full-loop.py` | Spawn a session of this tree's build → list → click → key → drag → snapshot → tear down. |
+| `full-loop.py` | Spawn a session of this tree's build → open search → type → snapshot → close → tear down. |
 | `real_apps.py` | A headless session with the tree's own apps installed, launched through the desktop's own launcher: `Session` for a check, `--start --open notes --shot out.png` for a person. Every check of a desktop with apps starts here. |
 | `files-clipboard-e2e.py` | Copy and cut files in Files, paste them into another folder through the session's file clipboard, and read the bytes back off disk. |
 

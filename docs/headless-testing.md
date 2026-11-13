@@ -262,7 +262,6 @@ Every widget in the tree exposes a name through either:
 - `real_apps.py` — the one client: `Session` (the tree's apps), `ScriptedSession` (a build of its own), `Agent` (the agent door), `Session.attach` (a session another tool started)
 - `reaper.py` — takes a session down, process group and all
 - `list-targets.py`, `click-and-snapshot.py`, `keyboard-flow.py`, `drag-demo.py`, `full-loop.py` — one op each
-- `action-api-demo.py` — discovery and semantic invocation by `(provider, id)`
 - `first-frame.py`, `startup-frame-timeline.py` — what a session's first frame costs
 - `session-e2e.py`, `canvas-e2e.py`, `tilolang-e2e.py`, `files-clipboard-e2e.py`, `agent-chat-e2e.py` — whole flows, each on a session of its own
 - `agent-seats-proof.py`, `session-lock-proof.py` — the proofs `tools/ci/session-proofs.sh` runs

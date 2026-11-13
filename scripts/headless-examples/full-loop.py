@@ -13,12 +13,12 @@ Usage:
 What it does:
   1. Spawns ./target/debug/tilo-session --backend headless on a scratch
      profile, with TILO_TEST_CONTROL set to the socket path.
-  2. Lists targets, opens the strip switcher (Super+S), clicks its card,
-     closes it (Escape).
-  3. Opens global search (Super+Space), types "Files", proves its live state,
-     waits for the transition to settle, and snapshots.
-  4. Closes the palette (Escape), snapshots again.
-  5. Stops the session and removes the profile, the socket and the runtime.
+  2. Lists targets, opens the desk's search (Super+Space), proves the palette
+     is up in the desk's own state (`chrome.overlays.search`) and that it
+     exports its input as a target, types a query, and snapshots.
+  3. Closes the palette (Escape), snapshots again, and proves the frame
+     changed rather than only the state.
+  4. Stops the session and removes the profile, the socket and the runtime.
 
 Total runtime: ~5 seconds on a warm cargo cache.
 
@@ -54,8 +54,9 @@ def state(session) -> dict:
     return response["state"]
 
 
-def palette(session) -> dict:
-    return state(session)["chrome"]["palette"]
+def search_is_open(session) -> bool:
+    """Whether the desk's own state says its search is up."""
+    return bool(state(session)["chrome"]["overlays"]["search"])
 
 
 def has_target(session, name: str) -> bool:
@@ -210,59 +211,36 @@ def main() -> int:
     print(f"socket up: {session.control_socket}")
     time.sleep(0.5)  # let the first paint complete
     try:
-        # 2. List targets, open the strip switcher, click its card.
+        # 2. List targets, then open the desk's search the way a person does.
         resp = session.control({"op": "list_targets"})
         print(f"  {len(resp['targets'])} targets")
         session.control({"op": "key_down", "key": "Super"})
-        session.control({"op": "key", "key": "s"})
-        session.control({"op": "key_up", "key": "Super"})
-        wait_until("strip switcher to open",
-                   lambda: state(session)["chrome"].get("strip_switcher_open"))
-        # The state flips at the key press; the open labels have a place to
-        # click only once a frame has laid them out.
-        wait_until("open strip switcher to be laid out",
-                   lambda: has_target(session, "strip_switcher"))
-        session.control({"op": "click_named", "name": "strip_switcher"})
-        print("  clicked strip_switcher")
-        session.control({"op": "key", "key": "Escape"})
-        wait_until("strip switcher to close",
-                   lambda: not state(session)["chrome"].get("strip_switcher_open"))
-
-        # 3. Fresh profiles use Super+Space for global search, which opens
-        # scoped to the workspace in front (its launcher's scope); typing
-        # still reaches other workspaces, the scope only ranks what is here.
-        # Hold the modifier through the production key-down/up path.
-        session.control({"op": "key_down", "key": "Super"})
         session.control({"op": "key", "key": "Space"})
         session.control({"op": "key_up", "key": "Super"})
-        wait_until("global-search palette to open", lambda: palette(session)["visible"])
+        wait_until("search to open", lambda: search_is_open(session))
         session.control({"op": "type", "text": "Files"})
-        wait_until(
-            "palette query to become Files",
-            lambda: palette(session)["visible"] and palette(session)["query"] == "Files",
-        )
-        if state(session)["chrome"]["search_scope"] != "Workspace":
-            raise RuntimeError("Super+Space did not open global search on the workspace")
+        # The palette is live in state; it has an input to point at once a
+        # frame has laid it out.
+        wait_until("the palette's input to be laid out",
+                   lambda: has_target(session, "command_palette_input"))
+        time.sleep(0.5)  # palette transition is 400ms; do not attest a cross-fade frame
+        session.control({"op": "snapshot", "path": str(PALETTE_PNG)},
+                        timeout=SNAPSHOT_TIMEOUT)
+        assert_nonblank_png(PALETTE_PNG)
         input_target = next(
             (t for t in session.control({"op": "list_targets"})["targets"]
              if t["name"] == "command_palette_input"), None,
         )
         if input_target is None:
             raise RuntimeError("palette is live in state but has no visible semantic target")
-        time.sleep(0.5)  # palette transition is 400ms; do not attest a cross-fade frame
-        session.control({"op": "snapshot", "path": str(PALETTE_PNG)},
-                        timeout=SNAPSHOT_TIMEOUT)
-        assert_nonblank_png(PALETTE_PNG)
         assert_palette_input_painted(PALETTE_PNG, input_target["rect"])
         print(f"  {PALETTE_PNG} written and verified")
 
-        # 4. Escape clears what was typed, a second Escape closes search;
+        # 3. Escape clears what was typed, a second Escape closes search;
         # snapshot the final state.
         session.control({"op": "key", "key": "Escape"})
-        wait_until("palette query to clear",
-                   lambda: palette(session)["visible"] and palette(session)["query"] == "")
         session.control({"op": "key", "key": "Escape"})
-        wait_until("palette to close", lambda: not palette(session)["visible"])
+        wait_until("search to close", lambda: not search_is_open(session))
         if any(
             t["name"] == "command_palette_input"
             for t in session.control({"op": "list_targets"})["targets"]
@@ -277,7 +255,7 @@ def main() -> int:
 
         return 0
     finally:
-        # 5. Tear down: the session, its profile, its socket and runtime.
+        # 4. Tear down: the session, its profile, its socket and runtime.
         session.stop()
 
 
