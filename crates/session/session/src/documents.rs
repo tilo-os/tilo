@@ -103,10 +103,18 @@ pub(crate) fn app_of(launch: &Launch) -> Option<&str> {
 /// first: what each is called, the glyph its app rows wear, and — where two apps that open the same
 /// document go by one name — where this device got it, so the two rows never read alike.
 pub(crate) fn candidates(launches: &[Launch], lists: &AppLists) -> Vec<DocumentApp> {
-    let mut rows: Vec<DocumentApp> = launches
-        .iter()
-        .filter_map(|launch| app_of(launch).map(|app| candidate(app, lists)))
-        .collect();
+    let mut rows: Vec<DocumentApp> = Vec::with_capacity(launches.len());
+    for launch in launches {
+        let Some(app) = app_of(launch) else {
+            continue;
+        };
+        // A Tilo app that keeps a desktop entry of its own is listed once, as itself: both launches
+        // name the same app.
+        if rows.iter().any(|row| row.id == app) {
+            continue;
+        }
+        rows.push(candidate(app, lists));
+    }
     let names: Vec<String> = rows.iter().map(|row| named(&row.name)).collect();
     for (index, row) in rows.iter_mut().enumerate() {
         let shared = names
@@ -169,17 +177,10 @@ fn source_of(app: &str, lists: &AppLists) -> Option<AppKind> {
         });
     }
     lists
-        .candidates
+        .applications
         .iter()
-        .any(|listed| listed.host_desktop_id() == Some(app))
-        .then_some(AppKind::System)
-        .or_else(|| {
-            lists
-                .applications
-                .iter()
-                .any(|listed| listed.id == app)
-                .then_some(AppKind::Tilo)
-        })
+        .any(|listed| listed.id == app)
+        .then_some(AppKind::Tilo)
 }
 
 /// A name as two rows are told apart by it, whatever case their entry writes.
@@ -261,5 +262,11 @@ mod tests {
         assert_eq!(both[0].source, Some(AppKind::Tilo));
         assert_eq!(both[1].source, Some(AppKind::Flatpak));
         assert_eq!(both[1].name, "Editor");
+        // A Tilo app that keeps a desktop entry of its own is one row, not two.
+        let repeated = candidates(
+            &[host("org.gnome.TextEditor"), host("org.gnome.TextEditor")],
+            &lists(),
+        );
+        assert_eq!(repeated.len(), 1);
     }
 }
