@@ -74,8 +74,9 @@ fn caret(session: &mut Session) -> (f64, f64, f64, f64) {
 /// Pan the canvas by a middle drag of `by` and zoom it in two wheel detents with Ctrl held, about
 /// its middle: a lens that is neither the origin nor the canvas's own scale.
 fn pan_and_zoom(session: &mut Session, by: (f64, f64)) {
-    let (x, y, w, h) = wait_for(session, "the canvas", |session| on_screen(session, CANVAS));
-    let middle = (x + w / 2.0, y + h / 2.0);
+    let (left, top, width, height) =
+        wait_for(session, "the canvas", |session| on_screen(session, CANVAS));
+    let middle = (left + width / 2.0, top + height / 2.0);
     point_to(session, middle);
     for pressed in [true, false] {
         if pressed {
@@ -666,13 +667,13 @@ fn a_right_click_on_a_place_opens_its_actions() {
     // The pointer over the place shows its handle; a right-click on its name opens the menu.
     point_to(&mut session, (px + pw * 0.5, py + ph * 0.5));
     let title = if inbox.name.is_empty() {
-        inbox.title.clone()
+        &inbox.title
     } else {
-        inbox.name.clone()
+        &inbox.name
     };
     let handle = wait_for(&mut session, "the place's handle", |session| {
         session
-            .shell_controls(&title)
+            .shell_controls(title)
             .into_iter()
             .filter(|(_, _, w, h)| *w > 0.0 && *h > 0.0)
             .min_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)))
@@ -762,7 +763,7 @@ fn the_dragged_rectangle_stays_outlined_while_typing() {
     let from = (x + w * 0.2, y + h * 0.2);
     let to = (x + w * 0.6, y + h * 0.7);
     // The rectangle's bottom edge, half way along: clear of the caret at its top.
-    let edge = ((from.0 + to.0) / 2.0, to.1);
+    let edge = (f64::midpoint(from.0, to.0), to.1);
     let pixel = |session: &mut Session| -> [u8; 4] {
         let shot = crate::common::shot(session, "canvas-outline");
         let at = ((edge.1.round() as u32 * shot.width + edge.0.round() as u32) * 4) as usize;

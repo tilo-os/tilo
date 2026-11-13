@@ -458,12 +458,10 @@ impl Session {
             let agents = Rc::clone(&agents);
             let sends = sends.clone();
             Rc::new(move |text: &str| {
-                let Some((workspace, policy)) = handle.read(|tree| {
+                let (workspace, policy) = handle.read(|tree| {
                     tree.active_workspace()
                         .map(|held| (held.id().to_string(), held.policy.clone()))
-                }) else {
-                    return None;
-                };
+                })?;
                 let to = crate::agents::agent_recipient(agents.kept(&workspace, &policy, &person));
                 let arguments = serde_json::json!({
                     "to": [to],
@@ -474,7 +472,7 @@ impl Session {
                     return None;
                 };
                 match sends.ask(&arguments) {
-                    Ok(sent) => Some(sent),
+                    Ok(number) => Some(number),
                     Err(error) => {
                         tracing::warn!(%error, "the canvas's ask was not sent");
                         None
