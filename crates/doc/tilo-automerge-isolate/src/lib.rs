@@ -13,8 +13,8 @@
 //!    per request ([`Limits::timeout`]). It can reach no file, socket or other
 //!    process: Landlock denies every path and TCP port, `openat` is refused,
 //!    and a seccomp allow-list kills it on any other syscall beyond its
-//!    pipes, memory, futexes, clocks and exit. A crash, an allocation failure, a refused syscall, an
-//!    overrun or an Automerge error rejects the input.
+//!    pipes, memory, futexes, clocks and exit. A crash, an allocation failure,
+//!    a refused syscall, an overrun or an Automerge error rejects the input.
 //!
 //! Only then does the caller make the identical call on its own document.
 //! Automerge is deterministic, so that call does what the worker's did.
