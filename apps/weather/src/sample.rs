@@ -91,12 +91,20 @@ fn synth_snapshot(loc: &SavedLocation, spec: &DaySpec) -> WeatherSnapshot {
     // Today keeps the day's own range, so it agrees with the hourly curve.
     let week_codes = [spec.code_day, 2, 61, 80, 3, 1, spec.code_day];
     let week_drift = [0.0, -0.4, -1.6, -2.2, -0.8, 0.6, 1.2];
+    let dates = [
+        "2026-06-30",
+        "2026-07-01",
+        "2026-07-02",
+        "2026-07-03",
+        "2026-07-04",
+        "2026-07-05",
+        "2026-07-06",
+    ];
     let mut daily = Vec::new();
-    for (d, (&code, &drift)) in week_codes.iter().zip(&week_drift).enumerate() {
+    for (d, ((&code, &drift), day)) in week_codes.iter().zip(&week_drift).zip(dates).enumerate() {
         let wet = crate::wxcode::Sky::from_code(code).is_wet();
         daily.push(DayForecast {
-            // Filled by the date sequence below: no calendar arithmetic.
-            date: String::new(),
+            date: day.to_string(),
             temp_max: ((spec.high + drift) * 10.0).round() / 10.0,
             temp_min: ((spec.low + drift * 0.6) * 10.0).round() / 10.0,
             precip_probability: if wet {
@@ -117,19 +125,6 @@ fn synth_snapshot(loc: &SavedLocation, spec: &DaySpec) -> WeatherSnapshot {
             ),
         });
     }
-    let dates = [
-        "2026-06-30",
-        "2026-07-01",
-        "2026-07-02",
-        "2026-07-03",
-        "2026-07-04",
-        "2026-07-05",
-        "2026-07-06",
-    ];
-    for (day, date) in daily.iter_mut().zip(dates) {
-        day.date = date.to_string();
-    }
-
     WeatherSnapshot {
         location_id: loc.id,
         current,

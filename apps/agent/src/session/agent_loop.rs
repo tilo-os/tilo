@@ -1878,7 +1878,7 @@ impl Session {
                     return Ok(None);
                 }
                 if said.reply.is_none() {
-                    said.reply = state.reply.clone();
+                    said.reply.clone_from(&state.reply);
                 }
                 self.chooser
                     .mark(tilo_model_client::TraceEvent::PlanReady, turn);
