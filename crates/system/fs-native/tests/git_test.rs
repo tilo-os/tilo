@@ -1,6 +1,6 @@
-//! Git works natively on a captured tree, and every capture is a state git
-//! can recover from. Nothing in the data plane knows about git; this test
-//! checks the general guarantees with git as the witness.
+//! Git works natively on a captured tree, and every capture is a state git can
+//! recover from. Nothing in the data plane knows about git; this test checks
+//! the general guarantees with git as the witness.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -53,7 +53,6 @@ fn git_ok(dir: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
-/// Where git keeps a loose object.
 fn object_path(hex: &str) -> PathBuf {
     PathBuf::from(format!("repo/.git/objects/{}/{}", &hex[..2], &hex[2..]))
 }
@@ -139,8 +138,7 @@ fn git_runs_natively_while_capture_runs_and_every_epoch_is_a_valid_repository() 
     );
 }
 
-/// Pumps the journal and cuts epochs on the scheduler's signal until
-/// `stop`, checking every epoch as it is published.
+/// checking every epoch as it is published.
 fn spawn_capturer(
     mut journal: ChangeJournal,
     mut capture: EpochCapture,
@@ -154,7 +152,6 @@ fn spawn_capturer(
             Duration::from_millis(100),
             Duration::from_millis(500),
         );
-        // Objects published so far, in application order.
         let mut published: HashSet<PathBuf> = HashSet::new();
         let mut seen = 0usize;
         let mut last = false;
@@ -189,8 +186,6 @@ fn spawn_capturer(
     })
 }
 
-/// V2: the snapshot is a repository git accepts. V3: a branch ref is
-/// published only after the commit object it names.
 fn check_epoch(
     snap: &Path,
     ops: &[ChangeOp],

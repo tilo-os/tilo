@@ -1,15 +1,11 @@
-//! The store volume: a dedicated Btrfs filesystem holding the workspace trees,
-//! capture snapshots and retained versions.
+//! The store volume: a dedicated Btrfs filesystem holding
+//! `<root>/live/<workspace>/` — one subvolume per workspace, the real POSIX
+//! tree — and `<root>/.epochs/`, read-only capture snapshots.
 //!
-//! ```text
-//! <root>/live/<workspace>/   one subvolume per workspace: the real POSIX tree
-//! <root>/.epochs/       read-only capture snapshots (short-lived)
-//! ```
-//!
-//! fanotify filesystem marks are per superblock, and a pre-content mark
-//! puts the daemon in front of every access it covers. The store must
-//! therefore be its own filesystem, never a subvolume of the root
-//! filesystem, which would put every file on the machine behind the daemon.
+//! fanotify filesystem marks are per superblock, and a pre-content mark puts
+//! the daemon in front of every access it covers. The store must therefore be
+//! its own filesystem, never a subvolume of the root filesystem, which would
+//! put every file on the machine behind the daemon.
 
 use std::fs;
 use std::io;
@@ -17,7 +13,6 @@ use std::path::{Path, PathBuf};
 
 use crate::btrfs;
 
-/// Why a path cannot serve as a Tier 1 store volume.
 #[derive(Debug, PartialEq, Eq)]
 pub enum VolumeError {
     NotBtrfs,
@@ -54,7 +49,6 @@ impl From<io::Error> for VolumeError {
     }
 }
 
-/// Checks that `root` is the top of a dedicated Btrfs filesystem.
 pub fn check_dedicated(root: &Path) -> Result<(), VolumeError> {
     if !btrfs::is_btrfs(root)? {
         return Err(VolumeError::NotBtrfs);
@@ -72,7 +66,6 @@ pub fn check_dedicated(root: &Path) -> Result<(), VolumeError> {
     Ok(())
 }
 
-/// Whether `root` is the mount point of the top-level subvolume.
 fn is_mount_root(root: &Path) -> io::Result<bool> {
     let canonical = fs::canonicalize(root)?;
     let info = fs::read_to_string("/proc/self/mountinfo")?;
@@ -104,7 +97,6 @@ fn unescape_mountinfo(s: &str) -> String {
     out
 }
 
-/// Paths of one store volume.
 #[derive(Clone, Debug)]
 pub struct StoreLayout {
     pub root: PathBuf,
@@ -127,8 +119,7 @@ impl StoreLayout {
         self.root.join(".epochs")
     }
 
-    /// Creates `live/` and `.epochs/`, and the workspace's subvolume if
-    /// missing.
+    /// Creates `live/` and `.epochs/`, and the workspace's subvolume if missing.
     pub fn ensure_workspace(&self, workspace: &str) -> io::Result<PathBuf> {
         fs::create_dir_all(self.live())?;
         fs::create_dir_all(self.epochs())?;

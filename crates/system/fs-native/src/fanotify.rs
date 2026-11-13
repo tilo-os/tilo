@@ -1,8 +1,6 @@
-//! A small, safe fanotify binding: groups, marks, event parsing and
-//! permission responses.
-//!
-//! `libc` covers the classic API; the pre-content (HSM) additions from Linux
-//! 6.14 are defined here from `<linux/fanotify.h>`.
+//! A small, safe fanotify binding: groups, marks, event parsing and permission
+//! responses. `libc` covers the classic API; the pre-content (HSM) additions
+//! from Linux 6.14 are defined here from `<linux/fanotify.h>`.
 
 use std::ffi::OsString;
 use std::io;
@@ -27,8 +25,8 @@ pub const FAN_MOVE_SELF: u64 = 0x0000_0800;
 pub const FAN_Q_OVERFLOW: u64 = 0x0000_4000;
 pub const FAN_OPEN_PERM: u64 = 0x0001_0000;
 pub const FAN_ACCESS_PERM: u64 = 0x0002_0000;
-/// Pre-content access hook (Linux 6.14): raised before a read, write or
-/// mapping touches a byte range of a marked regular file.
+/// Pre-content access hook (Linux 6.14): raised before a read, write or mapping
+/// touches a byte range of a marked regular file.
 pub const FAN_PRE_ACCESS: u64 = 0x0010_0000;
 pub const FAN_RENAME: u64 = 0x1000_0000;
 pub const FAN_ONDIR: u64 = 0x4000_0000;
@@ -68,8 +66,8 @@ pub const FAN_MARK_FILESYSTEM: u32 = 0x0000_0100;
 pub const FAN_ALLOW: u32 = 0x01;
 pub const FAN_DENY: u32 = 0x02;
 
-/// `FAN_DENY_ERRNO(err)`: deny a permission event with a specific errno
-/// (Linux 6.14, pre-content groups only).
+/// `FAN_DENY_ERRNO(err)`: deny a permission event with a specific errno (Linux
+/// 6.14, pre-content groups only).
 pub fn deny_errno(errno: i32) -> u32 {
     let err = u32::try_from(errno).unwrap_or(0) & 0xff;
     FAN_DENY | err.checked_shl(24).unwrap_or(0)
@@ -89,7 +87,6 @@ const FAN_NOFD: i32 = -1;
 /// Which object a FID record describes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FidKind {
-    /// The object itself (`FAN_REPORT_FID` / `FAN_REPORT_TARGET_FID`).
     Object,
     /// Its parent directory, optionally with the entry name.
     Parent,
@@ -105,7 +102,6 @@ pub enum Info {
         handle: FileHandle,
         name: Option<OsString>,
     },
-    /// The byte range of a pre-content event.
     Range {
         offset: u64,
         count: u64,
@@ -113,9 +109,9 @@ pub enum Info {
     Other(u8),
 }
 
-/// One fanotify event. For fd-reporting groups `fd` is an open descriptor
-/// of the object; permission events must be answered with
-/// [`Group::respond`] before it is dropped.
+/// One fanotify event. For fd-reporting groups `fd` is an open descriptor of
+/// the object; permission events must be answered with [`Group::respond`]
+/// before it is dropped.
 #[derive(Debug)]
 pub struct Event {
     pub mask: u64,
@@ -160,7 +156,7 @@ impl AsFd for Group {
 }
 
 impl Group {
-    /// `fanotify_init(2)`. `FAN_CLOEXEC` is always added.
+    /// `fanotify_init(2)`; `FAN_CLOEXEC` is always added.
     pub fn new(flags: u32, event_f_flags: u32) -> io::Result<Self> {
         // SAFETY: plain syscall; the result is checked.
         let fd = sys::cvt(unsafe { libc::fanotify_init(flags | FAN_CLOEXEC, event_f_flags) })?;
@@ -170,9 +166,8 @@ impl Group {
         })
     }
 
-    /// `fanotify_mark(2)` on `path`, resolved relative to `dir` (or the
-    /// current directory). With `path == None` the mark is placed on `dir`
-    /// itself.
+    /// `fanotify_mark(2)` on `path`, resolved relative to `dir` (or the current
+    /// directory). With `path == None` the mark is placed on `dir` itself.
     pub fn mark(
         &self,
         flags: u32,
@@ -188,7 +183,6 @@ impl Group {
         Ok(())
     }
 
-    /// Marks the object behind an open descriptor.
     pub fn mark_fd(&self, flags: u32, mask: u64, fd: BorrowedFd<'_>) -> io::Result<()> {
         self.mark(flags, mask, Some(fd), None)
     }
@@ -231,7 +225,6 @@ impl Group {
         parse_events(buf.get(..n).unwrap_or_default())
     }
 
-    /// Answers a permission event.
     pub fn respond(&self, event_fd: RawFd, response: u32) -> io::Result<()> {
         let resp = libc::fanotify_response {
             fd: event_fd,
