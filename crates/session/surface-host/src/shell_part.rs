@@ -42,13 +42,12 @@ use crate::{Placement, WidgetHost};
 /// What a shell reads of the session and the names the session publishes it by: every host's,
 /// so the shell's views and the session name one desk.
 pub use tilo_session_core::shell::{
-    ARRANGEMENT_RESOURCE, AgentReading, AppReading, ArrangementPlaceReading, ArrangementQueryReading,
-    ArrangementReading, ArrangementRefReading,
-    ArrangementRowReading, ArrangementStripReading, ArrangementWorkspaceReading, Ask, AskReading,
-    CHROME_RESOURCE, DESK_RESOURCE, DeskReading, DeskStyleReading, NoticeActionReading,
-    NoticeReading, ORIGIN, PersonReading, RoomReading, SHELL_APP, SHELL_RECORD, ScreenEdges,
-    TimerReading, TrayReading, WindowReading, WindowRect, WorkspaceReading, reach_pad,
-    screen_edges,
+    ARRANGEMENT_RESOURCE, AgentReading, AppReading, ArrangementPlaceReading,
+    ArrangementQueryReading, ArrangementReading, ArrangementRefReading, ArrangementRowReading,
+    ArrangementStripReading, ArrangementWorkspaceReading, Ask, AskReading, CHROME_RESOURCE,
+    DESK_RESOURCE, DeskReading, DeskStyleReading, NoticeActionReading, NoticeReading, ORIGIN,
+    PersonReading, RoomReading, SHELL_APP, SHELL_RECORD, ScreenEdges, TimerReading, TrayReading,
+    WindowReading, WindowRect, WorkspaceReading, reach_pad, screen_edges,
 };
 
 mod host;

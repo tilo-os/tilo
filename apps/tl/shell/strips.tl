@@ -237,7 +237,10 @@ view strip_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) 
             focused: in_front,
             lists_actions: lists_the_shown(shown),
             carries: window_record(shown),
+            fill,
         ) {
+            // The window fills the room the drop target around it is given: the target only
+            // takes what is dropped on it, and the window keeps the strip's whole height.
             controls: {
                 window_controls(a, v, s, shown, in_front, lists)
             }

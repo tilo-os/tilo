@@ -818,7 +818,7 @@ impl SessionSearch {
             })
             .filter_map(|action| app_of(action.address.resource.as_str()))
             .collect();
-        let mut found: Vec<(String, String, String, bool)> = Vec::new();
+        let mut found: Vec<(usize, (String, String, String, bool))> = Vec::new();
         for (resource, named) in types.iter() {
             if named.root {
                 // A root names the app rather than a type of its own.
@@ -832,10 +832,13 @@ impl SessionSearch {
             }
             // The kind the type's resources publish under (`tl.<app>.<Type>`): what a query
             // names, and what an answer of that kind becomes a place of.
-            let Some(kind) = own
+            // Where the type is first published among the app's actions: the order its package
+            // declares its types in, which the tie between types a query names alike falls back
+            // on, so the same words name the same type on every run.
+            let Some((order, kind)) = own
                 .iter()
-                .find(|action| action.address.resource.as_str() == resource.as_str())
-                .map(|action| action.resource_kind.clone())
+                .position(|action| action.address.resource.as_str() == resource.as_str())
+                .map(|at| (at, own[at].resource_kind.clone()))
             else {
                 continue;
             };
@@ -857,11 +860,14 @@ impl SessionSearch {
             // the one the other words name, not the one whose noun they typed to narrow it.
             let by_own_noun = ui::search::system::named_by_own_noun(&needle, named);
             if let Some(rest) = rest {
-                found.push((app.clone(), kind, rest, by_own_noun));
+                found.push((order, (app.clone(), kind, rest, by_own_noun)));
             }
         }
         // One app and one kind. A type named only through its app or a kindred type ("of <channel>"
         // after "videos") is the one the query means over one named by its own noun ("videos").
+        found.sort_by_key(|(order, _)| *order);
+        let found: Vec<(String, String, String, bool)> =
+            found.into_iter().map(|(_, named)| named).collect();
         let narrowed: Vec<&(String, String, String, bool)> =
             found.iter().filter(|(.., by_noun)| !by_noun).collect();
         let candidates: Vec<&(String, String, String, bool)> = if narrowed.is_empty() {

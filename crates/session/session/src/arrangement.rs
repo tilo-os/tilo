@@ -25,8 +25,9 @@ pub use tilo_session_core::arrangement::{
     Answer, AnswerRef, Arrangement, ArrangementAction, ArrangementQueryReading,
     ArrangementRefReading, Ask, AskOrigin, Busy, Catalog, Find, FindDone, Found, Item, OPERATION,
     PLACE_KIND, PlaceReading, QUERY_KIND, RECORD_RESOURCE, RESOURCE, ROW_KIND, Reading, RowReading,
-    STRIP_KIND, StripReading, Surface, Target, WorkspaceReading, canvas_find_within, found_resource,
-    place_kind_resource, placed, resources, row_kind_resource, strip_kind_resource, tab_app,
+    STRIP_KIND, StripReading, Surface, Target, WorkspaceReading, canvas_find_within,
+    found_resource, place_kind_resource, placed, resources, row_kind_resource, strip_kind_resource,
+    tab_app,
 };
 
 /// `person` 's arrangement of `handle` 's desk, whose changes `activity` keeps.

@@ -42,11 +42,11 @@ fn session() -> (Session, String) {
     (session, notes.into_iter().next().unwrap())
 }
 
-/// The session with the shell, on one display `width` by `height` , and the notes [`notebook`]
-/// keeps.
 /// The window's own menu in the pill of its bar, as every strip's window names it.
 const WINDOW_MENU: &str = "This window";
 
+/// The session with the shell, on one display `width` by `height` , and the notes [`notebook`]
+/// keeps.
 fn session_at(width: i32, height: i32) -> (Session, Vec<String>) {
     let (notebook, notes) = notebook();
     let session = crate::common::headless_on(
