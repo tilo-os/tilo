@@ -295,7 +295,7 @@ pub fn check_package(
 
 fn emit_package(a: Analysis) -> Compiled {
     let fx = effects::analyze(&a.ir, &a.env.app);
-    let mut meta = build_meta(&a.module, &a.env, &fx, &a.ir.states, &a.ir.shows);
+    let mut meta = build_meta(&a.module, &a.env, &fx, &a.ir.states, &a.ir.shows, &a.ir);
     meta.views
         .extend(row_views(&a.ir, &a.env.app, &fx, &a.ir.states));
     meta.words.clone_from(&a.ir.words);
@@ -471,6 +471,7 @@ fn build_meta(
     fx: &Effects,
     template_states: &[(String, crate::resolve::StateInfo)],
     shows: &[crate::ir::ViewShow],
+    ir: &crate::ir::Module,
 ) -> PackageMeta {
     let app = env.app.as_str();
     let mut meta = PackageMeta {
@@ -635,6 +636,7 @@ fn build_meta(
                     group: None,
                     guard: false,
                     applies: false,
+                    outside: Vec::new(),
                 });
                 meta.scenarios.push(ScenarioMeta {
                     id: c.id.clone(),
@@ -726,6 +728,11 @@ fn build_meta(
                         .applies
                         .iter()
                         .any(|r| crate::checker::offer_decided(r, &c.params)),
+                    outside: ir
+                        .funcs
+                        .get(idx)
+                        .map(|f| f.facts.outside_caps.iter().cloned().collect())
+                        .unwrap_or_default(),
                 });
                 if let Some(v) = env.callables.iter().find(|v| {
                     v.own && v.kind == CKind::View && Some(&v.id) == c.present.view.as_ref()
@@ -1008,6 +1015,7 @@ pub fn compile_program_reading(
             guard: false,
             applies: false,
             invokes: false,
+            outside: Vec::new(),
         }],
         ..PackageMeta::default()
     };

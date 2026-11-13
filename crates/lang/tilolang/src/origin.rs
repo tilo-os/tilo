@@ -533,6 +533,16 @@ pub const KINDS: &[OriginKind] = &[
                 "Collection<session.arrangement_place>",
                 "Every place, showing a resource through a view; each names the strip it is in.",
             ),
+            field(
+                "queries",
+                "Collection<session.arrangement_query>",
+                "The queries the canvas stands while an app answers them.",
+            ),
+            field(
+                "refs",
+                "Collection<session.arrangement_ref>",
+                "The resources those queries found, each naming the query it is of.",
+            ),
         ],
     },
     OriginKind {
@@ -624,6 +634,56 @@ pub const KINDS: &[OriginKind] = &[
                 "shell",
                 "Text",
                 "The shell that made it; empty reads as this shell's.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.arrangement_query",
+        doc: "A query typed on the canvas: what the person looked for, in which app, and what \
+              came of it (shell.md §8, \"Finding what to place\"). Placed like any resource, it \
+              shows the search as it runs, the rows it found and what a press on a row places, \
+              and why it found nothing or failed. Its `matches` name resources the same way a \
+              place's record does (`session.arrangement_ref`).",
+        derived: true,
+        fields: &[
+            field("key", "Text", "Its id, as the record names it."),
+            field("text", "Text", "What the person typed."),
+            field("in_app", "Text", "The app asked, by its canonical id."),
+            field(
+                "kind",
+                "Text",
+                "The kind of resource the query names, as its app publishes it.",
+            ),
+            field(
+                "state",
+                "Text",
+                "How the search stands: `searching`, `one`, `several`, `none` or `failed`.",
+            ),
+            field(
+                "reason",
+                "Text",
+                "Why it failed, in the app's own words; empty while it does better.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.arrangement_ref",
+        doc: "A resource a query found: the same reference a place holds, so a row of matches \
+              names what a place shows by the same three words.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "Its id, as `<query>/<number>`."),
+            field("query", "Text", "The query it is of, by its key."),
+            field(
+                "address",
+                "Text",
+                "The resource, by its id in its app, as the arrangement's `place` takes it.",
+            ),
+            field("title", "Text", "What it is called."),
+            field(
+                "kind",
+                "Text",
+                "Its kind, as its app publishes it (`tube.channel`).",
             ),
         ],
     },

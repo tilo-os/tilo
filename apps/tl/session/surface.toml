@@ -696,6 +696,40 @@ required = false
 type = "text"
 
 [[resources.verbs]]
+id = "show"
+kind = "undoable"
+
+[[resources.verbs.params]]
+name = "place"
+required = true
+
+[resources.verbs.params.type]
+resource = "arrangement.place"
+
+[[resources.verbs.params]]
+name = "resource"
+required = true
+
+[resources.verbs.params.type]
+resource = ""
+
+[[resources.verbs.params]]
+name = "view"
+required = false
+type = "text"
+
+[[resources.verbs]]
+id = "retry-query"
+kind = "undoable"
+
+[[resources.verbs.params]]
+name = "place"
+required = true
+
+[resources.verbs.params.type]
+resource = "arrangement.place"
+
+[[resources.verbs]]
 id = "undo"
 kind = "undoable"
 params = []

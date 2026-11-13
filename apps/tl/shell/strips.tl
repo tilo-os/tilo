@@ -559,7 +559,9 @@ view place_content(p: ArrangementPlace) {
 /// is no resource here to draw (a terminal, a legacy window). The window's controls are the
 /// frame's, in its one bar, outside it.
 view place_view(p: ArrangementPlace) {
-    if let r = placed_resource(p.record) {
+    if let q = query_of(p.key) {
+        query_view(q, p)
+    } else if let r = placed_resource(p.record) {
         if p.shown_as != "" or meta(r).opens {
             show(r, view: p.shown_as, fill)
         } else {
@@ -568,6 +570,54 @@ view place_view(p: ArrangementPlace) {
     } else {
         ui.WindowWell(place: p.key, fill)
     }
+}
+
+/// The query the place `key` shows, while its app answers it; `.none` for a place showing a
+/// resource (shell.md §8, "Finding what to place").
+fn query_of(key: Text) -> Option<ArrangementQuery> {
+    let a = root Arrangement
+    a.queries.find(q -> q.key == key)
+}
+
+/// A place's body while it shows a query (shell.md §8): what the person searched for and where,
+/// the rows it found (each a press that places that match in this same place), and what became
+/// of it — still searching, nothing matched (with Retry), or the app's reason (with Retry).
+view query_view(q: ArrangementQuery, p: ArrangementPlace) {
+    stack(gap: .related, fill) {
+        ui.Text(query_heading(q), role: .label, secondary: true)
+        if q.state == "searching" {
+            ui.ProgressBar()
+        } else if q.state == "failed" {
+            ui.Text(q.reason)
+            ui.Button("Retry", icon: .refresh) {
+                on press: query_retry(p.key)
+            }
+        } else if q.state == "none" {
+            ui.Text("Nothing matched {q.text}")
+            ui.Button("Retry", icon: .refresh) {
+                on press: query_retry(p.key)
+            }
+        } else {
+            for m in refs_of(q.key) {
+                if let r = resource(m.address) {
+                    ui.Button(m.title) {
+                        on press: query_show(p.key, r)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The resources the query `key` found, in the order the app answered them.
+fn refs_of(key: Text) -> List<ArrangementRef> {
+    let a = root Arrangement
+    a.refs.filter(r -> r.query == key)
+}
+
+/// What a query's place says while it runs: "Looking for <text> in <app>…".
+fn query_heading(q: ArrangementQuery) -> Text {
+    "Looking for {q.text} in {q.in_app}"
 }
 
 /// The row the strip `strip` stands in, by the place it holds.

@@ -676,6 +676,12 @@ pub struct ActionMeta {
     /// its writes; one that does not is one change and is never replayed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub invokes: bool,
+    /// The outside capabilities its body's `outside(...)` calls name, as written
+    /// (`youtube.search`, `smtp.send`), in order: what the platform tags the action with
+    /// (`outside:youtube.search`), so a query naming a kind of an outside service finds the
+    /// action of that service's app that asks it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outside: Vec<String>,
 }
 
 impl ActionMeta {

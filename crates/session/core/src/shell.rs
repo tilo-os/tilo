@@ -278,8 +278,8 @@ pub struct DeskStyleReading {
 
 /// The arrangement's readings, which a shell reads beside the desk's: what the person arranged.
 pub use crate::arrangement::{
-    ArrangementPlaceReading, ArrangementReading, ArrangementRowReading, ArrangementStripReading,
-    ArrangementWorkspaceReading,
+    ArrangementPlaceReading, ArrangementQueryReading, ArrangementReading, ArrangementRefReading,
+    ArrangementRowReading, ArrangementStripReading, ArrangementWorkspaceReading,
 };
 
 /// A running application's tray item, as the bar shows it.

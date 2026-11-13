@@ -127,6 +127,7 @@ fn note(service: &mut RecordService, title: &str) -> String {
 /// the type `shows` through the view `shown_as` (`""`: the type's default view).
 fn arrangement(record: &str, shows: &str, shown_as: &str) -> ArrangementReading {
     ArrangementReading {
+        queries: Vec::new(),
         workspaces: vec![ArrangementWorkspaceReading {
             key: "w1".to_owned(),
             name: "Desk".to_owned(),

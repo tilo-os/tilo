@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use tilo_desktop_surface::DesktopHandle;
 use tilo_session_core::arrangement::{
-    Arrangement, Ask, Busy, Door, Find, FindDone, RECORD_RESOURCE,
+    Arrangement, Ask, AskOrigin, Busy, Door, Find, FindDone, RECORD_RESOURCE,
 };
 use tilo_session_core::desk::Desk;
 
@@ -38,7 +38,15 @@ impl Arranging {
         // empty find answers at once with nothing, as a search over no source would.
         let find: Find = Rc::new(|_: &str, done: FindDone| done(Vec::new()));
         let ask: Ask = Rc::new(|_: &str| false);
-        let door = Door::new(Rc::clone(&arrangement), Rc::new(Busy::default), find, ask);
+        // No app's search is asked from the page either: a text naming an app's type places nothing.
+        let ask_origin: AskOrigin = Rc::new(|_: &str| None);
+        let door = Door::new(
+            Rc::clone(&arrangement),
+            Rc::new(Busy::default),
+            find,
+            ask,
+            ask_origin,
+        );
         Self { arrangement, door }
     }
 
