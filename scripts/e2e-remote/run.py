@@ -36,9 +36,9 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
 9. The person's third device lists the second among their devices (`tilo_devices`), as the
    first does, so that `--device <name>` can name it there.
 10. A person at another machine watches that tab: B's person shares the Browser's window with
-    the workspace, naming its tab, and A's desk, which listed the window as open on another
-    device, holds the window's picture in the tab that stood for it. A picture of each screen is
-    kept.
+    the workspace, naming its tab, and A's desk holds the window's picture in a tab of its own,
+    as a window that runs on B, whatever it lists as its own view of that window. A picture of
+    each screen is kept.
 11. C, another person's device, is refused at B's door.
 
 Every step is a result in report.json / report.md under --out; any failure fails the run.
@@ -500,7 +500,8 @@ ip -o addr show dev "$dev"
             self.step("E13", "The person's third device lists the second among their devices "
                              "(tilo_devices)",
                       lambda res: self.third_lists_second(d, b, res), "E10")
-            self.step("E14", "A's person watches the Browser window B shares, in its tab on A's desk",
+            self.step("E14", "A's person watches the Browser window B shares, in a tab of its own "
+                             "on A's desk",
                       lambda res: self.window_watched(a, b, res), "E10")
             self.step("E09", "A device of another person is refused at B's door",
                       lambda res: self.stranger(b, c, res), "E03")
@@ -1091,10 +1092,11 @@ ip -o addr show dev "$dev"
 
     def window_watched(self, a: Box, b: Box, res: Result) -> None:
         """B's person shares the Browser's window with the workspace, naming it by its tab
-        ("Share a window with the workspace"), and A, their other device, whose desk listed that
-        window as one open on another device, holds its picture in the tab that stood for it: a
-        share is the workspace's, so nobody asks for it on A. What a person reviewing the tab
-        from another machine sees."""
+        ("Share a window with the workspace"), and A, their other device, holds its picture in a
+        tab of its own, as a window that runs on B: a share is the workspace's, so nobody asks for
+        it on A. What A's desk lists under the window's own tab is A's own view of it, opened on
+        A, and is left as it is; what B shares is what runs on B, which is what a person
+        reviewing the tab from another machine has to see."""
         def desk(box: Box) -> dict:
             dump = box.vm.state()
             return dump.get("state") or dump
@@ -1172,8 +1174,10 @@ ip -o addr show dev "$dev"
         if not group or not tab or not room:
             raise Failed(f"B's desk does not hold the Browser's window in a workspace it shares: "
                          f"group {group}, tab {tab}, workspace {room}")
-        res.facts["tab_on_a_before"] = next((held.get("tile") for _, held in tabs(desk(a))
-                                             if held.get("id") == tab), None)
+        # What A lists under the window's own tab before anything is shared: its own view of the
+        # window, where the desk's record brought it. The step holds whether it is there or not.
+        res.facts["own_view_on_a_before"] = next((held.get("tile") for _, held in tabs(desk(a))
+                                                  if held.get("id") == tab), None)
         # The desk's own "Share a window" (`share-window`) is another thing: it asks Chat to put a
         # window's record in a channel. The window's picture goes to the workspace's devices
         # through the session's share, which takes the tab and finds the window itself.
@@ -1198,9 +1202,23 @@ ip -o addr show dev "$dev"
                 rows = held_on_a()
                 return rows if "Live" in json.dumps(rows, ensure_ascii=False) else []
 
+            def hosted_on_a(state: dict) -> dict | None:
+                """The tab of A's desk that holds B's window as one running on another device: the
+                tab A's session says it pictures the window in (`shown_in`), which is a tab of its
+                own wherever A lists its own view under the window's id."""
+                watched = next((row for row in shares(state, "watching")
+                                if str(row.get("tab")) == str(tab)), None) or {}
+                shown_in = str(watched.get("shown_in") or tab)
+                tile = next((held.get("tile") for _, held in tabs(state)
+                             if str(held.get("id")) == shown_in), None)
+                if isinstance(tile, dict) and "HostedWindow" in tile:
+                    return {"tab": shown_in, "tile": tile}
+                return None
+
             # The window's pictures travel the workspace's live plane, on a track of its own that
-            # A's plane asks B's for while A's desk shows the tab. The tab's row is there once the
-            # track's first keyframe reached A, and says Live once its tile decoded it.
+            # A's plane asks B's for while A's desk holds the window's tab: a tab of its own, made
+            # when the share reached A's desk. Its row is there once the track's first keyframe
+            # reached A, and says Live once its tile decoded it.
             rows = wait_until(pictured_on_a, 120, 2.0) or held_on_a()
             res.facts["peer_surface_rows"] = json.dumps(rows or [], ensure_ascii=False)[:1500]
             # How far the share came, on each end: the governance that names it, and what each
@@ -1212,8 +1230,11 @@ ip -o addr show dev "$dev"
                 "governed_on_b": governed(on_b), "governed_on_a": governed(on_a),
                 "sharing_on_b": shares(on_b, "sharing"), "starting_on_b": shares(on_b, "starting"),
                 "watching_on_a": shares(on_a, "watching"), "received_on_a": shares(on_a, "received"),
-                "tab_on_a": next((held.get("tile") for _, held in tabs(on_a)
-                                  if held.get("id") == tab), None),
+                # What A lists under the window's own id, which is its own view of the window,
+                # and the tab that holds the window B shares.
+                "own_view_on_a": next((held.get("tile") for _, held in tabs(on_a)
+                                       if held.get("id") == tab), None),
+                "hosted_tab_on_a": hosted_on_a(on_a),
                 # The pictures travel the workspace's live plane: how it stands on each end.
                 "live_on_b": plane(on_b), "live_on_a": plane(on_a),
             }
@@ -1224,7 +1245,7 @@ ip -o addr show dev "$dev"
                     box.vm.shot(self.out / f"shot-watch-{box.letter}.png")
                 except VmError as exc:
                     res.facts[f"shot_{box.letter}"] = str(exc)[:200]
-            if not rows:
+            if not rows or not seen["hosted_tab_on_a"]:
                 res.facts["windows_on_a"] = a.vm.raw({"op": "windows"})
                 viewers = [viewer for shared in seen["sharing_on_b"]
                            for viewer in shared.get("viewers") or []]
@@ -1263,11 +1284,18 @@ ip -o addr show dev "$dev"
                              else "nor did A's word that it views it reach B")
                     why = ("A watches the window and no keyframe of its track reached A over the "
                            f"workspace's live plane ({heard}): {res.facts['watching_on_a'][:300]}")
+                elif not seen["hosted_tab_on_a"]:
+                    why = ("the window's pictures reached A and its desk holds no tab for the window "
+                           f"that runs on B: A received {res.facts['received_on_a'][:300]}; under "
+                           f"the window's own id A lists {res.facts['own_view_on_a'][:200]}")
                 else:
-                    why = f"the window's pictures reached A and no tab pictures it: {res.facts['received_on_a'][:300]}"
-                raise Failed(f"A's desk never held the window B shares: {why}")
+                    why = ("the window's pictures reached A and the tab that holds the window "
+                           f"pictures none of them: {res.facts['hosted_tab_on_a'][:300]}; A received "
+                           f"{res.facts['received_on_a'][:300]}")
+                raise Failed(f"A's desk never pictured the window B shares: {why}")
             if "Live" not in res.facts["peer_surface_rows"]:
-                raise Failed("A's desk holds the shared window's tab and no picture of it came: "
+                raise Failed("A's desk holds the shared window in a tab of its own and no picture of "
+                             "it came: "
                              f"{res.facts['peer_surface_rows'][:400]}; A received: "
                              f"{res.facts['received_on_a'][:200]}; B shares: "
                              f"{res.facts['sharing_on_b'][:200]}")
