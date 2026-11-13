@@ -65,6 +65,10 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
         fn a_secret_splits_into_credentials_that_fit_and_joins_back;
 
         phase a_small_secret_is_one_credential;
