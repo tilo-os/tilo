@@ -244,6 +244,68 @@ fn typing_after_a_press_goes_to_the_field_as_the_press_left_it_once_the_app_ran_
     );
 }
 
+/// Typing that went out as splices, then a press, then more typing held for it: the app answers
+/// the press with what the field held before it took the splices (sent before it saw them), and
+/// the held typing still lands after what was typed before it. "summari" sent, then "se" held,
+/// is "summarise" in the app, never "summaries" from the held letters placed against the text the
+/// app no longer holds.
+#[test]
+fn typing_held_for_a_press_lands_after_what_was_typed_before_it_whatever_the_app_sent_before_it_took_that()
+ {
+    let (mut app, mut window) = window();
+    send(&mut app, &titled_page());
+    window.receive();
+    window.act(UiEvent::Edit("title".to_owned(), "Q3 summari".to_owned()));
+    window.flush();
+    assert!(
+        matches!(&sent(&mut app)[..], [ToApp::Splice { seq: 1, at: 2, delete: 0, insert, .. }] if insert == " summari"),
+        "the typing goes as it is typed"
+    );
+    // A press, and typing at once: the typing waits for the press.
+    window.act(UiEvent::Press("new".to_owned()));
+    window.act(UiEvent::Edit("title".to_owned(), "Q3 summaris".to_owned()));
+    window.act(UiEvent::Edit("title".to_owned(), "Q3 summarise".to_owned()));
+    window.flush();
+    assert!(
+        matches!(&sent(&mut app)[..], [ToApp::Fire { key, .. }] if key == "new"),
+        "the press goes at once, the typing waits"
+    );
+    // The app sent the field as it held it before it took the first splice, then ran the press.
+    send(
+        &mut app,
+        &[
+            ToUi::Bound {
+                lane: Lane::Root,
+                key: "title".to_owned(),
+                value: Value::text("Q3"),
+                acked: 0,
+            },
+            ToUi::Took { fired: 1 },
+        ],
+    );
+    window.receive();
+    window.flush();
+    // The app holds "Q3 summari": what was held goes after it.
+    let mut app_text = "Q3 summari".to_owned();
+    for message in sent(&mut app) {
+        if let ToApp::Splice {
+            at, delete, insert, ..
+        } = message
+        {
+            let at = at as usize;
+            app_text.replace_range(at..at + delete as usize, &insert);
+        }
+    }
+    assert_eq!(
+        app_text, "Q3 summarise",
+        "the letters land in the order typed"
+    );
+    assert_eq!(
+        window.bound_value("title"),
+        Some(Value::text("Q3 summarise"))
+    );
+}
+
 fn note(id: &str) -> ResourceRef {
     ResourceRef {
         id: id.to_owned(),
