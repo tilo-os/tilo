@@ -35,85 +35,326 @@ impl Runner for InventoryCli {
 fn metadata_plan() -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({"schema":1,"operation_id":"flatpak-fixture","categories":{"home":false,"flatpak":true,"accounts":false},"home":{"volume":{"disk_guid":"11111111-1111-4111-8111-111111111111","disk_bytes":(128u64 << 30),"sector_bytes":512,"partition_guid":"22222222-2222-4222-8222-222222222222","first_lba":2048,"last_lba":1048575,"filesystem_uuid":"33333333-3333-4333-8333-333333333333","filesystem":"ext4"},"relative":{"platform":"Unix","units":b"var/lib/flatpak"},"inode":1234,"original_uid":0,"subvolume":null}})).unwrap()
 }
-#[test]
-fn attested_inventory_rebinds_stage_operation_and_refuses_changes_or_overlap() {
-    use crate::setup::{migration_handoff, staging};
-    let (_temp, cli, selected) = fixture();
-    let retained = HandoffInventory::capture(
-        &cli,
-        Path::new("/source-home"),
-        vec![selected.clone()],
-        |_| Ok(metadata_plan()),
-    )
-    .unwrap();
-    let sample = migration_handoff::Plan::parse(&metadata_plan()).unwrap();
-    let source = &sample.home.volume;
-    let mut basis = staging::plan::tests::linux_basis(
-        512,
-        source.disk_bytes,
-        vec![staging::platform::Partition {
-            number: 1,
-            guid: source.partition_guid.clone(),
-            type_guid: "0fc63daf-8483-4772-8e79-3d69d8477de4".into(),
-            first_lba: source.first_lba,
-            last_lba: source.last_lba,
-        }],
-    );
-    basis.disk.guid.clone_from(&source.disk_guid);
-    let installation = staging::plan::compute(
-        &basis,
-        staging::plan::Requirements {
-            staging_esp_bytes: 600 << 20,
-            staging_root_bytes: 40 << 30,
-            target_bytes: staging::MIN_TARGET_BYTES,
-        },
-    )
-    .unwrap();
-    let fresh = || {
-        HandoffInventory::capture(
+tilo_test_env::scenario! {
+    /// The Flatpak handoff: the attested inventory, its persisted form and the selection it carries.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_flatpak_handoff_binds_its_attested_inventory_and_selection;
+
+    phase attested_inventory_rebinds_stage_operation_and_refuses_changes_or_overlap;
+    {
+        use crate::setup::{migration_handoff, staging};
+        let (_temp, cli, selected) = fixture();
+        let retained = HandoffInventory::capture(
             &cli,
             Path::new("/source-home"),
             vec![selected.clone()],
-            |_| {
-                let mut plan = sample.clone();
-                plan.categories = migration_handoff::Categories {
-                    home: false,
-                    flatpak: true,
-                    accounts: false,
-                };
-                Ok(plan.bytes().unwrap())
+            |_| Ok(metadata_plan()),
+        )
+        .unwrap();
+        let sample = migration_handoff::Plan::parse(&metadata_plan()).unwrap();
+        let source = &sample.home.volume;
+        let mut basis = staging::plan::tests::linux_basis(
+            512,
+            source.disk_bytes,
+            vec![staging::platform::Partition {
+                number: 1,
+                guid: source.partition_guid.clone(),
+                type_guid: "0fc63daf-8483-4772-8e79-3d69d8477de4".into(),
+                first_lba: source.first_lba,
+                last_lba: source.last_lba,
+            }],
+        );
+        basis.disk.guid.clone_from(&source.disk_guid);
+        let installation = staging::plan::compute(
+            &basis,
+            staging::plan::Requirements {
+                staging_esp_bytes: 600 << 20,
+                staging_root_bytes: 40 << 30,
+                target_bytes: staging::MIN_TARGET_BYTES,
             },
         )
-        .unwrap()
-    };
-    let operation = uuid::Uuid::new_v4().to_string();
-    let rebound = retained
-        .rebind_attested(fresh(), &sample.operation_id, &operation, &installation)
         .unwrap();
-    rebound.validate_operation(&operation).unwrap();
-    for (_, bytes) in rebound.sources() {
-        assert_eq!(
-            migration_handoff::Plan::parse(bytes).unwrap().operation_id,
-            operation
+        let fresh = || {
+            HandoffInventory::capture(
+                &cli,
+                Path::new("/source-home"),
+                vec![selected.clone()],
+                |_| {
+                    let mut plan = sample.clone();
+                    plan.categories = migration_handoff::Categories {
+                        home: false,
+                        flatpak: true,
+                        accounts: false,
+                    };
+                    Ok(plan.bytes().unwrap())
+                },
+            )
+            .unwrap()
+        };
+        let operation = uuid::Uuid::new_v4().to_string();
+        let rebound = retained
+            .rebind_attested(fresh(), &sample.operation_id, &operation, &installation)
+            .unwrap();
+        rebound.validate_operation(&operation).unwrap();
+        for (_, bytes) in rebound.sources() {
+            assert_eq!(
+                migration_handoff::Plan::parse(bytes).unwrap().operation_id,
+                operation
+            );
+        }
+        let mut overlap = installation.clone();
+        overlap.target_extent.first_lba = source.first_lba;
+        assert!(
+            retained
+                .rebind_attested(fresh(), &sample.operation_id, &operation, &overlap)
+                .is_err()
+        );
+        fs::write(
+            cli.root.join("repo/flathub.trustedkeys.gpg"),
+            b"changed original signing trust",
+        )
+        .unwrap();
+        assert!(
+            retained
+                .rebind_attested(fresh(), &sample.operation_id, &operation, &installation)
+                .is_err()
         );
     }
-    let mut overlap = installation.clone();
-    overlap.target_extent.first_lba = source.first_lba;
-    assert!(
-        retained
-            .rebind_attested(fresh(), &sample.operation_id, &operation, &overlap)
+
+    phase persisted_flatpak_inventory_is_bounded_metadata_and_revalidates_original_trust;
+    {
+        let (_temp, cli, selected) = fixture();
+        let mut bound = Vec::new();
+        let handoff = HandoffInventory::capture(
+            &cli,
+            Path::new("/source-home"),
+            vec![selected.clone()],
+            |root| {
+                bound.push(root.to_owned());
+                Ok(metadata_plan())
+            },
+        )
+        .unwrap();
+        assert_eq!(bound, [cli.root.clone()]);
+        assert_eq!(handoff.selected().len(), 2);
+        assert!(handoff.selected().contains(&selected));
+        assert!(
+            handoff
+                .selected()
+                .iter()
+                .any(|item| item.reference == "runtime/org.example.Platform/x86_64/stable")
+        );
+        assert_eq!(handoff.sources().count(), 1);
+        let bytes = handoff.bytes().unwrap();
+        assert!(
+            !bytes
+                .windows(b"original public signing key".len())
+                .any(|part| part == b"original public signing key")
+        );
+        assert!(
+            !bytes
+                .windows(b"original deployment metadata".len())
+                .any(|part| part == b"original deployment metadata")
+        );
+        let parsed = HandoffInventory::parse(&bytes).unwrap();
+        assert_eq!(parsed, handoff);
+        parsed.installations[0].verify_original(&cli.root).unwrap();
+        fs::write(
+            cli.root.join("repo/flathub.trustedkeys.gpg"),
+            b"replacement trust must fail",
+        )
+        .unwrap();
+        assert!(parsed.installations[0].verify_original(&cli.root).is_err());
+    }
+
+    phase original_deployment_change_and_writable_source_grants_are_refused;
+    {
+        let (_temp, cli, selected) = fixture();
+        let handoff =
+            HandoffInventory::capture(&cli, Path::new("/source-home"), vec![selected], |_| {
+                Ok(metadata_plan())
+            })
+            .unwrap();
+        fs::write(
+            cli.root
+                .join("app/org.example.Chat/x86_64/stable")
+                .join("a".repeat(64))
+                .join("deploy"),
+            b"different metadata",
+        )
+        .unwrap();
+        assert!(handoff.installations[0].verify_original(&cli.root).is_err());
+        let pin = PinnedDirectory::open_absolute(&cli.root).unwrap();
+        assert!(ReadOnlySource::from_resolved(&cli.root, pin, Arc::new(())).is_err());
+    }
+
+    phase handoff_refuses_unbound_ambiguous_and_secret_bearing_metadata;
+    {
+        let (_temp, cli, selected) = fixture();
+        let handoff = HandoffInventory::capture(
+            &cli,
+            Path::new("/source-home"),
+            vec![selected.clone()],
+            |_| Ok(metadata_plan()),
+        )
+        .unwrap();
+        assert!(
+            HandoffInventory::capture(
+                &cli,
+                Path::new("/source-home"),
+                vec![selected.clone(), selected],
+                |_| Ok(metadata_plan())
+            )
             .is_err()
-    );
-    fs::write(
-        cli.root.join("repo/flathub.trustedkeys.gpg"),
-        b"changed original signing trust",
-    )
-    .unwrap();
-    assert!(
-        retained
-            .rebind_attested(fresh(), &sample.operation_id, &operation, &installation)
-            .is_err()
-    );
+        );
+        for malformed in [
+            {
+                let mut value = serde_json::to_value(&handoff).unwrap();
+                value["installations"] = serde_json::json!([]);
+                value
+            },
+            {
+                let mut value = serde_json::to_value(&handoff).unwrap();
+                value["inventory"]["remotes"][0]["url"] =
+                    "https://example.org/repo/?access_token=secret".into();
+                value
+            },
+            {
+                let mut value = serde_json::to_value(&handoff).unwrap();
+                value["credentials"] = "secret".into();
+                value
+            },
+        ] {
+            assert!(HandoffInventory::parse(&serde_json::to_vec(&malformed).unwrap()).is_err());
+        }
+    }
+
+    phase source_scoped_adapter_routes_source_queries_and_target_execution_separately;
+    {
+        struct EmptySource;
+        impl Runner for EmptySource {
+            fn run(&self, _home: &Path, args: &[String]) -> Result<String, String> {
+                assert!(matches!(
+                    args.first().map(String::as_str),
+                    Some("list" | "remotes")
+                ));
+                if args.first().is_some_and(|verb| verb == "remotes") && args[1] == "--user" {
+                    return Ok("flathub\thttps://example.org/repo/\t\n".into());
+                }
+                Ok(String::new())
+            }
+        }
+        let home = Path::new("/explicit-original-home");
+        let mut metadata = HandoffInventory::capture(&EmptySource, home, Vec::new(), |_| {
+            panic!("Empty inventory must not request source grants")
+        })
+        .unwrap();
+        // Capture excludes unselected remotes. Exercise the adapter's retained
+        // public-metadata protocol through the validated persisted format, without
+        // inventing any physical source grant or installed application.
+        assert!(metadata.inventory.remotes.is_empty());
+        metadata.inventory.remotes = discover(&EmptySource, home).unwrap().remotes;
+        let metadata = HandoffInventory::parse(&metadata.bytes().unwrap()).unwrap();
+        let target = RoutingTarget::default();
+        let adapter = metadata
+            .resolve(home, target, |_| {
+                panic!("Empty inventory must not invent readonly grants")
+            })
+            .unwrap();
+        let source_inventory = discover(&adapter, home).unwrap();
+        assert!(source_inventory.refs.is_empty());
+        assert_eq!(
+            source_inventory.remotes,
+            [Remote {
+                installation: Installation::User,
+                name: "flathub".into(),
+                url: "https://example.org/repo/".into(),
+                options: String::new(),
+            }]
+        );
+        assert!(adapter.target.0.borrow().is_empty());
+        let args = vec!["install".into(), "--user".into(), "org.example.Chat".into()];
+        assert!(adapter.run(home, &args).is_err());
+        assert!(adapter.target.0.borrow().is_empty());
+        assert!(adapter.run(Path::new("/fresh-target-home"), &args).is_err());
+        assert!(adapter.target.0.borrow().is_empty());
+
+        let query = vec![
+            "info".into(),
+            "--user".into(),
+            "--show-origin".into(),
+            "app/org.example.Chat/x86_64/stable".into(),
+        ];
+        assert_eq!(
+            adapter
+                .run(Path::new("/fresh-target-home"), &query)
+                .unwrap(),
+            "reviewed-origin"
+        );
+        assert_eq!(
+            adapter.target.0.borrow().as_slice(),
+            [(PathBuf::from("/fresh-target-home"), query)]
+        );
+    }
+
+    phase selected_applications_intent_excludes_unselected_user_deployments_without_changing_home_intent;
+    {
+        let (_temp, cli, mut selected) = fixture();
+        let excluded_parent = cli.root.join("app/org.example.Excluded/x86_64/stable");
+        fs::create_dir_all(excluded_parent.join("a".repeat(64))).unwrap();
+        fs::write(
+            excluded_parent.join("a".repeat(64)).join("deploy"),
+            b"excluded metadata",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("a".repeat(64), excluded_parent.join("active")).unwrap();
+        selected.installation = Installation::User;
+        let runner = SelectedUserCli(cli);
+        let home = Path::new("/explicit-reviewed-home");
+        let subset =
+            HandoffInventory::capture_selected_state(&runner, home, vec![selected.clone()], |_| {
+                Ok(metadata_plan())
+            })
+            .unwrap();
+        assert!(
+            HandoffInventory::capture(&runner, home, vec![selected.clone()], |_| {
+                Ok(metadata_plan())
+            })
+            .is_err(),
+            "Full Home must preserve its copied-user conflict policy"
+        );
+        let whole =
+            HandoffInventory::capture(&runner, home, Vec::new(), |_| Ok(metadata_plan())).unwrap();
+        assert!(
+            subset
+                .inventory
+                .refs
+                .iter()
+                .all(|item| item.reference != "app/org.example.Excluded/x86_64/stable")
+        );
+        assert!(
+            whole
+                .inventory
+                .refs
+                .iter()
+                .any(|item| item.reference == "app/org.example.Excluded/x86_64/stable")
+        );
+        assert!(whole.selected().is_empty());
+        assert!(subset.selected().contains(&selected));
+        let reopened = HandoffInventory::parse(&subset.bytes().unwrap()).unwrap();
+        assert_eq!(reopened, subset);
+        assert!(reopened.selected().contains(&selected));
+        assert!(
+            reopened
+                .selected()
+                .iter()
+                .any(|item| item.reference == "runtime/org.example.Platform/x86_64/stable")
+        );
+        assert_eq!(
+            fs::read(excluded_parent.join("a".repeat(64)).join("deploy")).unwrap(),
+            b"excluded metadata"
+        );
+    }
 }
 fn fixture() -> (tempfile::TempDir, InventoryCli, InstalledRef) {
     let temp = tempfile::tempdir().unwrap();
@@ -154,111 +395,6 @@ fn fixture() -> (tempfile::TempDir, InventoryCli, InstalledRef) {
         selected,
     )
 }
-#[test]
-fn persisted_flatpak_inventory_is_bounded_metadata_and_revalidates_original_trust() {
-    let (_temp, cli, selected) = fixture();
-    let mut bound = Vec::new();
-    let handoff = HandoffInventory::capture(
-        &cli,
-        Path::new("/source-home"),
-        vec![selected.clone()],
-        |root| {
-            bound.push(root.to_owned());
-            Ok(metadata_plan())
-        },
-    )
-    .unwrap();
-    assert_eq!(bound, [cli.root.clone()]);
-    assert_eq!(handoff.selected().len(), 2);
-    assert!(handoff.selected().contains(&selected));
-    assert!(
-        handoff
-            .selected()
-            .iter()
-            .any(|item| item.reference == "runtime/org.example.Platform/x86_64/stable")
-    );
-    assert_eq!(handoff.sources().count(), 1);
-    let bytes = handoff.bytes().unwrap();
-    assert!(
-        !bytes
-            .windows(b"original public signing key".len())
-            .any(|part| part == b"original public signing key")
-    );
-    assert!(
-        !bytes
-            .windows(b"original deployment metadata".len())
-            .any(|part| part == b"original deployment metadata")
-    );
-    let parsed = HandoffInventory::parse(&bytes).unwrap();
-    assert_eq!(parsed, handoff);
-    parsed.installations[0].verify_original(&cli.root).unwrap();
-    fs::write(
-        cli.root.join("repo/flathub.trustedkeys.gpg"),
-        b"replacement trust must fail",
-    )
-    .unwrap();
-    assert!(parsed.installations[0].verify_original(&cli.root).is_err());
-}
-#[test]
-fn original_deployment_change_and_writable_source_grants_are_refused() {
-    let (_temp, cli, selected) = fixture();
-    let handoff =
-        HandoffInventory::capture(&cli, Path::new("/source-home"), vec![selected], |_| {
-            Ok(metadata_plan())
-        })
-        .unwrap();
-    fs::write(
-        cli.root
-            .join("app/org.example.Chat/x86_64/stable")
-            .join("a".repeat(64))
-            .join("deploy"),
-        b"different metadata",
-    )
-    .unwrap();
-    assert!(handoff.installations[0].verify_original(&cli.root).is_err());
-    let pin = PinnedDirectory::open_absolute(&cli.root).unwrap();
-    assert!(ReadOnlySource::from_resolved(&cli.root, pin, Arc::new(())).is_err());
-}
-#[test]
-fn handoff_refuses_unbound_ambiguous_and_secret_bearing_metadata() {
-    let (_temp, cli, selected) = fixture();
-    let handoff = HandoffInventory::capture(
-        &cli,
-        Path::new("/source-home"),
-        vec![selected.clone()],
-        |_| Ok(metadata_plan()),
-    )
-    .unwrap();
-    assert!(
-        HandoffInventory::capture(
-            &cli,
-            Path::new("/source-home"),
-            vec![selected.clone(), selected],
-            |_| Ok(metadata_plan())
-        )
-        .is_err()
-    );
-    for malformed in [
-        {
-            let mut value = serde_json::to_value(&handoff).unwrap();
-            value["installations"] = serde_json::json!([]);
-            value
-        },
-        {
-            let mut value = serde_json::to_value(&handoff).unwrap();
-            value["inventory"]["remotes"][0]["url"] =
-                "https://example.org/repo/?access_token=secret".into();
-            value
-        },
-        {
-            let mut value = serde_json::to_value(&handoff).unwrap();
-            value["credentials"] = "secret".into();
-            value
-        },
-    ] {
-        assert!(HandoffInventory::parse(&serde_json::to_vec(&malformed).unwrap()).is_err());
-    }
-}
 
 #[derive(Default)]
 struct RoutingTarget(std::cell::RefCell<Vec<(PathBuf, Vec<String>)>>);
@@ -273,74 +409,6 @@ impl Runner for RoutingTarget {
         }
         Ok("target native command result".into())
     }
-}
-
-#[test]
-fn source_scoped_adapter_routes_source_queries_and_target_execution_separately() {
-    struct EmptySource;
-    impl Runner for EmptySource {
-        fn run(&self, _home: &Path, args: &[String]) -> Result<String, String> {
-            assert!(matches!(
-                args.first().map(String::as_str),
-                Some("list" | "remotes")
-            ));
-            if args.first().is_some_and(|verb| verb == "remotes") && args[1] == "--user" {
-                return Ok("flathub\thttps://example.org/repo/\t\n".into());
-            }
-            Ok(String::new())
-        }
-    }
-    let home = Path::new("/explicit-original-home");
-    let mut metadata = HandoffInventory::capture(&EmptySource, home, Vec::new(), |_| {
-        panic!("Empty inventory must not request source grants")
-    })
-    .unwrap();
-    // Capture excludes unselected remotes. Exercise the adapter's retained
-    // public-metadata protocol through the validated persisted format, without
-    // inventing any physical source grant or installed application.
-    assert!(metadata.inventory.remotes.is_empty());
-    metadata.inventory.remotes = discover(&EmptySource, home).unwrap().remotes;
-    let metadata = HandoffInventory::parse(&metadata.bytes().unwrap()).unwrap();
-    let target = RoutingTarget::default();
-    let adapter = metadata
-        .resolve(home, target, |_| {
-            panic!("Empty inventory must not invent readonly grants")
-        })
-        .unwrap();
-    let source_inventory = discover(&adapter, home).unwrap();
-    assert!(source_inventory.refs.is_empty());
-    assert_eq!(
-        source_inventory.remotes,
-        [Remote {
-            installation: Installation::User,
-            name: "flathub".into(),
-            url: "https://example.org/repo/".into(),
-            options: String::new(),
-        }]
-    );
-    assert!(adapter.target.0.borrow().is_empty());
-    let args = vec!["install".into(), "--user".into(), "org.example.Chat".into()];
-    assert!(adapter.run(home, &args).is_err());
-    assert!(adapter.target.0.borrow().is_empty());
-    assert!(adapter.run(Path::new("/fresh-target-home"), &args).is_err());
-    assert!(adapter.target.0.borrow().is_empty());
-
-    let query = vec![
-        "info".into(),
-        "--user".into(),
-        "--show-origin".into(),
-        "app/org.example.Chat/x86_64/stable".into(),
-    ];
-    assert_eq!(
-        adapter
-            .run(Path::new("/fresh-target-home"), &query)
-            .unwrap(),
-        "reviewed-origin"
-    );
-    assert_eq!(
-        adapter.target.0.borrow().as_slice(),
-        [(PathBuf::from("/fresh-target-home"), query)]
-    );
 }
 
 struct SelectedUserCli(InventoryCli);
@@ -358,63 +426,4 @@ impl Runner for SelectedUserCli {
         }
         self.0.run(home, args)
     }
-}
-#[test]
-fn selected_applications_intent_excludes_unselected_user_deployments_without_changing_home_intent()
-{
-    let (_temp, cli, mut selected) = fixture();
-    let excluded_parent = cli.root.join("app/org.example.Excluded/x86_64/stable");
-    fs::create_dir_all(excluded_parent.join("a".repeat(64))).unwrap();
-    fs::write(
-        excluded_parent.join("a".repeat(64)).join("deploy"),
-        b"excluded metadata",
-    )
-    .unwrap();
-    std::os::unix::fs::symlink("a".repeat(64), excluded_parent.join("active")).unwrap();
-    selected.installation = Installation::User;
-    let runner = SelectedUserCli(cli);
-    let home = Path::new("/explicit-reviewed-home");
-    let subset =
-        HandoffInventory::capture_selected_state(&runner, home, vec![selected.clone()], |_| {
-            Ok(metadata_plan())
-        })
-        .unwrap();
-    assert!(
-        HandoffInventory::capture(&runner, home, vec![selected.clone()], |_| {
-            Ok(metadata_plan())
-        })
-        .is_err(),
-        "Full Home must preserve its copied-user conflict policy"
-    );
-    let whole =
-        HandoffInventory::capture(&runner, home, Vec::new(), |_| Ok(metadata_plan())).unwrap();
-    assert!(
-        subset
-            .inventory
-            .refs
-            .iter()
-            .all(|item| item.reference != "app/org.example.Excluded/x86_64/stable")
-    );
-    assert!(
-        whole
-            .inventory
-            .refs
-            .iter()
-            .any(|item| item.reference == "app/org.example.Excluded/x86_64/stable")
-    );
-    assert!(whole.selected().is_empty());
-    assert!(subset.selected().contains(&selected));
-    let reopened = HandoffInventory::parse(&subset.bytes().unwrap()).unwrap();
-    assert_eq!(reopened, subset);
-    assert!(reopened.selected().contains(&selected));
-    assert!(
-        reopened
-            .selected()
-            .iter()
-            .any(|item| item.reference == "runtime/org.example.Platform/x86_64/stable")
-    );
-    assert_eq!(
-        fs::read(excluded_parent.join("a".repeat(64)).join("deploy")).unwrap(),
-        b"excluded metadata"
-    );
 }

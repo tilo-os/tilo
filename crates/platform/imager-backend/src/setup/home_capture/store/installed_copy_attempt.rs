@@ -1060,61 +1060,71 @@ mod tests {
             metadata_quarantined: false,
         }
     }
-    #[test]
-    fn journal_refuses_outside_secret_bounds_and_noncanonical_attempt() {
-        for len in [0, 31, 129, u64::MAX] {
+    tilo_test_env::scenario! {
+        /// The installed copy attempt's journal.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn an_installed_copy_journal_never_turns_labels_into_verified_authority;
+
+        phase journal_refuses_outside_secret_bounds_and_noncanonical_attempt;
+        {
+            for len in [0, 31, 129, u64::MAX] {
+                let mut record = fixture();
+                record.secret.len = len;
+                assert!(record.validate().is_err());
+            }
             let mut record = fixture();
-            record.secret.len = len;
+            record.attempt = "75F0F98F-C7C7-4615-AEDE-74473918E6CB".into();
             assert!(record.validate().is_err());
         }
-        let mut record = fixture();
-        record.attempt = "75F0F98F-C7C7-4615-AEDE-74473918E6CB".into();
-        assert!(record.validate().is_err());
-    }
-    #[test]
-    fn journal_cannot_turn_an_expectation_or_phase_into_verified_authority() {
-        let mut record = fixture();
-        record.phase = Phase::ReceiverPending;
-        assert!(record.validate().is_err());
-        let mut record = fixture();
-        record.phase = Phase::Exported;
-        record.exported_response_sha256 = Some([4; 32]);
-        assert!(record.validate().is_err());
-        let mut record = fixture();
-        record.phase = Phase::Launching;
-        record.read_claim = Some([0; 32]);
-        assert!(record.validate().is_err());
-    }
-    #[test]
-    fn intended_attempt_cannot_claim_export_or_launch_evidence() {
-        let mut record = fixture();
-        record.read_claim = Some([4; 32]);
-        assert!(record.validate().is_err());
-        let mut record = fixture();
-        record.exported_response_sha256 = Some([4; 32]);
-        assert!(record.validate().is_err());
-    }
-    #[test]
-    fn unverified_phase_labels_do_not_supply_closed_artifacts_or_completion() {
-        for phase in [
-            Phase::Sealing,
-            Phase::RecoveryPrepared,
-            Phase::RecoveryVerifying,
-            Phase::ReceiverPending,
-            Phase::Verified,
-        ] {
+
+        phase journal_cannot_turn_an_expectation_or_phase_into_verified_authority;
+        {
             let mut record = fixture();
-            record.phase = phase;
+            record.phase = Phase::ReceiverPending;
+            assert!(record.validate().is_err());
+            let mut record = fixture();
+            record.phase = Phase::Exported;
+            record.exported_response_sha256 = Some([4; 32]);
+            assert!(record.validate().is_err());
+            let mut record = fixture();
+            record.phase = Phase::Launching;
+            record.read_claim = Some([0; 32]);
             assert!(record.validate().is_err());
         }
-    }
-    #[test]
-    fn material_retirement_labels_require_terminal_completion() {
-        let mut record = fixture();
-        record.material_retired = true;
-        assert!(record.validate().is_err());
-        let mut record = fixture();
-        record.metadata_quarantined = true;
-        assert!(record.validate().is_err());
+
+        phase intended_attempt_cannot_claim_export_or_launch_evidence;
+        {
+            let mut record = fixture();
+            record.read_claim = Some([4; 32]);
+            assert!(record.validate().is_err());
+            let mut record = fixture();
+            record.exported_response_sha256 = Some([4; 32]);
+            assert!(record.validate().is_err());
+        }
+
+        phase unverified_phase_labels_do_not_supply_closed_artifacts_or_completion;
+        {
+            for phase in [
+                Phase::Sealing,
+                Phase::RecoveryPrepared,
+                Phase::RecoveryVerifying,
+                Phase::ReceiverPending,
+                Phase::Verified,
+            ] {
+                let mut record = fixture();
+                record.phase = phase;
+                assert!(record.validate().is_err());
+            }
+        }
+
+        phase material_retirement_labels_require_terminal_completion;
+        {
+            let mut record = fixture();
+            record.material_retired = true;
+            assert!(record.validate().is_err());
+            let mut record = fixture();
+            record.metadata_quarantined = true;
+            assert!(record.validate().is_err());
+        }
     }
 }

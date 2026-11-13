@@ -686,70 +686,79 @@ mod tests {
     fn value() -> serde_json::Value {
         serde_json::json!({"schema":1,"operation":"11111111-2222-4333-8444-555555555555", "original_uid":1000,"inventory_len":10,"inventory_sha256":vec![1u8;32],"projections":[{"index":0,"device":1,"inode":2,"owner":1000}]})
     }
-    #[test]
-    fn original_flatpak_descriptor_is_bounded_and_rejects_unreviewed_authority() {
-        let mut raw = value();
-        raw["inventory"] = serde_json::json!({});
-        assert!(serde_json::from_value::<OriginalFlatpakClaim>(raw).is_err());
-        for uid in [0, u32::MAX] {
+    tilo_test_env::scenario! {
+        /// The original system's Flatpak descriptor, claim and protected inventory.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn the_original_flatpak_descriptor_and_inventory_are_bounded_and_protected;
+
+        phase original_flatpak_descriptor_is_bounded_and_rejects_unreviewed_authority;
+        {
             let mut raw = value();
-            raw["original_uid"] = serde_json::json!(uid);
+            raw["inventory"] = serde_json::json!({});
+            assert!(serde_json::from_value::<OriginalFlatpakClaim>(raw).is_err());
+            for uid in [0, u32::MAX] {
+                let mut raw = value();
+                raw["original_uid"] = serde_json::json!(uid);
+                assert!(serde_json::from_value::<OriginalFlatpakClaim>(raw).is_err());
+            }
+            let mut raw = value();
+            raw["inventory_len"] = serde_json::json!(INVENTORY_LIMIT + 1);
+            assert!(serde_json::from_value::<OriginalFlatpakClaim>(raw).is_err());
+            let mut raw = value();
+            raw["projections"] = serde_json::json!([{"index":1,"device":1,"inode":2,"owner":1000}]);
+            assert!(serde_json::from_value::<OriginalFlatpakClaim>(raw).is_err());
+            let claim: OriginalFlatpakClaim = serde_json::from_value(value()).unwrap();
+            assert!(
+                claim
+                    .review_reader(&claim.operation, &std::sync::atomic::AtomicBool::new(false))
+                    .is_err()
+            );
+            assert!(serde_json::to_vec(&claim).unwrap().len() < 64 * 1024);
+        }
+
+        phase original_claim_deserialization_preserves_selected_data_scope;
+        {
+            let claim: OriginalFlatpakClaim = serde_json::from_value(value()).unwrap();
+            assert_eq!(claim.selected_data_ids(), None);
+            let mut raw = value();
+            raw["selected_data_ids"] = serde_json::json!(["org.example.App"]);
+            let claim: OriginalFlatpakClaim = serde_json::from_value(raw.clone()).unwrap();
+            assert_eq!(
+                claim.selected_data_ids(),
+                Some(&["org.example.App".to_owned()][..])
+            );
+            raw["selected_data_ids"] = serde_json::json!([]);
             assert!(serde_json::from_value::<OriginalFlatpakClaim>(raw).is_err());
         }
-        let mut raw = value();
-        raw["inventory_len"] = serde_json::json!(INVENTORY_LIMIT + 1);
-        assert!(serde_json::from_value::<OriginalFlatpakClaim>(raw).is_err());
-        let mut raw = value();
-        raw["projections"] = serde_json::json!([{"index":1,"device":1,"inode":2,"owner":1000}]);
-        assert!(serde_json::from_value::<OriginalFlatpakClaim>(raw).is_err());
-        let claim: OriginalFlatpakClaim = serde_json::from_value(value()).unwrap();
-        assert!(
-            claim
-                .review_reader(&claim.operation, &std::sync::atomic::AtomicBool::new(false))
-                .is_err()
-        );
-        assert!(serde_json::to_vec(&claim).unwrap().len() < 64 * 1024);
-    }
-    #[test]
-    fn original_claim_deserialization_preserves_selected_data_scope() {
-        let claim: OriginalFlatpakClaim = serde_json::from_value(value()).unwrap();
-        assert_eq!(claim.selected_data_ids(), None);
-        let mut raw = value();
-        raw["selected_data_ids"] = serde_json::json!(["org.example.App"]);
-        let claim: OriginalFlatpakClaim = serde_json::from_value(raw.clone()).unwrap();
-        assert_eq!(
-            claim.selected_data_ids(),
-            Some(&["org.example.App".to_owned()][..])
-        );
-        raw["selected_data_ids"] = serde_json::json!([]);
-        assert!(serde_json::from_value::<OriginalFlatpakClaim>(raw).is_err());
-    }
-    #[test]
-    fn protected_inventory_admission_refuses_writable_and_unprotected_files() {
-        use std::os::unix::fs::PermissionsExt;
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("inventory.json");
-        let bytes = b"exact inventory";
-        std::fs::write(&path, bytes).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let original = std::fs::read(&path).unwrap();
-        let digest = Sha256::digest(bytes).into();
-        let result = read_protected_inventory(File::open(&path).unwrap(), 15, digest);
-        assert!(result.is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), original);
-        let result = read_protected_inventory(sealed_inventory(bytes).unwrap(), 15, digest);
-        assert!(result.is_err());
-    }
-    #[test]
-    fn original_inventory_memfd_is_readonly_and_irreversibly_sealed() {
-        let mut file = sealed_inventory(b"exact inventory").unwrap();
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).unwrap();
-        assert_eq!(bytes, b"exact inventory");
-        assert!(file.write_all(b"changed").is_err());
-        assert_eq!(
-            unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) } & SEALS,
-            SEALS
-        );
+
+        phase protected_inventory_admission_refuses_writable_and_unprotected_files;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("inventory.json");
+            let bytes = b"exact inventory";
+            std::fs::write(&path, bytes).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let original = std::fs::read(&path).unwrap();
+            let digest = Sha256::digest(bytes).into();
+            let result = read_protected_inventory(File::open(&path).unwrap(), 15, digest);
+            assert!(result.is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            let result = read_protected_inventory(sealed_inventory(bytes).unwrap(), 15, digest);
+            assert!(result.is_err());
+        }
+
+        phase original_inventory_memfd_is_readonly_and_irreversibly_sealed;
+        {
+            let mut file = sealed_inventory(b"exact inventory").unwrap();
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"exact inventory");
+            assert!(file.write_all(b"changed").is_err());
+            assert_eq!(
+                unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) } & SEALS,
+                SEALS
+            );
+        }
     }
 }

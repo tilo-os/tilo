@@ -305,69 +305,76 @@ mod tests {
             name: "Settings fixture".into(),
         }
     }
-    #[test]
-    fn exact_source_settings_bind_app_scope_and_detect_changed_or_removed_bytes() {
-        let root = tempfile::tempdir().unwrap();
-        let overrides = root.path().join("overrides");
-        std::fs::create_dir(&overrides).unwrap();
-        let path = overrides.join("org.tilo.Settings");
-        std::fs::write(
-            overrides.join("global"),
-            "[Context]\nshared=!network;ipc;\n",
-        )
-        .unwrap();
-        std::fs::write(&path,"[Context]\nfilesystems=!home;/private/synthetic:ro;\nsockets=if:wayland:has-wayland;\n[Environment]\nPRIVATE_VALUE=never project this\n").unwrap();
-        let reviewed = review_root(root.path(), &[app()]).unwrap();
-        validate(Some(&reviewed), &[app()]).unwrap();
-        assert_eq!(
-            reviewed.first().unwrap().domains(),
-            vec![
-                SettingsDomain::Folders,
-                SettingsDomain::Network,
-                SettingsDomain::Devices,
-                SettingsDomain::Environment
-            ]
-        );
-        let public = serde_json::to_string(&reviewed).unwrap();
-        assert!(!public.contains("/private/synthetic"));
-        assert!(!public.contains("never project"));
-        verify(root.path(), &reviewed).unwrap();
-        std::fs::write(&path, "[Context]\nfilesystems=!host;\n").unwrap();
-        assert!(verify(root.path(), &reviewed).is_err());
-        std::fs::remove_file(&path).unwrap();
-        assert!(verify(root.path(), &reviewed).is_err());
-        let mut wrong = app();
-        wrong.installation = Installation::System("other".into());
-        assert!(validate(Some(&reviewed), &[wrong]).is_err());
-    }
-    #[test]
-    fn absent_is_checked_but_symlink_and_unsafe_settings_are_not_none_found() {
-        let root = tempfile::tempdir().unwrap();
-        let original = review_root(root.path(), &[app()]).unwrap();
-        assert!(original.first().unwrap().global.is_none());
-        assert!(original.first().unwrap().application.is_none());
-        verify(root.path(), &original).unwrap();
-        std::fs::create_dir(root.path().join("overrides")).unwrap();
-        let outside = tempfile::NamedTempFile::new().unwrap();
-        symlink(outside.path(), root.path().join("overrides/global")).unwrap();
-        assert!(review_root(root.path(), &[app()]).is_err());
-        std::fs::remove_file(root.path().join("overrides/global")).unwrap();
-        std::fs::write(
-            root.path().join("overrides/global"),
-            "[Context]\nshared=network;\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(
-            root.path().join("overrides/global"),
-            std::fs::Permissions::from_mode(0o666),
-        )
-        .unwrap();
-        assert!(review_root(root.path(), &[app()]).is_err());
-        assert!(validate(None, &[app()]).is_ok());
-        assert!(
-            validate(Some(&[]), &[app()]).is_err(),
-            "known inventory must cover each system app"
-        );
+    tilo_test_env::scenario! {
+        /// The source system's Flatpak settings as the transfer reads them.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn source_flatpak_settings_are_bound_exactly_and_unsafe_ones_are_refused;
+
+        phase exact_source_settings_bind_app_scope_and_detect_changed_or_removed_bytes;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let overrides = root.path().join("overrides");
+            std::fs::create_dir(&overrides).unwrap();
+            let path = overrides.join("org.tilo.Settings");
+            std::fs::write(
+                overrides.join("global"),
+                "[Context]\nshared=!network;ipc;\n",
+            )
+            .unwrap();
+            std::fs::write(&path,"[Context]\nfilesystems=!home;/private/synthetic:ro;\nsockets=if:wayland:has-wayland;\n[Environment]\nPRIVATE_VALUE=never project this\n").unwrap();
+            let reviewed = review_root(root.path(), &[app()]).unwrap();
+            validate(Some(&reviewed), &[app()]).unwrap();
+            assert_eq!(
+                reviewed.first().unwrap().domains(),
+                vec![
+                    SettingsDomain::Folders,
+                    SettingsDomain::Network,
+                    SettingsDomain::Devices,
+                    SettingsDomain::Environment
+                ]
+            );
+            let public = serde_json::to_string(&reviewed).unwrap();
+            assert!(!public.contains("/private/synthetic"));
+            assert!(!public.contains("never project"));
+            verify(root.path(), &reviewed).unwrap();
+            std::fs::write(&path, "[Context]\nfilesystems=!host;\n").unwrap();
+            assert!(verify(root.path(), &reviewed).is_err());
+            std::fs::remove_file(&path).unwrap();
+            assert!(verify(root.path(), &reviewed).is_err());
+            let mut wrong = app();
+            wrong.installation = Installation::System("other".into());
+            assert!(validate(Some(&reviewed), &[wrong]).is_err());
+        }
+
+        phase absent_is_checked_but_symlink_and_unsafe_settings_are_not_none_found;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let original = review_root(root.path(), &[app()]).unwrap();
+            assert!(original.first().unwrap().global.is_none());
+            assert!(original.first().unwrap().application.is_none());
+            verify(root.path(), &original).unwrap();
+            std::fs::create_dir(root.path().join("overrides")).unwrap();
+            let outside = tempfile::NamedTempFile::new().unwrap();
+            symlink(outside.path(), root.path().join("overrides/global")).unwrap();
+            assert!(review_root(root.path(), &[app()]).is_err());
+            std::fs::remove_file(root.path().join("overrides/global")).unwrap();
+            std::fs::write(
+                root.path().join("overrides/global"),
+                "[Context]\nshared=network;\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(
+                root.path().join("overrides/global"),
+                std::fs::Permissions::from_mode(0o666),
+            )
+            .unwrap();
+            assert!(review_root(root.path(), &[app()]).is_err());
+            assert!(validate(None, &[app()]).is_ok());
+            assert!(
+                validate(Some(&[]), &[app()]).is_err(),
+                "known inventory must cover each system app"
+            );
+        }
     }
     #[test]
     fn override_directory_fifo_refuses_without_waiting_for_a_writer() {

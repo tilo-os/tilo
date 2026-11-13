@@ -177,37 +177,133 @@ impl OfflineRunner for OmittedRuntime<'_> {
         Ok(result)
     }
 }
-#[test]
-fn portable_stage_refuses_exporter_omitting_reviewed_runtime() {
-    let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().canonicalize().unwrap();
-    let fake = fixture(&root);
-    let selected = InstalledRef {
-        reference: APP.into(),
-        origin: "flathub".into(),
-        installation: Installation::System("default".into()),
-        name: "Paint".into(),
-    };
-    let source = PortableFlatpakSource::review(&fake, &fake.source_home, vec![selected]).unwrap();
-    let stage = root.join("incomplete-stage");
-    let journals = root.join("incomplete-journals");
-    private(&stage);
-    private(&journals);
-    let error = match source.stage(
-        &OmittedRuntime(&fake),
-        StageGrant {
-            root: &stage,
-            journals: &journals,
-            allocation_bytes: 64 * 1024 * 1024,
-            include_user_state: false,
-        },
-        &AtomicBool::new(false),
-    ) {
-        Ok(_) => panic!("An incomplete runtime export was marked ready"),
-        Err(error) => error,
-    };
-    assert!(error.to_string().contains(RUNTIME));
-    assert!(!stage.join("applications.json").exists());
+tilo_test_env::scenario! {
+    /// The portable Flatpak transfer: staging, authentication, and the selected apps and their data.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_portable_flatpak_transfer_refuses_before_it_stages_what_was_not_reviewed;
+
+    phase portable_stage_refuses_exporter_omitting_reviewed_runtime;
+    {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let fake = fixture(&root);
+        let selected = InstalledRef {
+            reference: APP.into(),
+            origin: "flathub".into(),
+            installation: Installation::System("default".into()),
+            name: "Paint".into(),
+        };
+        let source = PortableFlatpakSource::review(&fake, &fake.source_home, vec![selected]).unwrap();
+        let stage = root.join("incomplete-stage");
+        let journals = root.join("incomplete-journals");
+        private(&stage);
+        private(&journals);
+        let error = match source.stage(
+            &OmittedRuntime(&fake),
+            StageGrant {
+                root: &stage,
+                journals: &journals,
+                allocation_bytes: 64 * 1024 * 1024,
+                include_user_state: false,
+            },
+            &AtomicBool::new(false),
+        ) {
+            Ok(_) => panic!("An incomplete runtime export was marked ready"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains(RUNTIME));
+        assert!(!stage.join("applications.json").exists());
+    }
+
+    phase selected_app_state_mutation_refuses_without_unselected_data_reads;
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let fake = fixture(&root);
+        let selected = InstalledRef {
+            reference: APP.into(),
+            origin: "flathub".into(),
+            installation: Installation::System("default".into()),
+            name: "Paint".into(),
+        };
+        let chosen = fake.source_home.join(".var/app/org.example.Paint");
+        private(&chosen);
+        fs::write(chosen.join("settings"), b"initial").unwrap();
+        // An excluded unreadable/symlink subtree must never become part of the data grant.
+        std::os::unix::fs::symlink(
+            "/unavailable/excluded-source",
+            fake.source_home.join(".var/app/org.example.Excluded"),
+        )
+        .unwrap();
+        let source =
+            PortableFlatpakSource::review_selected_state(&fake, &fake.source_home, vec![selected])
+                .unwrap();
+        fs::write(chosen.join("settings"), b"changed after explicit review").unwrap();
+        let stage = root.join("refused-stage");
+        private(&stage);
+        let journals = root.join("refused-journals");
+        private(&journals);
+        assert!(
+            source
+                .stage(
+                    &fake,
+                    StageGrant {
+                        root: &stage,
+                        journals: &journals,
+                        allocation_bytes: 64 << 20,
+                        include_user_state: true
+                    },
+                    &AtomicBool::new(false)
+                )
+                .is_err()
+        );
+        assert_eq!(fs::read_dir(&stage).unwrap().count(), 0);
+    }
+
+    phase selected_system_app_data_refuses_new_global_override_before_staging;
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let fake = fixture(&root);
+        let selected = InstalledRef {
+            reference: APP.into(),
+            origin: "flathub".into(),
+            installation: Installation::System("default".into()),
+            name: "Paint".into(),
+        };
+        let source =
+            PortableFlatpakSource::review_selected_state(&fake, &fake.source_home, vec![selected])
+                .unwrap();
+        private(&fake.source_home.join(".local/share/flatpak/overrides"));
+        let override_path = fake
+            .source_home
+            .join(".local/share/flatpak/overrides/global");
+        fs::write(&override_path, b"[Context]\nfilesystems=host;\n").unwrap();
+        assert!(source.validate().is_err());
+        let stage = root.join("global-refused-stage");
+        private(&stage);
+        let journals = root.join("global-refused-journals");
+        private(&journals);
+        assert!(
+            source
+                .stage(
+                    &fake,
+                    StageGrant {
+                        root: &stage,
+                        journals: &journals,
+                        allocation_bytes: 64 << 20,
+                        include_user_state: true
+                    },
+                    &AtomicBool::new(false)
+                )
+                .is_err()
+        );
+        assert_eq!(fs::read_dir(stage).unwrap().count(), 0);
+        assert_eq!(
+            fs::read(override_path).unwrap(),
+            b"[Context]\nfilesystems=host;\n"
+        );
+    }
 }
 #[cfg(test)]
 fn package(root: &Path, fake: &Fake, state: bool) -> (PathBuf, Expectation) {
@@ -588,95 +684,5 @@ fn selected_user_apps_seal_only_selected_data_and_restore_exact_subset_without_s
             &cancel
         )
         .is_err()
-    );
-}
-
-#[test]
-fn selected_app_state_mutation_refuses_without_unselected_data_reads() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    let fake = fixture(&root);
-    let selected = InstalledRef {
-        reference: APP.into(),
-        origin: "flathub".into(),
-        installation: Installation::System("default".into()),
-        name: "Paint".into(),
-    };
-    let chosen = fake.source_home.join(".var/app/org.example.Paint");
-    private(&chosen);
-    fs::write(chosen.join("settings"), b"initial").unwrap();
-    // An excluded unreadable/symlink subtree must never become part of the data grant.
-    std::os::unix::fs::symlink(
-        "/unavailable/excluded-source",
-        fake.source_home.join(".var/app/org.example.Excluded"),
-    )
-    .unwrap();
-    let source =
-        PortableFlatpakSource::review_selected_state(&fake, &fake.source_home, vec![selected])
-            .unwrap();
-    fs::write(chosen.join("settings"), b"changed after explicit review").unwrap();
-    let stage = root.join("refused-stage");
-    private(&stage);
-    let journals = root.join("refused-journals");
-    private(&journals);
-    assert!(
-        source
-            .stage(
-                &fake,
-                StageGrant {
-                    root: &stage,
-                    journals: &journals,
-                    allocation_bytes: 64 << 20,
-                    include_user_state: true
-                },
-                &AtomicBool::new(false)
-            )
-            .is_err()
-    );
-    assert_eq!(fs::read_dir(&stage).unwrap().count(), 0);
-}
-
-#[test]
-fn selected_system_app_data_refuses_new_global_override_before_staging() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    let fake = fixture(&root);
-    let selected = InstalledRef {
-        reference: APP.into(),
-        origin: "flathub".into(),
-        installation: Installation::System("default".into()),
-        name: "Paint".into(),
-    };
-    let source =
-        PortableFlatpakSource::review_selected_state(&fake, &fake.source_home, vec![selected])
-            .unwrap();
-    private(&fake.source_home.join(".local/share/flatpak/overrides"));
-    let override_path = fake
-        .source_home
-        .join(".local/share/flatpak/overrides/global");
-    fs::write(&override_path, b"[Context]\nfilesystems=host;\n").unwrap();
-    assert!(source.validate().is_err());
-    let stage = root.join("global-refused-stage");
-    private(&stage);
-    let journals = root.join("global-refused-journals");
-    private(&journals);
-    assert!(
-        source
-            .stage(
-                &fake,
-                StageGrant {
-                    root: &stage,
-                    journals: &journals,
-                    allocation_bytes: 64 << 20,
-                    include_user_state: true
-                },
-                &AtomicBool::new(false)
-            )
-            .is_err()
-    );
-    assert_eq!(fs::read_dir(stage).unwrap().count(), 0);
-    assert_eq!(
-        fs::read(override_path).unwrap(),
-        b"[Context]\nfilesystems=host;\n"
     );
 }

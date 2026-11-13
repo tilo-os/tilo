@@ -26,164 +26,176 @@ fn fixture(root: &Path, operation: &str) -> (Store, Record) {
     (store, record)
 }
 
-#[test]
-fn durable_intent_roundtrip_serializes_same_operation_and_excludes_other_workers() {
-    let root = tempfile::Builder::new()
-        .permissions(std::fs::Permissions::from_mode(0o700))
-        .tempdir()
-        .unwrap();
-    let operation = uuid::Uuid::new_v4().to_string();
-    let (store, record) = fixture(root.path(), &operation);
-    store.save(&record, true).unwrap();
-    assert_eq!(store.load().unwrap(), Some(record.clone()));
-    assert!(
-        Store::open(
-            PinnedDirectory::open_absolute(root.path()).unwrap(),
-            &operation
-        )
-        .is_err()
-    );
-    assert_eq!(
-        std::fs::metadata(
-            root.path()
-                .join("records")
-                .join(format!("{operation}.json"))
-        )
-        .unwrap()
-        .mode()
-            & 0o777,
-        0o600
-    );
-    let mut foreign = record.clone();
-    foreign.grant.operation = uuid::Uuid::new_v4().to_string();
-    assert!(store.save(&foreign, false).is_err());
-    assert_eq!(store.load().unwrap(), Some(record));
-}
+tilo_test_env::scenario! {
+    /// The capture store's durable intent records.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_capture_intent_record_is_exclusive_and_never_cleanup_authority;
 
-#[test]
-fn replaced_or_public_records_never_become_capture_cleanup_authority() {
-    let root = tempfile::Builder::new()
-        .permissions(std::fs::Permissions::from_mode(0o700))
-        .tempdir()
-        .unwrap();
-    let operation = uuid::Uuid::new_v4().to_string();
-    let (store, record) = fixture(root.path(), &operation);
-    store.save(&record, true).unwrap();
-    let path = root
-        .path()
-        .join("records")
-        .join(format!("{operation}.json"));
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(store.load().is_err());
-    std::fs::remove_file(&path).unwrap();
-    let outside = root.path().join("unowned.json");
-    std::fs::write(&outside, serde_json::to_vec(&record).unwrap()).unwrap();
-    std::os::unix::fs::symlink(&outside, &path).unwrap();
-    assert!(store.load().is_err());
-    assert!(outside.exists());
-}
-
-#[test]
-fn original_output_operation_lease_rejects_replaced_lock_and_foreign_operation() {
-    let root = tempfile::Builder::new()
-        .permissions(std::fs::Permissions::from_mode(0o700))
-        .tempdir()
-        .unwrap();
-    let operation = uuid::Uuid::new_v4().to_string();
-    let store = Store::open(
-        PinnedDirectory::open_absolute(root.path()).unwrap(),
-        &operation,
-    )
-    .unwrap();
-    store.check_original_output_operation(&operation).unwrap();
-    let device = std::fs::metadata(root.path()).unwrap().dev();
-    store.check_original_output_filesystem(device).unwrap();
-    assert!(
-        store
-            .check_original_output_filesystem(device.checked_add(1).unwrap())
+    phase durable_intent_roundtrip_serializes_same_operation_and_excludes_other_workers;
+    {
+        let root = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
+        let operation = uuid::Uuid::new_v4().to_string();
+        let (store, record) = fixture(root.path(), &operation);
+        store.save(&record, true).unwrap();
+        assert_eq!(store.load().unwrap(), Some(record.clone()));
+        assert!(
+            Store::open(
+                PinnedDirectory::open_absolute(root.path()).unwrap(),
+                &operation
+            )
             .is_err()
-    );
-    assert!(
-        Store::open(
-            PinnedDirectory::open_absolute(root.path()).unwrap(),
-            &operation
-        )
-        .is_err()
-    );
-    assert!(
-        store
-            .check_original_output_operation(&uuid::Uuid::new_v4().to_string())
-            .is_err()
-    );
-    let lock = root
-        .path()
-        .join("records")
-        .join(format!("{operation}.lock"));
-    std::fs::rename(&lock, root.path().join("held-original.lock")).unwrap();
-    std::fs::write(&lock, b"").unwrap();
-    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let error = store
-        .check_original_output_operation(&operation)
-        .unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "Original output operation lease name changed"
-    );
-    // The old descriptor/lock remains retained; matching permission, pathname
-    // and operation do not turn the replacement into its authority.
-    assert!(root.path().join("held-original.lock").exists());
+        );
+        assert_eq!(
+            std::fs::metadata(
+                root.path()
+                    .join("records")
+                    .join(format!("{operation}.json"))
+            )
+            .unwrap()
+            .mode()
+                & 0o777,
+            0o600
+        );
+        let mut foreign = record.clone();
+        foreign.grant.operation = uuid::Uuid::new_v4().to_string();
+        assert!(store.save(&foreign, false).is_err());
+        assert_eq!(store.load().unwrap(), Some(record));
+    }
+
+    phase replaced_or_public_records_never_become_capture_cleanup_authority;
+    {
+        let root = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
+        let operation = uuid::Uuid::new_v4().to_string();
+        let (store, record) = fixture(root.path(), &operation);
+        store.save(&record, true).unwrap();
+        let path = root
+            .path()
+            .join("records")
+            .join(format!("{operation}.json"));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(store.load().is_err());
+        std::fs::remove_file(&path).unwrap();
+        let outside = root.path().join("unowned.json");
+        std::fs::write(&outside, serde_json::to_vec(&record).unwrap()).unwrap();
+        std::os::unix::fs::symlink(&outside, &path).unwrap();
+        assert!(store.load().is_err());
+        assert!(outside.exists());
+    }
 }
 
-#[test]
-fn original_output_incomplete_intent_refuses_replay_and_named_replacement() {
-    let root = tempfile::Builder::new()
-        .permissions(std::fs::Permissions::from_mode(0o700))
-        .tempdir()
+tilo_test_env::scenario! {
+    /// The original output's operation lease and its incomplete intent.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn an_original_output_operation_refuses_replaced_locks_and_replayed_intents;
+
+    phase original_output_operation_lease_rejects_replaced_lock_and_foreign_operation;
+    {
+        let root = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
+        let operation = uuid::Uuid::new_v4().to_string();
+        let store = Store::open(
+            PinnedDirectory::open_absolute(root.path()).unwrap(),
+            &operation,
+        )
         .unwrap();
-    let operation = uuid::Uuid::new_v4().to_string();
-    let store = Store::open(
-        PinnedDirectory::open_absolute(root.path()).unwrap(),
-        &operation,
-    )
-    .unwrap();
-    let attempt = uuid::Uuid::new_v4().to_string();
-    let (held, bytes) = store
-        .claim_original_output_intent([9; 32], &attempt)
+        store.check_original_output_operation(&operation).unwrap();
+        let device = std::fs::metadata(root.path()).unwrap().dev();
+        store.check_original_output_filesystem(device).unwrap();
+        assert!(
+            store
+                .check_original_output_filesystem(device.checked_add(1).unwrap())
+                .is_err()
+        );
+        assert!(
+            Store::open(
+                PinnedDirectory::open_absolute(root.path()).unwrap(),
+                &operation
+            )
+            .is_err()
+        );
+        assert!(
+            store
+                .check_original_output_operation(&uuid::Uuid::new_v4().to_string())
+                .is_err()
+        );
+        let lock = root
+            .path()
+            .join("records")
+            .join(format!("{operation}.lock"));
+        std::fs::rename(&lock, root.path().join("held-original.lock")).unwrap();
+        std::fs::write(&lock, b"").unwrap();
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let error = store
+            .check_original_output_operation(&operation)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Original output operation lease name changed"
+        );
+        // The old descriptor/lock remains retained; matching permission, pathname
+        // and operation do not turn the replacement into its authority.
+        assert!(root.path().join("held-original.lock").exists());
+    }
+
+    phase original_output_incomplete_intent_refuses_replay_and_named_replacement;
+    {
+        let root = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
+        let operation = uuid::Uuid::new_v4().to_string();
+        let store = Store::open(
+            PinnedDirectory::open_absolute(root.path()).unwrap(),
+            &operation,
+        )
         .unwrap();
-    store.check_original_output_intent(&held, &bytes).unwrap();
-    let same = store
-        .claim_original_output_intent([9; 32], &attempt)
-        .unwrap_err();
-    assert_eq!(same.kind(), io::ErrorKind::AlreadyExists);
-    assert_eq!(
-        same.to_string(),
-        "Original output same intent requires verified recovery"
-    );
-    let different = store
-        .claim_original_output_intent([8; 32], &uuid::Uuid::new_v4().to_string())
-        .unwrap_err();
-    assert_eq!(different.kind(), io::ErrorKind::PermissionDenied);
-    assert_eq!(
-        different.to_string(),
-        "Original output different intent refuses replacement"
-    );
-    let path = root
-        .path()
-        .join("records")
-        .join(format!("{operation}.original-output"));
-    assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o7777, 0o600);
-    std::fs::rename(&path, root.path().join("held-intent")).unwrap();
-    std::fs::write(&path, &bytes).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let error = store
-        .check_original_output_intent(&held, &bytes)
-        .unwrap_err();
-    assert_eq!(error.to_string(), "Original output intent name changed");
-    // Same bytes and operation/attempt do not substitute a new named inode.
-    assert_eq!(
-        std::fs::read(root.path().join("held-intent")).unwrap(),
-        bytes
-    );
+        let attempt = uuid::Uuid::new_v4().to_string();
+        let (held, bytes) = store
+            .claim_original_output_intent([9; 32], &attempt)
+            .unwrap();
+        store.check_original_output_intent(&held, &bytes).unwrap();
+        let same = store
+            .claim_original_output_intent([9; 32], &attempt)
+            .unwrap_err();
+        assert_eq!(same.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            same.to_string(),
+            "Original output same intent requires verified recovery"
+        );
+        let different = store
+            .claim_original_output_intent([8; 32], &uuid::Uuid::new_v4().to_string())
+            .unwrap_err();
+        assert_eq!(different.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            different.to_string(),
+            "Original output different intent refuses replacement"
+        );
+        let path = root
+            .path()
+            .join("records")
+            .join(format!("{operation}.original-output"));
+        assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o7777, 0o600);
+        std::fs::rename(&path, root.path().join("held-intent")).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let error = store
+            .check_original_output_intent(&held, &bytes)
+            .unwrap_err();
+        assert_eq!(error.to_string(), "Original output intent name changed");
+        // Same bytes and operation/attempt do not substitute a new named inode.
+        assert_eq!(
+            std::fs::read(root.path().join("held-intent")).unwrap(),
+            bytes
+        );
+    }
 }
 
 #[test]

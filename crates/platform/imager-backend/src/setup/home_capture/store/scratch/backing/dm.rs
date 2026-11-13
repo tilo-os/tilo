@@ -257,49 +257,55 @@ fn refused() -> io::Error {
 mod tests {
     use super::*;
 
-    #[test]
-    fn dm_dependencies_use_kernel_encoding_not_glibc_minor_layout() {
-        let device = libc::makedev(253, 0x12345) as u64;
-        let encoded = encode_device(device).expect("supported block device");
-        assert_eq!(encoded, 0x1230fd45);
-        assert_eq!(decode_device(encoded).expect("kernel dependency"), device);
-        assert!(decode_device(1_u64 << 32).is_err());
-        assert!(decode_device(0).is_err());
-    }
+    tilo_test_env::scenario! {
+        /// Decoding the kernel's device-mapper records.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn device_mapper_records_are_decoded_within_their_bounds;
 
-    #[test]
-    fn status_strings_must_terminate_within_the_bounded_record() {
-        assert_eq!(terminated(b"crypt\0ignored").expect("terminated"), b"crypt");
-        assert!(terminated(b"crypt").is_err());
-        assert!(terminated(&[]).is_err());
-    }
+        phase dm_dependencies_use_kernel_encoding_not_glibc_minor_layout;
+        {
+            let device = libc::makedev(253, 0x12345) as u64;
+            let encoded = encode_device(device).expect("supported block device");
+            assert_eq!(encoded, 0x1230fd45);
+            assert_eq!(decode_device(encoded).expect("kernel dependency"), device);
+            assert!(decode_device(1_u64 << 32).is_err());
+            assert!(decode_device(0).is_err());
+        }
 
-    #[test]
-    fn final_status_record_can_end_before_its_aligned_next_offset() {
-        let mut buffer = vec![0_u64; BUFFER_BYTES / 8];
-        // SAFETY: Header contains only integer values and byte arrays.
-        let mut header: Header = unsafe { std::mem::zeroed() };
-        header.data_start = HEADER_BYTES as u32;
-        header.data_size = (HEADER_BYTES + SPEC_BYTES + 1) as u32;
-        header.target_count = 1;
-        header.uuid[..4].copy_from_slice(b"test");
-        // SAFETY: byte view covers the initialized u64 allocation exactly.
-        let output = unsafe {
-            std::slice::from_raw_parts_mut(buffer.as_mut_ptr().cast::<u8>(), BUFFER_BYTES)
-        };
-        let spec = &mut output[HEADER_BYTES..HEADER_BYTES + SPEC_BYTES];
-        spec[8..16].copy_from_slice(&1_u64.to_ne_bytes());
-        spec[20..24].copy_from_slice(&48_u32.to_ne_bytes());
-        spec[24..29].copy_from_slice(b"crypt");
-        let state = parse_status(&buffer, &header).expect("unaligned final empty status");
-        assert_eq!(state.targets.len(), 1);
-        assert_eq!(state.targets[0].length, 1);
-        // The NUL must belong to the reported used bytes, not padding.
-        header.data_size -= 1;
-        assert!(parse_status(&buffer, &header).is_err());
-        // The same gap cannot precede an intermediate target.
-        header.data_size += 1;
-        header.target_count = 2;
-        assert!(parse_status(&buffer, &header).is_err());
+        phase status_strings_must_terminate_within_the_bounded_record;
+        {
+            assert_eq!(terminated(b"crypt\0ignored").expect("terminated"), b"crypt");
+            assert!(terminated(b"crypt").is_err());
+            assert!(terminated(&[]).is_err());
+        }
+
+        phase final_status_record_can_end_before_its_aligned_next_offset;
+        {
+            let mut buffer = vec![0_u64; BUFFER_BYTES / 8];
+            // SAFETY: Header contains only integer values and byte arrays.
+            let mut header: Header = unsafe { std::mem::zeroed() };
+            header.data_start = HEADER_BYTES as u32;
+            header.data_size = (HEADER_BYTES + SPEC_BYTES + 1) as u32;
+            header.target_count = 1;
+            header.uuid[..4].copy_from_slice(b"test");
+            // SAFETY: byte view covers the initialized u64 allocation exactly.
+            let output = unsafe {
+                std::slice::from_raw_parts_mut(buffer.as_mut_ptr().cast::<u8>(), BUFFER_BYTES)
+            };
+            let spec = &mut output[HEADER_BYTES..HEADER_BYTES + SPEC_BYTES];
+            spec[8..16].copy_from_slice(&1_u64.to_ne_bytes());
+            spec[20..24].copy_from_slice(&48_u32.to_ne_bytes());
+            spec[24..29].copy_from_slice(b"crypt");
+            let state = parse_status(&buffer, &header).expect("unaligned final empty status");
+            assert_eq!(state.targets.len(), 1);
+            assert_eq!(state.targets[0].length, 1);
+            // The NUL must belong to the reported used bytes, not padding.
+            header.data_size -= 1;
+            assert!(parse_status(&buffer, &header).is_err());
+            // The same gap cannot precede an intermediate target.
+            header.data_size += 1;
+            header.target_count = 2;
+            assert!(parse_status(&buffer, &header).is_err());
+        }
     }
 }

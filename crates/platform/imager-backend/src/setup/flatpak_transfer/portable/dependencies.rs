@@ -152,85 +152,92 @@ mod tests {
             Ok(format!("{reference}\n"))
         }
     }
-    #[test]
-    fn native_dependency_closure_refuses_missing_runtime_or_extension_export() {
-        let scope = Installation::System("default".into());
-        let items: Vec<_> = [
-            "app/org.example.Paint/x86_64/stable",
-            "runtime/org.example.Platform/x86_64/stable",
-            "runtime/org.example.Paint.Locale/x86_64/stable",
-        ]
-        .into_iter()
-        .map(|reference| InstalledRef {
-            reference: reference.into(),
-            origin: "approved".into(),
-            installation: scope.clone(),
-            name: "Fixture".into(),
-        })
-        .collect();
-        let required = review(
-            &Cli,
-            Path::new("/explicit-source"),
-            &scope,
-            &items,
-            items.get(..1).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(required.len(), 3);
-        for missing in &required {
-            let mut exported = required.clone();
-            exported.remove(missing);
-            assert!(
-                verify_exported(&required, &exported)
-                    .unwrap_err()
-                    .contains(missing)
-            );
-        }
-        verify_exported(&required, &required).unwrap();
-        assert!(
-            review(
+    tilo_test_env::scenario! {
+        /// The dependency closure of a portable Flatpak export.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn the_native_dependency_closure_checks_what_was_actually_exported;
+
+        phase native_dependency_closure_refuses_missing_runtime_or_extension_export;
+        {
+            let scope = Installation::System("default".into());
+            let items: Vec<_> = [
+                "app/org.example.Paint/x86_64/stable",
+                "runtime/org.example.Platform/x86_64/stable",
+                "runtime/org.example.Paint.Locale/x86_64/stable",
+            ]
+            .into_iter()
+            .map(|reference| InstalledRef {
+                reference: reference.into(),
+                origin: "approved".into(),
+                installation: scope.clone(),
+                name: "Fixture".into(),
+            })
+            .collect();
+            let required = review(
                 &Cli,
                 Path::new("/explicit-source"),
                 &scope,
-                items.get(..2).unwrap(),
-                items.get(..1).unwrap()
+                &items,
+                items.get(..1).unwrap(),
             )
-            .is_err()
-        );
-    }
-    #[test]
-    fn native_extension_output_checks_actual_scope_and_truncation() {
-        let app = "app/org.example.Paint/x86_64/stable";
-        // Exact Flatpak1.18.4 info.c475-485 labels; leading alignment is emitted
-        // by print_aligned in builtins-utils.c1111-1121, not part of the value.
-        let output = format!(
-            "{app}\n\n     Extension: runtime/org.example.Paint.Locale/x86_64/stable\n            ID: org.example.Paint.Locale\n        Origin: approved\n        Commit: {}\n  Installation: system\nInstalled Size: 12.0 kB\n      Subpaths: /en,/fr\n",
-            "a".repeat(64)
-        );
-        assert_eq!(
-            parse_extensions(
-                &output.replace("Installation: system", "Installation: system (work)"),
-                app,
-                &Installation::System("work".into())
-            )
-            .unwrap(),
-            vec!["runtime/org.example.Paint.Locale/x86_64/stable"]
-        );
-        let scope = Installation::System("default".into());
-        assert_eq!(
-            parse_extensions(&output, app, &scope).unwrap(),
-            vec!["runtime/org.example.Paint.Locale/x86_64/stable"]
-        );
-        assert!(
-            parse_extensions(
-                &output.replace("Installation: system", "Installation: user"),
-                app,
-                &scope
-            )
-            .is_err()
-        );
-        assert!(
-            parse_extensions(&output.replace("  Installation: system\n", ""), app, &scope).is_err()
-        );
+            .unwrap();
+            assert_eq!(required.len(), 3);
+            for missing in &required {
+                let mut exported = required.clone();
+                exported.remove(missing);
+                assert!(
+                    verify_exported(&required, &exported)
+                        .unwrap_err()
+                        .contains(missing)
+                );
+            }
+            verify_exported(&required, &required).unwrap();
+            assert!(
+                review(
+                    &Cli,
+                    Path::new("/explicit-source"),
+                    &scope,
+                    items.get(..2).unwrap(),
+                    items.get(..1).unwrap()
+                )
+                .is_err()
+            );
+        }
+
+        phase native_extension_output_checks_actual_scope_and_truncation;
+        {
+            let app = "app/org.example.Paint/x86_64/stable";
+            // Exact Flatpak1.18.4 info.c475-485 labels; leading alignment is emitted
+            // by print_aligned in builtins-utils.c1111-1121, not part of the value.
+            let output = format!(
+                "{app}\n\n     Extension: runtime/org.example.Paint.Locale/x86_64/stable\n            ID: org.example.Paint.Locale\n        Origin: approved\n        Commit: {}\n  Installation: system\nInstalled Size: 12.0 kB\n      Subpaths: /en,/fr\n",
+                "a".repeat(64)
+            );
+            assert_eq!(
+                parse_extensions(
+                    &output.replace("Installation: system", "Installation: system (work)"),
+                    app,
+                    &Installation::System("work".into())
+                )
+                .unwrap(),
+                vec!["runtime/org.example.Paint.Locale/x86_64/stable"]
+            );
+            let scope = Installation::System("default".into());
+            assert_eq!(
+                parse_extensions(&output, app, &scope).unwrap(),
+                vec!["runtime/org.example.Paint.Locale/x86_64/stable"]
+            );
+            assert!(
+                parse_extensions(
+                    &output.replace("Installation: system", "Installation: user"),
+                    app,
+                    &scope
+                )
+                .is_err()
+            );
+            assert!(
+                parse_extensions(&output.replace("  Installation: system\n", ""), app, &scope).is_err()
+            );
+        }
     }
 }

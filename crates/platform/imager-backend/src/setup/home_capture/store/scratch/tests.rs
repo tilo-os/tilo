@@ -12,33 +12,39 @@ fn receipt() -> ScratchReceipt {
     }
 }
 
-#[test]
-fn receipt_wire_round_trip_preserves_exact_custody_facts() {
-    let expected = receipt();
-    let bytes = serde_json::to_vec(&expected).unwrap();
-    let actual: ScratchReceipt = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(actual, expected);
-}
+tilo_test_env::scenario! {
+    /// The scratch receipt on the wire.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_scratch_receipt_round_trips_and_rejects_noncanonical_wire;
 
-#[test]
-fn receipt_wire_rejects_noncanonical_names_and_unbounded_parents() {
-    let original = serde_json::to_value(receipt()).unwrap();
-    for name in [
-        "inventory-not-a-uuid",
-        "inventory-../escape",
-        "inventory-00000000-0000-0000-0000-000000000000",
-        "other",
-    ] {
-        let mut wire = original.clone();
-        wire["name"] = name.into();
+    phase receipt_wire_round_trip_preserves_exact_custody_facts;
+    {
+        let expected = receipt();
+        let bytes = serde_json::to_vec(&expected).unwrap();
+        let actual: ScratchReceipt = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    phase receipt_wire_rejects_noncanonical_names_and_unbounded_parents;
+    {
+        let original = serde_json::to_value(receipt()).unwrap();
+        for name in [
+            "inventory-not-a-uuid",
+            "inventory-../escape",
+            "inventory-00000000-0000-0000-0000-000000000000",
+            "other",
+        ] {
+            let mut wire = original.clone();
+            wire["name"] = name.into();
+            assert!(serde_json::from_value::<ScratchReceipt>(wire).is_err());
+        }
+        for parent in ["relative", "/var/lib/../elsewhere"] {
+            let mut wire = original.clone();
+            wire["parent"] = parent.into();
+            assert!(serde_json::from_value::<ScratchReceipt>(wire).is_err());
+        }
+        let mut wire = original;
+        wire["unexpected"] = true.into();
         assert!(serde_json::from_value::<ScratchReceipt>(wire).is_err());
     }
-    for parent in ["relative", "/var/lib/../elsewhere"] {
-        let mut wire = original.clone();
-        wire["parent"] = parent.into();
-        assert!(serde_json::from_value::<ScratchReceipt>(wire).is_err());
-    }
-    let mut wire = original;
-    wire["unexpected"] = true.into();
-    assert!(serde_json::from_value::<ScratchReceipt>(wire).is_err());
 }
