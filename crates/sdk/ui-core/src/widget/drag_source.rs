@@ -27,7 +27,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
 use crate::widget::arrange::{Slot, Stack};
-use crate::widget::{Decorator, Element, Widget};
+use crate::widget::{Decorator, DrawChild, Element, Widget};
 
 /// What a `DragSource` carries on the drag bus: the kind its payload is written as, so a target
 /// reads a resource id out of the blob without knowing which view made the drag.
@@ -224,7 +224,8 @@ impl Decorator for DragSource {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.column.draw(scene, transform, text, theme, presence);
+        self.column
+            .draw_child(scene, transform, text, theme, presence);
         self.dirty = false;
     }
 

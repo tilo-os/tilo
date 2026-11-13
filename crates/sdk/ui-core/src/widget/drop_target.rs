@@ -19,7 +19,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
 use crate::widget::arrange::{Slot, Stack};
-use crate::widget::{Decorator, Element, Widget};
+use crate::widget::{Decorator, DrawChild, Element, Widget};
 
 /// The resource a payload names, when it names one: a
 /// [resource](super::drag_source::RESOURCE_PAYLOAD) drag's id, or a run item's
@@ -146,7 +146,8 @@ impl Decorator for DropTarget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.column.draw(scene, transform, text, theme, presence);
+        self.column
+            .draw_child(scene, transform, text, theme, presence);
         if self.hovered.is_some() && self.rect.width() > 0.0 {
             // The same line every drop indicator draws: your colour on the edge.
             let line = f64::from(theme.tokens.metrics.drag_line_px).max(1.0);
