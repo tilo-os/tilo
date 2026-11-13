@@ -859,3 +859,132 @@ fn a_document_that_misses_the_reference_is_not_qualified() {
         "an unstyled title alone is not the report: {verdict:?}"
     );
 }
+
+#[test]
+fn frames_are_the_same_picture_up_to_the_tolerance_and_the_allowed_share() {
+    fn frame(pixels: usize, differing: usize, by: u8) -> Vec<u8> {
+        (0..pixels)
+            .flat_map(|pixel| [0, if pixel < differing { by } else { 0 }, 0, 255])
+            .collect()
+    }
+    let past = PIXEL_TOLERANCE.saturating_add(1);
+    // Two frames, the share of their pixels that differ when they can be compared, and
+    // whether they are the same picture.
+    let rows = [
+        ("no pixels", Vec::new(), Vec::new(), None, false),
+        ("two sizes", frame(2, 0, 0), frame(1, 0, 0), None, false),
+        (
+            "one frame twice",
+            frame(2, 0, 0),
+            frame(2, 0, 0),
+            Some(0.0),
+            true,
+        ),
+        (
+            "every pixel at the tolerance",
+            frame(2, 0, 0),
+            frame(2, 2, PIXEL_TOLERANCE),
+            Some(0.0),
+            true,
+        ),
+        (
+            "one pixel of two past the tolerance",
+            frame(2, 0, 0),
+            frame(2, 1, past),
+            Some(0.5),
+            false,
+        ),
+        (
+            "one pixel of two past the tolerance, darker",
+            frame(2, 1, past),
+            frame(2, 0, 0),
+            Some(0.5),
+            false,
+        ),
+        (
+            "every pixel as far as a channel goes",
+            frame(2, 0, 0),
+            frame(2, 2, u8::MAX),
+            Some(1.0),
+            false,
+        ),
+        (
+            "one pixel in ten thousand",
+            frame(10_000, 0, 0),
+            frame(10_000, 1, past),
+            Some(MAX_FRAME_DIFFERENCE),
+            true,
+        ),
+        (
+            "two pixels in ten thousand",
+            frame(10_000, 0, 0),
+            frame(10_000, 2, past),
+            Some(0.0002),
+            false,
+        ),
+    ];
+    for (row, left, right, share, same) in rows {
+        let mut receipt = Receipt::default();
+        let verdict = same_picture("difference", &left, &right, &mut receipt);
+        assert_eq!(verdict.is_ok(), same, "{row}: {verdict:?}");
+        assert_eq!(
+            receipt
+                .measurements
+                .get("difference")
+                .and_then(serde_json::Value::as_f64),
+            share,
+            "{row}"
+        );
+    }
+}
+
+#[test]
+fn text_is_in_order_only_with_every_paragraph_after_the_one_before() {
+    let page = |order: &[usize], between: &str| {
+        order
+            .iter()
+            .map(|&block| REFERENCE[block].text)
+            .collect::<Vec<_>>()
+            .join(between)
+    };
+    let report = page(&[0, 1, 2, 3, 4, 5], "\n");
+    let rows = [
+        ("the report", report.clone(), true),
+        (
+            "nothing between its paragraphs",
+            page(&[0, 1, 2, 3, 4, 5], ""),
+            true,
+        ),
+        (
+            "every word on a line of its own",
+            report.replace(' ', "\n"),
+            true,
+        ),
+        ("a page number under it", format!("{report}\n1"), true),
+        ("an empty page", String::new(), false),
+        (
+            "its first paragraph missing",
+            page(&[1, 2, 3, 4, 5], "\n"),
+            false,
+        ),
+        (
+            "its last paragraph missing",
+            page(&[0, 1, 2, 3, 4], "\n"),
+            false,
+        ),
+        (
+            "two paragraphs swapped",
+            page(&[0, 1, 2, 4, 3, 5], "\n"),
+            false,
+        ),
+        (
+            "the title only after the rest",
+            page(&[1, 2, 3, 4, 5, 0], "\n"),
+            false,
+        ),
+    ];
+    for (row, text, in_order) in rows {
+        let verdict = text_in_order(&text);
+        assert_eq!(verdict.is_ok(), in_order, "{row}: {verdict:?}");
+    }
+}
