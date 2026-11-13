@@ -232,14 +232,7 @@ pub async fn run(bundle: &str) {
         }
     })
     .await;
-    admit_person(
-        &hosted,
-        &host,
-        &workspace.workspace,
-        &reader,
-        Role::Editor,
-    )
-    .await;
+    admit_person(&hosted, &host, &workspace.workspace, &reader, Role::Editor).await;
 
     // Another of the reader's devices joining now is replayed the chat and
     // the head, and nothing of part 1 until it asks.
