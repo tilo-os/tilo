@@ -67,9 +67,6 @@ GUEST_AGENT = HERE / "guest" / "agent.py"
 GUEST_DIR = ".cache/e2e-remote"
 MARK = "E2E-MCP "
 SLOT = "me"
-# What the boxes' sessions log beside their errors (see `branch`).
-LOG_FILTER = ("error,tilo_session::live=debug,tilo_session::window_share=debug,"
-              "tilo_session_client=warn,tilo_network_actor=debug")
 # Each box: guest memory and CPUs. Three fit beside each other in the micro-VM.
 # A, B and D run side by side; C runs beside B once A and D have stopped. A box takes 3 GiB: with less its
 # first login's onboarding does not come up (1.6 GiB boxes never showed it). A micro-VM t booked
@@ -596,14 +593,6 @@ ip -o addr show dev "$dev"
             self.wait_session(box)
         for box in (a, b):
             res.facts[f"lan_{box.letter}"] = self.address_lan(box)
-        # What a session says of its live plane, of a window's share and of the routes between
-        # devices is below what it logs by default. The login's environment asks for it on these
-        # boxes before their sessions start again, so a failed share step can say how far the
-        # plane came. D is branched from A later and inherits it.
-        for box in (a, b):
-            box.vm.root_exec("sed -i '/^RUST_LOG=/d' /etc/environment; "
-                             f"printf '%s\\n' 'RUST_LOG={LOG_FILTER}' >> /etc/environment",
-                             timeout=60)
         # The sessions start again on the network the boxes now share, as they would on a box
         # that came up on it.
         for box in (a, b):
@@ -1216,18 +1205,6 @@ ip -o addr show dev "$dev"
             }
             for name, value in seen.items():
                 res.facts[name] = json.dumps(value, ensure_ascii=False)[:800]
-            # What each session said of the live plane, the share and the routes between the
-            # devices, and the filter its session logs under.
-            for box in (a, b):
-                try:
-                    said = box.vm.exec(
-                        'echo "RUST_LOG=$RUST_LOG"; grep -E "tilo_session::live|'
-                        'tilo_session::window_share|tilo_network_actor|tilo_session_client" '
-                        '"$HOME/.local/state/tilo/session-logs/latest.log" | tail -n 80 | cut -c1-330',
-                        timeout=60, check=False)
-                except VmError as exc:
-                    said = str(exc)
-                res.facts[f"plane_log_{box.letter}"] = said[-9000:]
             for box in (a, b):
                 try:
                     box.vm.shot(self.out / f"shot-watch-{box.letter}.png")
