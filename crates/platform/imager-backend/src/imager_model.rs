@@ -1,15 +1,24 @@
-//! The installer's UI-free data model: plain data plus serde, round-tripped through
-//! Automerge scalars.
+//! Canonical UI-free data model for installation media frontends and native actors.
+//!
+//! Everything here is plain data + serde so the entire app state can be
+//! round-tripped through Automerge scalars. Rendering, probing and the
+//! write/install seam live in sibling modules — this file knows nothing
+//! about vello, taffy or `lsblk`.
 
 use serde::{Deserialize, Serialize};
 use tilo_resource::{Id, Identified, JsonSchema, Model};
 
+// ---------------------------------------------------------------------------
+// Source — what we are going to write or install.
+// ---------------------------------------------------------------------------
+
 /// Where the bytes to be written come from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 pub enum SourceKind {
+    /// An arbitrary local disk image picked from disk.
     #[default]
     IsoFile,
-    /// Authenticated by the release catalog.
+    /// A Tilo installer/live image authenticated by the release catalog.
     TiloImage,
 }
 
@@ -28,11 +37,13 @@ impl SourceKind {
     }
 }
 
-/// A selected image source, with the metadata shown without reading the file.
+/// A selected image source with the metadata we can show without reading
+/// the whole file (name, on-disk size, volume label / image type).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 pub struct Source {
     pub kind: SourceKind,
-    /// Absolute path to the image file (empty for a not-yet-downloaded known release).
+    /// Absolute path to the image file (empty for a not-yet-downloaded
+    /// known release).
     pub path: String,
     /// Display name (file name or release name).
     #[model(label)]
@@ -41,18 +52,22 @@ pub struct Source {
     pub size: u64,
     /// Volume label or image variant ("Tilo 1.0 Live", "Fedora-Workstation"…).
     pub label: String,
-    /// Whether this source can drive a full Tilo install (raw ISO write only otherwise).
+    /// Whether this source can drive a full Tilo install (vs. raw ISO write
+    /// only).
     pub installable: bool,
-    /// Stable identity of the reviewed file; the writer rejects a path that now resolves elsewhere.
+    /// Stable identity of the file selected and reviewed by the user. The
+    /// privileged writer rejects a path which now resolves to another file.
     #[serde(default)]
     pub identity: Option<SourceIdentity>,
-    /// Digest bound into a signed release catalog. A local arbitrary image has no such anchor, so it
-    /// relies on identity and exact size.
+    /// Digest bound into a signed release catalog. Local arbitrary images do
+    /// not have an external trust anchor, so they rely on identity + exact size.
     #[serde(default)]
     pub expected_sha256: Option<String>,
 }
 
 impl Source {
+    /// Stable identity of a reviewed source. Prefer immutable digest, then
+    /// platform identity, then the canonical path/name fallback.
     pub fn id(&self) -> String {
         let material = self
             .expected_sha256
@@ -74,7 +89,8 @@ impl Source {
                 },
                 |digest| format!("{}\u{1f}{digest}", self.kind.tag()),
             );
-        // FNV-1a names the source; the writer rechecks identity and digest at the privileged boundary.
+        // FNV-1a is a stable identifier, not a security boundary. The writer
+        // independently rechecks identity/digest at the privileged boundary.
         let hash = material
             .bytes()
             .fold(0xcbf2_9ce4_8422_2325u64, |acc, byte| {
@@ -84,12 +100,14 @@ impl Source {
     }
 }
 
-/// An image reviewed earlier, keyed by source id so concurrent choices keep both records.
+/// An image reviewed before the current one, stored under its source's id
+/// so two people choosing at once keep both records.
 #[derive(Clone, Debug, PartialEq, Eq, Model)]
 pub struct RecentSource {
     /// The source's [`Source::id`].
     pub id: Id,
-    /// Most recent first; concurrent choices of one rank sort by id.
+    /// Where it sorts: the most recent has the lowest rank; equal ranks
+    /// (concurrent choices) sort by id.
     pub rank: i64,
     /// Image
     pub source: Source,
@@ -106,7 +124,7 @@ impl Identified for RecentSource {
     }
 }
 
-/// A file's platform identity, kept across the helper request boundary.
+/// Platform file identity, portable across the helper request boundary.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 pub struct SourceIdentity {
     pub volume: u64,
@@ -114,8 +132,13 @@ pub struct SourceIdentity {
 }
 
 impl SourceIdentity {
-    /// Reads identity from the open `file`, never by reopening its path. Windows pairs the volume
-    /// serial with the 64-bit file index; an unavailable identity is `Ok(None)`.
+    /// Capture identity from the held source file, never by reopening its path.
+    /// Windows preserves the serialized volume serial / 64-bit file index pair;
+    /// native query failures are errors, not an absent identity.
+    ///
+    /// # Errors
+    /// Returns an error if file metadata cannot be read on Unix or the native
+    /// handle identity query fails on Windows. Other platforms return `Ok(None)`.
     pub fn from_file(file: &std::fs::File) -> std::io::Result<Option<Self>> {
         #[cfg(unix)]
         {
@@ -134,6 +157,8 @@ impl SourceIdentity {
             };
 
             let mut info = BY_HANDLE_FILE_INFORMATION::default();
+            // SAFETY: `file` keeps its handle alive for this call, and `info`
+            // is a valid, writable output structure with the native layout.
             if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
                 return Err(std::io::Error::last_os_error());
             }
@@ -154,7 +179,8 @@ fn generic_hardware_profile() -> String {
     "generic".into()
 }
 
-/// An authenticated release: compatibility needs both CPU architecture and board.
+/// Authenticated release identity includes both CPU architecture and board.
+/// Matching the host CPU alone does not establish device compatibility.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TiloRelease {
     pub name: String,
@@ -165,28 +191,30 @@ pub struct TiloRelease {
     pub architecture: String,
     #[serde(default = "generic_hardware_profile")]
     pub hardware_profile: String,
-    /// Empty until downloaded.
+    /// Local path once available; empty means "needs download".
     pub local_path: String,
-    /// Empty only in screenshot fixtures.
+    /// Immutable release asset URL. Empty only in screenshot/demo fixtures.
     #[serde(default)]
     pub url: String,
     /// SHA-256 of the downloaded `.img.zst` release asset.
     #[serde(default)]
     pub archive_sha256: String,
-    /// Bounds an untrusted response.
+    /// Exact compressed transport size, used to bound an untrusted response.
     #[serde(default)]
     pub archive_size: u64,
+    /// SHA-256 of the expanded image that is written to the device.
     #[serde(default)]
     pub image_sha256: String,
-    /// Authenticated with the media catalog's image digest.
+    /// Exact target consumer proof authenticated with the media catalog's image digest.
     #[serde(default)]
     pub account_custody: Option<crate::account_admission::ConsumerCapability>,
-    /// Authenticated with the same digest.
+    /// Home archive consumers authenticated with the selected image digest.
     #[serde(default)]
     pub home_archive: Option<crate::home_admission::ConsumerCapability>,
-    /// Authenticated with the same digest.
+    /// Selected app-state consumers authenticated with the exact image digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applications: Option<crate::applications_admission::ConsumerCapability>,
+    /// Original-source consumer proof authenticated with the selected image.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_source: Option<crate::original_admission::ConsumerCapability>,
 }
@@ -201,6 +229,8 @@ impl TiloRelease {
         }
     }
 
+    /// What the release says about the machines it starts on, for a surface
+    /// to put in the person's language.
     pub fn target_name(&self) -> TargetName {
         if self.hardware_profile != "generic" {
             return TargetName::Profile(self.hardware_profile.clone());
@@ -212,6 +242,8 @@ impl TiloRelease {
         }
     }
 
+    /// The same as a stored word a label or a comparison carries, never shown
+    /// as copy.
     fn target_key(&self) -> String {
         match self.target_name() {
             TargetName::Arm64 => "aarch64".to_owned(),
@@ -263,6 +295,11 @@ impl TiloRelease {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Target — the drive we write to.
+// ---------------------------------------------------------------------------
+
+/// Broad class of a block device (drives the icon + warning emphasis).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TargetKind {
     Usb,
@@ -274,7 +311,7 @@ pub enum TargetKind {
 }
 
 impl TargetKind {
-    /// This alone grants no write eligibility.
+    /// The device class is removable; this alone grants no write eligibility.
     pub fn is_removable_class(&self) -> bool {
         matches!(self, Self::Usb | Self::SdCard)
     }
@@ -304,7 +341,7 @@ impl TargetKind {
             Some("usb") => TargetKind::Usb,
             Some("nvme") => TargetKind::Nvme,
             Some("mmc") => TargetKind::SdCard,
-            // "sata", "ata" and anything unrecognised classify the same way.
+            // "sata" / "ata" and anything unrecognised (including no
             // transport at all) share the same removable/rotational
             // classification.
             _ => {
@@ -320,7 +357,8 @@ impl TargetKind {
     }
 }
 
-/// A partition on a target drive, shown so the erasure is visible.
+/// A partition currently on a target drive — shown so the user can see
+/// exactly what will be erased.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TargetPartition {
     pub name: String,
@@ -341,19 +379,21 @@ impl TargetPartition {
     }
 }
 
+/// A candidate write target.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TargetDrive {
     pub name: String,
     pub model: String,
-    /// Hardware identity (WWN, serial, UniqueId), checked for substitution before a destructive open.
+    /// Platform-provided hardware/media identity (WWN/serial/UniqueId) used
+    /// to detect unplug/replug target substitution before a destructive open.
     #[serde(default)]
     pub stable_id: Option<String>,
     pub size: u64,
     pub kind: TargetKind,
     pub tran: Option<String>,
     pub removable: bool,
-    /// The root disk: media creation never accepts it, and internal install belongs to the booted
-    /// installer.
+    /// `true` for the root/system disk. The media creator never accepts it;
+    /// internal installation belongs to the booted Tilo installer.
     pub is_system: bool,
     pub partitions: Vec<TargetPartition>,
 }
@@ -365,8 +405,9 @@ impl From<&TargetDrive> for TargetDrive {
 }
 
 impl TargetDrive {
-    /// Whether the desktop imager may offer this drive. Some USB readers report `RM=0`, so the
-    /// transport counts too, and system disks are always excluded.
+    /// Whether this is external installation media the desktop imager may
+    /// safely offer. Some USB readers report `RM=0`, so the transport is also
+    /// considered; system disks are unconditionally excluded.
     pub fn is_media_target(&self) -> bool {
         !self.is_system
             && (self.removable
@@ -388,7 +429,8 @@ impl TargetDrive {
         }
         #[cfg(target_os = "macos")]
         {
-            // The raw character device bypasses the buffer cache; Apple documents it for imaging.
+            // The raw character device avoids the buffered `/dev/diskN` path
+            // and is the interface Apple documents for imaging removable media.
             format!("/dev/r{}", self.name)
         }
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -396,8 +438,9 @@ impl TargetDrive {
             format!("/dev/{}", self.name)
         }
     }
-    /// The name of each partition: its label, else its filesystem; a partition with neither adds
-    /// no name.
+    /// The names the drive's partitions go by: the label a person set, else
+    /// the filesystem it holds, for a surface to name in their language. A
+    /// partition with neither adds no name; the count still speaks for it.
     pub fn partition_names(&self) -> Vec<&str> {
         self.partitions
             .iter()
@@ -409,14 +452,23 @@ impl TargetDrive {
             })
             .collect()
     }
+    /// Does the image fit? (Raw writes need `image_size` ≤ drive size.)
     pub fn fits(&self, image_size: u64) -> bool {
         image_size == 0 || image_size <= self.size
     }
 }
 
+// ---------------------------------------------------------------------------
+// Action — what to do with (source, target).
+// ---------------------------------------------------------------------------
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
+    /// Raw `dd`-style copy of an image onto a drive, then verify. The plain
+    /// "write this image to this drive" case (a USB stick or SD card).
     Flash,
+    /// Full Tilo install onto the target, driven by an [`InstallProfile`] — the
+    /// pre-configuration the Customize step collects is baked into the media.
     Install,
 }
 
@@ -435,7 +487,25 @@ impl Action {
     }
 }
 
-/// One step of the guided flow: Source → Drive → Customize → Confirm → Write → Done.
+// ---------------------------------------------------------------------------
+// Wizard flow — the ordered steps the app walks the user through.
+// ---------------------------------------------------------------------------
+
+/// One step of the guided flow. The app is a linear wizard with a visible,
+/// six-station step indicator:
+///
+///   Source → Drive → Customize → Confirm → Write → Done
+///
+/// * **Confirm** is the last screen before anything destructive happens: a
+///   read-only review of every choice plus the typed device-name gate.
+/// * **Write** shows live progress; the read-back verify is a phase *within*
+///   it (so "writing" and "verifying" share one station).
+/// * **Done** is the terminal outcome (verified / failed) with a fresh-start
+///   affordance.
+///
+/// Customize is skipped for a plain ISO (only a Tilo image carries a profile),
+/// but it always occupies a station in the indicator so the flow reads the
+/// same length every time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Step {
     Source,
@@ -477,6 +547,7 @@ impl Step {
             _ => Step::Source,
         }
     }
+    /// Zero-based order used for the step indicator + "is this step done" logic.
     pub fn index(&self) -> usize {
         match self {
             Step::Source => 0,
@@ -487,6 +558,7 @@ impl Step {
             Step::Done => 5,
         }
     }
+    /// The next step in the flow (saturates at the last step).
     #[must_use]
     pub fn next(&self) -> Step {
         match self {
@@ -497,6 +569,7 @@ impl Step {
             Step::Write | Step::Done => Step::Done,
         }
     }
+    /// The previous step (saturates at the first step).
     #[must_use]
     pub fn prev(&self) -> Step {
         match self {
@@ -509,15 +582,25 @@ impl Step {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Install options — the host-side draft whose validated, non-secret subset
+// serialises to the installation-media preconfiguration profile.
+// ---------------------------------------------------------------------------
+
 /// The machines a release starts on, as a surface names them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TargetName {
+    /// The generic build for ARM64.
     Arm64,
+    /// The generic build for x86-64.
     X86_64,
+    /// A generic build whose architecture the app names by its medium.
     Media,
+    /// A build for one hardware profile.
     Profile(String),
 }
 
+/// Filesystem used for the installed system.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Filesystem {
@@ -548,14 +631,17 @@ impl Filesystem {
     }
 }
 
-/// The account created during install; only its names are stored, the password is typed on the
-/// target.
+/// The user account created during install. Only the names are authored
+/// in the document; the password is entered on the target.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct UserAccount {
     /// Full name
     pub full_name: String,
     /// Username
     pub username: String,
+    /// Held only for the current host-side UI session. It is deliberately
+    /// excluded from the installation-media profile and must be entered on
+    /// the target device.
     #[model(skip)]
     pub password: String,
 }
@@ -571,6 +657,7 @@ impl Default for UserAccount {
 }
 
 /// Public expectation for an opaque, password-encrypted preparation package.
+/// Its zero default is invalid and grants no prepared setup authority.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedSetupExpectation {
@@ -589,6 +676,14 @@ impl PreparedSetupExpectation {
     }
 }
 
+/// The complete host-side customization draft. [`InstallProfile::to_media_profile_json`]
+/// emits only its validated, non-secret preferences; target selection,
+/// destructive consent, credentials, and recovery acknowledgement stay local
+/// to the device being installed.
+///
+/// The document holds the secret-free choices the media profile and the
+/// on-write setup carry; credentials are not part of that contract and
+/// stay on this machine.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct InstallProfile {
     /// Same OS, with ordinary computer or always-available server defaults.
@@ -621,12 +716,14 @@ pub struct InstallProfile {
     #[serde(default)]
     pub enroll_local_identity: bool,
     /// Public ciphertext binding carried by the reviewed setup profile.
-    /// The writer requires the matching held package; this value grants no access.
+    /// The writer independently requires the held matching package; this
+    /// descriptive value grants no identity or source access.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepared_setup: Option<PreparedSetupExpectation>,
 }
 
-/// A profile that still carries this has chosen no hostname, so a written disk keeps the image's name.
+/// The hostname a profile starts with. A profile that still carries it has not
+/// chosen one, so a written disk keeps the image's own name.
 pub const DEFAULT_HOSTNAME: &str = "tilo";
 
 impl Default for InstallProfile {
@@ -649,8 +746,10 @@ impl Default for InstallProfile {
 }
 
 impl InstallProfile {
-    /// Checks the secret-free subset the live installer accepts, so a bad profile is refused
-    /// before flashing; the installer repeats the checks.
+    /// Validate the exact secret-free subset accepted by the live installer,
+    /// with the rules it applies, so a bad profile is refused before
+    /// flashing. The live installer repeats every check across the trust
+    /// boundary.
     pub fn validate_media_profile(&self) -> Result<(), String> {
         use install_profile_model as rules;
         if !rules::valid_purpose(&self.purpose) {
@@ -694,8 +793,17 @@ impl InstallProfile {
         Ok(())
     }
 
-    /// The secret-free configuration embedded into Tilo installation media. Destructive choices
-    /// and credentials never cross the host/target boundary.
+    /// Secret-free configuration embedded into Tilo installation media.
+    ///
+    /// Destructive choices and credentials deliberately do not cross the
+    /// host/target boundary. The target installer consumes these validated
+    /// preferences, then asks only for the target disk, install method,
+    /// account/startup secret, and recovery-key acknowledgement.
+    ///
+    /// # Errors
+    ///
+    /// Returns a serialization error if the bounded media profile cannot be
+    /// encoded as JSON.
     pub fn to_media_profile_json(&self) -> Result<Vec<u8>, serde_json::Error> {
         #[derive(Serialize)]
         struct MediaProfile<'a> {
@@ -729,6 +837,7 @@ impl InstallProfile {
         })
     }
 
+    /// A named saved-profile snapshot for the "saved install profiles" list.
     pub fn sample_workstation() -> Self {
         InstallProfile {
             purpose: install_profile_model::default_purpose(),
@@ -750,6 +859,9 @@ impl InstallProfile {
         }
     }
 
+    /// Render the exact secret-free JSON embedded into Tilo media. The preview
+    /// excludes host paths, target devices, passwords, disk selection, and
+    /// destructive confirmation.
     pub fn to_headless_config(
         &self,
         source: Option<&Source>,
@@ -764,6 +876,11 @@ impl InstallProfile {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Progress / job state.
+// ---------------------------------------------------------------------------
+
+/// The phase of a write/install job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JobPhase {
     Idle,
@@ -806,15 +923,17 @@ impl JobPhase {
     }
 }
 
-/// Progress of the current job, 0..1 per phase.
+/// Live progress of the current job (0..1 each phase).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Progress {
     pub phase: JobPhase,
     pub write_frac: f64,
     pub verify_frac: f64,
+    /// Bytes per second of the active phase, for the ETA line.
     pub rate_bps: u64,
-    /// The writer's own failure text, kept so a device or verification error does not collapse
-    /// into a generic one.
+    /// Actionable terminal failure detail from the writer/helper. Kept on the
+    /// progress event so the privileged boundary cannot collapse a useful
+    /// device, authorization, or verification error into a generic failure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -832,7 +951,8 @@ impl Default for Progress {
 }
 
 impl Progress {
-    /// Overall fraction: write is the first 85%, verify the rest.
+    /// Overall fraction across both phases (write counts for the first 85%,
+    /// verify the last 15% — the read-back is quicker than the write).
     pub fn overall(&self) -> f64 {
         match self.phase {
             JobPhase::Idle => 0.0,
@@ -842,6 +962,8 @@ impl Progress {
         }
     }
 
+    /// Rough ETA in seconds for the active phase given `total` image bytes and
+    /// the reported rate. `None` when idle, finished, or the rate is unknown.
     pub fn eta_secs(&self, total: u64) -> Option<u64> {
         if self.rate_bps == 0 || !self.phase.is_active() {
             return None;
@@ -856,7 +978,7 @@ impl Progress {
     }
 }
 
-/// `m:ss`, or `Ns` under a minute.
+/// Format a duration in seconds as a short `m:ss` / `Ns` string for the ETA.
 pub fn fmt_eta(secs: u64) -> String {
     if secs >= 60 {
         format!("{}:{:02}", secs / 60, secs % 60)
@@ -865,7 +987,13 @@ pub fn fmt_eta(secs: u64) -> String {
     }
 }
 
-/// A USB stick as flash target and an internal `NVMe` as install target.
+// ---------------------------------------------------------------------------
+// Sample data — fully populated, used by `--shots` and as the instant-on
+// seed so the screenshot is deterministic offline.
+// ---------------------------------------------------------------------------
+
+/// Two target drives: a USB stick (the flash target) and an internal `NVMe`
+/// (the install target), exactly the spec the screenshot calls for.
 pub fn sample_targets() -> Vec<TargetDrive> {
     vec![
         TargetDrive {
@@ -911,6 +1039,7 @@ pub fn sample_targets() -> Vec<TargetDrive> {
     ]
 }
 
+/// Known Tilo releases offered without a file browse.
 pub fn sample_releases() -> Vec<TiloRelease> {
     vec![
         TiloRelease {
@@ -950,7 +1079,10 @@ pub fn sample_releases() -> Vec<TiloRelease> {
     ]
 }
 
+/// The source pre-selected for `--shots`: a Tilo 1.0 stable image.
 pub fn sample_source() -> Source {
+    // `sample_releases()` always returns at least one entry; the fallback
+    // below only matters if that ever changes.
     sample_releases().first().map_or_else(
         || Source {
             kind: SourceKind::TiloImage,
@@ -966,6 +1098,7 @@ pub fn sample_source() -> Source {
     )
 }
 
+/// Recent-source history shown in the source picker.
 pub fn sample_recent_sources() -> Vec<Source> {
     vec![
         sample_source(),
@@ -992,7 +1125,12 @@ pub fn sample_recent_sources() -> Vec<Source> {
     ]
 }
 
-/// SI decimal units, as drive vendors label capacities; zero reads `—`.
+// ---------------------------------------------------------------------------
+// Formatting helpers.
+// ---------------------------------------------------------------------------
+
+/// Format a byte count with SI decimal units, the way drive and image
+/// vendors label capacities (`931.5 GB`, `1 kB`). Zero means "unknown" and reads `—`.
 pub fn fmt_size(bytes: u64) -> String {
     if bytes == 0 {
         "—".to_string()
@@ -1001,6 +1139,7 @@ pub fn fmt_size(bytes: u64) -> String {
     }
 }
 
+/// Format a transfer rate as `X MB/s`.
 pub fn fmt_rate(bps: u64) -> String {
     if bps == 0 {
         return "—".into();
@@ -1010,6 +1149,7 @@ pub fn fmt_rate(bps: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Source identity across handles, renames and equal bytes.
     #[test]
     fn source_identity_follows_the_file_across_handles_and_renames() {
         #[cfg(any(unix, windows))]
@@ -1077,6 +1217,7 @@ mod tests {
 
     use super::*;
 
+    /// Sample data, release digests, capacity, sizes and target kinds.
     #[test]
     fn samples_releases_and_targets_are_classified_truthfully() {
         {
@@ -1142,6 +1283,7 @@ mod tests {
         }
     }
 
+    /// Embedded profile contract, filesystems, migration, validation and JSON.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1220,6 +1362,7 @@ mod tests {
         }
     }
 
+    /// Step flow, progress and ETA.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1256,6 +1399,7 @@ mod tests {
                 error: None,
             };
             assert!((writing.overall() - 0.425).abs() < 1e-9);
+            // Half of a 1000-byte image left at 100 B/s → ~5s.
             assert_eq!(writing.eta_secs(1000), Some(5));
             let done = Progress {
                 phase: JobPhase::Success,
@@ -1346,6 +1490,7 @@ impl From<crate::write::helper::HelperProgress> for Progress {
     }
 }
 
+/// Decimal byte formatting shared by native descriptions and frontends.
 fn bytes_si(n: u64) -> String {
     const UNITS: [&str; 7] = ["B", "kB", "MB", "GB", "TB", "PB", "EB"];
     #[allow(
@@ -1362,7 +1507,8 @@ fn bytes_si(n: u64) -> String {
     if unit == 0 {
         format!("{n} {name}")
     } else {
-        // One decimal, dropped when zero (`1 kB`).
+        // One decimal, left off when it is zero (`1 kB`, `1.5 MB`), as the
+        // toolkit's size style writes the sizes the app shows beside these.
         let text = format!("{value:.1}");
         format!("{} {name}", text.strip_suffix(".0").unwrap_or(&text))
     }
