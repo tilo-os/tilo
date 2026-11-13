@@ -122,7 +122,6 @@ mod tests {
     use automerge::ROOT;
     use automerge::transaction::Transactable;
 
-    #[test]
     fn typed_readers_cover_scalars_objects_and_integer_bounds() {
         let mut doc = AutoCommit::new();
         doc.put(&ROOT, "signed", 7_i64).unwrap();
@@ -163,7 +162,6 @@ mod tests {
         assert_eq!(doc.str_at(&ROOT, "signed"), None);
     }
 
-    #[test]
     fn typed_reads_check_ranges_types_and_list_slots() {
         let mut doc = AutoCommit::new();
         doc.put(&ROOT, "signed", 7_i64).unwrap();
@@ -203,7 +201,6 @@ mod tests {
         assert_eq!(immutable.int_at(&ROOT, "huge"), None);
     }
 
-    #[test]
     fn slots_read_only_as_their_own_type() {
         let mut doc = AutoCommit::new();
         doc.put(&ROOT, "name", "tilo").unwrap();
@@ -225,5 +222,27 @@ mod tests {
             str_entries(&doc, &map),
             BTreeMap::from([("a".to_string(), "1".to_string())])
         );
+    }
+
+    #[test]
+    fn typed_reads_answer_only_their_own_type_in_range() {
+        let cases: [(&str, fn()); 3] = [
+            (
+                "typed readers cover scalars objects and integer bounds",
+                typed_readers_cover_scalars_objects_and_integer_bounds,
+            ),
+            (
+                "typed reads check ranges types and list slots",
+                typed_reads_check_ranges_types_and_list_slots,
+            ),
+            (
+                "slots read only as their own type",
+                slots_read_only_as_their_own_type,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
     }
 }

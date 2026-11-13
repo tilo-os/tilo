@@ -117,7 +117,6 @@ mod tests {
         (doc, delta)
     }
 
-    #[test]
     fn changes_that_build_on_history_elsewhere_parse() {
         let (mut doc, delta) = delta();
         check(&delta).unwrap();
@@ -126,7 +125,6 @@ mod tests {
         check(&[]).unwrap();
     }
 
-    #[test]
     fn every_truncation_and_a_flipped_byte_are_refused() {
         let (_, delta) = delta();
         for end in 1..delta.len() {
@@ -136,6 +134,24 @@ mod tests {
             let mut corrupt = delta.clone();
             corrupt[at] ^= 0x01;
             assert!(check(&corrupt).is_err(), "byte {at} flipped");
+        }
+    }
+
+    #[test]
+    fn whole_changes_parse_and_damaged_ones_are_refused() {
+        let cases: [(&str, fn()); 2] = [
+            (
+                "changes that build on history elsewhere parse",
+                changes_that_build_on_history_elsewhere_parse,
+            ),
+            (
+                "every truncation and a flipped byte are refused",
+                every_truncation_and_a_flipped_byte_are_refused,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
         }
     }
 }
