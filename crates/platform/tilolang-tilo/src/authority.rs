@@ -465,48 +465,47 @@ mod tests {
     }
 
     #[test]
-    fn code_of_an_untrusted_author_asks() {
+    fn a_block_of_an_untrusted_author_asks() {
         let authority = authority(Vec::new());
         let me = Principal::new(PERSON);
         let stranger = ModuleHash::principal("person:stranger");
-        let foreign = info(EffectClass::Undoable, false);
+        let change = info(EffectClass::Undoable, false);
         assert_eq!(
-            authority.decide(&me, std::slice::from_ref(&stranger), &foreign),
+            authority.decide(&me, std::slice::from_ref(&stranger), &change),
             Decision::Ask
         );
-        let unknown = ModuleHash("someone-elses".to_owned());
-        assert_eq!(authority.decide(&me, &[unknown], &foreign), Decision::Ask);
         authority.trust(&stranger);
+        assert_eq!(authority.decide(&me, &[stranger], &change), Decision::Allow);
+    }
+
+    #[test]
+    fn a_packages_code_is_the_person_running_it() {
+        let authority = authority(Vec::new());
+        let me = Principal::new(PERSON);
+        let change = info(EffectClass::Undoable, true);
+        assert_eq!(authority.decide(&me, &[module()], &change), Decision::Allow);
+        // Revoking a package takes no authority from it: it is the person's own code.
+        authority.revoke(&module());
+        assert_eq!(authority.decide(&me, &[module()], &change), Decision::Allow);
+        // Nor does a block beside it add an author of its own.
         assert_eq!(
-            authority.decide(&me, &[stranger], &foreign),
+            authority.decide(&me, &[module(), module()], &change),
             Decision::Allow
         );
     }
 
     #[test]
-    fn a_trusted_modules_own_action_is_allowed() {
-        let authority = authority(Vec::new());
-        let me = Principal::new(PERSON);
-        let own = info(EffectClass::Undoable, true);
-        assert_eq!(authority.decide(&me, &[module()], &own), Decision::Allow);
-        // Untrusted, it is still an author of its own records.
-        authority.revoke(&module());
-        assert_eq!(authority.decide(&me, &[module()], &own), Decision::Allow);
-        let foreign = info(EffectClass::Undoable, false);
-        assert_eq!(authority.decide(&me, &[module()], &foreign), Decision::Ask);
-    }
-
-    #[test]
-    fn outside_from_a_strangers_code_asks() {
+    fn code_reaches_outside_as_its_person_and_a_strangers_block_asks() {
         let authority = authority(Vec::new());
         let me = Principal::new(PERSON);
         let stranger = ModuleHash::principal("person:stranger");
         let outside = info(EffectClass::Outside, false);
         assert_eq!(authority.decide(&me, &[stranger], &outside), Decision::Ask);
-        // Trusted code reaching outside asks too, unless the workspace grants its app that.
+        // The person's own device reaches outside as the person does; what an app may
+        // reach is capped by the kinds it declares.
         assert_eq!(
             authority.decide(&me, &[module()], &info(EffectClass::Outside, true)),
-            Decision::Ask
+            Decision::Allow
         );
     }
 
