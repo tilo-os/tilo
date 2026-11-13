@@ -1,27 +1,17 @@
 //! The search engines: how each is asked, and how its answer page is read.
 //!
-//! Every engine here works without an account or key. Bing, Brave,
-//! `DuckDuckGo` and Marginalia are read from the same result page a browser
-//! gets. The Bing, Brave and Marginalia scrapers are ported from metasearch2's
-//! `src/engines/search/` and its `src/parse.rs` (CC0-1.0); `DuckDuckGo` is
-//! Tilo's own. Google is asked through the search element sites embed, a
-//! technique taken from `SearXNG` (AGPL-3.0-or-later). `PROVENANCE.md` records
-//! both.
+//! Every engine works without an account or key, reading the same result page a
+//! browser gets. The Bing, Brave and Marginalia scrapers come from metasearch2
+//! (CC0-1.0), `DuckDuckGo` is Tilo's own, and Google is asked the way `SearXNG`
+//! does (AGPL-3.0-or-later); `PROVENANCE.md` records both.
 //!
-//! A search may ask for filtered results ([`SafeMode::Strict`]). Every
-//! engine that offers a filter is asked with its own parameter; one that
-//! does not is reported as skipped and named, never asked unfiltered in a
-//! filtered search.
-//!
-//! An answer is never trusted to have the expected shape:
-//!
-//! - An engine that shows a challenge it shows every client like this one is
-//!   [`EngineError::Blocked`].
-//! - One that says it is getting too many requests is
-//!   [`EngineError::RateLimited`], and the search leaves it alone for a while.
-//! - An answer with no result list where one belongs is
-//!   [`EngineError::Layout`]. That is how a change to an engine's markup
-//!   surfaces, instead of as silently empty results.
+//! A search may ask for filtered results ([`SafeMode::Strict`]): an engine without
+//! a filter is reported as skipped and named, never asked unfiltered. An answer is
+//! never trusted to have the expected shape: an engine showing a challenge is
+//! [`EngineError::Blocked`], one asking for fewer requests is
+//! [`EngineError::RateLimited`] and is left alone for a while, and an answer with no
+//! result list where one belongs is [`EngineError::Layout`], so a change to an
+//! engine's markup surfaces instead of as silently empty results.
 
 mod bing;
 mod brave;
