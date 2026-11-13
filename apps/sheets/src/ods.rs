@@ -17,32 +17,20 @@ use crate::model::{CellFormat, addr_to_a1};
 use crate::xlsx::SheetTable;
 use tilo_locale::Currency;
 
-/// Read every sheet of an `.ods` document into tables.
-///
-/// # Errors
-///
-/// Returns an error if the file can't be read, isn't a valid `.ods` package
-/// (including one over the zip-bomb bounds or carrying a DTD), or a tab
-/// spans more than [`crate::xlsx::MAX_MATERIALIZED_SLOTS`].
 pub fn read_ods(path: &Path) -> anyhow::Result<Vec<SheetTable>> {
     parse_ods(&crate::xlsx::read_file(path)?)
 }
 
-/// Read every sheet of the `.ods` document `bytes` into tables.
 pub fn parse_ods(bytes: &[u8]) -> anyhow::Result<Vec<SheetTable>> {
     let parsed = OdsCodec::parse(bytes)?;
-    // ODF types dates explicitly (they arrive as ISO text), so no style marks
-    // a number as a date.
     crate::xlsx::tables_from_parsed(parsed.sheets, &BTreeMap::new())
 }
 
-/// Write tables to an `.ods` document.
 pub fn write_ods(path: &Path, tables: &[SheetTable]) -> anyhow::Result<()> {
     crate::xlsx::write_file(path, &ods_bytes(tables)?)?;
     Ok(())
 }
 
-/// Tables as the bytes of an `.ods` document, as [`write_ods`] writes it.
 pub fn ods_bytes(tables: &[SheetTable]) -> anyhow::Result<Vec<u8>> {
     let snap = crate::xlsx::snapshot_of(tables, cell_style, to_ods_formula);
     let preserved = BTreeMap::from([("styles.xml".to_string(), common_styles_part(NUMBER_STYLES))]);
@@ -61,7 +49,6 @@ fn cell_style(cell: &crate::xlsx::ImportedCell) -> Option<String> {
     Some(name.to_string())
 }
 
-/// A handful of named data styles for the formatted numeric kinds.
 const NUMBER_STYLES: &str = r#"<number:currency-style style:name="ceUSD"><number:currency-symbol>$</number:currency-symbol><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/></number:currency-style><number:currency-style style:name="ceEUR"><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/><number:text> </number:text><number:currency-symbol>€</number:currency-symbol></number:currency-style><number:currency-style style:name="ceGBP"><number:currency-symbol>£</number:currency-symbol><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/></number:currency-style><number:currency-style style:name="ceJPY"><number:currency-symbol>¥</number:currency-symbol><number:number number:decimal-places="0" number:min-integer-digits="1" number:grouping="true"/></number:currency-style><number:currency-style style:name="ceCNY"><number:currency-symbol>¥</number:currency-symbol><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/></number:currency-style><number:currency-style style:name="ceCHF"><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/><number:text> CHF</number:text></number:currency-style><number:currency-style style:name="ceINR"><number:currency-symbol>₹</number:currency-symbol><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/></number:currency-style><number:currency-style style:name="ceCAD"><number:currency-symbol>$</number:currency-symbol><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/></number:currency-style><number:currency-style style:name="ceAUD"><number:currency-symbol>$</number:currency-symbol><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/></number:currency-style><number:percentage-style style:name="cePct"><number:number number:decimal-places="2" number:min-integer-digits="1"/><number:text>%</number:text></number:percentage-style><number:date-style style:name="ceDate"><number:year number:style="long"/><number:text>-</number:text><number:month number:style="long"/><number:text>-</number:text><number:day number:style="long"/></number:date-style><style:style style:name="coUSD" style:family="table-cell" style:data-style-name="ceUSD"/><style:style style:name="coEUR" style:family="table-cell" style:data-style-name="ceEUR"/><style:style style:name="coGBP" style:family="table-cell" style:data-style-name="ceGBP"/><style:style style:name="coJPY" style:family="table-cell" style:data-style-name="ceJPY"/><style:style style:name="coCNY" style:family="table-cell" style:data-style-name="ceCNY"/><style:style style:name="coCHF" style:family="table-cell" style:data-style-name="ceCHF"/><style:style style:name="coINR" style:family="table-cell" style:data-style-name="ceINR"/><style:style style:name="coCAD" style:family="table-cell" style:data-style-name="ceCAD"/><style:style style:name="coAUD" style:family="table-cell" style:data-style-name="ceAUD"/><style:style style:name="coPct" style:family="table-cell" style:data-style-name="cePct"/><style:style style:name="coDate" style:family="table-cell" style:data-style-name="ceDate"/>"#;
 
 fn currency_cell_style(currency: Currency) -> &'static str {
@@ -158,7 +145,6 @@ mod tests {
         }
     }
 
-    /// The members of an `.ods` written by [`write_ods`].
     fn written_part(tables: &[SheetTable], part: &str) -> String {
         let path = std::env::temp_dir().join(format!(
             "sheets-ods-part-{}-{}.ods",
@@ -191,10 +177,8 @@ mod tests {
             assert_eq!(back.len(), 1);
             assert_eq!(back[0].name, "Budget");
             assert_eq!(back[0].rows[0][0].as_ref().unwrap().raw, "Item");
-            // Currency value survived as 1200.
             let rent = back[0].rows[1][1].as_ref().unwrap();
             assert_eq!(rent.raw.parse::<f64>().unwrap(), 1200.0);
-            // Percent value survived as 0.21.
             let rate = back[0].rows[2][1].as_ref().unwrap();
             assert!((rate.raw.parse::<f64>().unwrap() - 0.21).abs() < 1e-9);
             let _ = std::fs::remove_file(&path);
@@ -229,10 +213,6 @@ mod tests {
             assert!(styles.contains(r#"style:name="coPct""#));
         }
 
-        // Case `ods_round_trips_formulas`.
-        // Formulas written into `.ods` (as `table:formula`) come back with their
-        // text intact and recompute to the original results — the real
-        // `from_cells` → `write_ods` → `read_ods` → engine path.
         {
             use crate::model::Addr;
             use std::collections::HashMap;
@@ -257,7 +237,6 @@ mod tests {
             let back = read_ods(&path).unwrap();
             let _ = std::fs::remove_file(&path);
 
-            // Formula text (normalized back to A1) survived the ODF round-trip.
             assert_eq!(
                 back[0].rows[2][0].as_ref().unwrap().formula.as_deref(),
                 Some("=SUM(A1:A2)")
@@ -284,7 +263,6 @@ mod tests {
         }
 
         {
-            // A1 refs become bracketed current-table refs under the of: namespace.
             assert_eq!(to_ods_formula("=SUM(A1:A3)"), "of:=SUM([.A1:.A3])");
             assert_eq!(to_ods_formula("=B2+C2"), "of:=[.B2]+[.C2]");
             assert_eq!(to_ods_formula("=A1*2"), "of:=[.A1]*2");
@@ -302,13 +280,11 @@ mod tests {
             let xml = written_part(std::slice::from_ref(&table), "content.xml");
             assert!(xml.contains("office:spreadsheet"));
             assert!(xml.contains(r#"table:name="Budget &lt;&amp;&gt; &quot;Q1&quot;""#));
-            // The currency cell carries a numeric office:value.
             assert!(xml.contains(r#"office:value="1200""#));
             assert!(
                 xml.contains(r#"table:formula="of:=SUM([.A1:.A2])""#),
                 "missing formula attr in: {xml}"
             );
-            // The cached value is still present so a non-recalc viewer shows it.
             assert!(xml.contains(r#"office:value="12""#));
         }
     }

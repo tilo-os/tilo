@@ -43,12 +43,10 @@ pub struct ImportedCell {
     /// plain value. Written into / read back from the OOXML `<f>` element and
     /// the ODF `table:formula` attribute.
     pub formula: Option<String>,
-    /// Bold text. Export writes it to `.xlsx`; imports leave it off.
     pub bold: bool,
 }
 
 impl ImportedCell {
-    /// A plain value cell (no formula).
     fn value(raw: String, format: CellFormat) -> Self {
         Self {
             raw,
@@ -59,13 +57,10 @@ impl ImportedCell {
     }
 }
 
-/// A single sheet as a row-major grid of optional cells. `None` is a blank.
 #[derive(Clone, Debug, Default)]
 pub struct SheetTable {
     pub name: String,
-    /// Whether the file keeps the sheet hidden.
     pub hidden: bool,
-    /// `rows[r][c]` — rows may be ragged.
     pub rows: Vec<Vec<Option<ImportedCell>>>,
 }
 
@@ -93,10 +88,6 @@ impl SheetTable {
                     let f = fmt.get(&addr).copied().unwrap_or_default();
                     let v = values.get(&addr).cloned().unwrap_or(CellValue::Empty);
                     let is_formula = raw_s.starts_with('=');
-                    // Store the cell's *value* as its payload (numeric raw for
-                    // numbers so a re-import re-infers cleanly, the plain
-                    // rendering otherwise). For a formula this is the cached
-                    // result; the formula itself rides in `formula`.
                     let stored_raw = match &v {
                         CellValue::Number(n) => format_number_general(*n),
                         _ if is_formula => v.to_plain_string(),
@@ -121,18 +112,10 @@ impl SheetTable {
     }
 }
 
-/// Read every sheet of an `.xlsx` workbook into tables.
-///
-/// # Errors
-///
-/// Returns an error if the file can't be read, isn't a valid `.xlsx` package
-/// (including one over the zip-bomb bounds or carrying a DTD), or a tab
-/// spans more than [`MAX_MATERIALIZED_SLOTS`].
 pub fn read_xlsx(path: &Path) -> anyhow::Result<Vec<SheetTable>> {
     parse_xlsx(&read_file(path)?)
 }
 
-/// Read every sheet of the `.xlsx` workbook `bytes` into tables.
 pub fn parse_xlsx(bytes: &[u8]) -> anyhow::Result<Vec<SheetTable>> {
     let parsed = XlsxCodec::parse(bytes)?;
     // Excel stores dates, money and percentages as plain numbers; a cell's
@@ -145,8 +128,6 @@ pub fn parse_xlsx(bytes: &[u8]) -> anyhow::Result<Vec<SheetTable>> {
     tables_from_parsed(parsed.sheets, &formats)
 }
 
-/// What each cell style of a `styles.xml` shows a number as, by style index:
-/// a date, a percentage, an amount of money or a grouped number.
 fn style_formats(styles: &[u8]) -> BTreeMap<String, CellFormat> {
     let dates = date_style_refs(styles);
     let mut formats: BTreeMap<String, CellFormat> = number_format_codes(styles)
@@ -164,7 +145,6 @@ fn style_formats(styles: &[u8]) -> BTreeMap<String, CellFormat> {
 /// general format and codes Sheets has no form for.
 fn format_of_code(code: &str) -> Option<CellFormat> {
     use tilo_locale::Currency;
-    // Only the first (positive) section counts.
     let first = code.split(';').next().unwrap_or(code);
     let symbols = [
         ("$", Currency::USD),
@@ -462,7 +442,6 @@ pub fn write_xlsx(path: &Path, tables: &[SheetTable]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Tables as the bytes of an `.xlsx` workbook, as [`write_xlsx`] writes it.
 pub fn xlsx_bytes(tables: &[SheetTable]) -> anyhow::Result<Vec<u8>> {
     let mut styles: Vec<CellStyle<'static>> = Vec::new();
     let snap = snapshot_of(
@@ -491,20 +470,16 @@ pub fn xlsx_bytes(tables: &[SheetTable]) -> anyhow::Result<Vec<u8>> {
     Ok(XlsxCodec::export_snapshot(&snap, &preserved)?)
 }
 
-/// The bytes of a file a chooser named.
 pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>, tilo_files::FsError> {
     let (dir, name) = tilo_files::file_at(path)?;
     tilo_files::blocking::read(&dir, &name)
 }
 
-/// Save `bytes` as the file a chooser named, keeping an existing file's link
-/// and permissions.
 pub(crate) fn write_file(path: &Path, bytes: &[u8]) -> Result<(), tilo_files::FsError> {
     let (dir, name) = tilo_files::file_at(path)?;
     tilo_files::blocking::save_document(&dir, &name, bytes)
 }
 
-/// Map our format to an Excel number-format code string.
 fn excel_number_format(fmt: CellFormat) -> Option<&'static str> {
     use tilo_locale::Currency;
     Some(match fmt {
@@ -585,10 +560,8 @@ mod tests {
             assert_eq!(back.len(), 1);
             assert_eq!(back[0].name, "Data");
             assert_eq!(back[0].rows[0][0].as_ref().unwrap().raw, "Item");
-            // The currency number survived as 100.
             let price = back[0].rows[1][1].as_ref().unwrap();
             assert_eq!(price.raw.parse::<f64>().unwrap(), 100.0);
-            // The percent value survived as 0.9.
             let pct = back[0].rows[2][1].as_ref().unwrap();
             assert!((pct.raw.parse::<f64>().unwrap() - 0.9).abs() < 1e-9);
             let _ = std::fs::remove_file(&path);
@@ -623,18 +596,10 @@ mod tests {
             let _ = std::fs::remove_file(path);
         }
 
-        // Case `xlsx_round_trips_formulas`.
-        // A sheet built from live cell data — including `=SUM`/`=AVERAGE`/`=IF`
-        // formulas — writes to `.xlsx` and reads back with the formula **text**
-        // intact (the OOXML `<f>` element), and re-evaluating the imported raws
-        // reproduces the original results. This is the real export → import path:
-        // `from_cells` → `write_xlsx` → `read_xlsx` → the formula engine.
         {
             use crate::model::Addr;
             use std::collections::HashMap;
 
-            // A1:A3 = 10/20/30, A4 = SUM, A5 = AVERAGE, A6 = an IF returning text.
-            // Anchored at A1 so the file's used range starts top-left (no shift).
             let mut raw: HashMap<Addr, String> = HashMap::new();
             raw.insert((0, 0), "10".into());
             raw.insert((0, 1), "20".into());
@@ -644,7 +609,6 @@ mod tests {
             raw.insert((0, 5), "=IF(A4>50,\"BIG\",\"SMALL\")".into());
             let fmt: HashMap<Addr, CellFormat> = HashMap::new();
             let values = crate::calc::recalculate(&raw);
-            // Sanity: the source really computed.
             assert_eq!(values.get(&(0, 3)), Some(&CellValue::Number(60.0)));
 
             let table = SheetTable::from_cells(
@@ -659,7 +623,6 @@ mod tests {
             let back = read_xlsx(&path).unwrap();
             let _ = std::fs::remove_file(&path);
 
-            // The formula TEXT survived the file (not just its computed value).
             let sum = back[0].rows[3][0].as_ref().unwrap();
             assert_eq!(sum.formula.as_deref(), Some("=SUM(A1:A3)"));
             let avg = back[0].rows[4][0].as_ref().unwrap();
@@ -667,8 +630,6 @@ mod tests {
             let iff = back[0].rows[5][0].as_ref().unwrap();
             assert_eq!(iff.formula.as_deref(), Some("=IF(A4>50,\"BIG\",\"SMALL\")"));
 
-            // Re-evaluating the imported raws (formula where present, else value)
-            // reproduces the original results.
             let mut reimported: HashMap<Addr, String> = HashMap::new();
             for (r, row) in back[0].rows.iter().enumerate() {
                 for (c, cell) in row.iter().enumerate() {
@@ -683,7 +644,6 @@ mod tests {
             let recomputed = crate::calc::recalculate(&reimported);
             assert_eq!(recomputed.get(&(0, 3)), Some(&CellValue::Number(60.0)));
             assert_eq!(recomputed.get(&(0, 4)), Some(&CellValue::Number(20.0)));
-            // IF(A4>50,…) with A4 = 60 takes the true branch.
             assert_eq!(
                 recomputed.get(&(0, 5)),
                 Some(&CellValue::Text("BIG".into()))
@@ -691,7 +651,6 @@ mod tests {
         }
 
         {
-            // XLSX bodies have no leading '=' and plain A1 refs.
             assert_eq!(normalize_read_formula("SUM(A1:A3)"), "=SUM(A1:A3)");
             assert_eq!(normalize_read_formula("of:=SUM([.A1:.A3])"), "=SUM(A1:A3)");
             assert_eq!(normalize_read_formula("of:=[.B2]+[.C2]"), "=B2+C2");

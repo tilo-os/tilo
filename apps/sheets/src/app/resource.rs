@@ -1,4 +1,4 @@
-//! The workbook's own life: what the app is built from, the resource it attaches to and adopts, what it submits as the person edits, and the locale and currency a document is shown in.
+//! The sheets window as a bound view of the workbook.
 
 use super::{
     Addr, Atom, Cell, CellFormat, ChromeMetrics, ColorSwatchPicker, CommandSlot, ContextMenu,
@@ -87,12 +87,10 @@ impl SheetsApp {
         }
     }
 
-    /// The window shows the workbook of the file at `path`.
     pub(crate) fn show_file_of(&mut self, path: PathBuf) {
         self.file = Some(path);
     }
 
-    /// Take part in the framework: submit workbook edits through its dispatcher.
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<Workbook>,
@@ -103,8 +101,6 @@ impl SheetsApp {
         self.live = Some(live);
     }
 
-    /// What shows a search hit or an agent's `open`: a sheet, or a cell of
-    /// one, revealed at the next settle.
     pub(crate) fn opener(
         &self,
     ) -> impl FnMut(&str) -> Result<(), ui::tilo_resource::Refusal> + 'static {
@@ -163,13 +159,11 @@ impl SheetsApp {
         }
     }
 
-    /// Name comment authors from the workspace's roster.
     pub(crate) fn attach_people(&mut self, people: ui::framework::People) {
         self.people = Some(people);
         self.pending.redraw = true;
     }
 
-    /// Follow the person's shared locale defaults.
     pub(crate) fn follow_locale(&mut self, locale: ui::framework::Setting<Locale>) {
         self.locale = Some(locale);
     }
@@ -180,7 +174,6 @@ impl SheetsApp {
         }
         self.workbook = Rc::clone(state);
         self.revision = self.revision.wrapping_add(1);
-        // A hidden sheet has no tab; its cells still feed formulas.
         let shown = || state.sheets.iter().filter(|(_, sheet)| !sheet.hidden);
         self.sheet_names = shown().map(|(_, sheet)| sheet.name.0.clone()).collect();
         self.sheet_colors = shown().map(|(_, sheet)| sheet.color).collect();
@@ -189,7 +182,6 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    /// Read the workbook again after an own edit applied to `doc`.
     pub(super) fn follow(&mut self, doc: &Edits<'_>) {
         let Some(live) = &self.live else {
             return;
@@ -204,7 +196,6 @@ impl SheetsApp {
         self.sheet_ids.get(self.active_sheet).cloned()
     }
 
-    /// The cells of the active sheet as stored: blank where nothing is.
     pub(super) fn stored_cells(&self) -> impl Fn(Addr) -> Cell + '_ {
         let sheet = self
             .active_sheet_id()
@@ -218,9 +209,6 @@ impl SheetsApp {
         }
     }
 
-    /// Submit `invoke` now through the workbook's dispatcher — the one door
-    /// every edit takes, the palette's and an agent's too — and read the
-    /// workbook again. A refusal is the status.
     pub(super) fn submit(&mut self, doc: &mut Edits<'_>, invoke: Invoke<Workbook>) -> bool {
         let Some(dispatch) = &self.dispatch else {
             self.status = "The workbook is not open for editing".into();
@@ -276,7 +264,6 @@ impl SheetsApp {
         self.write_cells(doc, &cells);
     }
 
-    /// Store `cells` in the active sheet as they are, one undo step.
     pub(super) fn write_cells(&mut self, doc: &mut Edits<'_>, cells: &[(Addr, Cell)]) {
         let Some(sheet) = self.active_sheet_id() else {
             return;
@@ -289,11 +276,9 @@ impl SheetsApp {
             .iter()
             .filter_map(|edit| Invoke::edit(edit).ok())
             .collect();
-        // One write is one action: one change, one history entry.
         self.submit(doc, Invoke::group(members));
     }
 
-    /// The document's effective locale (per-doc overrides over global).
     pub(super) fn locale(&self) -> EffectiveLocale {
         EffectiveLocale::resolve(&self.global, &self.doc_settings)
     }

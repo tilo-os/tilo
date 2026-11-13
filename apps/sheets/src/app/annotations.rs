@@ -24,43 +24,27 @@ use ui::surface::separator;
 use ui::widget::{BadgeFace, ButtonFace, ButtonRole, CardFace, ChipStyle, ControlSize, Tone};
 use vello::kurbo::Vec2;
 
-/// How many chart cards stand in the dock at once.
 const MAX_CHART_CARDS: usize = 3;
-/// How many points a series plots, so a broad range cannot turn a paint into
-/// an unbounded formula or path build.
 const MAX_PLOT_POINTS: usize = 48;
-/// How many series a chart plots.
 const MAX_SERIES: usize = 6;
-/// The rows a grid keeps visible above the dock; a window too short for them
-/// shows no dock rather than a sliver of sheet.
 const MIN_GRID_ROWS: usize = 4;
-/// How many lines of a comment the card shows.
 const COMMENT_LINES: usize = 2;
 
-/// Measured rows of a comment card's body, relative to the body's top.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct CommentRows {
-    /// The anchor range line.
     pub range_h: f64,
-    /// The comment text, at most [`COMMENT_LINES`] lines.
     pub text_top: f64,
     pub text_h: f64,
-    /// The replies line.
     pub replies_top: f64,
     pub actions_top: f64,
     pub height: f64,
 }
 
 impl ChromeMetrics {
-    /// Height of a chart's plot: the legend's line and a step under it, a
-    /// content-sized plot, then a step and the line of category labels.
     pub(super) fn plot_h(&self) -> f64 {
         2.0 * (self.lh_caption + self.s1) + self.s16
     }
 
-    /// Rows of a comment card's body: the range line, the comment text, the
-    /// replies line and the action row, each a measured line box plus a
-    /// spacing token.
     pub(super) fn comment_rows(&self) -> CommentRows {
         let range_h = self.lh_caption;
         let text_top = range_h + self.s1;
@@ -80,22 +64,16 @@ impl ChromeMetrics {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum DockCard {
-    /// The chart at this index of the sheet's charts.
     Chart(usize),
 }
 
-/// What a dock card needs, measured once per frame with the other chrome
-/// metrics.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct CardMetrics {
-    /// Wide, landscape cards want one and a half utility panels, grown with text.
     pub width: f64,
-    /// Height of a chart card and of a comment card.
     pub chart_h: f64,
     pub chart_compact_h: f64,
     pub chart_single_row_w: f64,
     pub comment_h: f64,
-    /// The narrowest a card can be before its action row stops fitting.
     pub chart_min_w: f64,
     pub comment_min_w: f64,
 }
@@ -106,8 +84,6 @@ impl CardMetrics {
             * f64::from(ui::tokens::Metrics::text_growth(theme.text_scale))
             * 1.5;
         let face = CardFace::new().title("Ag");
-        // Budget both action rows on narrow cards. Wide cards combine the
-        // same commands into one row, giving the sheet back that height.
         let chart_compact_h =
             face.height_for_body(tr, theme, width, m.plot_h() + m.s2 + m.control_h);
         let chart_h = face.height_for_body(
@@ -161,27 +137,15 @@ impl CardMetrics {
 }
 
 impl SheetsApp {
-    /// Whether `p` is over an annotation card or one of its buttons, as of the
-    /// last paint.
     pub(super) fn annotation_hit(&self, p: Point) -> bool {
         self.annotation_clicks
             .iter()
             .any(|(rect, _)| rect.contains(p))
     }
 
-    /// Lay the dock out in `area`, the strip the grid and the dock share: the
-    /// height the dock takes (zero when the sheet has no annotations, or the
-    /// window is too short to give them up), where each card stands before
-    /// the dock is scrolled, and how wide the cards are together.
-    ///
-    /// The cards stand left to right, each as wide as a utility panel while
-    /// they fit. When they do not they share the width,
-    /// none narrower than its action row needs, and the dock scrolls
-    /// sideways to the ones past its edge, with its bar under them.
     pub(super) fn dock_layout(&self, area: Rect) -> (f64, Vec<(DockCard, Rect)>, f64) {
         let m = &self.metrics;
         let cm = &m.cards;
-        // Every card has a place, however narrow the window.
         let cards: Vec<DockCard> = (0..self.sheet_charts.len().min(MAX_CHART_CARDS))
             .map(DockCard::Chart)
             .collect();
@@ -190,8 +154,6 @@ impl SheetsApp {
         let gaps = pad * f64_of_usize(cards.len().saturating_sub(1));
         let mins: Vec<f64> = cards.iter().map(|card| cm.min_width(*card)).collect();
         let room = avail - gaps - mins.iter().sum::<f64>();
-        // Every card gets what its action row needs; what is left over grows
-        // them toward a utility panel's width, equally.
         let slack: f64 = mins.iter().map(|min| (cm.width - min).max(0.0)).sum();
         let grow = if slack > 0.0 {
             room.max(0.0).min(slack) / slack
@@ -208,7 +170,6 @@ impl SheetsApp {
             .map(|(card, width)| cm.height(*card, *width))
             .fold(0.0, f64::max);
         let content_w = widths.iter().sum::<f64>() + gaps + 2.0 * pad;
-        // Cards past the edge scroll in, over the bar's lane under them.
         let lane = if content_w > area.width() + 0.5 {
             f64::from(self.chrome_theme.tokens.metrics.scrollbar_gutter)
         } else {
@@ -235,9 +196,6 @@ impl SheetsApp {
         (dock_h, placed, content_w)
     }
 
-    /// Route the wheel, the touchpad and the bar's drag over the dock to its
-    /// sideways scroll while cards stand past its edge. Returns whether the
-    /// event was consumed.
     pub(super) fn route_dock_scroll(
         &mut self,
         event: &WindowEvent,
@@ -306,7 +264,6 @@ impl SheetsApp {
         }
     }
 
-    /// Paint the dock: one hairline on its first pixel row, then its cards.
     pub(super) fn draw_annotation_dock(
         &mut self,
         scene: &mut Scene,
@@ -477,10 +434,6 @@ impl SheetsApp {
         self.draw_card_actions(ctx, (body.x0, plot.y1 + gap), actions, Some(chart.kind));
     }
 
-    /// Rounded ticks over `lo..=hi` and their step, reaching past both ends
-    /// of the data so no mark stands above the top value read off the axis.
-    /// A series of one value has one tick at a whole step: its range has no
-    /// width, and a step of none has no precision to label it at.
     fn value_ticks(lo: f64, hi: f64) -> (Vec<f64>, f64) {
         let mut ticks = ui::charts::nice_ticks(lo, hi, 3);
         ticks.dedup();
@@ -503,10 +456,6 @@ impl SheetsApp {
         (ticks, tick_step)
     }
 
-    /// The chart in the theme's series colours: a legend naming each series
-    /// over the plot, a value axis with its ticks and rules at the plot's
-    /// leading edge, then columns grouped by category from a zero baseline,
-    /// or one line per series, with each category's label under it.
     fn draw_plot(ctx: &mut PaintCtx<'_>, area: Rect, kind: ChartKind, data: &PlotData) {
         let series = data.series.as_slice();
         let theme = ctx.theme;
@@ -533,13 +482,9 @@ impl SheetsApp {
 
         Self::draw_legend(ctx, area, line, series);
 
-        // The value axis: rounded ticks over the range, each a rule across
-        // the plot and its value in the gutter, the half line it needs
-        // above the top rule and below the bottom one kept inside the card.
         let all = || series.iter().flat_map(PlotSeries::numbers);
         let max = all().fold(f64::NEG_INFINITY, f64::max);
         let min = all().fold(f64::INFINITY, f64::min);
-        // Columns stand on zero, so their heights compare honestly.
         let (lo, hi) = match kind {
             ChartKind::Column => (min.min(0.0), max.max(0.0)),
             ChartKind::Line => (min, max),
@@ -575,7 +520,6 @@ impl SheetsApp {
         let y_of = |value: f64| plot.y1 - (value - lo) / span * plot.height();
         for (tick, label) in ticks.iter().zip(&labels) {
             let y = y_of(*tick);
-            // The card's own hairline, the edge its raised ground derives.
             separator(
                 ctx.scene,
                 ctx.transform,
@@ -604,8 +548,6 @@ impl SheetsApp {
         Self::draw_categories(ctx, plot, kind, &data.categories);
     }
 
-    /// Each category's label under the plot, centred on its cluster of
-    /// columns or its point on the lines, elided to the room it has.
     fn draw_categories(ctx: &mut PaintCtx<'_>, plot: Rect, kind: ChartKind, categories: &[String]) {
         if categories.is_empty() {
             return;
@@ -651,13 +593,10 @@ impl SheetsApp {
         }
     }
 
-    /// The radius of a line chart's dot on every sample.
     fn line_dot(theme: &Theme) -> f64 {
         2.5 * f64::from(theme.text_scale).max(1.0)
     }
 
-    /// The legend over the plot: one row, each entry its swatch and the
-    /// series' name, sharing the width when they do not all fit.
     fn draw_legend(ctx: &mut PaintCtx<'_>, area: Rect, line: f64, series: &[PlotSeries]) {
         let theme = ctx.theme;
         let sp = &theme.tokens.spacing;
@@ -688,7 +627,6 @@ impl SheetsApp {
         }
     }
 
-    /// The series' marks in `plot`, over the value range `lo` to `lo + span`.
     fn draw_marks(
         ctx: &mut PaintCtx<'_>,
         plot: Rect,
@@ -723,8 +661,6 @@ impl SheetsApp {
                 }
             }
             ChartKind::Line => {
-                // The toolkit's trend line, a dot on every sample, kept a
-                // dot's radius in from the plot's sides.
                 let dot = Self::line_dot(theme);
                 let style = TrendStyle::CHART
                     .with_fill(TrendFill::None)
@@ -746,7 +682,6 @@ impl SheetsApp {
         }
     }
 
-    /// The thread open on the sheet: the one on the selected cell.
     pub(super) fn open_thread(&self) -> Option<&CommentThread> {
         let (col, row) = self.grid.active();
         self.sheet_comments.iter().find(|thread| {
@@ -762,7 +697,6 @@ impl SheetsApp {
         })
     }
 
-    /// The cells a thread is about, on screen.
     pub(super) fn thread_rect(&self, thread: &CommentThread) -> Rect {
         let a = self.grid.cell_screen_rect(
             thread.start.0.min(thread.end.0),
@@ -817,9 +751,6 @@ impl SheetsApp {
         Some(Rect::new(x0, y0, x0 + w, y0 + h))
     }
 
-    /// The marker of every thread whose cells are in view: the cell in the
-    /// top trailing corner of its cells, and its tone, the author's colour
-    /// while the thread is open for discussion, neutral once it is resolved.
     pub(super) fn comment_markers(&self, presence: &PresenceCtx) -> Vec<(Rect, Tone)> {
         let body = self.grid.body_rect();
         self.sheet_comments
@@ -842,7 +773,6 @@ impl SheetsApp {
             .collect()
     }
 
-    /// A marker in the corner of every commented cell.
     pub(super) fn draw_comment_markers(
         &self,
         scene: &mut Scene,
@@ -876,7 +806,6 @@ impl SheetsApp {
         scene.pop_layer();
     }
 
-    /// The open thread, floating beside its cell.
     pub(super) fn draw_comment_popover(
         &mut self,
         scene: &mut Scene,
@@ -896,8 +825,6 @@ impl SheetsApp {
         self.draw_comment_card(&mut ctx, card, &thread, presence);
     }
 
-    /// A comment thread as a card: who wrote it and on what range, the
-    /// comment, its replies, and what can be done with it.
     fn draw_comment_card(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -916,7 +843,6 @@ impl SheetsApp {
         let body = face.body_rect(ctx.text, theme, card);
         let colors = &theme.tokens.colors;
 
-        // The anchor range, and a badge when the thread is resolved.
         let range = if thread.start == thread.end {
             crate::model::addr_to_a1(thread.start.0, thread.start.1)
         } else {
@@ -944,7 +870,6 @@ impl SheetsApp {
                 .paint(ctx.scene, ctx.transform, ctx.text, theme);
         }
 
-        // The comment itself, at most two lines.
         let style = theme.text(TextRole::Body);
         let lines =
             ctx.text
@@ -964,7 +889,6 @@ impl SheetsApp {
             );
         }
 
-        // How many replies it has.
         let replies = match thread.replies.len() {
             0 => crate::resource::CATALOG.t("sheets-no-replies"),
             1 => "1 reply".to_owned(),
@@ -1006,8 +930,6 @@ impl SheetsApp {
             ],
             None,
         );
-        // The rest of the card opens the thread's range. Registered after the
-        // buttons, so a button wins where they overlap.
         self.annotation_clicks
             .push((card, AnnotationClick::Open(thread.start)));
     }
@@ -1027,8 +949,6 @@ fn comment_marker(cell: Rect, size: f64, inset: f64) -> Rect {
     )
 }
 
-/// One series of a chart: its name and its number at each category, `None`
-/// where that cell holds none.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct PlotSeries {
     pub name: String,
@@ -1036,14 +956,11 @@ pub(super) struct PlotSeries {
 }
 
 impl PlotSeries {
-    /// The numbers it plots, in order, gaps skipped.
     fn numbers(&self) -> impl Iterator<Item = f64> + '_ {
         self.values.iter().filter_map(|value| *value)
     }
 }
 
-/// What a chart plots: the label of each category (empty when the range has
-/// no label column or row) and the series measured at each.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct PlotData {
     pub categories: Vec<String>,
@@ -1081,13 +998,11 @@ fn chart_data(chart: &ChartSnapshot, values: &HashMap<Addr, CellValue>) -> PlotD
         _ => None,
     };
     let first_step = *steps.start();
-    // The first line labels the categories when it holds text and no number.
     let first_line = *lines.start();
     let labelled = lines.clone().count() > 1
         && steps.clone().all(|step| number(first_line, step).is_none())
         && steps.clone().any(|step| text(first_line, step).is_some());
     let series_lines: Vec<u32> = lines.skip(usize::from(labelled)).collect();
-    // The first step heads the series when one of them is headed by text.
     let headed = series_lines
         .iter()
         .any(|&line| text(line, first_step).is_some());
@@ -1129,8 +1044,6 @@ fn chart_data(chart: &ChartSnapshot, values: &HashMap<Addr, CellValue>) -> PlotD
 mod chart_data_tests {
     use super::*;
 
-    /// A series of one value has one tick, at a whole step, and its label
-    /// reads the value: no zero step to label it at.
     #[test]
     fn a_series_of_one_value_has_one_tick_it_labels() {
         let (ticks, step) = SheetsApp::value_ticks(7.0, 7.0);
@@ -1183,7 +1096,6 @@ mod chart_data_tests {
             [Some(18200.0), Some(15600.0), Some(12400.0), Some(20900.0)]
         );
 
-        // Wider than tall: the label row is the axis, each row a series.
         let values = sheet(&[
             &["Month", "Jan", "Feb", "Mar", "Apr", "May"],
             &["Rent", "1250", "1250", "1250", "1250", "1250"],
@@ -1198,7 +1110,6 @@ mod chart_data_tests {
             "a blank is a gap, not a shift"
         );
 
-        // Numbers alone: no axis labels, no phantom series.
         let values = sheet(&[&["3"], &["5"], &["8"]]);
         let data = chart_data(&chart((0, 0), (0, 2)), &values);
         assert!(data.categories.is_empty());

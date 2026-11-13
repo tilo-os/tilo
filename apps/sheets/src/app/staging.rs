@@ -1,16 +1,9 @@
-//! The view a review capture stages against the document, applied once the window has the layout it needs.
+//! Capture scenarios: the state a screenshot stages before its frame.
 
 use super::{Edits, SettingsPanel, SheetsApp, Staged, Widget, a1_to_addr};
 
 impl SheetsApp {
-    /// Stage a screenshot scenario's view state over the sample workbook its
-    /// actions wrote: the active cell, an edit in progress, a message. A menu
-    /// or sheet opens in the first measured frame (it anchors to what that
-    /// frame lays out); what needs the document (a fill, a paste, the
-    /// palette's actions) is done by the `sync` that follows.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
-        // A smart-typed currency cell, so the formula bar and the type
-        // indicator are populated.
         if let Some(addr) = a1_to_addr("E2") {
             self.grid.select_only(addr);
         }
@@ -48,8 +41,6 @@ impl SheetsApp {
                 self.grid.set_edit_caret(10, true); // select "B2:D2"
             }
             Some("commandpalette") => self.staged = Some(Staged::CommandPalette),
-            // Both scrollbar thumbs offset, proving the two-dimensional
-            // viewport rather than idle rails.
             Some("scrollbars") => {
                 self.grid.on_scroll(540.0, 260.0);
             }
@@ -58,12 +49,10 @@ impl SheetsApp {
             Some("error") => {
                 self.status = "Excel import failed: the workbook is password protected".into();
             }
-            // An incoming revision superseding the value being edited.
             Some("conflict") => {
                 self.status =
                     "Budget was updated by a collaborator; showing the latest value".into();
             }
-            // The acknowledgement stays visible with animations suppressed.
             Some("reducedmotion") => {
                 self.set_motion_reduced(true);
                 self.status = "Pasted into B2:D4".into();
@@ -71,14 +60,11 @@ impl SheetsApp {
             Some("charts" | "comments") => {
                 self.status = "2 charts and 1 resolved comment thread added".into();
             }
-            // The bold header row, so the Bold command shows it is on.
             Some("bold") => self.grid.select_range_public((0, 0), (6, 0)),
             _ => {}
         }
     }
 
-    /// Open the staged menu or sheet, if any, now that the chrome is measured
-    /// and laid out where it will be painted.
     pub(super) fn apply_staged_overlay(&mut self) {
         let Some(name) = self.staged_overlay.take() else {
             return;
@@ -92,7 +78,6 @@ impl SheetsApp {
                 self.open_cell_menu(anchor);
             }
             "tabrename" => self.begin_tab_rename(0),
-            // The popover opens over tabs that already carry a colour.
             "tabcolour" => {
                 self.open_tab_menu(0);
                 self.tab_menu.close();
@@ -102,7 +87,6 @@ impl SheetsApp {
         }
     }
 
-    /// Finish the staged part of a scenario that works on the document.
     pub(super) fn finish_staging(&mut self, doc: &mut Edits<'_>) {
         let Some(staged) = self.staged.take() else {
             return;
@@ -138,7 +122,6 @@ impl SheetsApp {
         self.reload();
     }
 
-    /// Open the per-document settings sheet.
     pub(super) fn open_doc_settings(&mut self) {
         self.close_overlays();
         self.settings_panel = SettingsPanel::Document;

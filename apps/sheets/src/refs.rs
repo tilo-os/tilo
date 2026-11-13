@@ -1,22 +1,14 @@
-//! Cell references inside formula text: where they are, for tinting them
-//! while a formula is edited, and how they move when a formula is copied,
-//! rows or columns are inserted or deleted, or a sheet is renamed.
-//!
-//! These work on the raw formula a cell stores, character by character, so
-//! the formula keeps its spelling (spaces, case, `$` anchors) through every
-//! rewrite; the formula engine only ever reads the result.
+//! Cell references inside formula text: where they are, for tinting, and how they move when a
+//! formula is copied or rows, columns or sheet names change. Everything works on the raw text,
+//! so a formula keeps its spelling through every rewrite.
 
 use std::collections::HashMap;
 
 use crate::model::{Addr, GridEdit, a1_to_addr, addr_to_a1};
 
-/// A bounds-checked cursor over a formula's characters.
-///
-/// The reference scanner, the tokenizer and the `TEXT` date picture all walk a
-/// formula by index. Routing every read through one cursor keeps the index
-/// inside the buffer, so a truncated or malformed formula ends the scan
-/// instead of reading past the end. `Copy`, so a caller can fork a look-ahead
-/// and commit it only once the look-ahead has succeeded.
+/// A bounds-checked cursor over a formula's characters: every read goes through it, so a
+/// malformed formula ends the scan instead of reading past the end. `Copy`, so a caller can
+/// fork a look-ahead and commit it once that succeeded.
 #[derive(Clone, Copy)]
 struct Scan<'a> {
     chars: &'a [char],
@@ -28,17 +20,14 @@ impl<'a> Scan<'a> {
         Self { chars, pos: 0 }
     }
 
-    /// Index of the next character to read.
     fn pos(self) -> usize {
         self.pos
     }
 
-    /// The next character, without consuming it.
     fn peek(self) -> Option<char> {
         self.chars.get(self.pos).copied()
     }
 
-    /// The character immediately before `index`, if there is one.
     fn before(self, index: usize) -> Option<char> {
         index
             .checked_sub(1)
@@ -46,21 +35,18 @@ impl<'a> Scan<'a> {
             .copied()
     }
 
-    /// Consume and return the next character.
     fn bump(&mut self) -> Option<char> {
         let c = self.chars.get(self.pos).copied()?;
         self.pos = self.pos.saturating_add(1);
         Some(c)
     }
 
-    /// Consume characters for as long as `pred` holds.
     fn skip_while(&mut self, pred: impl Fn(char) -> bool) {
         while self.peek().is_some_and(&pred) {
             self.pos = self.pos.saturating_add(1);
         }
     }
 
-    /// The text between `start` and the cursor.
     fn text_from(self, start: usize) -> String {
         self.chars
             .get(start..self.pos)
@@ -70,35 +56,21 @@ impl<'a> Scan<'a> {
     }
 }
 
-/// A cell or range reference located inside a formula body, used to tint the
-/// reference where it appears in the formula text and to outline the cells it
-/// points at on the grid — the coloured-reference cue Excel/Calc show while a
-/// formula is being edited.
+/// A cell or range reference inside a formula body, tinted in the text and outlined on the grid.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RefSpan {
-    /// Char index into the body (the text after `=`) where the reference
-    /// token starts.
     pub start: usize,
-    /// Char index one past the reference token's end.
     pub end: usize,
-    /// Top-left cell of the referenced rectangle (equals `br` for a single
-    /// cell), normalized so `tl <= br`.
+    /// The rectangle's top-left cell, equal to `br` for one cell.
     pub tl: Addr,
-    /// Bottom-right cell of the referenced rectangle.
     pub br: Addr,
-    /// Stable key used for colour assignment — identical references (ignoring
-    /// `$` anchors and letter case) share a colour.
+    /// Identical references share a key, and with it a colour.
     pub key: String,
 }
 
-/// Scan a formula body (the text after the leading `=`) for cell and range
-/// references, returning each one's character span and target rectangle.
-///
-/// String literals are skipped, and an identifier immediately followed by `(`
-/// is treated as a function name rather than a reference (so `SUM` in
-/// `SUM(A1:A3)` is not tinted, but `A1:A3` is). Numeric exponents like `1e3`
-/// are never mistaken for references. A reference to another sheet
-/// (`Rates!A2`) names no cell of this one and is not returned.
+/// Every cell and range reference in a formula body, with its span and rectangle. String
+/// literals are skipped, a name followed by `(` is a function, `1e3` is an exponent, and a
+/// reference to another sheet is not returned.
 pub fn references(body: &str) -> Vec<RefSpan> {
     let chars: Vec<char> = body.chars().collect();
     let mut scan = Scan::new(&chars);
@@ -124,7 +96,7 @@ pub fn references(body: &str) -> Vec<RefSpan> {
         let prev_numish = scan
             .before(start)
             .is_some_and(|prev| prev.is_ascii_digit() || prev == '.');
-        // An identifier followed by `(` is a function name, not a ref.
+        // A name followed by `(` is a function.
         let mut ahead = scan;
         ahead.skip_while(char::is_whitespace);
         if prev_numish || ahead.peek() == Some('(') {
@@ -133,8 +105,7 @@ pub fn references(body: &str) -> Vec<RefSpan> {
         let Some(first) = a1_to_addr(&scan.text_from(start)) else {
             continue; // TRUE / FALSE / function names / bare words
         };
-        // A `:` (optionally spaced) followed by another reference makes a
-        // range that spans from the first reference to the second.
+        // A `:`, optionally spaced, to another reference makes a range from one to the other.
         if ahead.peek() == Some(':') {
             ahead.bump();
             ahead.skip_while(char::is_whitespace);
@@ -167,9 +138,7 @@ pub fn references(body: &str) -> Vec<RefSpan> {
     out
 }
 
-/// Hand each reference span a colour slot so identical references share a
-/// slot; slots are assigned in first-appearance order. Returns a vector
-/// parallel to `spans`. The view layer maps a slot to a concrete colour.
+/// A colour slot per span, in first-appearance order, so identical references share one.
 pub fn ref_color_slots(spans: &[RefSpan]) -> Vec<usize> {
     let mut map: HashMap<&str, usize> = HashMap::new();
     let mut out = Vec::with_capacity(spans.len());
@@ -180,24 +149,10 @@ pub fn ref_color_slots(spans: &[RefSpan]) -> Vec<usize> {
     out
 }
 
-/// Rewrite a formula so its **relative** cell references shift by `(dcol,
-/// drow)` — the adjustment every spreadsheet applies when a formula is copied
-/// or filled to a new location. This is the formula layer's single source of
-/// truth for relativisation; the copy/paste and fill paths both route through
-/// it.
-///
-/// The rules match Excel/Sheets exactly:
-///   * a bare `A1` shifts on both axes (`=A1` copied one row down → `=A2`);
-///   * `$A$1` is fully anchored and never moves;
-///   * `$A1` locks the column, so only the row shifts;
-///   * `A$1` locks the row, so only the column shifts;
-///   * a range shifts each endpoint independently (`A1:B3` → `B2:C4`);
-///   * string literals, function names, and numeric literals (including
-///     scientific notation like `1e3`) are never mistaken for references.
-///
-/// Non-formula input (no leading `=`) and a zero offset are returned
-/// unchanged. A relative component never underflows past the grid origin
-/// (column `A` / row `1`).
+/// A formula whose relative references shift by `(dcol, drow)`, as a copy or fill moves them:
+/// `$A1` locks the column, `A$1` the row, `$A$1` both; a range shifts each end; literals,
+/// function names and exponents stay as written. A component never underflows past column `A`
+/// or row 1.
 pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
     if dcol == 0 && drow == 0 {
         return raw.to_string();
@@ -217,20 +172,9 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
     })
 }
 
-/// Rewrite every A1 reference in a formula through a structural grid change.
-///
-/// Unlike [`offset_refs`], this is not a copy/fill operation: `$` anchors
-/// affect copying, but inserting or deleting a row/column moves *all*
-/// references, including absolute ones. A target that was deleted becomes the
-/// canonical `#REF!` token. A range `A1:B3` moves as a unit through
-/// [`GridEdit::map_range`], so deleting its first or last line shrinks it and
-/// only deleting all of it yields `#REF!`. String literals, function names,
-/// and numeric exponents use the same scanner as copy/fill and are left
-/// verbatim.
-///
-/// Keeping this beside [`offset_refs`] is important: row/column actions must
-/// preserve formula relationships in the same replayable action that moves the
-/// cells, rather than leaving stale coordinates for a later UI-only repair.
+/// A formula rewritten through a structural grid change: unlike a copy, inserting or deleting a
+/// row or column moves anchored references too, a deleted target becomes `#REF!`, and a range
+/// moves as a unit, shrinking when its first or last line goes.
 pub fn remap_refs(raw: &str, edit: GridEdit) -> String {
     rewrite_refs(raw, false, |reference| {
         let moved = match reference {
@@ -241,8 +185,7 @@ pub fn remap_refs(raw: &str, edit: GridEdit) -> String {
             Ref::Lines(first, sep, second) => {
                 let rows_edit = matches!(edit, GridEdit::InsertRow(_) | GridEdit::DeleteRow(_));
                 if first.rows == rows_edit {
-                    // Whole rows move only with rows, whole columns only with
-                    // columns; the other axis spans the grid either way.
+                    // Whole rows move only with rows, whole columns only with columns.
                     let corner = |line: Line| {
                         if line.rows {
                             (0, line.at)
@@ -267,11 +210,8 @@ pub fn remap_refs(raw: &str, edit: GridEdit) -> String {
     })
 }
 
-/// `raw` with the sheet each reference to another sheet names replaced by
-/// what `rename` answers for it: `rename` gets the name as written, quotes
-/// undone, and answers the name to write instead, or `None` to keep it as
-/// written. String literals are left alone, and input that is no formula is
-/// returned unchanged.
+/// A formula with each reference to another sheet renamed by `rename`, which gets the name as
+/// written and answers the one to write instead.
 pub fn rename_sheets(raw: &str, mut rename: impl FnMut(&str) -> Option<String>) -> String {
     let Some(body) = raw.strip_prefix('=').filter(|body| body.contains('!')) else {
         return raw.to_string();
@@ -317,26 +257,21 @@ fn written_sheet(prefix: &str) -> String {
     }
 }
 
-/// A sheet name as references match it, ignoring case and surrounding
-/// space, as spreadsheets do.
+/// A sheet name as references match it: case and surrounding space ignored.
 pub fn fold_sheet(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
-/// One reference [`rewrite_refs`] hands its callback: a cell, a range with
-/// the separator between its ends, or whole rows or columns (`1:3`, `A:C`).
+/// One reference the rewrite hands its callback: a cell, a range, or whole rows or columns.
 enum Ref<'a> {
     Cell(RefToken),
     Range(RefToken, &'a str, RefToken),
     Lines(Line, &'a str, Line),
 }
 
-/// Rewrite every reference in a formula through `rewrite`.
-/// String literals, sheet names, function names, and numeric exponents
-/// (`1e3`) are copied verbatim; non-formula input (no leading `=`) is
-/// returned unchanged. A reference to another sheet is rewritten only when
-/// `foreign` is set: a copy shifts it as any other, but rows and columns
-/// inserted on this sheet do not move it.
+/// Every reference in a formula rewritten through `rewrite`; literals, sheet names, function
+/// names and exponents are copied verbatim. A foreign reference is rewritten only when asked,
+/// since rows inserted on this sheet do not move it.
 fn rewrite_refs(raw: &str, foreign: bool, mut rewrite: impl FnMut(Ref<'_>) -> String) -> String {
     let Some(body) = raw.strip_prefix('=') else {
         return raw.to_string();
@@ -380,7 +315,7 @@ fn rewrite_refs(raw: &str, foreign: bool, mut rewrite: impl FnMut(Ref<'_>) -> St
         let prev_numish = scan
             .before(start)
             .is_some_and(|prev| prev.is_ascii_digit() || prev == '.');
-        // An identifier immediately followed by `(` is a function name.
+        // A name followed by `(` is a function.
         let mut ahead = scan;
         ahead.skip_while(char::is_whitespace);
         let is_call = ahead.peek() == Some('(');
@@ -405,15 +340,14 @@ fn rewrite_refs(raw: &str, foreign: bool, mut rewrite: impl FnMut(Ref<'_>) -> St
     out
 }
 
-/// At a sheet name and its `!` (`Rates!`, `'Q3 data'!`), move `scan` past
-/// both and answer the text they span; otherwise leave it and answer `None`.
+/// A sheet name and its `!`, with the scan moved past both.
 fn sheet_prefix(scan: &mut Scan<'_>) -> Option<String> {
     let start = scan.pos();
     let mut ahead = *scan;
     if ahead.peek() == Some('\'') {
         quoted_sheet(&mut ahead)?;
     } else {
-        // A name right after a digit is a number's exponent, not a sheet.
+        // A name after a digit is an exponent, not a sheet.
         if ahead
             .before(start)
             .is_some_and(|prev| prev.is_ascii_alphanumeric() || prev == '.')
@@ -429,7 +363,6 @@ fn sheet_prefix(scan: &mut Scan<'_>) -> Option<String> {
     Some(scan.text_from(start))
 }
 
-/// Move `scan` past the reference at it, and the range end after a `:`.
 fn skip_reference(scan: &mut Scan<'_>) {
     scan.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
     let mut ahead = *scan;
@@ -442,15 +375,12 @@ fn skip_reference(scan: &mut Scan<'_>) {
     }
 }
 
-/// Whether `c` may be part of an unquoted name: a function's, a
-/// reference's or a sheet's.
+/// Whether `c` may be part of an unquoted name.
 fn is_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '$' || c == '_' || c == '.'
 }
 
-/// A quoted sheet name and the `!` after it (`'Q3 data'!`), the scan at its
-/// opening quote: the name, a doubled quote standing for one. `None` when
-/// the quote is not closed or no `!` follows.
+/// A quoted sheet name and the `!` after it, a doubled quote standing for one.
 fn quoted_sheet(scan: &mut Scan<'_>) -> Option<String> {
     scan.bump();
     let mut name = String::new();
@@ -467,18 +397,17 @@ fn quoted_sheet(scan: &mut Scan<'_>) -> Option<String> {
     (scan.bump() == Some('!')).then_some(name)
 }
 
-/// One end of a whole-row (`3`, `$3`) or whole-column (`C`, `$C`) range,
-/// remembering its `$` spelling.
+/// One end of a whole-row or whole-column range, remembering its `$`.
 #[derive(Clone, Copy)]
 struct Line {
-    /// Zero-based row or column.
+    /// The row or column, zero-based.
     at: u32,
     rows: bool,
     abs: bool,
 }
 
 impl Line {
-    /// The line at the scan, `$` included: a row number or column letters.
+    /// The line at the scan, a row number or column letters.
     fn parse(scan: &mut Scan<'_>) -> Option<Self> {
         let abs = scan.peek() == Some('$');
         if abs {
@@ -502,8 +431,7 @@ impl Line {
         Some(Self { at, rows, abs })
     }
 
-    /// The line moved by `by` for a copy or fill: an anchored one stays, a
-    /// free one clamps to the grid's start.
+    /// The line moved by a copy or fill; an anchored one stays.
     fn offset(self, by: i64) -> u32 {
         if self.abs {
             return self.at;
@@ -514,7 +442,7 @@ impl Line {
         u32::try_from(moved).unwrap_or(self.at)
     }
 
-    /// Line `at` spelled with this end's `$` anchor.
+    /// Line `at` spelled with this end's `$`.
     fn render(self, at: u32) -> String {
         let anchor = if self.abs { "$" } else { "" };
         if self.rows {
@@ -525,9 +453,7 @@ impl Line {
     }
 }
 
-/// A whole-row or whole-column range at the scan (`1:3`, `$A:C`), with the
-/// separator as written and the scan past it; `None` for anything else (a
-/// cell, a number, a name).
+/// A whole-row or whole-column range at the scan, with the scan past it.
 fn line_range(scan: Scan<'_>) -> Option<(Line, String, Line, Scan<'_>)> {
     if scan.before(scan.pos()).is_some_and(is_name_char) {
         return None;
@@ -548,8 +474,7 @@ fn line_range(scan: Scan<'_>) -> Option<(Line, String, Line, Scan<'_>)> {
     Some((first, sep, second, ahead))
 }
 
-/// One `A1`/`$A$1`-shaped token, remembering its `$` spelling so a
-/// structural remap can write the moved address back the same way.
+/// An `A1` token remembering its `$` spelling, as written.
 #[derive(Clone, Copy)]
 struct RefToken {
     addr: Addr,
@@ -558,7 +483,7 @@ struct RefToken {
 }
 
 impl RefToken {
-    /// `None` when the token is not a well-formed reference.
+    /// The token, or `None` when it is not a well-formed reference.
     fn parse(tok: &str) -> Option<Self> {
         let bytes = tok.as_bytes();
         let mut at = 0usize;
@@ -596,9 +521,8 @@ impl RefToken {
         })
     }
 
-    /// The address moved by `(dcol, drow)` for a copy or fill: `$`-anchored
-    /// components stay, the others clamp to the grid's addressable range
-    /// so a wild offset lands on the edge rather than wrapping around it.
+    /// The address moved by a copy or fill: anchored components stay and the rest clamp to the
+    /// grid's addressable range.
     fn offset(self, dcol: i64, drow: i64) -> Addr {
         let shift = |at: u32, by: i64, anchored: bool| {
             if anchored {
@@ -615,7 +539,6 @@ impl RefToken {
         )
     }
 
-    /// `addr` spelled with this token's `$` anchors.
     fn render(self, (col, row): Addr) -> String {
         let mut result = String::new();
         if self.col_abs {
@@ -634,17 +557,14 @@ impl RefToken {
 mod tests {
     use super::*;
 
-    /// Reference spans, range expansion/colour sharing and skipping strings/functions.
     #[test]
     fn references_report_spans_targets_and_colours() {
         {
-            // Body of `=B9-B7`: two single-cell refs, distinct colour slots.
             let spans = references("B9-B7");
             assert_eq!(spans.len(), 2);
             assert_eq!(spans[0].tl, a1_to_addr("B9").unwrap());
             assert_eq!(spans[0].br, a1_to_addr("B9").unwrap());
             assert_eq!(spans[1].tl, a1_to_addr("B7").unwrap());
-            // The spans point at the actual characters `B9` and `B7`.
             assert_eq!(&"B9-B7"[spans[0].start..spans[0].end], "B9");
             assert_eq!(&"B9-B7"[spans[1].start..spans[1].end], "B7");
             let slots = ref_color_slots(&spans);
@@ -652,8 +572,6 @@ mod tests {
         }
 
         {
-            // `SUM(B2:D2)+B2`: the range B2:D2 and the single B2 are different
-            // keys; a repeated B2 would reuse a slot.
             let spans = references("SUM(B2:D2)+B2");
             assert_eq!(spans.len(), 2, "SUM is a call, not a ref");
             assert_eq!(spans[0].key, "B2:D2");
@@ -667,35 +585,25 @@ mod tests {
         }
 
         {
-            // `IF(B7>B9,"A1","B2")`: refs are B7 and B9 only; the quoted A1/B2 are
-            // string literals and IF is a function name.
             let spans = references("IF(B7>B9,\"A1\",\"B2\")");
             let keys: Vec<&str> = spans.iter().map(|s| s.key.as_str()).collect();
             assert_eq!(keys, vec!["B7", "B9"]);
         }
     }
 
-    // --- reference adjustment (copy/paste + fill) ---------------------------
-
-    /// Relative/absolute offsets and structural remapping.
     #[test]
     fn reference_offsets_and_structural_remaps() {
         {
-            // A bare reference shifts on the pasted-to axis. Copying `=A1` from B2
-            // and pasting into B3 (Δrow +1) yields `=A2`; into C2 (Δcol +1) → `=B1`.
             assert_eq!(offset_refs("=A1", 0, 1), "=A2");
             assert_eq!(offset_refs("=A1", 1, 0), "=B1");
             assert_eq!(offset_refs("=A1", 1, 1), "=B2");
 
             // `$A$1` is fully anchored and never moves anywhere.
             assert_eq!(offset_refs("=$A$1", 3, 4), "=$A$1");
-            // `$A1` locks the column: only the row shifts.
             assert_eq!(offset_refs("=$A1", 5, 2), "=$A3");
-            // `A$1` locks the row: only the column shifts.
             assert_eq!(offset_refs("=A$1", 2, 5), "=C$1");
 
             assert_eq!(offset_refs("=SUM(A1:B3)", 1, 1), "=SUM(B2:C4)");
-            // A range mixing anchored and relative endpoints shifts only the free one.
             assert_eq!(offset_refs("=$A$1:B2", 1, 1), "=$A$1:C3");
         }
 
@@ -705,11 +613,8 @@ mod tests {
                 offset_refs("=IF(A1>0,\"A1\",B2)", 0, 1),
                 "=IF(A2>0,\"A1\",B3)"
             );
-            // Scientific-notation literals (`1e3`) are numbers, not references.
             assert_eq!(offset_refs("=1e3+A1", 0, 1), "=1e3+A2");
-            // A plain literal (not a formula) is returned unchanged.
             assert_eq!(offset_refs("1200", 3, 3), "1200");
-            // A zero offset is an identity, formula or not.
             assert_eq!(offset_refs("=A1+B2", 0, 0), "=A1+B2");
             // A relative component never underflows past the grid origin.
             assert_eq!(offset_refs("=A1", -5, -5), "=A1");
@@ -724,8 +629,6 @@ mod tests {
         }
 
         {
-            // Rows (zero-based `DeleteRow(1)` is row 2): first, last, middle,
-            // outside, and the whole range.
             let row = |raw| remap_refs(raw, GridEdit::DeleteRow(1));
             assert_eq!(row("=SUM(B2:B3)"), "=SUM(B2:B2)");
             assert_eq!(row("=SUM(B1:B2)"), "=SUM(B1:B1)");
@@ -733,15 +636,12 @@ mod tests {
             assert_eq!(row("=SUM(B3:B4)"), "=SUM(B2:B3)");
             assert_eq!(row("=SUM(B1:C1)"), "=SUM(B1:C1)");
             assert_eq!(row("=SUM(B2:D2)"), "=SUM(#REF!)");
-            // `$` anchors are spelled back as written; reversed corners keep
-            // their roles.
             assert_eq!(row("=SUM($B$2:$B$3)"), "=SUM($B$2:$B$2)");
             assert_eq!(row("=SUM(B$2:$B3)"), "=SUM(B$2:$B2)");
             assert_eq!(row("=SUM(B3:B2)"), "=SUM(B2:B2)");
             assert_eq!(row("=SUM(B4 : B2)"), "=SUM(B3 : B2)");
             assert_eq!(row("=B2+SUM(B2:B3)"), "=#REF!+SUM(B2:B2)");
 
-            // Columns (`DeleteColumn(1)` is column B).
             let col = |raw| remap_refs(raw, GridEdit::DeleteColumn(1));
             assert_eq!(col("=SUM(B1:C1)"), "=SUM(B1:B1)");
             assert_eq!(col("=SUM(A1:B1)"), "=SUM(A1:A1)");
@@ -764,21 +664,16 @@ mod tests {
 
     #[test]
     fn whole_rows_and_columns_move_like_ranges() {
-        // Copy/fill: rows shift with the row offset, columns with the column
-        // offset; `$` anchors hold.
         assert_eq!(offset_refs("=SUM(1:1)", 3, 1), "=SUM(2:2)");
         assert_eq!(offset_refs("=SUM(A:A)", 1, 3), "=SUM(B:B)");
         assert_eq!(offset_refs("=SUM($1:3)", 0, 2), "=SUM($1:5)");
         assert_eq!(offset_refs("=SUM(A:$C)", 2, 0), "=SUM(C:$C)");
         assert_eq!(offset_refs("=SUM(2 : 4)", 0, -5), "=SUM(1 : 1)");
         assert_eq!(offset_refs("=SUM(Rates!B:C)", 1, 0), "=SUM(Rates!C:D)");
-        // Numbers, cells and names are not lines.
         assert_eq!(offset_refs("=1+2*A1", 0, 1), "=1+2*A2");
         assert_eq!(offset_refs("=A1:B2", 0, 1), "=A2:B3");
         assert_eq!(offset_refs("=\"1:1\"&A1", 0, 1), "=\"1:1\"&A2");
 
-        // Inserting and deleting: rows move with row edits only, columns
-        // with column edits only, anchored or not.
         assert_eq!(remap_refs("=SUM(2:3)", GridEdit::InsertRow(0)), "=SUM(3:4)");
         assert_eq!(
             remap_refs("=SUM($2:$3)", GridEdit::InsertRow(2)),
@@ -806,7 +701,6 @@ mod tests {
             "=SUM(#REF!)"
         );
         assert_eq!(remap_refs("=SUM(B:C)", GridEdit::DeleteRow(0)), "=SUM(B:C)");
-        // Rows inserted on this sheet do not move another sheet's.
         assert_eq!(
             remap_refs("=SUM(Rates!2:3)", GridEdit::InsertRow(0)),
             "=SUM(Rates!2:3)"

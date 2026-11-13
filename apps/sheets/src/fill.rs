@@ -1,35 +1,12 @@
-//! Smart fill — the fill-handle / autofill engine.
-//!
-//! Given the run of cells the user selected as a *pattern*, extend it the way
-//! Excel and Google Sheets do when the fill handle is dragged. The pattern's
-//! shape picks the heuristic:
-//!
-//!   * **formulas** copy forward with their relative references shifted
-//!     (`=A1` → `=A2` → `=A3`), preserving `$`-anchors — see
-//!     [`crate::refs::offset_refs`];
-//!   * **a single number** fills as a constant (`5` → `5`, `5`, …);
-//!   * **two or more numbers** extrapolate a linear series (`1, 2` → `3, 4,
-//!     5`; a straight line fit for longer runs);
-//!   * **dates** continue by the detected step — a whole-month cadence stays
-//!     monthly (`31 Jan, 29 Feb` style day-clamping included), otherwise a
-//!     constant day delta (a lone date advances one day at a time);
-//!   * **month or weekday names** cycle onward (`Jan` → `Feb`; `Mon, Wed` →
-//!     `Fri, Sun`);
-//!   * **text with a trailing number** increments it (`Item 1` → `Item 2`),
-//!     keeping any zero-padding (`Q01` → `Q02`);
-//!   * **anything else** (pure text, blanks, mixed blocks) repeats the block
-//!     verbatim.
-//!
-//! The engine is pure: it takes the pattern cells and a target count and
-//! returns the cells to write, so it is exercised in isolation by the unit
-//! tests here and through the real fill-handle event path in `app`.
+//! Smart fill: extend a selected pattern the way a spreadsheet's fill handle does. Formulas copy
+//! with their relative references shifted, one number fills constant and two or more extrapolate,
+//! dates continue by their step, month and weekday names cycle, text with a trailing number
+//! counts up, and anything else repeats. The engine is pure: pattern cells in, cells to write out.
 
 use crate::model::{CellFormat, CellValue, date_to_serial, serial_to_ymd};
 use ui::num::f64_of_usize;
 
-/// One source cell handed to the fill engine: the stored raw input, the
-/// computed value (used to recognise numeric / date series), and the display
-/// format (carried onto the generated cells).
+/// One source cell: its raw input, its computed value and its display format.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FillCell {
     pub raw: String,
@@ -38,7 +15,6 @@ pub struct FillCell {
 }
 
 impl FillCell {
-    /// Convenience constructor for tests and callers.
     pub fn new(raw: impl Into<String>, value: CellValue, fmt: CellFormat) -> Self {
         Self {
             raw: raw.into(),
@@ -51,8 +27,7 @@ impl FillCell {
         self.raw.trim_start().starts_with('=')
     }
 
-    /// The plain display string used for text-shaped detection (names,
-    /// text+number). Prefers the computed value, falling back to the raw.
+    /// The plain display shown, used for text-shaped detection.
     fn display(&self) -> String {
         match &self.value {
             CellValue::Empty => self.raw.trim().to_string(),
@@ -68,14 +43,12 @@ pub struct FillOut {
     pub fmt: CellFormat,
 }
 
-/// Extend `pattern` by `count` new cells continuing forward in the fill
-/// direction `(dcol, drow)` — `(0, 1)` fills down, `(1, 0)` fills right.
-/// Returns exactly `count` cells, in forward order.
+/// Extend `pattern` by `count` cells in the direction `(dcol, drow)`.
 pub fn extend_series(pattern: &[FillCell], count: usize, dcol: i64, drow: i64) -> Vec<FillOut> {
     if pattern.is_empty() || count == 0 {
         return Vec::new();
     }
-    // Any formula in the run → copy the block forward, shifting refs.
+    // A formula anywhere: copy the block forward, shifting references.
     if pattern.iter().any(FillCell::is_formula) {
         return block_copy(pattern, count, dcol, drow);
     }
@@ -91,24 +64,21 @@ pub fn extend_series(pattern: &[FillCell], count: usize, dcol: i64, drow: i64) -
     if let Some(out) = text_number_series(pattern, count) {
         return out;
     }
-    // Pure text / blanks / mixed → repeat the block verbatim.
+    // Anything else repeats the block verbatim.
     block_copy(pattern, count, dcol, drow)
 }
 
-/// Copy the pattern block forward, repeating it, shifting each formula's
-/// relative references by how far the generated cell sits from the source it
-/// copies. Plain values copy verbatim.
+/// Repeat the pattern block, shifting each formula's references by how far the generated cell
+/// sits from the source it copies.
 fn block_copy(pattern: &[FillCell], count: usize, dcol: i64, drow: i64) -> Vec<FillOut> {
     let block = i64::try_from(pattern.len()).unwrap_or(i64::MAX);
-    // Distance from a generated cell back to the source it copies: one whole
-    // block for the first repetition, one more for each further one.
+    // One whole block for the first repetition, one more for each further one.
     let mut steps = block;
     let mut sources = pattern.iter();
     let mut out = Vec::with_capacity(count);
     for _ in 0..count {
         if sources.as_slice().is_empty() {
-            // Wrapped past the end of the block: this repetition sits one
-            // whole block further from the source it copies.
+            // Wrapped past the block's end: one whole block further from its source.
             steps = steps.saturating_add(block);
             sources = pattern.iter();
         }
@@ -129,8 +99,7 @@ fn block_copy(pattern: &[FillCell], count: usize, dcol: i64, drow: i64) -> Vec<F
     out
 }
 
-/// Plain-number series: every cell is a number that is not date/time
-/// formatted. One number fills constant; two or more extrapolate a line.
+/// A number series: one number fills constant, two or more extrapolate a line.
 fn numeric_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>> {
     let mut nums = Vec::with_capacity(pattern.len());
     for c in pattern {
@@ -157,9 +126,7 @@ fn numeric_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>> {
     )
 }
 
-/// Date series: every cell is a date-formatted number. A consistent
-/// whole-month cadence stays monthly; otherwise a constant day delta (a lone
-/// date advances one day per step).
+/// A date series: a whole-month cadence stays monthly, otherwise a constant day step.
 fn date_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>> {
     let mut serials = Vec::with_capacity(pattern.len());
     let mut style = None;
@@ -181,8 +148,7 @@ fn date_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>> {
         return Some(
             (0..count)
                 .map(|j| {
-                    // `j` counts generated cells, so the month offset stays
-                    // small; saturating keeps an absurd drag from wrapping.
+                    // `j` counts generated cells, so the month offset stays small.
                     let ahead = i64::try_from(j).unwrap_or(i64::MAX).saturating_add(1);
                     let serial = add_months(y, m, d, ahead.saturating_mul(months));
                     FillOut {
@@ -207,9 +173,7 @@ fn date_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>> {
     )
 }
 
-/// Month-name or weekday-name series: every cell is a recognised name from a
-/// single list; the sequence continues cycling with the detected step
-/// (default +1).
+/// A month or weekday series, continuing with the detected step.
 fn name_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>> {
     // format: machine (the names a cell holds and the series continues; never
     // the viewer's language, so every collaborator fills the same cells)
@@ -532,11 +496,9 @@ mod tests {
         out.iter().map(|o| o.raw.clone()).collect()
     }
 
-    /// Formula reference shifting and linear/constant numeric series.
     #[test]
     fn numeric_and_formula_fills_extrapolate() {
         {
-            // A single `=A1` filled down three cells → =A2, =A3, =A4.
             let pat = [FillCell::new(
                 "=A1",
                 CellValue::Number(0.0),
@@ -546,7 +508,6 @@ mod tests {
                 raws(&extend_series(&pat, 3, 0, 1)),
                 vec!["=A2", "=A3", "=A4"]
             );
-            // Filled right instead → =B1, =C1, =D1.
             assert_eq!(
                 raws(&extend_series(&pat, 3, 1, 0)),
                 vec!["=B1", "=C1", "=D1"]
@@ -563,19 +524,15 @@ mod tests {
         }
 
         {
-            // 1, 2 → 3, 4, 5.
             let pat = [num(1.0), num(2.0)];
             assert_eq!(raws(&extend_series(&pat, 3, 0, 1)), vec!["3", "4", "5"]);
-            // 2, 4 → 6, 8 (step 2).
             let pat = [num(2.0), num(4.0)];
             assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["6", "8"]);
-            // 10, 7 → 4, 1, -2 (negative step).
             let pat = [num(10.0), num(7.0)];
             assert_eq!(raws(&extend_series(&pat, 3, 0, 1)), vec!["4", "1", "-2"]);
         }
 
         {
-            // A perfect line 2, 4, 6 → 8, 10.
             let pat = [num(2.0), num(4.0), num(6.0)];
             assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["8", "10"]);
         }
@@ -586,7 +543,6 @@ mod tests {
         }
     }
 
-    /// Daily/monthly dates, month/weekday names, numbered text, pure text and mixed blocks.
     #[test]
     fn date_name_and_text_fills_continue_their_pattern() {
         {
@@ -616,7 +572,6 @@ mod tests {
         }
 
         {
-            // 15 Jan, 15 Feb → 15 Mar, 15 Apr (monthly cadence).
             let pat = [date(2024, 1, 15), date(2024, 2, 15)];
             let out = extend_series(&pat, 2, 0, 1);
             let s0: f64 = out[0].raw.parse().unwrap();
@@ -629,9 +584,6 @@ mod tests {
                 crate::model::serial_to_date(s1, DateStyle::Iso),
                 "2024-04-15"
             );
-            // Month-end clamps: a day-31 monthly cadence (Oct 31, Dec 31 — step of
-            // two months) continues to Feb 29 (leap) and Apr 30, each clamped into
-            // its shorter month.
             let pat = [date(2023, 10, 31), date(2023, 12, 31)];
             let out = extend_series(&pat, 2, 0, 1);
             let s0: f64 = out[0].raw.parse().unwrap();
@@ -654,13 +606,11 @@ mod tests {
                 raws(&extend_series(&pat, 2, 0, 1)),
                 vec!["January", "February"]
             );
-            // Weekday names with a step of 2.
             let pat = [text("Mon"), text("Wed")];
             assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["Fri", "Sun"]);
         }
 
         {
-            // Single "Item 1" increments by one.
             let pat = [text("Item 1")];
             assert_eq!(
                 raws(&extend_series(&pat, 2, 0, 1)),
@@ -684,7 +634,6 @@ mod tests {
         }
 
         {
-            // A number and a label alternate → the block repeats.
             let pat = [num(5.0), text("x")];
             assert_eq!(
                 raws(&extend_series(&pat, 4, 0, 1)),
