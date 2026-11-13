@@ -885,214 +885,222 @@ mod tests {
         )
     }
 
-    /// Metadata lines are not rows, side by side pairs a deletion with the addition after it, and
-    /// the rows follow the measured `Code` line box.
-    #[test]
-    fn rows_skip_metadata_pair_changes_and_follow_the_code_line() {
-        let diff = sample_diff();
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let m = Metrics::measure(&mut text, &theme, &diff);
-        let wrapped = wrap_lines(&diff, 200);
-        let (unified, height) = lay_out(&diff, DiffLayout::Unified, &m, &wrapped);
-        let code_lines = diff
-            .lines
-            .iter()
-            .filter(|l| !matches!(l.kind, DiffLineKind::Meta))
-            .count();
-        assert_eq!(unified.len(), code_lines);
-        assert!((height - (2.0 * m.hunk_h + 7.0 * m.row_h)).abs() < 0.01);
-        let (split, _) = lay_out(&diff, DiffLayout::SideBySide, &m, &wrapped);
-        assert!(split.iter().any(|(row, _, _)| matches!(
-            row,
-            Row::Pair(Some(l), Some(r))
-                if diff.lines[*l].kind == DiffLineKind::Deletion
-                    && diff.lines[*r].kind == DiffLineKind::Addition
-        )));
+    tilo_test_env::scenario! {
+        fn the_diff_lays_out_its_rows_and_offers_its_actions;
 
-        let two = Metrics::measure(&mut text, &Theme::dark().with_text_scale(2.0), &diff);
-        assert!(two.row_h > m.row_h && two.hunk_h >= m.hunk_h);
+        phase rows_skip_metadata_pair_changes_and_follow_the_code_line;
+        // Metadata lines are not rows, side by side pairs a deletion with the addition after it, and
+        // the rows follow the measured `Code` line box.
+        {
+            let diff = sample_diff();
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let m = Metrics::measure(&mut text, &theme, &diff);
+            let wrapped = wrap_lines(&diff, 200);
+            let (unified, height) = lay_out(&diff, DiffLayout::Unified, &m, &wrapped);
+            let code_lines = diff
+                .lines
+                .iter()
+                .filter(|l| !matches!(l.kind, DiffLineKind::Meta))
+                .count();
+            assert_eq!(unified.len(), code_lines);
+            assert!((height - (2.0 * m.hunk_h + 7.0 * m.row_h)).abs() < 0.01);
+            let (split, _) = lay_out(&diff, DiffLayout::SideBySide, &m, &wrapped);
+            assert!(split.iter().any(|(row, _, _)| matches!(
+                row,
+                Row::Pair(Some(l), Some(r))
+                    if diff.lines[*l].kind == DiffLineKind::Deletion
+                        && diff.lines[*r].kind == DiffLineKind::Addition
+            )));
+
+            let two = Metrics::measure(&mut text, &Theme::dark().with_text_scale(2.0), &diff);
+            assert!(two.row_h > m.row_h && two.hunk_h >= m.hunk_h);
+        }
+
+        phase hunks_and_the_file_offer_their_actions;
+        {
+            let diff = sample_diff();
+            let worktree = draw(&diff, 900.0, DiffLayout::Unified, false, true);
+            for hunk in 0..2 {
+                for action in [HunkAction::Toggle, HunkAction::Discard] {
+                    assert!(
+                        worktree
+                            .targets
+                            .iter()
+                            .any(|(_, hit)| *hit == DiffHit::Hunk(hunk, action)),
+                        "hunk {hunk} offers {action:?}"
+                    );
+                }
+            }
+            assert!(
+                worktree
+                    .targets
+                    .iter()
+                    .any(|(_, h)| *h == DiffHit::DiscardFile)
+            );
+            let staged = draw(&diff, 900.0, DiffLayout::Unified, true, true);
+            assert!(
+                !staged.targets.iter().any(|(_, h)| matches!(
+                    h,
+                    DiffHit::DiscardFile | DiffHit::Hunk(_, HunkAction::Discard)
+                )),
+                "the staged side has nothing to discard"
+            );
+            // Targets never overlap one another.
+            for (i, (a, _)) in worktree.targets.iter().enumerate() {
+                for (b, _) in worktree.targets.iter().skip(i + 1) {
+                    assert!(a.intersect(*b).area() <= 0.0, "{a:?} overlaps {b:?}");
+                }
+            }
+        }
+
+        phase two_columns_fold_into_one_when_the_pane_is_too_narrow;
+        // Side by side needs a line of code each; where the pane cannot give it one the rows are one
+        // column with a sentence saying why, never two columns of fragments.
+        {
+            let diff = sample_diff();
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let mut scene = Scene::new();
+            let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+            let narrow = paint(
+                &mut ctx,
+                Rect::new(0.0, 0.0, 390.0, 600.0),
+                &DiffInput {
+                    diff: &diff,
+                    scroll: 0.0,
+                    hscroll: 0.0,
+                    settings: Settings {
+                        diff_layout: DiffLayout::SideBySide,
+                        ..Settings::default()
+                    },
+                    staged: false,
+                    can_discard: true,
+                    actions: true,
+                    pointer: None,
+                },
+            );
+            assert_eq!(
+                narrow.layout,
+                DiffLayout::Unified,
+                "390 px cannot hold two columns of code"
+            );
+            let wide = draw(&diff, 1400.0, DiffLayout::SideBySide, false, true);
+            assert_eq!(wide.layout, DiffLayout::SideBySide, "1400 px can");
+        }
+
+        phase a_view_without_actions_draws_none;
+        // A view that offers no actions draws none: a commit's file or a conflicted file has no
+        // working tree to act on.
+        {
+            let diff = sample_diff();
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let mut scene = Scene::new();
+            let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+            let quiet = paint(
+                &mut ctx,
+                Rect::new(0.0, 0.0, 900.0, 600.0),
+                &DiffInput {
+                    diff: &diff,
+                    scroll: 0.0,
+                    hscroll: 0.0,
+                    settings: Settings::default(),
+                    staged: false,
+                    can_discard: true,
+                    actions: false,
+                    pointer: None,
+                },
+            );
+            assert!(
+                quiet.targets.is_empty(),
+                "nothing to press: {:?}",
+                quiet.targets
+            );
+            assert!(
+                quiet.content_height > 0.0,
+                "the change is still drawn, only not acted on"
+            );
+        }
     }
 
-    #[test]
-    fn hunks_and_the_file_offer_their_actions() {
-        let diff = sample_diff();
-        let worktree = draw(&diff, 900.0, DiffLayout::Unified, false, true);
-        for hunk in 0..2 {
-            for action in [HunkAction::Toggle, HunkAction::Discard] {
+    tilo_test_env::scenario! {
+        fn long_lines_wrap_or_scroll_inside_their_pane;
+
+        phase unwrapped_lines_scroll_sideways;
+        // Without wrapping, a narrow pane scrolls its long lines sideways; with it, nothing scrolls
+        // sideways.
+        {
+            let diff = parse_unified(
+                "x.rs",
+                "rust",
+                "@@ -1,1 +1,1 @@\n-let value = compute_the_answer_to_everything(with_a_very_long_argument_list, and_more);\n+let value = compute_the_answer_to_everything(with_an_even_longer_argument_list, and_more);\n",
+            );
+            assert!(draw(&diff, 400.0, DiffLayout::Unified, false, false).max_hscroll > 0.0);
+            assert!(draw(&diff, 2400.0, DiffLayout::Unified, false, false).max_hscroll <= 0.0);
+            assert!(draw(&diff, 400.0, DiffLayout::Unified, false, true).max_hscroll <= 0.0);
+        }
+
+        phase long_lines_wrap_inside_their_pane;
+        // A long line wraps onto more rows of its pane instead of being cut at the edge, breaking
+        // after a space or a word where one falls late enough, and the row grows with it.
+        {
+            let line = "let value = compute(with_a_long_argument, and_more);";
+            let segments = wrap(line, 20);
+            assert!(segments.len() > 1);
+            let joined: String = segments.iter().map(|r| &line[r.clone()]).collect();
+            assert_eq!(joined, line, "wrapping keeps every character once");
+            assert!(
+                segments
+                    .iter()
+                    .all(|r| line[r.clone()].chars().count() <= 20)
+            );
+            assert_eq!(&line[segments[0].clone()], "let value = compute");
+            assert_eq!(wrap("short", 20), vec![0..5]);
+            let nested = "        call(first_argument, second_argument);";
+            let rows = wrap(nested, 24);
+            assert!(rows.len() > 2);
+            assert!(
+                rows.iter()
+                    .skip(1)
+                    .all(|r| nested[r.clone()].chars().count() <= 24 - 8),
+                "continuation rows leave room for the hanging indent"
+            );
+            assert_eq!(wrap("", 20), vec![0..0]);
+
+            let diff = parse_unified(
+                "x.rs",
+                "rust",
+                &format!("@@ -1,1 +1,1 @@\n-{line}\n+{line} // and a trailing comment\n"),
+            );
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let m = Metrics::measure(&mut text, &theme, &diff);
+            for layout in [DiffLayout::Unified, DiffLayout::SideBySide] {
+                let narrow = wrap_lines(&diff, code_columns(400.0, layout, &m));
+                let (rows, _) = lay_out(&diff, layout, &m, &narrow);
                 assert!(
-                    worktree
-                        .targets
-                        .iter()
-                        .any(|(_, hit)| *hit == DiffHit::Hunk(hunk, action)),
-                    "hunk {hunk} offers {action:?}"
+                    rows.iter().any(|(_, _, h)| *h > m.row_h * 1.5),
+                    "{layout:?}: a long line takes more than one row"
+                );
+                let wide = wrap_lines(&diff, code_columns(2400.0, layout, &m));
+                let (rows, _) = lay_out(&diff, layout, &m, &wide);
+                assert!(
+                    rows.iter()
+                        .all(|(row, _, h)| matches!(row, Row::Hunk(_)) || (*h - m.row_h).abs() < 0.01),
+                    "{layout:?}: a wide pane keeps every line on one row"
                 );
             }
         }
-        assert!(
-            worktree
-                .targets
-                .iter()
-                .any(|(_, h)| *h == DiffHit::DiscardFile)
-        );
-        let staged = draw(&diff, 900.0, DiffLayout::Unified, true, true);
-        assert!(
-            !staged.targets.iter().any(|(_, h)| matches!(
-                h,
-                DiffHit::DiscardFile | DiffHit::Hunk(_, HunkAction::Discard)
-            )),
-            "the staged side has nothing to discard"
-        );
-        // Targets never overlap one another.
-        for (i, (a, _)) in worktree.targets.iter().enumerate() {
-            for (b, _) in worktree.targets.iter().skip(i + 1) {
-                assert!(a.intersect(*b).area() <= 0.0, "{a:?} overlaps {b:?}");
-            }
+
+        phase a_break_falls_between_a_word_and_its_punctuation;
+        // A word is not cut from the punctuation that follows it when the break can fall between them.
+        {
+            let line = "    let x = blur_params);";
+            let cols = 24;
+            let rows = wrap(line, cols);
+            assert!(rows.len() > 1);
+            assert_eq!(&line[rows[0].clone()], "    let x = blur_params");
         }
-    }
-
-    /// Side by side needs a line of code each; where the pane cannot give it one the rows are one
-    /// column with a sentence saying why, never two columns of fragments.
-    #[test]
-    fn two_columns_fold_into_one_when_the_pane_is_too_narrow() {
-        let diff = sample_diff();
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let mut scene = Scene::new();
-        let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        let narrow = paint(
-            &mut ctx,
-            Rect::new(0.0, 0.0, 390.0, 600.0),
-            &DiffInput {
-                diff: &diff,
-                scroll: 0.0,
-                hscroll: 0.0,
-                settings: Settings {
-                    diff_layout: DiffLayout::SideBySide,
-                    ..Settings::default()
-                },
-                staged: false,
-                can_discard: true,
-                actions: true,
-                pointer: None,
-            },
-        );
-        assert_eq!(
-            narrow.layout,
-            DiffLayout::Unified,
-            "390 px cannot hold two columns of code"
-        );
-        let wide = draw(&diff, 1400.0, DiffLayout::SideBySide, false, true);
-        assert_eq!(wide.layout, DiffLayout::SideBySide, "1400 px can");
-    }
-
-    /// A view that offers no actions draws none: a commit's file or a conflicted file has no
-    /// working tree to act on.
-    #[test]
-    fn a_view_without_actions_draws_none() {
-        let diff = sample_diff();
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let mut scene = Scene::new();
-        let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        let quiet = paint(
-            &mut ctx,
-            Rect::new(0.0, 0.0, 900.0, 600.0),
-            &DiffInput {
-                diff: &diff,
-                scroll: 0.0,
-                hscroll: 0.0,
-                settings: Settings::default(),
-                staged: false,
-                can_discard: true,
-                actions: false,
-                pointer: None,
-            },
-        );
-        assert!(
-            quiet.targets.is_empty(),
-            "nothing to press: {:?}",
-            quiet.targets
-        );
-        assert!(
-            quiet.content_height > 0.0,
-            "the change is still drawn, only not acted on"
-        );
-    }
-
-    /// Without wrapping, a narrow pane scrolls its long lines sideways; with it, nothing scrolls
-    /// sideways.
-    #[test]
-    fn unwrapped_lines_scroll_sideways() {
-        let diff = parse_unified(
-            "x.rs",
-            "rust",
-            "@@ -1,1 +1,1 @@\n-let value = compute_the_answer_to_everything(with_a_very_long_argument_list, and_more);\n+let value = compute_the_answer_to_everything(with_an_even_longer_argument_list, and_more);\n",
-        );
-        assert!(draw(&diff, 400.0, DiffLayout::Unified, false, false).max_hscroll > 0.0);
-        assert!(draw(&diff, 2400.0, DiffLayout::Unified, false, false).max_hscroll <= 0.0);
-        assert!(draw(&diff, 400.0, DiffLayout::Unified, false, true).max_hscroll <= 0.0);
-    }
-
-    /// A long line wraps onto more rows of its pane instead of being cut at the edge, breaking
-    /// after a space or a word where one falls late enough, and the row grows with it.
-    #[test]
-    fn long_lines_wrap_inside_their_pane() {
-        let line = "let value = compute(with_a_long_argument, and_more);";
-        let segments = wrap(line, 20);
-        assert!(segments.len() > 1);
-        let joined: String = segments.iter().map(|r| &line[r.clone()]).collect();
-        assert_eq!(joined, line, "wrapping keeps every character once");
-        assert!(
-            segments
-                .iter()
-                .all(|r| line[r.clone()].chars().count() <= 20)
-        );
-        assert_eq!(&line[segments[0].clone()], "let value = compute");
-        assert_eq!(wrap("short", 20), vec![0..5]);
-        let nested = "        call(first_argument, second_argument);";
-        let rows = wrap(nested, 24);
-        assert!(rows.len() > 2);
-        assert!(
-            rows.iter()
-                .skip(1)
-                .all(|r| nested[r.clone()].chars().count() <= 24 - 8),
-            "continuation rows leave room for the hanging indent"
-        );
-        assert_eq!(wrap("", 20), vec![0..0]);
-
-        let diff = parse_unified(
-            "x.rs",
-            "rust",
-            &format!("@@ -1,1 +1,1 @@\n-{line}\n+{line} // and a trailing comment\n"),
-        );
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let m = Metrics::measure(&mut text, &theme, &diff);
-        for layout in [DiffLayout::Unified, DiffLayout::SideBySide] {
-            let narrow = wrap_lines(&diff, code_columns(400.0, layout, &m));
-            let (rows, _) = lay_out(&diff, layout, &m, &narrow);
-            assert!(
-                rows.iter().any(|(_, _, h)| *h > m.row_h * 1.5),
-                "{layout:?}: a long line takes more than one row"
-            );
-            let wide = wrap_lines(&diff, code_columns(2400.0, layout, &m));
-            let (rows, _) = lay_out(&diff, layout, &m, &wide);
-            assert!(
-                rows.iter()
-                    .all(|(row, _, h)| matches!(row, Row::Hunk(_)) || (*h - m.row_h).abs() < 0.01),
-                "{layout:?}: a wide pane keeps every line on one row"
-            );
-        }
-    }
-
-    /// A word is not cut from the punctuation that follows it when the break can fall between them.
-    #[test]
-    fn a_break_falls_between_a_word_and_its_punctuation() {
-        let line = "    let x = blur_params);";
-        let cols = 24;
-        let rows = wrap(line, cols);
-        assert!(rows.len() > 1);
-        assert_eq!(&line[rows[0].clone()], "    let x = blur_params");
     }
 }

@@ -78,16 +78,52 @@ fn is_staged(path: &Path, file: &str) -> bool {
     })
 }
 
-/// Whole-file index operations and commits: stage, unstage, stage an untracked file then commit,
-/// empty-message and missing-identity rejection, and stash save/apply.
-#[test]
-fn file_staging_commit_and_stash_round_trip() {
-    stage_file_writes_index();
-    unstage_file_resets_index_to_head();
-    stage_untracked_then_commit_creates_object_with_file();
-    commit_with_empty_message_is_rejected();
-    commit_without_identity_is_rejected();
-    stash_save_and_apply_roundtrip();
+tilo_test_env::scenario! {
+    fn staging_writes_the_index_by_file_and_by_hunk;
+
+    phase file_staging_commit_and_stash_round_trip;
+    // Whole-file index operations and commits: stage, unstage, stage an untracked file then commit,
+    // empty-message and missing-identity rejection, and stash save/apply.
+    {
+        stage_file_writes_index();
+        unstage_file_resets_index_to_head();
+        stage_untracked_then_commit_creates_object_with_file();
+        commit_with_empty_message_is_rejected();
+        commit_without_identity_is_rejected();
+        stash_save_and_apply_roundtrip();
+    }
+
+    phase hunk_staging_touches_only_the_selected_hunk;
+    // Hunk-level staging: stage and unstage one hunk, an untracked file's hunk stages the whole file,
+    // and a partially staged file keeps distinct diffs.
+    {
+        stage_hunk_stages_only_the_selected_hunk();
+        unstage_hunk_reverses_a_staged_hunk();
+        stage_hunk_of_untracked_file_stages_whole_file();
+        partially_staged_file_keeps_distinct_staged_and_worktree_diffs();
+    }
+
+    phase untracked_files_preview_their_contents_before_staging;
+    {
+        use git_client::model::DiffKey;
+
+        let (_dir, path) = init_repo();
+        fs::create_dir(path.join("nested")).unwrap();
+        fs::write(path.join("nested/new.rs"), "fn main() {}\n// new file\n").unwrap();
+
+        let (model, diffs) = repo::load(&path).unwrap();
+        let change = model
+            .untracked
+            .iter()
+            .find(|change| change.path == "nested/new.rs")
+            .unwrap();
+        assert_eq!((change.additions, change.deletions), (2, 0));
+        let diff = &diffs[&DiffKey::worktree("nested/new.rs")];
+        assert!(diff.is_new);
+        assert!(diff.lines.iter().any(|line| line.content == "fn main() {}"));
+        assert!(diff.lines.iter().any(|line| line.content == "// new file"));
+        assert!(!is_staged(&path, "nested/new.rs"));
+    }
 }
 
 fn stage_file_writes_index() {
@@ -234,16 +270,6 @@ fn delete_branch_removes_ref_and_refuses_head() {
         repo::delete_branch(&path, &head).is_err(),
         "cannot delete HEAD branch"
     );
-}
-
-/// Hunk-level staging: stage and unstage one hunk, an untracked file's hunk stages the whole file,
-/// and a partially staged file keeps distinct diffs.
-#[test]
-fn hunk_staging_touches_only_the_selected_hunk() {
-    stage_hunk_stages_only_the_selected_hunk();
-    unstage_hunk_reverses_a_staged_hunk();
-    stage_hunk_of_untracked_file_stages_whole_file();
-    partially_staged_file_keeps_distinct_staged_and_worktree_diffs();
 }
 
 fn stage_hunk_stages_only_the_selected_hunk() {
@@ -457,14 +483,132 @@ fn fetch_and_pull_against_a_local_remote() {
 // App level: the `GitClientApp`'s production action methods, so the exact UI code path is exercised
 // against a real repository.
 
-#[test]
-fn app_production_actions_mutate_the_repository() {
-    app_stage_and_commit_through_production_actions();
-    app_toggle_stage_single_file_mutates_index();
-    app_checkout_branch_through_production_action();
-    app_create_branch_through_production_action();
-    app_stage_hunk_through_production_action();
-    app_discard_file_through_production_action();
+tilo_test_env::scenario! {
+    fn the_app_s_actions_reach_the_repository;
+
+    phase app_production_actions_mutate_the_repository;
+    {
+        app_stage_and_commit_through_production_actions();
+        app_toggle_stage_single_file_mutates_index();
+        app_checkout_branch_through_production_action();
+        app_create_branch_through_production_action();
+        app_stage_hunk_through_production_action();
+        app_discard_file_through_production_action();
+    }
+
+    phase app_switch_asks_first_and_honours_the_answer;
+    // The app asks before a switch moves the tree, and the sheet's own answers
+    // do what they say: park the work or take it along.
+    {
+        let (_dir, path) = init_repo();
+        repo::create_branch(&path, "feature", None, false).unwrap();
+        let app = GitClientApp::open_at(&path).unwrap();
+        let original = app.test_head();
+        assert_ne!(original, "feature");
+        fs::write(path.join("file.txt"), "line 1\nuncommitted\nline 3\n").unwrap();
+        let mut app = GitClientApp::open_at(&path).unwrap();
+
+        app.test_branch_action(BranchAction::Checkout("feature".into()));
+        assert_eq!(
+            app.test_pending_switch().as_deref(),
+            Some("feature"),
+            "uncommitted work asks before the branch moves"
+        );
+        assert_eq!(
+            open(&path).head().unwrap().shorthand(),
+            Ok(original.as_str()),
+            "nothing moved while the question stands"
+        );
+
+        app.test_answer_switch(repo::CheckoutPlan::Stash);
+        assert_eq!(app.test_last_error(), None);
+        assert_eq!(open(&path).head().unwrap().shorthand(), Ok("feature"));
+        assert_eq!(app.test_head(), "feature", "the model reloaded");
+        assert!(
+            app.test_notice()
+                .is_some_and(|notice| notice.contains("feature") && notice.contains("stashed")),
+            "the switch says what became of the work: {:?}",
+            app.test_notice()
+        );
+        assert_eq!(
+            fs::read_to_string(path.join("file.txt")).unwrap(),
+            "line 1\nline 2\nline 3\n",
+            "the edits left the working tree"
+        );
+    }
+
+    phase app_history_reads_a_commits_files_and_one_files_diff;
+    // History opens a commit's changed files and one file's diff, through the
+    // same production path its rows use.
+    {
+        let (_dir, path) = init_repo();
+        fs::write(path.join("file.txt"), "line 1\nrewritten\nline 3\n").unwrap();
+        repo::stage_file(&path, "file.txt").unwrap();
+        repo::commit(&path, "rewrite the second line").unwrap();
+        let mut app = GitClientApp::open_at(&path).unwrap();
+
+        let files = app.test_commit_files(0);
+        assert_eq!(files, vec!["file.txt"], "the commit's changed file");
+        app.test_open_commit_file(0);
+        assert_eq!(
+            app.test_commit_diff(),
+            Some((
+                open(&path).head().unwrap().target().unwrap().to_string(),
+                "file.txt".to_owned()
+            )),
+            "the row opens that file's diff in that commit"
+        );
+
+        // The root commit has no parent: everything it holds is added.
+        let roots = app.test_commit_files(1);
+        assert_eq!(roots, vec!["file.txt"]);
+    }
+
+    phase app_resolves_a_conflicted_file_by_keeping_a_side;
+    // Keeping a side of a conflicted file from the app's own action settles it
+    // and says so.
+    {
+        let (_dir, path) = init_repo();
+        repo::create_branch(&path, "feature", None, true).unwrap();
+        fs::write(path.join("file.txt"), "line 1\ntheirs\nline 3\n").unwrap();
+        repo::stage_file(&path, "file.txt").unwrap();
+        repo::commit(&path, "their edit").unwrap();
+        repo::checkout_branch(&path, "master").unwrap();
+        fs::write(path.join("file.txt"), "line 1\nours\nline 3\n").unwrap();
+        repo::stage_file(&path, "file.txt").unwrap();
+        repo::commit(&path, "our edit").unwrap();
+        {
+            let repo = open(&path);
+            let tip = repo
+                .find_branch("feature", git2::BranchType::Local)
+                .unwrap()
+                .into_reference()
+                .peel_to_commit()
+                .unwrap();
+            let annotated = repo.find_annotated_commit(tip.id()).unwrap();
+            repo.merge(&[&annotated], None, None).unwrap();
+        }
+
+        let mut app = GitClientApp::open_at(&path).unwrap();
+        let conflicted = app
+            .test_change_counts()
+            .0
+            .saturating_add(app.test_change_counts().1);
+        assert!(conflicted > 0, "the merge left a conflict to settle");
+        app.test_select_conflicted_file();
+        app.test_resolve_conflict(repo::ConflictSide::Ours);
+        assert_eq!(app.test_last_error(), None);
+        assert!(
+            app.test_notice()
+                .is_some_and(|notice| notice.contains("our side") && notice.contains("file.txt")),
+            "the resolution names the side it kept: {:?}",
+            app.test_notice()
+        );
+        assert!(
+            !open(&path).index().unwrap().has_conflicts(),
+            "the repository's index really is settled"
+        );
+    }
 }
 
 fn app_stage_and_commit_through_production_actions() {
@@ -899,28 +1043,6 @@ fn dangling_symlinks_can_be_staged_and_discarded() {
     );
 }
 
-#[test]
-fn untracked_files_preview_their_contents_before_staging() {
-    use git_client::model::DiffKey;
-
-    let (_dir, path) = init_repo();
-    fs::create_dir(path.join("nested")).unwrap();
-    fs::write(path.join("nested/new.rs"), "fn main() {}\n// new file\n").unwrap();
-
-    let (model, diffs) = repo::load(&path).unwrap();
-    let change = model
-        .untracked
-        .iter()
-        .find(|change| change.path == "nested/new.rs")
-        .unwrap();
-    assert_eq!((change.additions, change.deletions), (2, 0));
-    let diff = &diffs[&DiffKey::worktree("nested/new.rs")];
-    assert!(diff.is_new);
-    assert!(diff.lines.iter().any(|line| line.content == "fn main() {}"));
-    assert!(diff.lines.iter().any(|line| line.content == "// new file"));
-    assert!(!is_staged(&path, "nested/new.rs"));
-}
-
 /// Render a git2 diff to its full patch text for substring assertions.
 fn diff_to_string(diff: &git2::Diff) -> String {
     let mut out = String::new();
@@ -935,214 +1057,222 @@ fn diff_to_string(diff: &git2::Diff) -> String {
     out
 }
 
-/// Separate checkouts preserve the caller's HEAD and dirty files and use the
-/// explicitly selected revision, even when created from a linked checkout.
-#[test]
-fn linked_worktrees_use_selected_revision_and_preserve_existing_work() {
-    let (dir, path) = init_repo();
-    let repository = open(&path);
-    let original_head = repository.head().unwrap().name().unwrap().to_owned();
-    let initial = repository.head().unwrap().target().unwrap();
-    fs::write(path.join("file.txt"), "new revision\n").unwrap();
-    repo::stage_file(&path, "file.txt").unwrap();
-    repo::commit(&path, "second revision").unwrap();
-    fs::write(path.join("file.txt"), "uncommitted work\n").unwrap();
-    let destination = dir.path().join("agent-checkout");
-    repo::create_worktree(
-        &path,
-        &abs(&destination),
-        "codex/tile",
-        &initial.to_string(),
-    )
-    .unwrap();
-    let linked = open(&destination);
-    assert_eq!(linked.head().unwrap().shorthand().unwrap(), "codex/tile");
-    assert_eq!(linked.head().unwrap().target(), Some(initial));
-    assert_eq!(
-        repository.head().unwrap().name().unwrap(),
-        original_head.as_str()
-    );
-    assert_eq!(
-        fs::read_to_string(path.join("file.txt")).unwrap(),
-        "uncommitted work\n"
-    );
-    assert_eq!(
-        fs::read_to_string(destination.join("file.txt")).unwrap(),
-        "line 1\nline 2\nline 3\n"
-    );
-    let rows = repo::list_worktrees(&destination).unwrap();
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows.iter().filter(|row| row.current).count(), 1);
-    assert!(
-        rows.iter()
-            .any(|row| row.current && row.head == "codex/tile")
-    );
-    let second = dir.path().join("second-checkout");
-    repo::create_worktree(&destination, &abs(&second), "codex/verify", "HEAD").unwrap();
-    // HEAD is resolved in the initiating checkout, not the main checkout.
-    assert_eq!(open(&second).head().unwrap().target(), Some(initial));
-    assert_eq!(repo::list_worktrees(&path).unwrap().len(), 3);
-}
+tilo_test_env::scenario! {
+    fn linked_worktrees_follow_the_selection_and_refuse_what_is_unsafe;
 
-/// Existing paths and branches and invalid revisions fail without replacing files, creating
-/// branches, or silently succeeding.
-#[test]
-fn linked_worktrees_refuse_unsafe_destinations_and_invalid_inputs() {
-    let (dir, path) = init_repo();
-    let destination = dir.path().join("occupied");
-    fs::create_dir(&destination).unwrap();
-    fs::write(destination.join("keep.txt"), "keep").unwrap();
-    assert!(repo::create_worktree(&path, &abs(&destination), "codex/new", "HEAD").is_err());
-    assert_eq!(
-        fs::read_to_string(destination.join("keep.txt")).unwrap(),
-        "keep"
-    );
-    let repository = open(&path);
-    assert!(
-        repository
-            .find_branch("codex/new", git2::BranchType::Local)
-            .is_err()
-    );
-    let fresh = dir.path().join("fresh");
-    let branch = repository.head().unwrap().shorthand().unwrap().to_owned();
-    assert!(repo::create_worktree(&path, &abs(&fresh), &branch, "HEAD").is_err());
-    assert!(repo::create_worktree(&path, &abs(&fresh), "codex/new", "missing-revision").is_err());
-    assert!(!fresh.exists());
-    assert!(
-        repository
-            .find_branch("codex/new", git2::BranchType::Local)
-            .is_err()
-    );
-}
-
-/// Worktree enumeration failure is an explicit separate state: the ordinary
-/// repository, its current edits and an unborn checkout remain usable.
-#[test]
-fn linked_worktree_enumeration_errors_preserve_the_repository() {
-    let empty = tempfile::tempdir().unwrap();
-    Repository::init(empty.path()).unwrap();
-    let (model, _) = repo::load(empty.path()).expect("unborn repository still opens");
-    assert!(model.worktree_error.is_none());
-    assert_eq!(model.worktrees.len(), 1);
-    assert!(model.worktrees[0].current);
-
-    let (dir, path) = init_repo();
-    let linked = dir.path().join("missing-checkout");
-    repo::create_worktree(&path, &abs(&linked), "codex/missing", "HEAD").unwrap();
-    fs::remove_dir_all(&linked).unwrap();
-    fs::write(path.join("file.txt"), "current edit\n").unwrap();
-    assert!(repo::list_worktrees(&path).is_err());
-    let (model, _) = repo::load(&path).expect("current checkout still opens");
-    assert!(
-        model.worktree_error.is_some(),
-        "failure must not look like an empty list"
-    );
-    assert_eq!(model.commits.len(), 1);
-    assert!(
-        model
-            .unstaged
-            .iter()
-            .any(|change| change.path == "file.txt")
-    );
-    assert!(GitClientApp::open_at(&path).is_some());
-
-    let bare = tempfile::tempdir().unwrap();
-    Repository::init_bare(bare.path()).unwrap();
-    let (model, _) = repo::load(bare.path()).expect("bare repository still opens");
-    assert!(
-        model.worktree_error.is_some(),
-        "bare checkout absence is explicit"
-    );
-}
-
-/// Switching branches with uncommitted work either parks it on the stash or
-/// carries it: both are the person's choice, made before the tree moves.
-#[test]
-fn uncommitted_work_is_parked_or_carried_across_a_switch() {
-    let (_dir, path) = init_repo();
-    repo::create_branch(&path, "feature", None, false).unwrap();
-    let original = open(&path).head().unwrap().shorthand().unwrap().to_owned();
-    assert_ne!(original, "feature");
-
-    // Parked: the tree is clean after the switch, and the edit is on the
-    // stash under the branch it was made on.
-    fs::write(path.join("file.txt"), "line 1\nedited\nline 3\n").unwrap();
-    let stash = repo::checkout_branch_planned(&path, "feature", repo::CheckoutPlan::Stash)
-        .expect("stash and switch");
-    assert!(stash.is_some(), "the switch reports the stash it made");
-    assert_eq!(open(&path).head().unwrap().shorthand(), Ok("feature"));
-    assert_eq!(
-        fs::read_to_string(path.join("file.txt")).unwrap(),
-        "line 1\nline 2\nline 3\n",
-        "the branch's own content is checked out"
-    );
-    let mut stashes = open(&path);
-    let mut listed = Vec::new();
-    stashes
-        .stash_foreach(|_, message, _| {
-            listed.push(message.to_owned());
-            true
-        })
-        .expect("the stash list can be read");
-    assert_eq!(listed.len(), 1, "one stash was made: {listed:?}");
-    assert!(
-        listed[0].contains("feature"),
-        "the stash says which branch it was made for: {listed:?}"
-    );
-
-    // Carried: an edit that does not conflict comes across untouched.
-    repo::checkout_branch(&path, &original).unwrap();
-    fs::write(path.join("file.txt"), "line 1\ncarried\nline 3\n").unwrap();
-    let stash = repo::checkout_branch_planned(&path, "feature", repo::CheckoutPlan::Carry)
-        .expect("switch carrying the edit");
-    assert!(stash.is_none(), "nothing was parked");
-    assert_eq!(open(&path).head().unwrap().shorthand(), Ok("feature"));
-    assert_eq!(
-        fs::read_to_string(path.join("file.txt")).unwrap(),
-        "line 1\ncarried\nline 3\n",
-        "the edit came with the switch"
-    );
-}
-
-/// Carrying edits that the target branch would overwrite is refused, and the
-/// tree is left exactly as it was: nothing is lost to learn that.
-#[test]
-fn a_switch_that_would_overwrite_edits_refuses_to_carry_them() {
-    let (_dir, path) = init_repo();
-    // `feature` changes the same line the uncommitted edit does, so a safe
-    // checkout cannot carry the edit.
-    repo::create_branch(&path, "feature", None, true).unwrap();
-    fs::write(path.join("file.txt"), "line 1\non the branch\nline 3\n").unwrap();
-    repo::stage_file(&path, "file.txt").unwrap();
-    repo::commit(&path, "branch edit").unwrap();
-    let original = "master";
-    if open(&path)
-        .find_branch(original, git2::BranchType::Local)
-        .is_err()
+    phase linked_worktrees_use_selected_revision_and_preserve_existing_work;
+    // Separate checkouts preserve the caller's HEAD and dirty files and use the
+    // explicitly selected revision, even when created from a linked checkout.
     {
-        // Some git versions initialise `main`.
-        repo::checkout_branch(&path, "main").unwrap();
-    } else {
-        repo::checkout_branch(&path, original).unwrap();
+        let (dir, path) = init_repo();
+        let repository = open(&path);
+        let original_head = repository.head().unwrap().name().unwrap().to_owned();
+        let initial = repository.head().unwrap().target().unwrap();
+        fs::write(path.join("file.txt"), "new revision\n").unwrap();
+        repo::stage_file(&path, "file.txt").unwrap();
+        repo::commit(&path, "second revision").unwrap();
+        fs::write(path.join("file.txt"), "uncommitted work\n").unwrap();
+        let destination = dir.path().join("agent-checkout");
+        repo::create_worktree(
+            &path,
+            &abs(&destination),
+            "codex/tile",
+            &initial.to_string(),
+        )
+        .unwrap();
+        let linked = open(&destination);
+        assert_eq!(linked.head().unwrap().shorthand().unwrap(), "codex/tile");
+        assert_eq!(linked.head().unwrap().target(), Some(initial));
+        assert_eq!(
+            repository.head().unwrap().name().unwrap(),
+            original_head.as_str()
+        );
+        assert_eq!(
+            fs::read_to_string(path.join("file.txt")).unwrap(),
+            "uncommitted work\n"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("file.txt")).unwrap(),
+            "line 1\nline 2\nline 3\n"
+        );
+        let rows = repo::list_worktrees(&destination).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.iter().filter(|row| row.current).count(), 1);
+        assert!(
+            rows.iter()
+                .any(|row| row.current && row.head == "codex/tile")
+        );
+        let second = dir.path().join("second-checkout");
+        repo::create_worktree(&destination, &abs(&second), "codex/verify", "HEAD").unwrap();
+        // HEAD is resolved in the initiating checkout, not the main checkout.
+        assert_eq!(open(&second).head().unwrap().target(), Some(initial));
+        assert_eq!(repo::list_worktrees(&path).unwrap().len(), 3);
     }
-    fs::write(path.join("file.txt"), "line 1\nwork in progress\nline 3\n").unwrap();
-    let before = open(&path).head().unwrap().shorthand().unwrap().to_owned();
 
-    let error = repo::checkout_branch_planned(&path, "feature", repo::CheckoutPlan::Carry)
-        .expect_err("the edits would be overwritten");
-    let message = format!("{error:#}");
-    assert!(message.contains("checkout"), "{message}");
-    assert!(
-        fs::read_to_string(path.join("file.txt"))
-            .unwrap()
-            .contains("work in progress"),
-        "the edits are still in the working tree: {message}"
-    );
-    assert_eq!(
-        open(&path).head().unwrap().shorthand(),
-        Ok(before.as_str()),
-        "a refused switch leaves the branch where it was"
-    );
+    phase linked_worktrees_refuse_unsafe_destinations_and_invalid_inputs;
+    // Existing paths and branches and invalid revisions fail without replacing files, creating
+    // branches, or silently succeeding.
+    {
+        let (dir, path) = init_repo();
+        let destination = dir.path().join("occupied");
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("keep.txt"), "keep").unwrap();
+        assert!(repo::create_worktree(&path, &abs(&destination), "codex/new", "HEAD").is_err());
+        assert_eq!(
+            fs::read_to_string(destination.join("keep.txt")).unwrap(),
+            "keep"
+        );
+        let repository = open(&path);
+        assert!(
+            repository
+                .find_branch("codex/new", git2::BranchType::Local)
+                .is_err()
+        );
+        let fresh = dir.path().join("fresh");
+        let branch = repository.head().unwrap().shorthand().unwrap().to_owned();
+        assert!(repo::create_worktree(&path, &abs(&fresh), &branch, "HEAD").is_err());
+        assert!(repo::create_worktree(&path, &abs(&fresh), "codex/new", "missing-revision").is_err());
+        assert!(!fresh.exists());
+        assert!(
+            repository
+                .find_branch("codex/new", git2::BranchType::Local)
+                .is_err()
+        );
+    }
+
+    phase linked_worktree_enumeration_errors_preserve_the_repository;
+    // Worktree enumeration failure is an explicit separate state: the ordinary
+    // repository, its current edits and an unborn checkout remain usable.
+    {
+        let empty = tempfile::tempdir().unwrap();
+        Repository::init(empty.path()).unwrap();
+        let (model, _) = repo::load(empty.path()).expect("unborn repository still opens");
+        assert!(model.worktree_error.is_none());
+        assert_eq!(model.worktrees.len(), 1);
+        assert!(model.worktrees[0].current);
+
+        let (dir, path) = init_repo();
+        let linked = dir.path().join("missing-checkout");
+        repo::create_worktree(&path, &abs(&linked), "codex/missing", "HEAD").unwrap();
+        fs::remove_dir_all(&linked).unwrap();
+        fs::write(path.join("file.txt"), "current edit\n").unwrap();
+        assert!(repo::list_worktrees(&path).is_err());
+        let (model, _) = repo::load(&path).expect("current checkout still opens");
+        assert!(
+            model.worktree_error.is_some(),
+            "failure must not look like an empty list"
+        );
+        assert_eq!(model.commits.len(), 1);
+        assert!(
+            model
+                .unstaged
+                .iter()
+                .any(|change| change.path == "file.txt")
+        );
+        assert!(GitClientApp::open_at(&path).is_some());
+
+        let bare = tempfile::tempdir().unwrap();
+        Repository::init_bare(bare.path()).unwrap();
+        let (model, _) = repo::load(bare.path()).expect("bare repository still opens");
+        assert!(
+            model.worktree_error.is_some(),
+            "bare checkout absence is explicit"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_switch_parks_carries_or_refuses_uncommitted_work;
+
+    phase uncommitted_work_is_parked_or_carried_across_a_switch;
+    // Switching branches with uncommitted work either parks it on the stash or
+    // carries it: both are the person's choice, made before the tree moves.
+    {
+        let (_dir, path) = init_repo();
+        repo::create_branch(&path, "feature", None, false).unwrap();
+        let original = open(&path).head().unwrap().shorthand().unwrap().to_owned();
+        assert_ne!(original, "feature");
+
+        // Parked: the tree is clean after the switch, and the edit is on the
+        // stash under the branch it was made on.
+        fs::write(path.join("file.txt"), "line 1\nedited\nline 3\n").unwrap();
+        let stash = repo::checkout_branch_planned(&path, "feature", repo::CheckoutPlan::Stash)
+            .expect("stash and switch");
+        assert!(stash.is_some(), "the switch reports the stash it made");
+        assert_eq!(open(&path).head().unwrap().shorthand(), Ok("feature"));
+        assert_eq!(
+            fs::read_to_string(path.join("file.txt")).unwrap(),
+            "line 1\nline 2\nline 3\n",
+            "the branch's own content is checked out"
+        );
+        let mut stashes = open(&path);
+        let mut listed = Vec::new();
+        stashes
+            .stash_foreach(|_, message, _| {
+                listed.push(message.to_owned());
+                true
+            })
+            .expect("the stash list can be read");
+        assert_eq!(listed.len(), 1, "one stash was made: {listed:?}");
+        assert!(
+            listed[0].contains("feature"),
+            "the stash says which branch it was made for: {listed:?}"
+        );
+
+        // Carried: an edit that does not conflict comes across untouched.
+        repo::checkout_branch(&path, &original).unwrap();
+        fs::write(path.join("file.txt"), "line 1\ncarried\nline 3\n").unwrap();
+        let stash = repo::checkout_branch_planned(&path, "feature", repo::CheckoutPlan::Carry)
+            .expect("switch carrying the edit");
+        assert!(stash.is_none(), "nothing was parked");
+        assert_eq!(open(&path).head().unwrap().shorthand(), Ok("feature"));
+        assert_eq!(
+            fs::read_to_string(path.join("file.txt")).unwrap(),
+            "line 1\ncarried\nline 3\n",
+            "the edit came with the switch"
+        );
+    }
+
+    phase a_switch_that_would_overwrite_edits_refuses_to_carry_them;
+    // Carrying edits that the target branch would overwrite is refused, and the
+    // tree is left exactly as it was: nothing is lost to learn that.
+    {
+        let (_dir, path) = init_repo();
+        // `feature` changes the same line the uncommitted edit does, so a safe
+        // checkout cannot carry the edit.
+        repo::create_branch(&path, "feature", None, true).unwrap();
+        fs::write(path.join("file.txt"), "line 1\non the branch\nline 3\n").unwrap();
+        repo::stage_file(&path, "file.txt").unwrap();
+        repo::commit(&path, "branch edit").unwrap();
+        let original = "master";
+        if open(&path)
+            .find_branch(original, git2::BranchType::Local)
+            .is_err()
+        {
+            // Some git versions initialise `main`.
+            repo::checkout_branch(&path, "main").unwrap();
+        } else {
+            repo::checkout_branch(&path, original).unwrap();
+        }
+        fs::write(path.join("file.txt"), "line 1\nwork in progress\nline 3\n").unwrap();
+        let before = open(&path).head().unwrap().shorthand().unwrap().to_owned();
+
+        let error = repo::checkout_branch_planned(&path, "feature", repo::CheckoutPlan::Carry)
+            .expect_err("the edits would be overwritten");
+        let message = format!("{error:#}");
+        assert!(message.contains("checkout"), "{message}");
+        assert!(
+            fs::read_to_string(path.join("file.txt"))
+                .unwrap()
+                .contains("work in progress"),
+            "the edits are still in the working tree: {message}"
+        );
+        assert_eq!(
+            open(&path).head().unwrap().shorthand(),
+            Ok(before.as_str()),
+            "a refused switch leaves the branch where it was"
+        );
+    }
 }
 
 /// A commit's detail names the files it changed, and each one's diff reads
@@ -1208,229 +1338,119 @@ fn a_commit_reports_the_files_it_changed_and_their_diffs() {
     assert_eq!(root_files[0].kind, git_client::model::ChangeKind::Added);
 }
 
-/// Keeping a side of a conflicted file discards what the other side wrote,
-/// so the app reads the two sides first and says how much each choice
-/// throws away. The counts are the lines only one side has, as git's own
-/// diff of the two sides counts them.
-#[test]
-fn a_conflict_reports_what_each_side_costs() {
-    let (_dir, path) = init_repo();
-    repo::create_branch(&path, "feature", None, true).unwrap();
-    // Their side: the second line rewritten, and two lines added under it.
-    fs::write(
-        path.join("file.txt"),
-        "line 1\ntheir second\ntheir third\ntheir fourth\nline 3\n",
-    )
-    .unwrap();
-    repo::stage_file(&path, "file.txt").unwrap();
-    repo::commit(&path, "feature edits the second line").unwrap();
-    repo::checkout_branch(&path, "master").unwrap();
-    // Our side: the same line rewritten, in our words only.
-    fs::write(path.join("file.txt"), "line 1\nour second\nline 3\n").unwrap();
-    repo::stage_file(&path, "file.txt").unwrap();
-    repo::commit(&path, "our side edits the second line").unwrap();
+tilo_test_env::scenario! {
+    fn a_conflict_is_costed_and_settled_by_keeping_a_side;
+
+    phase a_conflict_reports_what_each_side_costs;
+    // Keeping a side of a conflicted file discards what the other side wrote,
+    // so the app reads the two sides first and says how much each choice
+    // throws away. The counts are the lines only one side has, as git's own
+    // diff of the two sides counts them.
     {
-        let repo = open(&path);
-        let tip = repo
-            .find_branch("feature", git2::BranchType::Local)
-            .unwrap()
-            .into_reference()
-            .peel_to_commit()
-            .unwrap();
-        let annotated = repo.find_annotated_commit(tip.id()).unwrap();
-        repo.merge(&[&annotated], None, None).unwrap();
+        let (_dir, path) = init_repo();
+        repo::create_branch(&path, "feature", None, true).unwrap();
+        // Their side: the second line rewritten, and two lines added under it.
+        fs::write(
+            path.join("file.txt"),
+            "line 1\ntheir second\ntheir third\ntheir fourth\nline 3\n",
+        )
+        .unwrap();
+        repo::stage_file(&path, "file.txt").unwrap();
+        repo::commit(&path, "feature edits the second line").unwrap();
+        repo::checkout_branch(&path, "master").unwrap();
+        // Our side: the same line rewritten, in our words only.
+        fs::write(path.join("file.txt"), "line 1\nour second\nline 3\n").unwrap();
+        repo::stage_file(&path, "file.txt").unwrap();
+        repo::commit(&path, "our side edits the second line").unwrap();
+        {
+            let repo = open(&path);
+            let tip = repo
+                .find_branch("feature", git2::BranchType::Local)
+                .unwrap()
+                .into_reference()
+                .peel_to_commit()
+                .unwrap();
+            let annotated = repo.find_annotated_commit(tip.id()).unwrap();
+            repo.merge(&[&annotated], None, None).unwrap();
+            assert!(
+                repo.index().unwrap().has_conflicts(),
+                "the fixture is conflicted"
+            );
+        }
+
+        let cost = repo::conflict_cost(&path, "file.txt").expect("both sides are in the index");
+        assert_eq!(cost.ours, 1, "one line only our side wrote: {cost:?}");
+        assert_eq!(cost.theirs, 3, "three lines only theirs wrote: {cost:?}");
+        assert_eq!(
+            cost.discards(repo::ConflictSide::Ours),
+            3,
+            "keeping ours throws their three lines away"
+        );
+        assert_eq!(cost.discards(repo::ConflictSide::Theirs), 1);
+
+        // A file that is not conflicted has no two sides to cost.
+        let error = repo::conflict_cost(&path, "missing.txt").expect_err("no such file");
+        assert!(format!("{error:#}").contains("no our side"), "{error:#}");
+
+        // Settling the conflict ends the question: there is nothing left to cost.
+        repo::resolve_conflict(&path, "file.txt", repo::ConflictSide::Ours).unwrap();
         assert!(
-            repo.index().unwrap().has_conflicts(),
-            "the fixture is conflicted"
+            repo::conflict_cost(&path, "file.txt").is_err(),
+            "a settled file has no second side"
         );
     }
 
-    let cost = repo::conflict_cost(&path, "file.txt").expect("both sides are in the index");
-    assert_eq!(cost.ours, 1, "one line only our side wrote: {cost:?}");
-    assert_eq!(cost.theirs, 3, "three lines only theirs wrote: {cost:?}");
-    assert_eq!(
-        cost.discards(repo::ConflictSide::Ours),
-        3,
-        "keeping ours throws their three lines away"
-    );
-    assert_eq!(cost.discards(repo::ConflictSide::Theirs), 1);
-
-    // A file that is not conflicted has no two sides to cost.
-    let error = repo::conflict_cost(&path, "missing.txt").expect_err("no such file");
-    assert!(format!("{error:#}").contains("no our side"), "{error:#}");
-
-    // Settling the conflict ends the question: there is nothing left to cost.
-    repo::resolve_conflict(&path, "file.txt", repo::ConflictSide::Ours).unwrap();
-    assert!(
-        repo::conflict_cost(&path, "file.txt").is_err(),
-        "a settled file has no second side"
-    );
-}
-
-/// A conflicted file is settled by keeping one side: the index stops being
-/// conflicted, the working tree holds the kept text, and the other side is
-/// gone from the file (its history stays in the merge).
-#[test]
-fn a_conflict_is_resolved_by_keeping_one_side() {
-    let (_dir, path) = init_repo();
-    repo::create_branch(&path, "feature", None, true).unwrap();
-    fs::write(path.join("file.txt"), "line 1\nfeature side\nline 3\n").unwrap();
-    repo::stage_file(&path, "file.txt").unwrap();
-    repo::commit(&path, "feature edits the line").unwrap();
-    let feature = open(&path).head().unwrap().shorthand().unwrap().to_owned();
-    assert_eq!(feature, "feature");
-    repo::checkout_branch(&path, "master").unwrap();
-    let base = open(&path).head().unwrap().shorthand().unwrap().to_owned();
-    assert_eq!(base, "master");
-    fs::write(path.join("file.txt"), "line 1\nour side\nline 3\n").unwrap();
-    repo::stage_file(&path, "file.txt").unwrap();
-    repo::commit(&path, "our side edits the line").unwrap();
-
+    phase a_conflict_is_resolved_by_keeping_one_side;
+    // A conflicted file is settled by keeping one side: the index stops being
+    // conflicted, the working tree holds the kept text, and the other side is
+    // gone from the file (its history stays in the merge).
     {
+        let (_dir, path) = init_repo();
+        repo::create_branch(&path, "feature", None, true).unwrap();
+        fs::write(path.join("file.txt"), "line 1\nfeature side\nline 3\n").unwrap();
+        repo::stage_file(&path, "file.txt").unwrap();
+        repo::commit(&path, "feature edits the line").unwrap();
+        let feature = open(&path).head().unwrap().shorthand().unwrap().to_owned();
+        assert_eq!(feature, "feature");
+        repo::checkout_branch(&path, "master").unwrap();
+        let base = open(&path).head().unwrap().shorthand().unwrap().to_owned();
+        assert_eq!(base, "master");
+        fs::write(path.join("file.txt"), "line 1\nour side\nline 3\n").unwrap();
+        repo::stage_file(&path, "file.txt").unwrap();
+        repo::commit(&path, "our side edits the line").unwrap();
+
+        {
+            let repo = open(&path);
+            let tip = repo
+                .find_branch("feature", git2::BranchType::Local)
+                .unwrap()
+                .into_reference()
+                .peel_to_commit()
+                .unwrap();
+            let annotated = repo.find_annotated_commit(tip.id()).unwrap();
+            repo.merge(&[&annotated], None, None).unwrap();
+            assert!(
+                repo.index().unwrap().has_conflicts(),
+                "the fixture really is conflicted"
+            );
+        }
+
+        repo::resolve_conflict(&path, "file.txt", repo::ConflictSide::Ours).expect("keep our side");
         let repo = open(&path);
-        let tip = repo
-            .find_branch("feature", git2::BranchType::Local)
-            .unwrap()
-            .into_reference()
-            .peel_to_commit()
-            .unwrap();
-        let annotated = repo.find_annotated_commit(tip.id()).unwrap();
-        repo.merge(&[&annotated], None, None).unwrap();
         assert!(
-            repo.index().unwrap().has_conflicts(),
-            "the fixture really is conflicted"
+            !repo.index().unwrap().has_conflicts(),
+            "the file is no longer conflicted"
         );
+        assert_eq!(
+            fs::read_to_string(path.join("file.txt")).unwrap(),
+            "line 1\nour side\nline 3\n",
+            "our version is what the file holds"
+        );
+        assert_eq!(repo.head().unwrap().shorthand(), Ok(base.as_str()));
+
+        // Keeping a side a file does not have is a refusal, not a silent write.
+        let error = repo::resolve_conflict(&path, "file.txt", repo::ConflictSide::Theirs)
+            .expect_err("the conflict is already settled");
+        assert!(format!("{error:#}").contains("no their side"), "{error:#}");
     }
-
-    repo::resolve_conflict(&path, "file.txt", repo::ConflictSide::Ours).expect("keep our side");
-    let repo = open(&path);
-    assert!(
-        !repo.index().unwrap().has_conflicts(),
-        "the file is no longer conflicted"
-    );
-    assert_eq!(
-        fs::read_to_string(path.join("file.txt")).unwrap(),
-        "line 1\nour side\nline 3\n",
-        "our version is what the file holds"
-    );
-    assert_eq!(repo.head().unwrap().shorthand(), Ok(base.as_str()));
-
-    // Keeping a side a file does not have is a refusal, not a silent write.
-    let error = repo::resolve_conflict(&path, "file.txt", repo::ConflictSide::Theirs)
-        .expect_err("the conflict is already settled");
-    assert!(format!("{error:#}").contains("no their side"), "{error:#}");
-}
-
-/// The app asks before a switch moves the tree, and the sheet's own answers
-/// do what they say: park the work or take it along.
-#[test]
-fn app_switch_asks_first_and_honours_the_answer() {
-    let (_dir, path) = init_repo();
-    repo::create_branch(&path, "feature", None, false).unwrap();
-    let app = GitClientApp::open_at(&path).unwrap();
-    let original = app.test_head();
-    assert_ne!(original, "feature");
-    fs::write(path.join("file.txt"), "line 1\nuncommitted\nline 3\n").unwrap();
-    let mut app = GitClientApp::open_at(&path).unwrap();
-
-    app.test_branch_action(BranchAction::Checkout("feature".into()));
-    assert_eq!(
-        app.test_pending_switch().as_deref(),
-        Some("feature"),
-        "uncommitted work asks before the branch moves"
-    );
-    assert_eq!(
-        open(&path).head().unwrap().shorthand(),
-        Ok(original.as_str()),
-        "nothing moved while the question stands"
-    );
-
-    app.test_answer_switch(repo::CheckoutPlan::Stash);
-    assert_eq!(app.test_last_error(), None);
-    assert_eq!(open(&path).head().unwrap().shorthand(), Ok("feature"));
-    assert_eq!(app.test_head(), "feature", "the model reloaded");
-    assert!(
-        app.test_notice()
-            .is_some_and(|notice| notice.contains("feature") && notice.contains("stashed")),
-        "the switch says what became of the work: {:?}",
-        app.test_notice()
-    );
-    assert_eq!(
-        fs::read_to_string(path.join("file.txt")).unwrap(),
-        "line 1\nline 2\nline 3\n",
-        "the edits left the working tree"
-    );
-}
-
-/// History opens a commit's changed files and one file's diff, through the
-/// same production path its rows use.
-#[test]
-fn app_history_reads_a_commits_files_and_one_files_diff() {
-    let (_dir, path) = init_repo();
-    fs::write(path.join("file.txt"), "line 1\nrewritten\nline 3\n").unwrap();
-    repo::stage_file(&path, "file.txt").unwrap();
-    repo::commit(&path, "rewrite the second line").unwrap();
-    let mut app = GitClientApp::open_at(&path).unwrap();
-
-    let files = app.test_commit_files(0);
-    assert_eq!(files, vec!["file.txt"], "the commit's changed file");
-    app.test_open_commit_file(0);
-    assert_eq!(
-        app.test_commit_diff(),
-        Some((
-            open(&path).head().unwrap().target().unwrap().to_string(),
-            "file.txt".to_owned()
-        )),
-        "the row opens that file's diff in that commit"
-    );
-
-    // The root commit has no parent: everything it holds is added.
-    let roots = app.test_commit_files(1);
-    assert_eq!(roots, vec!["file.txt"]);
-}
-
-/// Keeping a side of a conflicted file from the app's own action settles it
-/// and says so.
-#[test]
-fn app_resolves_a_conflicted_file_by_keeping_a_side() {
-    let (_dir, path) = init_repo();
-    repo::create_branch(&path, "feature", None, true).unwrap();
-    fs::write(path.join("file.txt"), "line 1\ntheirs\nline 3\n").unwrap();
-    repo::stage_file(&path, "file.txt").unwrap();
-    repo::commit(&path, "their edit").unwrap();
-    repo::checkout_branch(&path, "master").unwrap();
-    fs::write(path.join("file.txt"), "line 1\nours\nline 3\n").unwrap();
-    repo::stage_file(&path, "file.txt").unwrap();
-    repo::commit(&path, "our edit").unwrap();
-    {
-        let repo = open(&path);
-        let tip = repo
-            .find_branch("feature", git2::BranchType::Local)
-            .unwrap()
-            .into_reference()
-            .peel_to_commit()
-            .unwrap();
-        let annotated = repo.find_annotated_commit(tip.id()).unwrap();
-        repo.merge(&[&annotated], None, None).unwrap();
-    }
-
-    let mut app = GitClientApp::open_at(&path).unwrap();
-    let conflicted = app
-        .test_change_counts()
-        .0
-        .saturating_add(app.test_change_counts().1);
-    assert!(conflicted > 0, "the merge left a conflict to settle");
-    app.test_select_conflicted_file();
-    app.test_resolve_conflict(repo::ConflictSide::Ours);
-    assert_eq!(app.test_last_error(), None);
-    assert!(
-        app.test_notice()
-            .is_some_and(|notice| notice.contains("our side") && notice.contains("file.txt")),
-        "the resolution names the side it kept: {:?}",
-        app.test_notice()
-    );
-    assert!(
-        !open(&path).index().unwrap().has_conflicts(),
-        "the repository's index really is settled"
-    );
 }
