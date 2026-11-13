@@ -487,16 +487,19 @@ fn a_state_the_run_stages_lays_the_window_out_there() {
 fn a_phone_layout_shows_what_a_tapped_row_opens() {
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    for (app, shows) in [
+    for (app, shown) in [
         // Notes is a tree and the note it opens: at this width the tree is the window's first
-        // screen and a row of it pushes the note in front, with the way back to the tree.
-        ("notes", ", then a note_editor in front at 390×844"),
+        // screen and a row of it pushes the note in front, with the way back to the tree. One run
+        // of the check dumps both pages.
         (
             "notes",
-            ", then Back pressed, then a note_editor in front at 390×844",
+            &[
+                ", then a note_editor in front at 390×844",
+                ", then Back pressed, then a note_editor in front at 390×844",
+            ][..],
         ),
         // A board keeps no detail of its own: the card a finger taps is the page that shows.
-        ("board", "then a card_page in front at 390×844"),
+        ("board", &["then a card_page in front at 390×844"][..]),
     ] {
         let dir = manifest().join("../../../apps/tl").join(app);
         let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
@@ -512,11 +515,13 @@ fn a_phone_layout_shows_what_a_tapped_row_opens() {
             doc.lines().last().unwrap_or_default()
         );
         let headers: Vec<&str> = doc.lines().filter(|line| line.starts_with("== ")).collect();
-        assert!(
-            headers.iter().any(|header| header.contains(shows)),
-            "a phone window shows what `{shows}` names in {app}:\n{}",
-            headers.join("\n")
-        );
+        for &shows in shown {
+            assert!(
+                headers.iter().any(|header| header.contains(shows)),
+                "a phone window shows what `{shows}` names in {app}:\n{}",
+                headers.join("\n")
+            );
+        }
     }
 }
 
