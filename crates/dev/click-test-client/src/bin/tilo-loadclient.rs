@@ -1,13 +1,10 @@
-//! A Wayland client that keeps the desktop busy drawing.
+//! A Wayland client that keeps the desktop busy drawing: every window commits a frame for every
+//! frame the compositor shows, so it has work to composite and a tool can measure what that costs.
+//! `--windows N` keeps N windows drawing at once, `--fullscreen` fills the display as a video player
+//! does. At the end it answers `LOADCLIENT frames=<n> windows=<n> seconds=<s>`.
 //!
-//! Every window commits a frame for every frame the compositor shows, so it has
-//! work to composite and a tool can measure what that costs. `--windows N` keeps
-//! N windows drawing at once, `--fullscreen` fills the display as a video player
-//! does. At the end it answers
-//! `LOADCLIENT frames=<n> windows=<n> seconds=<s>`.
-//!
-//! It never starts a session and reads no session state: it connects to
-//! `$WAYLAND_DISPLAY` on `$XDG_RUNTIME_DIR`, like an app.
+//! It never starts a session and reads no session state: it connects to `$WAYLAND_DISPLAY` on
+//! `$XDG_RUNTIME_DIR`, like an app.
 //!
 //!     cargo build -p click-test-client --bin tilo-loadclient
 //!     WAYLAND_DISPLAY=wayland-0 tilo-loadclient --seconds 8 --windows 4
@@ -164,8 +161,8 @@ usage: tilo-loadclient [--seconds S] [--windows N] [--fullscreen]
 
     impl Client {
         /// Draw window `index` and commit it: one frame the compositor counts, with content that
-        /// changes every frame so every commit is a repaint. It is drawn anew in a buffer the
-        /// compositor is not holding, so a frame never waits for the previous one to come back.
+        /// changes every frame so every commit is a repaint. It draws in a buffer the compositor is
+        /// not holding, so a frame never waits for the previous one to come back.
         fn draw(&mut self, qh: &QueueHandle<Self>, index: usize) {
             let Some((surface, (width, height))) = self
                 .windows
@@ -250,7 +247,7 @@ usage: tilo-loadclient [--seconds S] [--windows N] [--fullscreen]
         ) {
         }
         /// The compositor showed the frame this window's last commit carries: drawing the next one
-        /// now keeps exactly one commit in flight, at the display's own pace.
+        /// now keeps exactly one commit in flight, at the display's pace.
         fn frame(
             &mut self,
             _: &Connection,

@@ -31,10 +31,9 @@ mod linux {
         zwp_text_input_v3::{self, ZwpTextInputV3},
     };
 
-    /// Convert width/height to the `i32` + byte-stride triple `SlotPool::create_buffer`
-    /// wants. `w`/`h` come from the compositor's `configure` event, which is not bounded
-    /// by this client — `None` degrades to "skip this frame" rather than wrapping the
-    /// stride into a buffer smaller than the canvas.
+    /// Width and height as the `i32` and byte-stride triple `SlotPool::create_buffer` wants.
+    /// `w`/`h` come from the compositor's `configure` event and are not bounded here, so `None`
+    /// skips the frame rather than wrapping the stride into a buffer smaller than the canvas.
     fn buffer_geometry(w: u32, h: u32) -> Option<(i32, i32, i32)> {
         let w_px = i32::try_from(w).ok()?;
         let h_px = i32::try_from(h).ok()?;
@@ -64,10 +63,9 @@ mod linux {
         committed: Option<String>,
         /// Whether Control is held, from the seat's modifiers.
         ctrl: bool,
-        /// Input events from the dispatch in progress. Published together
-        /// after `blocking_dispatch` returns, so a click cannot become
-        /// visible while key presses already read in that queue are still
-        /// waiting to be delivered.
+        /// Input events from the dispatch in progress, published together after `blocking_dispatch`
+        /// returns, so a click cannot become visible while key presses read in that queue still
+        /// wait to be delivered.
         pending_events: Vec<String>,
     }
 
@@ -115,9 +113,8 @@ mod linux {
         }
     }
 
-    /// One write for every input event this dispatch delivered. Separate
-    /// lines would let a reader observe the click before key presses that
-    /// were already queued behind it in the same read.
+    /// One write for every input event this dispatch delivered: separate lines would let a reader
+    /// observe the click before key presses already queued behind it in the same read.
     fn publish_events(app: &mut ClientApp) {
         if app.pending_events.is_empty() {
             return;
