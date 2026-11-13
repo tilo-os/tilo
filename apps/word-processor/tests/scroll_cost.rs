@@ -393,7 +393,9 @@ struct Case {
 /// the same wheel and click place the caret again, and the case runs only if the editor then
 /// reports what it reported to the first: the same scroll offset and range, the same loaded
 /// paragraphs, the same caret and the same text under it. So a case that changes the document
-/// goes last.
+/// goes last. The click lands where the last case's did, so it waits out what is left of the
+/// multi-click interval: within it the press would be the second of a double click and select
+/// a word, and whether it is would depend on how fast the case before it ran.
 fn counted_in_turn<const N: usize>(
     blocks: usize,
     cases: [Case; N],
@@ -403,12 +405,16 @@ fn counted_in_turn<const N: usize>(
         let mut host = Host::new();
         opened(app, &mut host, blocks);
         let mut first_start = None;
+        let mut clicked = None;
         counted = Some(cases.map(|case| {
-            if first_start.is_some() {
+            if let Some(clicked) = clicked {
                 host.step(app, vec![wheel(1.0e9, TouchPhase::Moved)]);
                 host.settle(app);
+                let since = ui::time::now().duration_since(clicked);
+                std::thread::sleep(ui::gesture::multi_click_interval().saturating_sub(since));
             }
             caret_in_the_middle(app, &mut host);
+            clicked = Some(ui::time::now());
             let start = observe(app);
             let first = first_start.get_or_insert_with(|| start.clone());
             assert_eq!(
