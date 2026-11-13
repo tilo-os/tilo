@@ -955,6 +955,51 @@ pub(crate) async fn settle_strips(
         .map_err(|error| anyhow::anyhow!("give the shared desktop its strips: {error}"))
 }
 
+/// Refound each `APP/RECORD` the operator named, once per start that names it:
+/// a record whose retained history lost the base its deltas were written over
+/// is published again as the workspace's next checkpoint of it, and what its
+/// channel retained until now is archived beside the replay. What was done is
+/// kept in `refounded.json` beside the workspace, so a later start naming the
+/// same record does not found it again.
+async fn refound_records(
+    workspaces: &Workspaces,
+    workspace: &str,
+    named: &[String],
+    state: &Path,
+) -> anyhow::Result<()> {
+    if named.is_empty() {
+        return Ok(());
+    }
+    let done_at = state.join("refounded.json");
+    let done: BTreeMap<String, String> = read_json(&done_at)?;
+    let mut done = done;
+    for entry in named {
+        let (app, record) = entry
+            .split_once('/')
+            .with_context(|| format!("--refound {entry:?} is not APP/RECORD"))?;
+        if done.contains_key(entry) {
+            continue;
+        }
+        let outcome = workspaces
+            .refound_record(workspace, app, record)
+            .await
+            .map_err(|error| anyhow::anyhow!("refound {entry}: {error}"))?;
+        tracing::info!(
+            workspace = %workspace,
+            app = %outcome.app,
+            record = %outcome.record,
+            archived = outcome.archived,
+            "a record was refounded and its old history archived"
+        );
+        done.insert(
+            entry.clone(),
+            format!("archived {} entries", outcome.archived),
+        );
+        write_json(&done_at, &done)?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn ensure_guest_policy(
     workspaces: &Workspaces,
     workspace: &str,
