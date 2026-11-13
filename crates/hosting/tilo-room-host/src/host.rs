@@ -1,20 +1,16 @@
-//! The workspace host: the governance of the workspaces placed on a device and the
-//! session stack their members connect through, embeddable in any process
-//! that owns an iroh endpoint.
+//! The workspaces one device serves: their governance and the session stack their members
+//! connect through, embeddable in any process that owns an iroh endpoint.
 //!
-//! A relay runs one as a certified host ([`HostMode::CertifiedHost`]); a
-//! person's device runs the same one for the workspaces placed on it
-//! ([`HostMode::Device`]). [`WorkspaceHost::open`] spawns nothing periodic: with
-//! no peers connected the host wakes only on I/O, and a connected peer's
-//! session is audited when its workspaces' membership files change, which the
-//! host watches. Its embedder registers
-//! [`WorkspaceHost::protocols`] on its own router, or, when the router is built
-//! before any workspace is placed here, [`deferred_protocols`], which refuse
-//! connections until [`HostSlot::install`] gives them a host.
+//! A device runs the same stack whether it has a screen or not; [`HostConfig::work`] is what
+//! it takes from others. [`WorkspaceHost::open`] spawns nothing periodic: with no peers
+//! connected the host wakes only on I/O, and a connected peer's session is audited when its
+//! workspaces' membership files change, which the host watches. Its embedder registers
+//! [`WorkspaceHost::protocols`] on its own router, or, when the router is built before any
+//! workspace is placed here, [`deferred_protocols`], which refuse connections until
+//! [`HostSlot::install`] gives them a host.
 //!
-//! A member in the same process connects through [`WorkspaceHost::connect_local`]:
-//! the same handshake and session as a remote member, over an in-process
-//! stream.
+//! A member in the same process connects through [`WorkspaceHost::connect_local`]: the same
+//! handshake and session as a remote member, over an in-process stream.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -34,48 +30,19 @@ use crate::metrics::Metrics;
 use crate::peer::{PeerContext, WorkspaceAutobind, WorkspaceRegistry, run_peer_until};
 use crate::policy::TrustPolicy;
 use crate::transport::{ALPN, MAX_FRAME_BYTES};
-use tilo_relay_protocol::WorkspaceId;
+use tilo_relay_protocol::{WorkSetting, WorkspaceId};
 
 /// How much an in-process session buffers each way before its writer waits.
 const LOCAL_SESSION_BUFFER: usize = 1 << 20;
-
-/// How a host proves itself to the members that dial it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HostMode {
-    /// An always-on host certified with host capability (a relay).
-    CertifiedHost,
-    /// A person's device hosting the workspaces placed on it: no host capability
-    /// needed. The governing device itself serves its workspaces, and its join
-    /// answers name it as such
-    /// ([`WorkspaceHostMode::NativeInteractiveWorkspaceOwner`]).
-    ///
-    /// [`WorkspaceHostMode::NativeInteractiveWorkspaceOwner`]:
-    /// tilo_delivery_protocol::workspace_join::WorkspaceHostMode::NativeInteractiveWorkspaceOwner
-    Device,
-}
-
-impl HostMode {
-    /// What the host's join answers say it is.
-    pub(crate) const fn join_hint_mode(
-        self,
-    ) -> tilo_delivery_protocol::workspace_join::WorkspaceHostMode {
-        match self {
-            Self::CertifiedHost => {
-                tilo_delivery_protocol::workspace_join::WorkspaceHostMode::CertifiedHost
-            }
-            Self::Device => {
-                tilo_delivery_protocol::workspace_join::WorkspaceHostMode::NativeInteractiveWorkspaceOwner
-            }
-        }
-    }
-}
 
 /// What a host is opened with.
 #[derive(Clone)]
 pub struct HostConfig {
     /// Where the host keeps its workspaces and their retained state.
     pub state_root: PathBuf,
-    pub mode: HostMode,
+    /// The work this device takes from others. A device of its person hands it a workspace to
+    /// serve only when the setting takes that person's work.
+    pub work: WorkSetting,
     /// Who the handshake admits besides the person's own devices and the
     /// workspaces' members.
     pub trust_policy: TrustPolicy,
@@ -94,10 +61,10 @@ impl HostConfig {
     /// A host keeping its state under `state_root`, admitting the person's
     /// own devices and its workspaces' members, with the desktop's payloads.
     #[must_use]
-    pub fn new(state_root: PathBuf, mode: HostMode) -> Self {
+    pub fn new(state_root: PathBuf, work: WorkSetting) -> Self {
         Self {
             state_root,
-            mode,
+            work,
             trust_policy: TrustPolicy::AllowMatchingUser,
             member_limits: None,
             max_workspace_grants: None,
@@ -110,7 +77,7 @@ impl HostConfig {
 /// Why a host could not open or change.
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
-    /// The identity is invalid, or not one this mode may host with.
+    /// The identity is invalid, or a device that takes work may not govern workspaces.
     #[error("identity: {0}")]
     Identity(String),
     /// On-disk persistence.
@@ -196,10 +163,9 @@ impl HostSessions {
         ) -> Option<Arc<dyn AppServingPlane>>,
     ) -> Result<(Self, Option<Governed>), HostError> {
         validate_host_device_identity(&identity)?;
-        if cfg.mode == HostMode::CertifiedHost && !identity.device_cert.capabilities.can_act_as_host
-        {
+        if !cfg.work.takes_nothing() && !identity.device_cert.capabilities.can_own_workspaces {
             return Err(HostError::Identity(
-                "device certificate is not host-capable".into(),
+                "a device that takes work cannot govern workspaces".into(),
             ));
         }
         say_when_unsealed(governs, &identity.device_cert);
@@ -319,7 +285,7 @@ impl HostSessions {
                 .unwrap_or(crate::workspaces::DEFAULT_MAX_PRE_ADMISSIONS),
             trust_policy: self.handler.trust_policy.clone(),
             agents: self.handler.agents.clone(),
-            mode: cfg.mode.join_hint_mode(),
+            work: cfg.work.clone(),
             arrivals: self.handler.arrivals.clone(),
         }
     }
@@ -551,8 +517,8 @@ impl WorkspaceHost {
     ///
     /// # Errors
     ///
-    /// The identity is invalid or, for [`HostMode::CertifiedHost`], not
-    /// host-capable; `cfg` admits anyone, under which no workspace is governed;
+    /// The identity is invalid, or a device that takes work may not govern
+    /// workspaces; `cfg` admits anyone, under which no workspace is governed;
     /// the state root cannot be created; or the workspaces kept there cannot be
     /// opened.
     pub async fn open(

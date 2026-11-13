@@ -16,7 +16,7 @@ use crate::{
 use ed25519_dalek::SigningKey;
 use neighbour_wire::{NeighbourMsg, Retention};
 use std::{collections::BTreeMap, time::SystemTime};
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_user_identity::DeviceCert;
 
 use super::{APP, certificate};
@@ -32,7 +32,6 @@ pub struct TestGovernor {
     host: DeviceCert,
     host_key: SigningKey,
     /// The host is a dedicated certified host, not the governor itself.
-    certified_host: bool,
     workspace_id: WorkspaceId,
     generation: u64,
     outgoing: Vec<Vec<u8>>,
@@ -126,7 +125,6 @@ impl TestGovernor {
             governor_key,
             host,
             host_key,
-            certified_host: true,
             workspace_id,
             generation: 0,
             outgoing: Vec::new(),
@@ -185,7 +183,6 @@ impl TestGovernor {
             host: governor,
             host_key: governor_key.clone(),
             governor_key,
-            certified_host: false,
             workspace_id,
             generation: 0,
             outgoing: Vec::new(),
@@ -243,17 +240,14 @@ impl TestGovernor {
     /// The host's signed hint that it serves the workspace at `endpoint_addr`.
     #[must_use]
     pub fn hint(&self, endpoint_addr: iroh_base::EndpointAddr) -> TransportHint {
-        IrohWorkspaceHostHintV1 {
+        WorkspaceDeviceHintV1 {
             version: 1,
-            mode: if self.certified_host {
-                WorkspaceHostMode::CertifiedHost
-            } else {
-                WorkspaceHostMode::NativeInteractiveWorkspaceOwner
-            },
+            holds_keys: true,
+            runs_work: false,
             workspace_id: self.workspace_id,
             endpoint_addr,
-            host_user_public_key: self.host.user_public_key,
-            host_device_certificate: self.host.clone(),
+            user_public_key: self.host.user_public_key,
+            device_certificate: self.host.clone(),
             packet_relay_url: "https://relay.invalid".into(),
         }
         .transport_hint(&self.host_key)
@@ -598,7 +592,7 @@ impl TestGovernor {
 mod empty_interactive_tests {
     use super::{TestGovernor, certificate};
     use ed25519_dalek::SigningKey;
-    use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+    use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 
     #[test]
     fn checkpoint_refresh_follows_admitted_native_receipts() {
@@ -646,12 +640,9 @@ mod empty_interactive_tests {
             .unwrap(),
         );
         let hint = governor.hint(endpoint);
-        let (payload, _) = IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint).unwrap();
-        assert_eq!(
-            payload.mode,
-            WorkspaceHostMode::NativeInteractiveWorkspaceOwner
-        );
-        assert_eq!(payload.host_device_certificate, cert);
+        let (payload, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).unwrap();
+        assert!(payload.holds_keys);
+        assert_eq!(payload.device_certificate, cert);
         assert!(
             TestGovernor::empty_interactive(cert, SigningKey::from_bytes(&[94; 32]), &workspace)
                 .is_err()

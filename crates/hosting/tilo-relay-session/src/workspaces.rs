@@ -318,12 +318,12 @@ impl WorkspaceHostAddress {
     pub fn of_hint(hint: &[u8]) -> Option<Self> {
         let decoded: tilo_workspace_join::TransportHint = postcard::from_bytes(hint).ok()?;
         let (host, _) =
-            tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(
+            tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::authenticate_transport_hint(
                 &decoded,
             )
             .ok()?;
         Some(Self {
-            name: host.host_device_certificate.device_label,
+            name: host.device_certificate.device_label,
             hint: Some(hex::encode(hint)),
         })
     }
@@ -334,7 +334,7 @@ impl WorkspaceHostAddress {
     /// It is no signed workspace address.
     pub fn address(
         &self,
-    ) -> Result<tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1, String> {
+    ) -> Result<tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1, String> {
         let hint = self
             .hint
             .as_deref()
@@ -342,7 +342,7 @@ impl WorkspaceHostAddress {
         let bytes = hex::decode(hint).map_err(|error| error.to_string())?;
         let decoded: tilo_workspace_join::TransportHint =
             postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
-        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(
+        tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::authenticate_transport_hint(
             &decoded,
         )
         .map(|(host, _)| host)

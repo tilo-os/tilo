@@ -234,7 +234,7 @@ impl NativeWorkspaceOwner {
 /// it from outside its own network.
 fn host_relays(hint: &TransportHint) -> Result<std::collections::BTreeSet<String>, String> {
     let (payload, _) =
-        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(
+        tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::authenticate_transport_hint(
             hint,
         )
         .map_err(|error| error.to_string())?;

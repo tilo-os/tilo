@@ -728,13 +728,14 @@ fn address_on_b(
     b: &B,
     workspace: &str,
 ) -> tilo_relay_session::workspaces::WorkspaceHostAddress {
-    let hint = tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
+    let hint = tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1 {
         version: 1,
-        mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+        holds_keys: true,
+        runs_work: false,
         workspace_id: tilo_desktop_model::WorkspaceId::parse(workspace).unwrap(),
         endpoint_addr: addr(&b.endpoint),
-        host_user_public_key: person.b.1.user_public_key,
-        host_device_certificate: person.b.1.clone(),
+        user_public_key: person.b.1.user_public_key,
+        device_certificate: person.b.1.clone(),
         packet_relay_url: "iroh:direct".into(),
     }
     .transport_hint(&person.b.0)
@@ -765,7 +766,7 @@ async fn a_key_enters_a_workspace_its_persons_device_hosts_at_the_address_their_
         "the list names the device that hosts it"
     );
     let dialing = endpoint(&all.0).await;
-    let entered = enter(&dialing, &key, DESK, &address, "Visa backend #1")
+    let entered = enter(&dialing, &key, DESK, &address)
         .await
         .expect("the person's device lets their key in");
     let introduced = entered.handle(initialize()).await.unwrap();
@@ -791,11 +792,7 @@ async fn a_key_enters_a_workspace_its_persons_device_hosts_at_the_address_their_
     assert_eq!(arrived[0].workspace.as_deref(), Some(DESK));
 
     // An address names one workspace: another's is not entered with it.
-    assert!(
-        enter(&dialing, &key, ON_RELAY, &address, "Visa backend #1")
-            .await
-            .is_err()
-    );
+    assert!(enter(&dialing, &key, ON_RELAY, &address).await.is_err());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -822,7 +819,6 @@ async fn a_key_for_another_workspace_or_a_revoked_key_is_refused_at_the_device()
         },
         DESK,
         &address_on_b(&person, &b, DESK),
-        "elsewhere",
     )
     .await
     .err()
@@ -837,7 +833,6 @@ async fn a_key_for_another_workspace_or_a_revoked_key_is_refused_at_the_device()
         },
         DESK,
         &address_on_b(&person, &b, DESK),
-        "revoked",
     )
     .await
     .err()

@@ -18,7 +18,7 @@ use iroh::protocol::Router;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 use super::{ChannelKeys, ChannelKeysAnswerFuture, DeviceChannels, PreAdmitRequest, Workspaces};
-use crate::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
+use crate::host::{HostConfig, HostIdentity, WorkspaceHost};
 
 /// A host certified only to host workspaces: it governs them without taking part in
 /// their channels.
@@ -224,7 +224,10 @@ async fn host_on(
     let host = WorkspaceHost::open(
         HostConfig {
             max_workspace_grants: grants,
-            ..HostConfig::new(state_root.to_owned(), HostMode::CertifiedHost)
+            ..HostConfig::new(
+                state_root.to_owned(),
+                tilo_relay_protocol::WorkSetting::own_person(),
+            )
         },
         HostIdentity {
             user_public_key: cert.user_public_key,

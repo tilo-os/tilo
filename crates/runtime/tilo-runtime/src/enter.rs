@@ -20,14 +20,11 @@
 //!
 //! Either way the caller gets an [`Entered`], which answers MCP JSON-RPC.
 
-use std::sync::Arc;
-
 use ed25519_dalek::SigningKey;
 use iroh::Endpoint;
 use serde_json::Value;
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_relay_session::workspaces::WorkspaceHostAddress;
-use tilo_session_client::PeerConfig;
 use tilo_session_client::device::Device;
 use tilo_session_core::remote::SessionActions;
 use tilo_user_identity::DeviceCert;
@@ -88,7 +85,7 @@ impl Drop for Entered {
 ///
 /// # Errors
 /// It is no signed workspace address.
-pub fn host_of(address: &WorkspaceHostAddress) -> Result<IrohWorkspaceHostHintV1, String> {
+pub fn host_of(address: &WorkspaceHostAddress) -> Result<WorkspaceDeviceHintV1, String> {
     address.address()
 }
 
@@ -104,60 +101,24 @@ pub async fn enter(
     key: &Key,
     workspace: &str,
     address: &WorkspaceHostAddress,
-    name: &str,
 ) -> Result<Entered, String> {
-    let host = host_of(address)?;
-    if host.workspace_id.to_string() != workspace {
+    let device = host_of(address)?;
+    if device.workspace_id.to_string() != workspace {
         return Err("that address is another workspace's".to_owned());
     }
     if *endpoint.id().as_bytes() != key.cert.device_public_key {
         return Err("the endpoint dials as another key than the one entering".to_owned());
     }
-    match host.mode {
-        WorkspaceHostMode::NativeInteractiveWorkspaceOwner => {
-            let dialed = crate::remote_door::open(
-                endpoint,
-                host.endpoint_addr.clone(),
-                &key.cert,
-                Some(workspace),
-                false,
-            )
-            .await
-            .map_err(|reason| format!("{} did not let this key in: {reason}", address.name))?;
-            Ok(Entered::Door(Box::new(DoorLines::new(dialed))))
-        }
-        WorkspaceHostMode::CertifiedHost => {
-            let device = Device::over(
-                PeerConfig {
-                    host: tilo_relay_client::Host::at(host.endpoint_addr.clone()),
-                    cert: key.cert.clone(),
-                    host_cert: host.host_device_certificate.clone(),
-                    revocations: tilo_user_identity::RevocationList::new(),
-                    entering: None,
-                },
-                Arc::new(key.key.clone()),
-                &key.cert.device_label,
-            );
-            let entered = match device.connected().await {
-                Ok(()) => {
-                    device
-                        .enter_workspace(workspace, &key.cert.device_label)
-                        .await
-                }
-                Err(refusal) => Err(refusal),
-            };
-            match entered {
-                Ok(workspace_id) => Ok(Entered::on_host(device, workspace_id, workspace, name)),
-                Err(refusal) => {
-                    device.close();
-                    Err(format!(
-                        "{} did not let this key in: {}",
-                        address.name, refusal.message
-                    ))
-                }
-            }
-        }
-    }
+    let dialed = crate::remote_door::open(
+        endpoint,
+        device.endpoint_addr.clone(),
+        &key.cert,
+        Some(workspace),
+        false,
+    )
+    .await
+    .map_err(|reason| format!("{} did not let this key in: {reason}", address.name))?;
+    Ok(Entered::Door(Box::new(DoorLines::new(dialed))))
 }
 
 impl Entered {

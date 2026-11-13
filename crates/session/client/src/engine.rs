@@ -1619,13 +1619,14 @@ impl Engine {
             .relay_urls()
             .next()
             .map_or_else(|| "iroh:direct".to_owned(), ToString::to_string);
-        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
+        tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1 {
             version: 1,
-            mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+            holds_keys: true,
+            runs_work: false,
             workspace_id,
             endpoint_addr: endpoint.clone(),
-            host_user_public_key: identity.device_cert.user_public_key,
-            host_device_certificate: identity.device_cert.clone(),
+            user_public_key: identity.device_cert.user_public_key,
+            device_certificate: identity.device_cert.clone(),
             packet_relay_url,
         }
         .transport_hint(identity.signer.as_ref())

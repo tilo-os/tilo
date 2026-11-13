@@ -29,7 +29,7 @@ use tilo_actions::remote::{
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::{PersonalStore, PersonalSync};
-use tilo_room_host::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
+use tilo_room_host::host::{HostConfig, HostIdentity, WorkspaceHost};
 use tilo_runtime::enter::Entered;
 use tilo_runtime::key_runs::{KeyRuns, RunHost, Runs};
 use tilo_runtime::remote_door::PersonalDevices;
@@ -246,7 +246,10 @@ async fn device_host(root: &SigningKey) -> Box_ {
                 apps: Some(
                     Arc::clone(&key_runs) as Arc<dyn tilo_room_host::app_serving::AppServingPlane>
                 ),
-                ..HostConfig::new(state.path().join("room-host"), HostMode::Device)
+                ..HostConfig::new(
+                    state.path().join("room-host"),
+                    tilo_relay_protocol::WorkSetting::none(),
+                )
             },
             HostIdentity {
                 user_public_key: cert.user_public_key,

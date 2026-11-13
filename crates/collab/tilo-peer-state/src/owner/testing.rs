@@ -18,7 +18,7 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::{collections::BTreeMap, time::SystemTime};
 use tilo_automation::Shortcut;
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 pub mod governor;
@@ -41,13 +41,14 @@ pub fn own_host_hint(
     certificate: &DeviceCert,
     key: &SigningKey,
 ) -> join::TransportHint {
-    IrohWorkspaceHostHintV1 {
+    WorkspaceDeviceHintV1 {
         version: 1,
-        mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+        holds_keys: true,
+        runs_work: false,
         workspace_id: workspace,
         endpoint_addr: endpoint,
-        host_user_public_key: certificate.user_public_key,
-        host_device_certificate: certificate.clone(),
+        user_public_key: certificate.user_public_key,
+        device_certificate: certificate.clone(),
         packet_relay_url: "iroh:direct".into(),
     }
     .transport_hint(key)
@@ -286,15 +287,16 @@ fn seeded(now: SystemTime) -> Seeded {
     let device_key = member_key();
     let device = certificate(&SigningKey::from_bytes(&[64; 32]), &device_key, "Member");
     let workspace_id = WorkspaceId::parse(WORKSPACE).unwrap();
-    let hint = IrohWorkspaceHostHintV1 {
+    let hint = WorkspaceDeviceHintV1 {
         version: 1,
-        mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+        holds_keys: true,
+        runs_work: false,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
         ),
-        host_user_public_key: governor.user_public_key,
-        host_device_certificate: governor.clone(),
+        user_public_key: governor.user_public_key,
+        device_certificate: governor.clone(),
         packet_relay_url: "https://relay.invalid".into(),
     }
     .transport_hint(&governor_key)

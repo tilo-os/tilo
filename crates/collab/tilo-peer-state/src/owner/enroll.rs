@@ -11,7 +11,7 @@ use crate::owner::{
     VerifiedNativeEnrollmentIntent, WorkspaceSlot, enrollment::ns as now_ns,
 };
 use std::time::SystemTime;
-use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_identity_host::custody::HostIdentity;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
@@ -118,8 +118,8 @@ pub async fn prepare_and_complete(
         if hints.next().is_some() {
             return Err("invitation has ambiguous native Iroh routes".into());
         }
-        let (host, _) = IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint)
-            .map_err(|e| e.to_string())?;
+        let (host, _) =
+            WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
         host.validate_invitation(join.grant())
             .map_err(|e| e.to_string())?;
         match client
@@ -191,7 +191,7 @@ pub async fn prepare_and_complete(
     };
     current(&identity, identity_topic, &device)?;
     active(&owner, &intent, &id)?;
-    let (host, _) = IrohWorkspaceHostHintV1::authenticate_transport_hint(intent.transport_hint())
+    let (host, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(intent.transport_hint())
         .map_err(|e| e.to_string())?;
     let complete: JoinTransportRequest =
         postcard::from_bytes(intent.complete_bytes()).map_err(|e| e.to_string())?;
@@ -377,7 +377,7 @@ pub async fn admit_as_member(
     now: SystemTime,
 ) -> Result<(), String> {
     let (host, _) =
-        IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
+        WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
     let (device, _) = identity.current_material(workspace_id)?;
     let bootstrap = prove_membership(
         &client,
@@ -414,7 +414,7 @@ pub async fn renew_membership(
         return Ok(false);
     }
     let (host, _) =
-        IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
+        WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
     let bootstrap =
         prove_membership(&client, &host.endpoint_addr, topic, &renewed, &identity).await?;
     current(&identity, topic, &renewed)?;

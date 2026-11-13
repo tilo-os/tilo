@@ -14,7 +14,7 @@ use automerge::AutoCommit;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use neighbour_wire::NeighbourMsg;
-use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::RelayClient;
@@ -145,7 +145,7 @@ pub async fn invite(
     .unwrap();
     let hint = verified.grant().transport.first().unwrap();
     // What the invitation tells whoever holds it to dial.
-    let named = IrohWorkspaceHostHintV1::from_transport_hint(hint)
+    let named = WorkspaceDeviceHintV1::from_transport_hint(hint)
         .unwrap()
         .endpoint_addr;
     let mut request = [0; 32];

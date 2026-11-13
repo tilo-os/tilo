@@ -940,25 +940,24 @@ impl RelayClient {
         ))
     }
 
-    /// Connect to the exact primary device authorized by a verified signed
-    /// interactive-owner hint. The opaque trust token binds the service key,
-    /// governing certificate and workspace; the resulting client
-    /// rejects every state frame outside that scope.
+    /// Connect to the exact device a verified signed address names for one workspace. The
+    /// proof binds the service key, the device's certificate and the workspace; the resulting
+    /// client rejects every state frame outside that scope.
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn connect_v2_to_interactive_workspace_owner(
+    pub async fn connect_to_workspace_device(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
-        trust: tilo_delivery_protocol::workspace_join::InteractiveOwnerTrust,
+        served: tilo_delivery_protocol::workspace_join::ServedWorkspace,
         own_cert: DeviceCert,
         own_sk: impl DeviceSigner,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
-        if *relay_addr.id.as_bytes() != trust.service_public_key() {
+        if *relay_addr.id.as_bytes() != served.service_public_key() {
             return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
         }
         let scope = InteractiveWorkspaceScope {
-            workspace_id: trust.workspace_id(),
-            authority: trust.host().clone(),
+            workspace_id: served.workspace_id(),
+            authority: served.device().clone(),
         };
         Self::connect_version(
             endpoint,

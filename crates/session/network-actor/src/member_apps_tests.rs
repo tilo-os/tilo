@@ -15,7 +15,7 @@ use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId as Workspace;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync, Owning};
@@ -76,13 +76,14 @@ fn hint(
     certificate: &DeviceCert,
     key: &SigningKey,
 ) -> TransportHint {
-    IrohWorkspaceHostHintV1 {
+    WorkspaceDeviceHintV1 {
         version: 1,
-        mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+        holds_keys: true,
+        runs_work: false,
         workspace_id: workspace,
         endpoint_addr: addr(endpoint),
-        host_user_public_key: certificate.user_public_key,
-        host_device_certificate: certificate.clone(),
+        user_public_key: certificate.user_public_key,
+        device_certificate: certificate.clone(),
         packet_relay_url: "iroh:direct".into(),
     }
     .transport_hint(key)

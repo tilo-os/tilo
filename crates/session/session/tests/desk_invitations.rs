@@ -86,11 +86,10 @@ fn a_link_made_right_after_start_names_the_relay_the_device_is_reached_through()
             laptop.diagnostic()
         )
     });
-    let hint =
-        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::from_transport_hint(
-            &join.grant().transport[0],
-        )
-        .expect("the invitation names its host's address");
+    let hint = tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::from_transport_hint(
+        &join.grant().transport[0],
+    )
+    .expect("the invitation names its host's address");
     let relay = test_relay::loopback_url();
     assert!(
         hint.endpoint_addr

@@ -13,7 +13,7 @@ use ed25519_dalek::SigningKey;
 use iroh::protocol::DynProtocolHandler;
 use std::{sync::Arc, time::Duration};
 use tilo_delivery_protocol::workspace_join::{
-    IrohWorkspaceHostHintV1, WORKSPACE_JOIN_ALPN, WorkspaceJoinService,
+    WORKSPACE_JOIN_ALPN, WorkspaceDeviceHintV1, WorkspaceJoinService,
 };
 use tilo_peer_state::join::{self, JoinTransportRequest, JoinTransportResponse, Role};
 use tilo_peer_state::owner::testing::governor::TestGovernor;
@@ -160,7 +160,7 @@ impl Joined {
         let host = tilo_room_host::host::WorkspaceHost::open(
             tilo_room_host::host::HostConfig::new(
                 directory.path().join("room-host"),
-                tilo_room_host::host::HostMode::Device,
+                tilo_relay_protocol::WorkSetting::none(),
             ),
             tilo_room_host::host::HostIdentity {
                 user_public_key: joined.custody.device_cert.user_public_key,
@@ -304,14 +304,13 @@ impl HostedWorkspace {
             self.authority.lock().unwrap().peer().clone(),
             self.governor_key.clone(),
         );
-        let (payload, _) =
-            IrohWorkspaceHostHintV1::authenticate_transport_hint(&self.hint).unwrap();
+        let (payload, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(&self.hint).unwrap();
         let endpoint = local_endpoint(&self.governor_key).await;
         let dialed = link
             .dial(
                 &endpoint,
                 payload.endpoint_addr,
-                payload.host_device_certificate.device_public_key,
+                payload.device_certificate.device_public_key,
             )
             .await
             .unwrap();

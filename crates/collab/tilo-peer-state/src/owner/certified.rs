@@ -8,7 +8,7 @@ use crate::join::{
 use crate::owner::{PendingEnrollmentId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use tilo_delivery_protocol::workspace_join::{
-    IrohWorkspaceHostHintV1, MAX_WORKSPACE_JOIN_REQUEST_BYTES, WorkspaceHostMode,
+    MAX_WORKSPACE_JOIN_REQUEST_BYTES, WorkspaceDeviceHintV1,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::SystemTime;
@@ -179,28 +179,20 @@ fn validate_historical_iroh(
         return Err("native enrollment requires signed Iroh host hint".into());
     }
     join::verify_transport_hint_at(hint, &RevocationList::new(), at)?;
-    let value: IrohWorkspaceHostHintV1 =
+    let value: WorkspaceDeviceHintV1 =
         serde_json::from_str(&hint.opaque_json).map_err(|e| e.to_string())?;
     if value.version != 1
         || value.workspace_id != join.grant().workspace_id
-        || value.host_device_certificate != hint.host
-        || value.host_user_public_key != hint.host.user_public_key
+        || value.device_certificate != hint.host
+        || value.user_public_key != hint.host.user_public_key
         || *value.endpoint_addr.id.as_bytes() != hint.service_public_key
         || value.packet_relay_url.is_empty()
         || value.packet_relay_url.len() > 4096
     {
         return Err("native signed Iroh scope mismatch".into());
     }
-    match value.mode {
-        WorkspaceHostMode::CertifiedHost if !hint.host.capabilities.can_act_as_host => {
-            return Err("native data host lacks host capability".into());
-        }
-        WorkspaceHostMode::NativeInteractiveWorkspaceOwner
-            if !hint.host.capabilities.can_own_workspaces =>
-        {
-            return Err("interactive data host cannot own workspaces".into());
-        }
-        _ => {}
+    if value.holds_keys && !hint.host.capabilities.can_own_workspaces {
+        return Err("the device serving the workspace cannot govern workspaces".into());
     }
     value
         .validate_invitation(join.grant())

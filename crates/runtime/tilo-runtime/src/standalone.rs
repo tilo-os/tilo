@@ -1281,7 +1281,7 @@ fn place_own_workspace(
                         as Arc<dyn tilo_room_host::app_serving::AppServingPlane>),
                     ..tilo_room_host::host::HostConfig::new(
                         profile.join(HOST_STORE),
-                        tilo_room_host::host::HostMode::Device,
+                        tilo_relay_protocol::WorkSetting::none(),
                     )
                 },
                 tilo_room_host::host::HostIdentity {

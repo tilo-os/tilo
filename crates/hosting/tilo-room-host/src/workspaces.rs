@@ -892,9 +892,9 @@ pub(crate) struct WorkspaceServices {
     /// Agent delegations, for [`crate::workspace_access::decide`] and for
     /// refusing an agent the administration only a person holds.
     pub(crate) agents: crate::peer::AgentRegistry,
-    /// What the join answers say the host is: a certified host, or the
-    /// governing device serving its own workspaces.
-    pub(crate) mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode,
+    /// The work this device takes: it serves a workspace placed on it only when the setting
+    /// takes the placing person's work.
+    pub(crate) work: tilo_relay_protocol::WorkSetting,
     /// Each device whose session to this host authenticated: a host it
     /// dials and could not reach is dialled again then.
     pub(crate) arrivals: crate::attach::Arrivals,

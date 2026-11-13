@@ -26,8 +26,8 @@ use tilo_actions::remote::{
 };
 use tilo_agent_participant::workspace_actions::{ShellRan, Watching};
 use tilo_peer_state::actions::{ActionPlane, NoActions};
-use tilo_relay::host::HostMode;
 use tilo_relay::placed_shells::{Member, Members, PlacedShells};
+use tilo_relay_protocol::WorkSetting;
 use tilo_runtime::standalone::take_work;
 use tilo_user_identity::DeviceCapabilities;
 
@@ -141,7 +141,7 @@ async fn placed() -> Arc<Placed> {
     let operator = TestUser::fresh("operator");
     let desk = operator.enrol("host", DeviceCapabilities::primary());
     let vm_host = operator.enrol(VM_HOST, DeviceCapabilities::member());
-    let hosted = host_on(&operator, &desk, HostMode::Device).await;
+    let hosted = host_on(&operator, &desk, WorkSetting::none()).await;
     let workspace = hosted
         .host
         .workspaces()

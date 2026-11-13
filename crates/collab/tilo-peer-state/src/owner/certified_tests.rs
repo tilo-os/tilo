@@ -4,7 +4,7 @@ use crate::owner::testing::member_certificate as certificate;
 use crate::{SeedState, StatePeer, seed_workspace};
 use ed25519_dalek::SigningKey;
 use std::time::{Duration, SystemTime};
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_user_identity::RevocationList;
 
 fn actual_redemption() -> (
@@ -53,15 +53,16 @@ fn actual_redemption_at(
     );
     let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let workspace_id = tilo_relay_protocol::WorkspaceId::parse(workspace).unwrap();
-    let hint = IrohWorkspaceHostHintV1 {
+    let hint = WorkspaceDeviceHintV1 {
         version: 1,
-        mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+        holds_keys: true,
+        runs_work: false,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
         ),
-        host_user_public_key: governor.user_public_key,
-        host_device_certificate: governor.clone(),
+        user_public_key: governor.user_public_key,
+        device_certificate: governor.clone(),
         packet_relay_url: "https://relay.invalid".into(),
     }
     .transport_hint(&governor_key)

@@ -9,7 +9,7 @@
 use super::{ActorState, Arc, HashMap, InternalEvent, NeighbourMsg};
 use crate::WorkspaceId;
 use crate::local_host::LocalHost;
-use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_peer_state::direct::DirectSync;
 use tilo_peer_state::join::TransportHint;
 pub use tilo_peer_state::owner::session::{Connect, Input, Scope};
@@ -452,7 +452,7 @@ impl ActorState {
             return;
         };
         let Ok((payload, _)) =
-            IrohWorkspaceHostHintV1::authenticate_transport_hint(link.scope.host())
+            WorkspaceDeviceHintV1::authenticate_transport_hint(link.scope.host())
         else {
             return;
         };

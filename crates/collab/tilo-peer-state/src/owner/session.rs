@@ -40,7 +40,7 @@ impl NativeWorkspaceOwner {
             .with_current(workspace, |view| Ok(view.transport_hint()?.clone()))
             .ok()?;
         let (payload, _) =
-            tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(
+            tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::authenticate_transport_hint(
                 &hint,
             )
             .ok()?;

@@ -9,7 +9,7 @@ use crate::StatePeer;
 use crate::join::JoinTransportResponse;
 use crate::owner::record::{StoredVouch, StoredWorkspace};
 use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, publication};
-use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 use web_time::SystemTime;
 
@@ -178,7 +178,7 @@ impl NativeWorkspaceOwner {
         if hint.host.device_public_key != bootstrap.host.device_public_key {
             return Err("the workspace's host hint is not the host that answered".into());
         }
-        IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint)
+        WorkspaceDeviceHintV1::authenticate_transport_hint(&hint)
             .map_err(|error| error.to_string())?;
         let workspace = bootstrap.workspace_id;
         let _turn = self.0.mutation.lock();

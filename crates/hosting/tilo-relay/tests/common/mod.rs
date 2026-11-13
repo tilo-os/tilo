@@ -28,8 +28,9 @@ use tilo_user_identity::{
 use tilo_relay::{
     Envelope, RelayClient, RelayConfig, WorkspaceId,
     daemon::{Relay, RelayIdentity},
-    host::{HostConfig, HostIdentity, HostMode, WorkspaceHost},
+    host::{HostConfig, HostIdentity, WorkspaceHost},
 };
+use tilo_relay_protocol::WorkSetting;
 
 /// A "user" (root keypair) + on-disk identity root usable by the
 /// tests.
@@ -284,11 +285,11 @@ impl Hosted {
     }
 }
 
-pub async fn host_on(user: &TestUser, device: &TestDevice, mode: HostMode) -> Hosted {
+pub async fn host_on(user: &TestUser, device: &TestDevice, work: WorkSetting) -> Hosted {
     let state = tempfile::tempdir().unwrap();
     let endpoint = device_endpoint(device).await;
     let host = WorkspaceHost::open(
-        HostConfig::new(state.path().to_path_buf(), mode),
+        HostConfig::new(state.path().to_path_buf(), work),
         HostIdentity {
             user_public_key: user.user_pk,
             device_signing_key: device.sk.clone(),

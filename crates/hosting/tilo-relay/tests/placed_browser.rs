@@ -14,9 +14,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use legacy_vm::hosted::control::{self, OpenBrowser, Reply, Request};
-use tilo_relay::host::HostMode;
 use tilo_relay::placed_browsers::{OpenError, PlacedBrowsers};
 use tilo_relay::placed_shells::{Member, Members, PlacedShells};
+use tilo_relay_protocol::WorkSetting;
 use tilo_runtime::standalone::take_work;
 use tilo_user_identity::DeviceCapabilities;
 
@@ -135,7 +135,7 @@ async fn placed() -> Placed {
     let operator = TestUser::fresh("operator");
     let desk = operator.enrol("host", DeviceCapabilities::primary());
     let vm_host = operator.enrol(VM_HOST, DeviceCapabilities::member());
-    let hosted = host_on(&operator, &desk, HostMode::Device).await;
+    let hosted = host_on(&operator, &desk, WorkSetting::none()).await;
     let workspace = hosted
         .host
         .workspaces()

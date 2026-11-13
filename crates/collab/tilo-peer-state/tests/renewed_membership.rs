@@ -12,7 +12,7 @@
 use ed25519_dalek::SigningKey;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::join::invitations::{IssueInvitationRequest, IssuedInvitation};
 use tilo_peer_state::join::{
@@ -253,15 +253,16 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
     let joined_ns = testing::ns(joined_at).unwrap();
     let governor = JoinAnswer(MemoryWorkspaces::new(&device, &key, joined_at));
     let workspace_id = join::WorkspaceId::parse(WORKSPACE).unwrap();
-    let hint = IrohWorkspaceHostHintV1 {
+    let hint = WorkspaceDeviceHintV1 {
         version: 1,
-        mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+        holds_keys: true,
+        runs_work: false,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&device.device_public_key).unwrap(),
         ),
-        host_user_public_key: device.user_public_key,
-        host_device_certificate: device.clone(),
+        user_public_key: device.user_public_key,
+        device_certificate: device.clone(),
         packet_relay_url: "iroh:direct".into(),
     }
     .transport_hint(&key)

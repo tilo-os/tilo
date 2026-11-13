@@ -11,7 +11,7 @@
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::time::SystemTime;
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::join::invitations::IssueInvitationRequest;
@@ -38,15 +38,16 @@ fn device(root: u8, key: u8, label: &str) -> (SigningKey, SigningKey, DeviceCert
 
 /// The host's signed hint that it answers the workspace's joins at its own endpoint.
 fn hint(cert: &DeviceCert, key: &SigningKey) -> TransportHint {
-    IrohWorkspaceHostHintV1 {
+    WorkspaceDeviceHintV1 {
         version: 1,
-        mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+        holds_keys: true,
+        runs_work: false,
         workspace_id: join::WorkspaceId::parse(WORKSPACE).unwrap(),
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&cert.device_public_key).unwrap(),
         ),
-        host_user_public_key: cert.user_public_key,
-        host_device_certificate: cert.clone(),
+        user_public_key: cert.user_public_key,
+        device_certificate: cert.clone(),
         packet_relay_url: "iroh:direct".into(),
     }
     .transport_hint(key)

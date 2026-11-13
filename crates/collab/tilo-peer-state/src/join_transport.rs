@@ -9,8 +9,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 use tilo_delivery_protocol::workspace_join::{
-    IrohWorkspaceHostHintV1, MAX_WORKSPACE_JOIN_REQUEST_BYTES, MAX_WORKSPACE_JOIN_RESPONSE_BYTES,
-    WORKSPACE_JOIN_ALPN, WorkspaceJoinAdmission, WorkspaceJoinError, WorkspaceJoinService,
+    MAX_WORKSPACE_JOIN_REQUEST_BYTES, MAX_WORKSPACE_JOIN_RESPONSE_BYTES, WORKSPACE_JOIN_ALPN,
+    WorkspaceDeviceHintV1, WorkspaceJoinAdmission, WorkspaceJoinError, WorkspaceJoinService,
 };
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_join::{
@@ -259,11 +259,11 @@ impl WorkspaceJoinClient {
         device_key: &ed25519_dalek::SigningKey,
         request_id: [u8; 32],
     ) -> Result<WorkspaceJoinAdmission, WorkspaceJoinError> {
-        let host = IrohWorkspaceHostHintV1::from_transport_hint(hint)?;
+        let host = WorkspaceDeviceHintV1::from_transport_hint(hint)?;
         let inspection = self
             .inspect(host.endpoint_addr.clone(), signed_invitation.clone())
             .await?;
-        let invitation_trust = host.validate_invitation(&inspection.grant)?;
+        let invitation_served = host.validate_invitation(&inspection.grant)?;
         let bootstrap = self
             .redeem(
                 host.endpoint_addr.clone(),
@@ -273,13 +273,13 @@ impl WorkspaceJoinClient {
                 request_id,
             )
             .await?;
-        let trust = host.validate_bootstrap(&bootstrap)?;
-        if trust != invitation_trust {
+        let served = host.validate_bootstrap(&bootstrap)?;
+        if served != invitation_served {
             return Err(WorkspaceJoinError::Protocol(
-                "invitation and bootstrap host trust disagree".into(),
+                "the invitation and the bootstrap name different devices".into(),
             ));
         }
-        Ok(WorkspaceJoinAdmission { bootstrap, trust })
+        Ok(WorkspaceJoinAdmission { bootstrap, served })
     }
 }
 

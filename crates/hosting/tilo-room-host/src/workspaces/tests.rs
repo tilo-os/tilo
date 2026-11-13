@@ -4,7 +4,7 @@
 )]
 
 use super::*;
-use crate::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
+use crate::host::{HostConfig, HostIdentity, WorkspaceHost};
 use tilo_relay_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
@@ -2799,7 +2799,10 @@ async fn a_host_serves_the_workspaces_its_renamed_certificate_governs() {
     let refused = WorkspaceHost::open(
         HostConfig {
             max_workspace_grants: None,
-            ..HostConfig::new(dir.path().to_owned(), HostMode::CertifiedHost)
+            ..HostConfig::new(
+                dir.path().to_owned(),
+                tilo_relay_protocol::WorkSetting::own_person(),
+            )
         },
         HostIdentity {
             user_public_key: other_cert.user_public_key,
@@ -2830,7 +2833,7 @@ async fn a_host_serves_the_workspaces_its_renamed_certificate_governs() {
 #[tokio::test]
 async fn a_room_names_its_own_host_to_every_member() {
     use std::time::Duration;
-    use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
+    use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = tokio::time::timeout(Duration::from_secs(120), test_host(dir.path(), &key, &cert))
@@ -2856,7 +2859,7 @@ async fn a_room_names_its_own_host_to_every_member() {
     assert_eq!(hosts.len(), 1, "{hosts:?}");
     assert_eq!(hosts[0].host.device_public_key, cert.device_public_key);
     assert_eq!(
-        IrohWorkspaceHostHintV1::from_transport_hint(&hosts[0])
+        WorkspaceDeviceHintV1::from_transport_hint(&hosts[0])
             .unwrap()
             .endpoint_addr,
         addr

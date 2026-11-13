@@ -560,19 +560,18 @@ async fn a_restarted_host_names_its_relay_before_its_first_invitation() {
     let relay = start_at(state.path(), &alice, &host, iroh_listen).await;
     // What a person does as soon as their host is up again: hand out a link.
     let invited = invite(&relay, &laptop, &room.workspace, Role::Editor, bob.user_pk).await;
-    let hint =
-        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::from_transport_hint(
-            &decode_and_verify_invitation(
-                &invited.signed_invitation,
-                None,
-                &RevocationList::new(),
-                tilo_clock::unix_now_ns(),
-            )
-            .unwrap()
-            .grant()
-            .transport[0],
+    let hint = tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::from_transport_hint(
+        &decode_and_verify_invitation(
+            &invited.signed_invitation,
+            None,
+            &RevocationList::new(),
+            tilo_clock::unix_now_ns(),
         )
-        .unwrap();
+        .unwrap()
+        .grant()
+        .transport[0],
+    )
+    .unwrap();
     let relay_url = relay
         .node_addr()
         .relay_urls()

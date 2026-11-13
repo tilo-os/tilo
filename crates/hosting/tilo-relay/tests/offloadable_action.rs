@@ -27,11 +27,11 @@ use tilo_peer_state::actions::{ActionPlane, NoActions};
 use tilo_peer_state::direct::Replica;
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
-use tilo_relay::host::HostMode;
 use tilo_relay::host_jobs::ComputeJobs;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::workspaces::IssueInvitationRequest;
 use tilo_relay::{ComputeContentStore, ComputeSandbox, ComputeSandboxInvocation, WorkspaceId};
+use tilo_relay_protocol::WorkSetting;
 use tilo_runtime::offload::{
     BindError, MediaFuture, OutputContent, PlanePeers, WorkspaceMedia, offer_offload,
 };
@@ -337,7 +337,7 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     // The host governs the workspace and keeps its content: the photographs
     // are the workspace's, so the device that asks reads them exactly where
     // the host does.
-    let hosted = host_on(&owner, &desk, HostMode::Device).await;
+    let hosted = host_on(&owner, &desk, WorkSetting::none()).await;
     let created = hosted.host.workspaces().create("Photos").await.unwrap();
     let workspace = created.workspace.clone();
     let content = Arc::new(Media::default());

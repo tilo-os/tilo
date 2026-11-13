@@ -363,7 +363,6 @@ impl Session {
             &self.connection.entering_key(),
             workspace,
             &address,
-            &self.label,
         )
         .await?;
         let run = Arc::new(OnDevice(entered));
@@ -386,10 +385,9 @@ impl Session {
             .into_iter()
             .find(|listed| listed.id == workspace)?
             .address?;
-        let host = address.address().ok()?;
-        (host.mode
-            == tilo_delivery_protocol::workspace_join::WorkspaceHostMode::NativeInteractiveWorkspaceOwner)
-            .then_some(address)
+        // A listed address with a hint is a device's own, never the answering device's.
+        address.address().ok()?;
+        Some(address)
     }
 
     /// Answer the client's `initialize`. A pinned session enters its one

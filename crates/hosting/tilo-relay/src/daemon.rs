@@ -587,7 +587,7 @@ impl Relay {
         let (sessions, governed) = crate::host::HostSessions::open(
             crate::host::HostConfig {
                 state_root: cfg.state_root.clone(),
-                mode: crate::host::HostMode::CertifiedHost,
+                work: tilo_relay_protocol::WorkSetting::own_person(),
                 trust_policy: cfg.trust_policy.clone(),
                 member_limits: cfg.member_limits,
                 max_workspace_grants: cfg.max_workspace_grants,

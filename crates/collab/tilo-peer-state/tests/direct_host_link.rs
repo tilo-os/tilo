@@ -330,14 +330,15 @@ fn hint(
     certificate: &tilo_user_identity::DeviceCert,
     key: &SigningKey,
 ) -> tilo_peer_state::join::TransportHint {
-    use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
-    IrohWorkspaceHostHintV1 {
+    use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
+    WorkspaceDeviceHintV1 {
         version: 1,
-        mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+        holds_keys: true,
+        runs_work: false,
         workspace_id: workspace,
         endpoint_addr: addr(endpoint),
-        host_user_public_key: certificate.user_public_key,
-        host_device_certificate: certificate.clone(),
+        user_public_key: certificate.user_public_key,
+        device_certificate: certificate.clone(),
         packet_relay_url: "iroh:direct".into(),
     }
     .transport_hint(key)

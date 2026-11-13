@@ -1889,16 +1889,17 @@ mod tests {
         let mut personal = open(identity.clone(), None);
         assert!(personal.publish_local(&desk));
         let workspace = first.to_string();
-        let hint = tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
+        let hint = tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1 {
             version: 1,
-            mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+            holds_keys: true,
+            runs_work: false,
             workspace_id: tilo_peer_state::join::WorkspaceId::parse(&workspace).expect("an id"),
             endpoint_addr: iroh::EndpointAddr::new(
                 iroh::EndpointId::from_bytes(&identity.device_cert.device_public_key)
                     .expect("a key"),
             ),
-            host_user_public_key: identity.device_cert.user_public_key,
-            host_device_certificate: identity.device_cert.clone(),
+            user_public_key: identity.device_cert.user_public_key,
+            device_certificate: identity.device_cert.clone(),
             packet_relay_url: "iroh:direct".into(),
         }
         .transport_hint(identity.signer.as_ref())

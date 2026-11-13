@@ -103,13 +103,15 @@ pub(crate) fn validate_host_hint(
     if !hosted_by(hint, &device.device_public_key) {
         return Err("the workspace's host hint is not this device's own".into());
     }
-    let (payload, _) = tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::
-        authenticate_transport_hint(hint)
+    let (payload, _) =
+        tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::authenticate_transport_hint(
+            hint,
+        )
         .map_err(|error| error.to_string())?;
     if payload.workspace_id != workspace_id {
         return Err("the workspace's host hint names another workspace".into());
     }
-    if payload.host_device_certificate != *device {
+    if payload.device_certificate != *device {
         return Err("the workspace's host hint is not the host's own signed address".into());
     }
     Ok(())

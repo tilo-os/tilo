@@ -389,14 +389,14 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
     assert_eq!(workspace, lounge.workspace);
     let hint: tilo_peer_state::join::TransportHint = postcard::from_bytes(&address).unwrap();
     let (address, _) =
-        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(
+        tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::authenticate_transport_hint(
             &hint,
         )
         .expect("the host signed its address");
     assert_eq!(address.workspace_id.to_string(), lounge.workspace);
     assert_eq!(address.workspace_id, lounge.workspace_id);
     assert_eq!(
-        address.host_device_certificate.device_public_key, host_device.cert.device_public_key,
+        address.device_certificate.device_public_key, host_device.cert.device_public_key,
         "the address is the admitting host's own"
     );
 

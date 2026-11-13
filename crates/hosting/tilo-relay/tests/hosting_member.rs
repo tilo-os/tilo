@@ -3,8 +3,8 @@
 //! whom the room's governance admits as that governance changes, carries
 //! members' changes to the governor, and stops when detached.
 
-use tilo_relay::host::HostMode;
 use tilo_relay::{Envelope, RelayClient};
+use tilo_relay_protocol::WorkSetting;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, host_on, next_delta, session_to};
@@ -43,8 +43,8 @@ async fn a_certified_host_of_the_person_serves_a_room_its_device_governs() {
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let nas = alice.enrol("nas", DeviceCapabilities::host());
-    let governor = host_on(&alice, &laptop, HostMode::Device).await;
-    let member = host_on(&alice, &nas, HostMode::CertifiedHost).await;
+    let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
+    let member = host_on(&alice, &nas, WorkSetting::own_person()).await;
     let rooms = governor.host.workspaces();
     let room = rooms.create("Notes").await.unwrap();
 
@@ -145,8 +145,8 @@ async fn a_device_serves_no_room_another_device_governs() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let desktop = alice.enrol("desktop", DeviceCapabilities::primary());
-    let governor = host_on(&alice, &laptop, HostMode::Device).await;
-    let other = host_on(&alice, &desktop, HostMode::Device).await;
+    let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
+    let other = host_on(&alice, &desktop, WorkSetting::none()).await;
     let rooms = governor.host.workspaces();
     let room = rooms.create("Notes").await.unwrap();
 
@@ -178,8 +178,8 @@ async fn a_detached_host_lets_the_room_go_and_serves_it_again_from_its_files() {
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let tablet = alice.enrol("tablet", DeviceCapabilities::primary());
     let nas = alice.enrol("nas", DeviceCapabilities::host());
-    let governor = host_on(&alice, &laptop, HostMode::Device).await;
-    let member = host_on(&alice, &nas, HostMode::CertifiedHost).await;
+    let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
+    let member = host_on(&alice, &nas, WorkSetting::own_person()).await;
     let rooms = governor.host.workspaces();
     let room = rooms.create("Notes").await.unwrap();
     let records = member.host.workspace_records();

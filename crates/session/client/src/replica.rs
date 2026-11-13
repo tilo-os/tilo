@@ -337,7 +337,7 @@ impl Replicas {
             })?
             .ok()??;
         let payload =
-            tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::from_transport_hint(
+            tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::from_transport_hint(
                 &hint,
             )
             .ok()?;

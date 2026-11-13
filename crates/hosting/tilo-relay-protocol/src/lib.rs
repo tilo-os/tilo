@@ -62,6 +62,7 @@ pub mod sealed_invitations;
 pub mod transport;
 pub mod voice;
 pub mod web;
+pub mod work;
 pub mod workspaces;
 
 /// A workspace's id, defined beside [`delegation`].
@@ -84,6 +85,7 @@ pub use metrics::MetricsSnapshot;
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
 pub use transport::{ALPN, ContentPeerRegistration, Envelope};
+pub use work::{WorkFrom, WorkKinds, WorkSetting, WorkWhen};
 
 /// Domain-separated secret the relay binds, derived from the device secret.
 ///

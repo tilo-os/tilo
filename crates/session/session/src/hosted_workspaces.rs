@@ -21,7 +21,7 @@ use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
     InvocationReceipt, InvocationState, InvokeRequest, Pending, pending,
 };
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
 use tilo_identity_host::device_admin;
 use tilo_lock::MutexRecover as _;
@@ -57,7 +57,7 @@ struct Host {
 struct Placed {
     workspace: String,
     workspace_id: WorkspaceId,
-    host: IrohWorkspaceHostHintV1,
+    host: WorkspaceDeviceHintV1,
 }
 
 impl HostedWorkspaces {
@@ -97,7 +97,7 @@ impl HostedWorkspaces {
         // The session a host is reached on is a task of this session's runtime, and a caller may
         // be a thread of the broker's: it opens here, inside the runtime that reaches hosts.
         let _inside = self.0.runtime.enter();
-        let key = placed.host.host_device_certificate.device_public_key;
+        let key = placed.host.device_certificate.device_public_key;
         let mut hosts = self.0.hosts.lock_recover();
         if let Some(host) = hosts.get(&key).filter(|host| host.device.is_live()) {
             return Arc::clone(host);
@@ -107,7 +107,7 @@ impl HostedWorkspaces {
             PeerConfig {
                 host: tilo_relay_client::Host::at(placed.host.endpoint_addr.clone()),
                 cert: identity.device_cert.clone(),
-                host_cert: placed.host.host_device_certificate.clone(),
+                host_cert: placed.host.device_certificate.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),
                 entering: None,
             },
@@ -230,17 +230,15 @@ impl HostedWorkspaces {
     }
 }
 
-/// The host `hint` places a workspace on, when that is a dedicated host other than the device
-/// `own`: one that runs its records' actions in its own workers. A workspace a desktop hosts
-/// (its own desk's) runs them where its windows are.
+/// The device `hint` places a workspace on, when that is another device than `own` and it runs
+/// the workspace's work in its own workers. A workspace a desktop serves runs its records'
+/// actions where its windows are.
 fn placed_on_host(
     hint: &tilo_peer_state::join::TransportHint,
     own: [u8; 32],
-) -> Option<IrohWorkspaceHostHintV1> {
-    let (host, _) = IrohWorkspaceHostHintV1::authenticate_transport_hint(hint).ok()?;
-    (host.mode == WorkspaceHostMode::CertifiedHost
-        && host.host_device_certificate.device_public_key != own)
-        .then_some(host)
+) -> Option<WorkspaceDeviceHintV1> {
+    let (device, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(hint).ok()?;
+    (device.runs_work && device.device_certificate.device_public_key != own).then_some(device)
 }
 
 /// One of the person's workspaces on a host that runs its records: the workspace as the host knows
@@ -249,7 +247,7 @@ struct OnHosts {
     /// A workspace of theirs this device is in there, which is where its host is asked anything
     /// about the person.
     workspace: String,
-    host: IrohWorkspaceHostHintV1,
+    host: WorkspaceDeviceHintV1,
 }
 
 /// Each host of a workspace `engine` holds, with one of its workspaces, in the order the workspaces
@@ -265,7 +263,7 @@ fn hosts_of(engine: &Engine) -> Vec<OnHosts> {
         let Some(host) = placed_on_host(&hint, own) else {
             continue;
         };
-        if !seen.insert(host.host_device_certificate.device_public_key) {
+        if !seen.insert(host.device_certificate.device_public_key) {
             continue;
         }
         hosts.push(OnHosts { workspace, host });
@@ -317,7 +315,7 @@ pub(crate) fn keep_on_hosts(
         let mut arguments = serde_json::Map::new();
         arguments.insert("list".to_owned(), value.clone());
         let request = record_request(tilo_relay_session::workspaces::KEEP_PERSONAL, arguments);
-        let label = host.host_device_certificate.device_label.clone();
+        let label = host.device_certificate.device_label.clone();
         actions.invoke(&Caller::local_person("tilo"), request).then(
             move |answered| match answered {
                 Some(Ok(receipt))
@@ -467,13 +465,13 @@ mod tests {
     #![allow(clippy::unwrap_used, reason = "a test's unwrap is its assertion")]
 
     use super::placed_on_host;
-    use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+    use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-    /// A hint placing a workspace on the device `capabilities` certify, in `mode`, and that
-    /// device's key.
+    /// A hint placing a workspace on the device `capabilities` certify, which runs the
+    /// workspace's work or not, and that device's key.
     fn hint(
-        mode: WorkspaceHostMode,
+        runs_work: bool,
         capabilities: DeviceCapabilities,
     ) -> (tilo_peer_state::join::TransportHint, [u8; 32]) {
         let root = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
@@ -490,15 +488,16 @@ mod tests {
         };
         sign_device_cert(&mut cert, &root).unwrap();
         let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned();
-        let hint = IrohWorkspaceHostHintV1 {
+        let hint = WorkspaceDeviceHintV1 {
             version: 1,
-            mode,
+            holds_keys: true,
+            runs_work,
             workspace_id: tilo_peer_state::join::WorkspaceId::parse(&workspace).unwrap(),
             endpoint_addr: iroh::EndpointAddr::new(
                 iroh::EndpointId::from_bytes(&cert.device_public_key).unwrap(),
             ),
-            host_user_public_key: cert.user_public_key,
-            host_device_certificate: cert.clone(),
+            user_public_key: cert.user_public_key,
+            device_certificate: cert.clone(),
             packet_relay_url: "iroh:direct".into(),
         }
         .transport_hint(&key)
@@ -507,23 +506,20 @@ mod tests {
     }
 
     #[test]
-    fn only_a_dedicated_host_of_another_device_runs_the_records() {
-        let (dedicated, host) = hint(WorkspaceHostMode::CertifiedHost, DeviceCapabilities::host());
+    fn only_another_device_that_takes_the_work_runs_the_records() {
+        let (taker, device) = hint(true, DeviceCapabilities::host());
         assert!(
-            placed_on_host(&dedicated, [7; 32]).is_some(),
-            "a dedicated host runs its workspaces' records"
+            placed_on_host(&taker, [7; 32]).is_some(),
+            "a device that takes the work runs the workspace's records"
         );
         assert!(
-            placed_on_host(&dedicated, host).is_none(),
-            "this device runs those it hosts itself"
+            placed_on_host(&taker, device).is_none(),
+            "a device runs the records of the workspaces it serves itself"
         );
-        let (desk, _) = hint(
-            WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-            DeviceCapabilities::primary(),
-        );
+        let (desk, _) = hint(false, DeviceCapabilities::primary());
         assert!(
             placed_on_host(&desk, [7; 32]).is_none(),
-            "a desktop's own workspace runs its records where its windows are"
+            "a device that takes no work has its records run where its windows are"
         );
     }
 }

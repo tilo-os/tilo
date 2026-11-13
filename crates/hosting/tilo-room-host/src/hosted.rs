@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use neighbour_wire::NeighbourMsg;
 use serde::{Deserialize, Serialize};
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join::{JoinBootstrap, TransportHint};
 use tilo_peer_state::{GovernedAccess, StatePeer, TransportOrigin};
@@ -170,20 +170,23 @@ impl Hosting {
     ///
     /// # Errors
     ///
-    /// This host is not a certified host, the caller or the governor is not
-    /// a device of this host's person, the request does not hold up, or the
-    /// workspace's governance does not admit this host's device.
+    /// The device does not take the caller's work, the request does not hold
+    /// up, or the workspace's governance does not admit this device.
     pub(crate) async fn host_workspace(
         &self,
         caller: &DeviceCert,
         request: &HostWorkspaceRequest,
     ) -> Result<TransportHint, String> {
         let own = &self.services.cert;
-        if caller.user_public_key != own.user_public_key {
-            return Err("only its own person's devices ask a host to serve a workspace".into());
-        }
-        if self.services.mode != WorkspaceHostMode::CertifiedHost {
-            return Err("a device hosts only the workspaces placed on it".into());
+        if !self
+            .services
+            .work
+            .from
+            .admits(caller.user_public_key, own.user_public_key, None)
+        {
+            return Err(
+                "a device serves a workspace placed on it only when it takes that work".into(),
+            );
         }
         let hint = self.serve(request, false).await?;
         let record = HostedRecord::of(request)?;
@@ -255,13 +258,13 @@ impl Hosting {
     ) -> Result<TransportHint, String> {
         let services = &self.services;
         let own = &services.cert;
-        let governor = IrohWorkspaceHostHintV1::from_transport_hint(&request.governor_hint)
+        let governor = WorkspaceDeviceHintV1::from_transport_hint(&request.governor_hint)
             .map_err(|error| error.to_string())?;
         governor
             .validate_bootstrap(&request.bootstrap)
             .map_err(|error| error.to_string())?;
         // The owner device serving the workspace, whose own address the hint is.
-        let authority = governor.host_device_certificate.clone();
+        let authority = governor.device_certificate.clone();
         // The hint names the workspace this host is asked to serve, by the same
         // uuid and shard, from a device of this host's own person.
         let asked_shard = request.workspace_id;
@@ -351,20 +354,21 @@ impl Hosting {
 /// This host's own signed address for the workspace `governor` addresses.
 fn own_hint(
     services: &WorkspaceServices,
-    governor: &IrohWorkspaceHostHintV1,
+    governor: &WorkspaceDeviceHintV1,
 ) -> Result<TransportHint, String> {
     let endpoint_addr = services.endpoint.addr();
     let packet_relay_url = endpoint_addr
         .relay_urls()
         .next()
         .map_or_else(|| "iroh:direct".to_owned(), ToString::to_string);
-    IrohWorkspaceHostHintV1 {
+    WorkspaceDeviceHintV1 {
         version: 1,
-        mode: WorkspaceHostMode::CertifiedHost,
+        holds_keys: true,
+        runs_work: !services.work.takes_nothing(),
         workspace_id: governor.workspace_id,
         endpoint_addr,
-        host_user_public_key: services.cert.user_public_key,
-        host_device_certificate: services.cert.clone(),
+        user_public_key: services.cert.user_public_key,
+        device_certificate: services.cert.clone(),
         packet_relay_url,
     }
     .transport_hint(&services.key)
