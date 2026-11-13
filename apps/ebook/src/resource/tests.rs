@@ -1081,11 +1081,21 @@ fn reads_chapter(app: &mut ui::framework::testing::TestApp<EbookShell>, title: &
 
 #[test]
 fn every_scenario_stages_the_sample_shelf_through_the_librarys_edits() {
+    let mut comments_shown = false;
     for scenario in
         std::iter::once(None).chain(crate::scenarios::SCENARIOS.iter().copied().map(Some))
     {
-        let app = ui::framework::testing::TestApp::<EbookShell>::capture(scenario)
+        let mut app = ui::framework::testing::TestApp::<EbookShell>::capture(scenario)
             .unwrap_or_else(|error| panic!("{scenario:?}: {error}"));
+        if scenario == Some("comments") {
+            assert!(
+                app.harness().a11y_nodes().iter().any(|(_, node)| node
+                    .label()
+                    .is_some_and(|label| label.contains("colour that keeps the time of day"))),
+                "the comments scenario has the highlight's comments open"
+            );
+            comments_shown = true;
+        }
         let shelf = app.state().entries.len();
         if scenario == Some("onboarding") {
             assert_eq!(shelf, 0, "the first start is an empty shelf");
@@ -1097,13 +1107,9 @@ fn every_scenario_stages_the_sample_shelf_through_the_librarys_edits() {
             assert_eq!(shelf, 3, "{scenario:?} shows the sample shelf");
         }
     }
-    let mut comments =
-        ui::framework::testing::TestApp::<EbookShell>::capture(Some("comments")).unwrap();
     assert!(
-        comments.harness().a11y_nodes().iter().any(|(_, node)| node
-            .label()
-            .is_some_and(|label| label.contains("colour that keeps the time of day"))),
-        "the comments scenario has the highlight's comments open"
+        comments_shown,
+        "the comments scenario is one of the scenarios"
     );
 }
 
