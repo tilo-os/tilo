@@ -744,13 +744,6 @@ fn writer_agent_benchmark_qualifies_against_the_reference() {
     let mut typed = typed_arm(&mut receipt);
     let typed_frame = typed.harness().render_rgba();
     keep_frame(&mut typed, "typed-arm");
-    // The control for `same_picture`, not a qualification: it measures into a receipt of its own.
-    let missing_a_format = same_picture(
-        "difference",
-        &typed_frame,
-        &frame_missing_one_format(),
-        &mut Receipt::default(),
-    );
     let drawn = differs_from_a_blank_document(&typed_frame, &mut receipt);
     receipt.record("visual.editor_draws_the_document", drawn);
 
@@ -835,6 +828,14 @@ fn writer_agent_benchmark_qualifies_against_the_reference() {
         .map(|q| format!("{}: {}", q.id, q.observed))
         .collect();
     assert!(failed.is_empty(), "unqualified:\n{}", failed.join("\n"));
+    // The control for `same_picture`, not a qualification: it runs once the receipt is written
+    // and the benchmark has its verdict, and measures into a receipt of its own.
+    let missing_a_format = same_picture(
+        "difference",
+        &typed_frame,
+        &frame_missing_one_format(),
+        &mut Receipt::default(),
+    );
     assert!(
         missing_a_format.is_err(),
         "a page missing one format is the same picture: {missing_a_format:?}"
