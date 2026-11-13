@@ -7,7 +7,7 @@ d-2lehvjd6 = Today
     .doc = The day at a glance, over other apps' roots: each part is a place of its own app, drawn by that app.
     .noun = { $count ->
         [one] today
-       *[other] today
+       *[other] todays
     }
 
 d-4z4vz2pv = Morning cleanup
