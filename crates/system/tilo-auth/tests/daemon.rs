@@ -592,17 +592,39 @@ fn without_a_tpm_only_a_strong_password_stands_alone() {
     );
 }
 
+/// The login screen's two questions about a person, over one machine and one
+/// first sign-in: whether their key is held, and whether their secret is a
+/// PIN. Neither question changes what the other is answered.
 #[test]
-fn a_key_is_held_for_the_sessions_its_sign_in_starts_and_no_longer() {
+fn a_key_is_held_for_its_sessions_and_the_login_screen_learns_whether_the_secret_is_a_pin() {
     let m = machine!(true, &[("ada", "123456")]);
     m.leave_proof();
     let daemon = m.daemon();
     let held =
         |peer: Peer, user: &str| reply(daemon.handle(peer, Request::KeyHeld { user: user.into() }));
+    let kind = |peer: Peer, user: &str| {
+        reply(daemon.handle(peer, Request::SecretKind { user: user.into() }))
+    };
     assert_eq!(held(ROOT, "ada").key_held, Some(false));
+    assert_eq!(kind(GREETER, "ada"), Reply::success());
 
     assert_eq!(verify(&daemon, ROOT, "ada", "123456"), Reply::success());
+    for peer in [ROOT, ADA, GREETER] {
+        assert_eq!(kind(peer, "ada").secret, Some(SecretKind::Pin));
+    }
+    assert_eq!(kind(BOB, "ada"), refused(Refusal::NotPermitted));
+    assert_eq!(kind(GREETER, "nobody"), refused(Refusal::NotEnrolled));
+    assert_eq!(kind(ROOT, "nobody"), refused(Refusal::NotEnrolled));
+    assert_eq!(kind(BOB, "nobody"), refused(Refusal::NotPermitted));
+    assert_eq!(
+        kind(BOB, "bob"),
+        Reply::success(),
+        "no secret yet, so no kind"
+    );
+
     assert_eq!(held(GREETER, "ada").key_held, Some(false));
+    assert_eq!(held(GREETER, "nobody"), refused(Refusal::NotEnrolled));
+    assert_eq!(held(BOB, "bob").key_held, Some(false));
 
     m.session(ADA.uid, true);
     assert_eq!(held(ADA, "ada").key_held, Some(true));
@@ -623,24 +645,6 @@ fn a_key_is_held_for_the_sessions_its_sign_in_starts_and_no_longer() {
     assert_eq!(held(ROOT, "ada").key_held, Some(false));
     assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
     assert_eq!(held(ROOT, "ada").key_held, Some(true));
-}
-
-#[test]
-fn the_login_screen_learns_whether_a_secret_is_a_pin() {
-    let m = machine!(true, &[("ada", "123456")]);
-    m.leave_proof();
-    let daemon = m.daemon();
-    let kind = |peer: Peer, user: &str| {
-        reply(daemon.handle(peer, Request::SecretKind { user: user.into() }))
-    };
-    assert_eq!(kind(GREETER, "ada"), Reply::success());
-
-    assert_eq!(verify(&daemon, ROOT, "ada", "123456"), Reply::success());
-    for peer in [ROOT, ADA, GREETER] {
-        assert_eq!(kind(peer, "ada").secret, Some(SecretKind::Pin));
-    }
-    assert_eq!(kind(BOB, "ada"), refused(Refusal::NotPermitted));
-    assert_eq!(kind(GREETER, "nobody"), refused(Refusal::NotEnrolled));
 }
 
 #[test]
@@ -747,24 +751,41 @@ fn a_secret_changes_with_the_current_one_or_with_the_recovery_key_as_root() {
     assert_eq!(verify(&daemon, ADA, "ada", "1357"), Reply::success());
 }
 
+/// A recovery key that is not the machine's is refused and leaves the record
+/// as it was, so the same machine then takes the right one and goes on to the
+/// login screen's use of it.
 #[test]
-fn the_login_screen_sets_a_new_secret_with_the_recovery_key() {
+fn the_admins_recovery_key_must_be_the_machines_and_the_login_screen_sets_a_new_secret_with_it() {
     let m = machine!(true, &[("ada", "123456")]);
     m.leave_proof();
     let daemon = m.daemon();
     assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
     let recovery = m.recovery.formatted();
-    assert_eq!(
+    let other = RecoveryKey::from_bytes([6; 32]).formatted();
+    let add_recovery = |recovery: &str| {
         reply(daemon.handle(
             ROOT,
             Request::AddRecovery {
                 user: "ada".into(),
                 secret: secret("123456"),
-                recovery: secret(&recovery),
-            }
-        )),
-        Reply::success()
+                recovery: secret(recovery),
+            },
+        ))
+    };
+    let enrolled = m.record(ADA.uid).unwrap();
+    assert_eq!(add_recovery(&other), refused(Refusal::Wrong));
+    assert!(!m.record(ADA.uid).unwrap().has(Kind::Recovery));
+    assert_eq!(
+        add_recovery("not a recovery key"),
+        refused(Refusal::BadRequest)
     );
+    assert_eq!(
+        m.record(ADA.uid).unwrap(),
+        enrolled,
+        "a refused recovery key changes nothing"
+    );
+
+    assert_eq!(add_recovery(&recovery), Reply::success());
     let change = |current: Option<&str>, recovery: Option<&str>, new: &str| {
         reply(daemon.handle(
             GREETER,
@@ -781,7 +802,7 @@ fn the_login_screen_sets_a_new_secret_with_the_recovery_key() {
         change(Some("123456"), None, "2468"),
         refused(Refusal::NotPermitted)
     );
-    let other = RecoveryKey::from_bytes([6; 32]).formatted();
+    assert_eq!(change(None, None, "2468"), refused(Refusal::BadRequest));
     assert_eq!(change(None, Some(&other), "2468"), refused(Refusal::Wrong));
     assert_eq!(
         change(None, Some("not a recovery key"), "2468"),
@@ -795,27 +816,6 @@ fn the_login_screen_sets_a_new_secret_with_the_recovery_key() {
         Some(Refusal::Wrong)
     );
     assert_eq!(verify(&daemon, ADA, "ada", "2468"), Reply::success());
-}
-
-#[test]
-fn the_admins_recovery_key_must_be_the_machines() {
-    let m = machine!(true, &[("ada", "123456")]);
-    m.leave_proof();
-    let daemon = m.daemon();
-    assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
-    let other = RecoveryKey::from_bytes([6; 32]).formatted();
-    assert_eq!(
-        reply(daemon.handle(
-            ROOT,
-            Request::AddRecovery {
-                user: "ada".into(),
-                secret: secret("123456"),
-                recovery: secret(&other),
-            }
-        )),
-        refused(Refusal::Wrong)
-    );
-    assert!(!m.record(ADA.uid).unwrap().has(Kind::Recovery));
 }
 
 #[test]

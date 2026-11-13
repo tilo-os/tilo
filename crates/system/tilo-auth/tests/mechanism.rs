@@ -589,23 +589,12 @@ fn a_keyslot_can_be_added_with_the_volume_key_alone() {
     assert!(opens_any_slot(&device, DISK_PASSPHRASE, scratch.path()));
 }
 
+/// One image: with no sign-in token on it there is nothing to try; once the
+/// admin is enrolled on it, their secret or the recovery key opens it.
 #[test]
-fn boot_unlock_opens_the_volume_with_the_secret_or_the_recovery_key() {
+fn boot_unlock_cannot_try_without_a_sign_in_token_then_opens_with_the_secret_or_the_recovery_key() {
     let f = fixture!();
-    f.throttle();
     let device = f.luks_image();
-    let (mut record, key) = f.enrolled_admin(&device, "123456");
-    let recovery = RecoveryKey::from_bytes([3; 32]);
-    record.set_recovery_wrapper(Wrapper::recovery(&key, UID, &recovery).unwrap());
-    let slot = record.system_keyslot.unwrap();
-    luks::write_token(
-        &f.runner,
-        &f.ws,
-        &device,
-        &SigninToken::mirror(&record, slot),
-    )
-    .unwrap();
-
     let keys_dir = f.scratch.path().join("keys");
     std::fs::create_dir(&keys_dir).unwrap();
     let unlock = BootUnlock {
@@ -617,6 +606,26 @@ fn boot_unlock_opens_the_volume_with_the_secret_or_the_recovery_key() {
         keys_dir: &keys_dir,
         handoff: None,
     };
+    assert!(matches!(unlock.run(b"123456"), BootOutcome::CouldNotTry(_)));
+    assert!(!keys_dir.join("root.key").exists());
+    assert_eq!(
+        f.tries_used(),
+        0,
+        "a volume nobody signs in to costs no try"
+    );
+
+    f.throttle();
+    let (mut record, key) = f.enrolled_admin(&device, "123456");
+    let recovery = RecoveryKey::from_bytes([3; 32]);
+    record.set_recovery_wrapper(Wrapper::recovery(&key, UID, &recovery).unwrap());
+    let slot = record.system_keyslot.unwrap();
+    luks::write_token(
+        &f.runner,
+        &f.ws,
+        &device,
+        &SigninToken::mirror(&record, slot),
+    )
+    .unwrap();
 
     match unlock.run(b"999999\n") {
         BootOutcome::Wrong(Some(tries)) => assert_eq!(tries.left, 4),
@@ -647,25 +656,6 @@ fn boot_unlock_opens_the_volume_with_the_secret_or_the_recovery_key() {
         unlock.run(RecoveryKey::from_bytes([4; 32]).formatted().as_bytes()),
         BootOutcome::Wrong(None)
     ));
-}
-
-#[test]
-fn boot_unlock_cannot_try_on_a_volume_with_no_sign_in_token() {
-    let f = fixture!();
-    let device = f.luks_image();
-    let keys_dir = f.scratch.path().join("keys");
-    std::fs::create_dir(&keys_dir).unwrap();
-    let outcome = BootUnlock {
-        runner: &f.runner,
-        ws: &f.ws,
-        device: &device,
-        volume: "root",
-        uid: None,
-        keys_dir: &keys_dir,
-        handoff: None,
-    }
-    .run(b"123456");
-    assert!(matches!(outcome, BootOutcome::CouldNotTry(_)));
 }
 
 #[test]
