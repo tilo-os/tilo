@@ -418,201 +418,209 @@ fn unexpected(response: CloudResponse) -> std::io::Error {
 mod tests {
     use super::*;
 
-    #[test]
-    fn cloud_wire_round_trips_and_errors_surface() {
-        let (client_end, mut service) = UnixStream::pair().unwrap();
-        let answer = std::thread::spawn(move || {
-            let request: CloudRequest = CLOUD_FRAMING.read_value(&mut service).unwrap().unwrap();
-            assert_eq!(
-                request,
-                CloudRequest::File {
-                    account: "a".into(),
-                    request: FileRequest::ShareLink {
-                        path: "x.txt".into()
-                    },
-                }
-            );
-            CLOUD_FRAMING
-                .write_value(&mut service, &CloudResponse::Error("no".into()))
-                .unwrap();
-            let request: CloudRequest = CLOUD_FRAMING.read_value(&mut service).unwrap().unwrap();
-            assert_eq!(request, CloudRequest::List);
-            let mounts = vec![CloudMount {
-                account: "a".into(),
-                mount_point: "/home/ada/Remote/A".into(),
-                health: Some(MountHealth::Offline),
-                paused: true,
-                capabilities: CloudCapabilities {
-                    revisions: true,
-                    share_links: false,
-                },
-            }];
-            CLOUD_FRAMING
-                .write_value(&mut service, &CloudResponse::Mounts(mounts))
-                .unwrap();
-        });
-        let mut client = CloudClient { stream: client_end };
-        let refused = client
-            .file(
-                "a",
-                FileRequest::ShareLink {
-                    path: "x.txt".into(),
-                },
-            )
-            .unwrap_err();
-        assert_eq!(refused.to_string(), "no");
-        let mounts = client.mounts().unwrap();
-        answer.join().unwrap();
-        assert_eq!(mounts.len(), 1);
-        assert!(mounts[0].paused);
-        assert_eq!(mounts[0].health, Some(MountHealth::Offline));
-        assert!(mounts[0].capabilities.revisions);
-    }
+    tilo_test_env::scenario! {
+        fn the_cloud_wire;
 
-    #[test]
-    fn describe_round_trips_on_the_file_socket() {
-        let (client_end, mut service) = UnixStream::pair().unwrap();
-        let request = CloudRequest::File {
-            account: "a".into(),
-            request: FileRequest::Describe {
-                path: "Work/Essay.docx".into(),
-            },
-        };
-        assert!(!CloudSocket::Accounts.serves(&request));
-        assert!(CloudSocket::Files.serves(&request));
-        let description = FileDescription {
-            source_mime: Some("application/vnd.google-apps.document".into()),
-            converted: true,
-            content_writable: false,
-        };
-        let reply = FileReply::Description(description);
-        let expected = reply.clone();
-        let worker = std::thread::spawn(move || {
-            let received: CloudRequest = CLOUD_FRAMING.read_value(&mut service).unwrap().unwrap();
-            assert_eq!(received, request);
-            CLOUD_FRAMING
-                .write_value(&mut service, &CloudResponse::File(reply))
-                .unwrap();
-        });
-        let mut client = CloudClient { stream: client_end };
-        assert_eq!(
-            client
+        phase cloud_wire_round_trips_and_errors_surface;
+        {
+            let (client_end, mut service) = UnixStream::pair().unwrap();
+            let answer = std::thread::spawn(move || {
+                let request: CloudRequest = CLOUD_FRAMING.read_value(&mut service).unwrap().unwrap();
+                assert_eq!(
+                    request,
+                    CloudRequest::File {
+                        account: "a".into(),
+                        request: FileRequest::ShareLink {
+                            path: "x.txt".into()
+                        },
+                    }
+                );
+                CLOUD_FRAMING
+                    .write_value(&mut service, &CloudResponse::Error("no".into()))
+                    .unwrap();
+                let request: CloudRequest = CLOUD_FRAMING.read_value(&mut service).unwrap().unwrap();
+                assert_eq!(request, CloudRequest::List);
+                let mounts = vec![CloudMount {
+                    account: "a".into(),
+                    mount_point: "/home/ada/Remote/A".into(),
+                    health: Some(MountHealth::Offline),
+                    paused: true,
+                    capabilities: CloudCapabilities {
+                        revisions: true,
+                        share_links: false,
+                    },
+                }];
+                CLOUD_FRAMING
+                    .write_value(&mut service, &CloudResponse::Mounts(mounts))
+                    .unwrap();
+            });
+            let mut client = CloudClient { stream: client_end };
+            let refused = client
                 .file(
                     "a",
-                    FileRequest::Describe {
-                        path: "Work/Essay.docx".into()
-                    }
-                )
-                .unwrap(),
-            expected
-        );
-        worker.join().unwrap();
-    }
-
-    #[test]
-    fn maximum_import_chunk_fits_the_wire_frame() {
-        let (client_end, mut service) = UnixStream::pair().unwrap();
-        let worker = std::thread::spawn(move || {
-            let request: CloudRequest = CLOUD_FRAMING.read_value(&mut service).unwrap().unwrap();
-            assert!(matches!(
-                request,
-                CloudRequest::Import {
-                    request: ImportRequest::ReadChunk {
-                        length: IMPORT_CHUNK_LIMIT,
-                        ..
+                    FileRequest::ShareLink {
+                        path: "x.txt".into(),
                     },
-                    ..
-                }
-            ));
-            CLOUD_FRAMING
-                .write_value(
-                    &mut service,
-                    &CloudResponse::Import(ImportReply::Chunk {
-                        bytes: vec![255; IMPORT_CHUNK_LIMIT as usize],
-                        eof: true,
-                    }),
+                )
+                .unwrap_err();
+            assert_eq!(refused.to_string(), "no");
+            let mounts = client.mounts().unwrap();
+            answer.join().unwrap();
+            assert_eq!(mounts.len(), 1);
+            assert!(mounts[0].paused);
+            assert_eq!(mounts[0].health, Some(MountHealth::Offline));
+            assert!(mounts[0].capabilities.revisions);
+        }
+
+        phase describe_round_trips_on_the_file_socket;
+        {
+            let (client_end, mut service) = UnixStream::pair().unwrap();
+            let request = CloudRequest::File {
+                account: "a".into(),
+                request: FileRequest::Describe {
+                    path: "Work/Essay.docx".into(),
+                },
+            };
+            assert!(!CloudSocket::Accounts.serves(&request));
+            assert!(CloudSocket::Files.serves(&request));
+            let description = FileDescription {
+                source_mime: Some("application/vnd.google-apps.document".into()),
+                converted: true,
+                content_writable: false,
+            };
+            let reply = FileReply::Description(description);
+            let expected = reply.clone();
+            let worker = std::thread::spawn(move || {
+                let received: CloudRequest = CLOUD_FRAMING.read_value(&mut service).unwrap().unwrap();
+                assert_eq!(received, request);
+                CLOUD_FRAMING
+                    .write_value(&mut service, &CloudResponse::File(reply))
+                    .unwrap();
+            });
+            let mut client = CloudClient { stream: client_end };
+            assert_eq!(
+                client
+                    .file(
+                        "a",
+                        FileRequest::Describe {
+                            path: "Work/Essay.docx".into()
+                        }
+                    )
+                    .unwrap(),
+                expected
+            );
+            worker.join().unwrap();
+        }
+
+        phase maximum_import_chunk_fits_the_wire_frame;
+        {
+            let (client_end, mut service) = UnixStream::pair().unwrap();
+            let worker = std::thread::spawn(move || {
+                let request: CloudRequest = CLOUD_FRAMING.read_value(&mut service).unwrap().unwrap();
+                assert!(matches!(
+                    request,
+                    CloudRequest::Import {
+                        request: ImportRequest::ReadChunk {
+                            length: IMPORT_CHUNK_LIMIT,
+                            ..
+                        },
+                        ..
+                    }
+                ));
+                CLOUD_FRAMING
+                    .write_value(
+                        &mut service,
+                        &CloudResponse::Import(ImportReply::Chunk {
+                            bytes: vec![255; IMPORT_CHUNK_LIMIT as usize],
+                            eof: true,
+                        }),
+                    )
+                    .unwrap();
+            });
+            let mut client = CloudClient { stream: client_end };
+            let reply = client
+                .import(
+                    "account",
+                    ImportRequest::ReadChunk {
+                        session: "opaque".into(),
+                        offset: 0,
+                        length: IMPORT_CHUNK_LIMIT,
+                    },
                 )
                 .unwrap();
-        });
-        let mut client = CloudClient { stream: client_end };
-        let reply = client
-            .import(
-                "account",
-                ImportRequest::ReadChunk {
-                    session: "opaque".into(),
-                    offset: 0,
-                    length: IMPORT_CHUNK_LIMIT,
+            assert_eq!(
+                reply,
+                ImportReply::Chunk {
+                    bytes: vec![255; IMPORT_CHUNK_LIMIT as usize],
+                    eof: true
+                }
+            );
+            worker.join().unwrap();
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn the_cloud_sockets;
+
+        phase the_socket_lives_in_the_service_runtime_directory;
+        {
+            assert_eq!(
+                socket_in(Path::new("/run/user/1000")),
+                Path::new("/run/user/1000/tilo-fs-cloud/control.sock")
+            );
+            let files = files_socket_in(Path::new("/run/user/1000"));
+            assert_eq!(
+                files,
+                Path::new("/run/user/1000/tilo-fs-cloud-files/files.sock")
+            );
+            assert!(
+                !files.starts_with(Path::new("/run/user/1000").join(RUNTIME_DIR_NAME)),
+                "a grant of the account socket's directory must not reach the file socket"
+            );
+        }
+
+        phase only_the_file_socket_serves_file_requests;
+        {
+            let file = CloudRequest::File {
+                account: "a".into(),
+                request: FileRequest::ShareLink {
+                    path: "x.txt".into(),
                 },
-            )
-            .unwrap();
-        assert_eq!(
-            reply,
-            ImportReply::Chunk {
-                bytes: vec![255; IMPORT_CHUNK_LIMIT as usize],
-                eof: true
+            };
+            assert!(!CloudSocket::Accounts.serves(&file));
+            assert!(CloudSocket::Files.serves(&file));
+            let account = "a".to_owned();
+            for request in [
+                CloudRequest::List,
+                CloudRequest::SyncNow {
+                    account: account.clone(),
+                },
+                CloudRequest::Pause {
+                    account: account.clone(),
+                },
+                CloudRequest::Resume {
+                    account: account.clone(),
+                },
+                CloudRequest::PrepareImport {
+                    account: account.clone(),
+                },
+                CloudRequest::AbortImport {
+                    account: account.clone(),
+                    token: "opaque".into(),
+                },
+                CloudRequest::BeginCommitImport {
+                    account: account.clone(),
+                    token: "opaque".into(),
+                },
+                CloudRequest::CompleteImport {
+                    account: account.clone(),
+                    token: "opaque".into(),
+                },
+                CloudRequest::RecoverImport { account },
+            ] {
+                assert!(CloudSocket::Accounts.serves(&request));
+                assert!(CloudSocket::Files.serves(&request));
             }
-        );
-        worker.join().unwrap();
-    }
-
-    #[test]
-    fn the_socket_lives_in_the_service_runtime_directory() {
-        assert_eq!(
-            socket_in(Path::new("/run/user/1000")),
-            Path::new("/run/user/1000/tilo-fs-cloud/control.sock")
-        );
-        let files = files_socket_in(Path::new("/run/user/1000"));
-        assert_eq!(
-            files,
-            Path::new("/run/user/1000/tilo-fs-cloud-files/files.sock")
-        );
-        assert!(
-            !files.starts_with(Path::new("/run/user/1000").join(RUNTIME_DIR_NAME)),
-            "a grant of the account socket's directory must not reach the file socket"
-        );
-    }
-
-    #[test]
-    fn only_the_file_socket_serves_file_requests() {
-        let file = CloudRequest::File {
-            account: "a".into(),
-            request: FileRequest::ShareLink {
-                path: "x.txt".into(),
-            },
-        };
-        assert!(!CloudSocket::Accounts.serves(&file));
-        assert!(CloudSocket::Files.serves(&file));
-        let account = "a".to_owned();
-        for request in [
-            CloudRequest::List,
-            CloudRequest::SyncNow {
-                account: account.clone(),
-            },
-            CloudRequest::Pause {
-                account: account.clone(),
-            },
-            CloudRequest::Resume {
-                account: account.clone(),
-            },
-            CloudRequest::PrepareImport {
-                account: account.clone(),
-            },
-            CloudRequest::AbortImport {
-                account: account.clone(),
-                token: "opaque".into(),
-            },
-            CloudRequest::BeginCommitImport {
-                account: account.clone(),
-                token: "opaque".into(),
-            },
-            CloudRequest::CompleteImport {
-                account: account.clone(),
-                token: "opaque".into(),
-            },
-            CloudRequest::RecoverImport { account },
-        ] {
-            assert!(CloudSocket::Accounts.serves(&request));
-            assert!(CloudSocket::Files.serves(&request));
         }
     }
 }
