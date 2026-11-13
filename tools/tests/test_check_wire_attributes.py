@@ -168,6 +168,145 @@ pub enum Settings {
         self.assertIn("Nowhere", unreadable[0])
 
 
+STORED = '''#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Held {{
+    pub id: String,
+    {attribute}
+    pub name: String,
+}}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bundle {{
+    pub held: Vec<Held>,
+}}
+
+pub fn read(bytes: &[u8]) -> Held {{
+    postcard::from_bytes::<Held>(bytes).unwrap()
+}}
+'''
+
+
+class StoredRecordTests(unittest.TestCase):
+    """A record no interface declares: the call that reads it names its type."""
+
+    def tree(self, source, extra_files=None):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source_path = root / "crates/demo/store/src/lib.rs"
+        source_path.parent.mkdir(parents=True)
+        source_path.write_text(source)
+        for name, text in (extra_files or {}).items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        return root
+
+    def judged(self, source, **kwargs):
+        return attributes.problems(self.tree(source, **kwargs))
+
+    def test_a_type_a_postcard_call_names_is_judged(self):
+        found = self.judged(STORED.format(attribute='#[serde(skip_serializing_if = "Option::is_none")]'))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("Held.name", found[0])
+
+    def test_the_types_a_named_type_is_made_of_are_judged(self):
+        source = STORED.format(attribute="#[serde(default)]") + '''
+pub fn read_bundle(bytes: &[u8]) -> Bundle {
+    postcard::from_bytes::<Bundle>(bytes).unwrap()
+}
+'''
+        found = self.judged(
+            source.replace(
+                "#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]\npub struct Bundle {",
+                '#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]\npub struct Bundle {\n'
+                '    #[serde(skip_serializing_if = "Vec::is_empty")]\n    pub spare: Vec<String>,',
+            )
+        )
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("Bundle.spare", found[0])
+
+    def test_a_bincode_call_names_its_type_too(self):
+        source = STORED.format(attribute='#[serde(skip_serializing_if = "Option::is_none")]').replace(
+            "postcard::from_bytes::<Held>(bytes).unwrap()",
+            "bincode::deserialize::<Held>(bytes).unwrap()",
+        )
+        found = self.judged(source)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("Held.name", found[0])
+
+    def test_a_call_that_lets_the_type_be_inferred_names_nothing(self):
+        source = STORED.format(attribute='#[serde(skip_serializing_if = "Option::is_none")]').replace(
+            "postcard::from_bytes::<Held>(bytes).unwrap()",
+            "postcard::from_bytes(bytes).unwrap()",
+        )
+        self.assertEqual(self.judged(source), [])
+
+    def test_a_name_a_turbofish_carries_that_is_no_type_is_no_type(self):
+        source = STORED.format(attribute="#[serde(default)]") + '''
+pub fn peek(bytes: &[u8]) -> u32 {
+    postcard::take_from_bytes::<u32>(bytes).unwrap().0
+}
+
+pub fn any<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Option<T> {
+    postcard::from_bytes::<T>(bytes).ok()
+}
+'''
+        self.assertEqual(self.judged(source), [])
+
+    def test_a_call_in_test_code_names_nothing(self):
+        source = STORED.format(attribute="#[serde(default)]") + '''
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_held_row_round_trips() {
+        let bytes = postcard::to_stdvec(&Held { id: String::new(), name: String::new() }).unwrap();
+        assert_eq!(postcard::from_bytes::<Held>(&bytes).unwrap().name, "");
+    }
+}
+'''
+        self.assertEqual(self.judged(source), [])
+
+    def test_a_type_that_writes_its_own_bytes_is_judged_by_that(self):
+        """A type whose impl writes JSON text in a binary format keeps its
+        fields' `skip`s: serde reads none of them by position."""
+        source = '''pub struct Choice {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<u32>,
+}
+
+impl serde::Serialize for Choice {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde_json::to_string(&self.at)
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
+    }
+}
+
+pub fn read(bytes: &[u8]) -> Choice {
+    postcard::from_bytes::<Choice>(bytes).unwrap()
+}
+'''
+        self.assertEqual(self.judged(source), [])
+
+    def test_a_type_a_socket_carries_is_still_judged_beside_a_stored_one(self):
+        """The two derivations meet in one file without counting a type twice."""
+        root = self.tree(STORED.format(attribute='#[serde(skip_serializing_if = "Option::is_none")]'))
+        manifest = root / "crates/demo/store/interface.toml"
+        manifest.write_text(
+            INTERFACE.format(
+                encoding="postcard", roots='"Held"', extra=""
+            ).replace("crates/demo/wire/src/lib.rs", "crates/demo/store/src/lib.rs")
+        )
+        found = attributes.problems(root)
+        self.assertEqual(len(found), 1, found)
+
+    def test_the_tree_omits_no_field_a_compact_format_carries(self):
+        self.assertEqual(attributes.problems(), [])
+
+
 class SpecTests(unittest.TestCase):
     def manifest(self, text):
         temporary = tempfile.TemporaryDirectory()
