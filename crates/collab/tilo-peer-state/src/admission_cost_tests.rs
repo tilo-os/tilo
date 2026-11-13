@@ -335,8 +335,20 @@ fn newcomer_work(members: u32) -> crate::governance_work::GovernanceWork {
 /// receipt of the invitation they redeemed) and one receipt read per
 /// member, a bound the protocol makes inherent. Every reading over all the
 /// rows is made a fixed number of times, however many members there are.
+///
+/// The process remembers, on purpose, what it has already checked, admitted
+/// and replayed ([`newcomer_work`]), so these counts are a newcomer's only
+/// where no other test reads the same rows: a process of its own.
 #[test]
 fn a_newcomer_works_through_each_member_once() {
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_newcomer_works_through_each_member_once",
+        newcomer_of_30_against_300,
+    );
+}
+
+fn newcomer_of_30_against_300() {
     let small = newcomer_work(30);
     let large = newcomer_work(300);
     let more = |large: u64, small: u64| large.saturating_sub(small);

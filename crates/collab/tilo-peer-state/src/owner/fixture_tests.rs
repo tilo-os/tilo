@@ -3,6 +3,7 @@ use crate::owner::{NativeWorkspaceOwner, VerifiedNativeEnrollmentIntent, open_fi
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::time::SystemTime;
+use tilo_identity_host::policy_change::epoch;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 pub(crate) struct Fixture {
@@ -282,9 +283,19 @@ async fn a_member_device_republishes_its_retained_frames_and_a_peer_converges() 
 
 /// A write to an app record changes nothing authorization decides on, so its
 /// watchers are not told; a change of the workspace's grants is, at once.
+///
+/// Not announced is read as the process's announcement epoch holding still
+/// ([`tilo_identity_host::policy_change`]), and every owner, device fleet and
+/// registry in a process announces into that one epoch: this reads it where
+/// no other test owns a workspace that moves it.
 #[tokio::test]
 async fn only_a_governance_change_is_announced_to_authorization() {
-    use tilo_identity_host::policy_change::epoch;
+    if !tilo_test_env::in_own_process_here(
+        module_path!(),
+        "only_a_governance_change_is_announced_to_authorization",
+    ) {
+        return;
+    }
     let fixture = member_device_fixture();
     let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
     let before = epoch();
