@@ -1,6 +1,5 @@
-//! `tilo-collab-probe` is a packaged app that checks collaboration through the
-//! sandbox service descriptor supplied by the launcher (`TILO_SVC_COLLAB_FD`).
-//! It does not connect to a socket path directly.
+//! `tilo-collab-probe` is a packaged app that checks collaboration through the sandbox service
+//! descriptor the launcher supplies (`TILO_SVC_COLLAB_FD`), never a socket path.
 //!
 //! ```text
 //! tilo-collab-probe write:<text>      # author an edit, publish it
@@ -8,21 +7,16 @@
 //! tilo-collab-probe routes:<app>,...  # what this launch may do on each app's route
 //! ```
 //!
-//! The room comes from `TILO_WORKSPACE_ID`. `write` publishes a signed
-//! Automerge change through the broker, and `read` loads the change into its
-//! own document. Exit status is zero only when the requested operation
-//! succeeds; failures identify the step that failed.
+//! The workspace comes from `TILO_WORKSPACE_ID`. `write` publishes a signed Automerge change through
+//! the broker, and `read` loads the change into its own document. Exit status is zero only when the
+//! requested operation succeeds.
 //!
-//! `routes` asks, as the attested launch of whatever package the probe was
-//! launched as (`TILO_PACKAGE_ID`), to join each named app's route and to
-//! write on it, and prints one `probe: ROUTE` line per app with what the
-//! broker and the identity service answered. It changes nothing it may not:
-//! the write it offers another app's route is not a valid operation, so only
-//! a broker that admits writes there would even look at it. A package whose
-//! entrypoint is the probe and that the shell launches without arguments
-//! reads the instruction from `probe-routes` in its payload
-//! (`TILO_APP_MODULE`): how `docs/tilolang-e2e.md` checks a tilolang app's
-//! route access as that app.
+//! `routes` asks, as the attested launch of the package the probe was launched as
+//! (`TILO_PACKAGE_ID`), to join each named app's route and to write on it, and prints one
+//! `probe: ROUTE` line per app with what the broker and the identity service answered. The write it
+//! offers another app's route is not a valid operation, so only a broker that admits writes there
+//! would look at it. A package whose entrypoint is the probe and that the shell launches without
+//! arguments reads the instruction from `probe-routes` in its payload (`TILO_APP_MODULE`).
 
 use std::process::ExitCode;
 use tilo_automerge::ApplyIncoming;
@@ -31,8 +25,8 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
 use collab_types::{CommitNamed, DocumentMutation, Ed25519PublicKey, OpKind, Signature, SignedOp};
 
-/// Root key the probe reads and writes. One flat string is enough because the
-/// probe proves delivery, not a document model.
+/// The key the probe reads and writes: one flat string is enough, since the probe proves delivery
+/// and not a document model.
 const FIELD: &str = "text";
 const APP_ID: &str = "so.tilo.collab-probe";
 const RECORD_ID: &str = "";
