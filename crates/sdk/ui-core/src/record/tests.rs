@@ -129,27 +129,25 @@ fn a_part_stored_after_the_window_opened_is_held_and_opens() {
     store.try_open_record(&part).unwrap();
 }
 
-/// Writer records stamped before the kind rename reopen as rich text
-/// without rewriting their attributed history.
+/// A record reads back with the kind it was stamped with — a kind is the name
+/// its app writes — and reading it leaves its attributed history alone.
 #[test]
-fn records_stamped_with_former_writer_kinds_reopen_without_rewrite() {
-    let current = RecordKind::new("tilo.rich-text");
-    assert!(current.names("tilo.rich-text"));
-    for former in ["document", "qdoc.rich-text"] {
-        assert_eq!(RecordKind::new(former), current);
-        assert!(current.names(former));
+fn records_read_back_with_the_kind_they_were_stamped_with() {
+    for kind in ["tilo.rich-text", "document"] {
+        let stamped = RecordKind::new(kind);
+        assert!(stamped.names(kind));
         let id = RecordId::for_tab(7);
         let mut doc = AutoCommit::new();
-        init(&mut doc, &id, &current, "workspace");
+        init(&mut doc, &id, &stamped, "workspace");
         let meta = meta_obj(&mut doc).unwrap();
-        doc.put(&meta, "kind", former).unwrap();
+        doc.put(&meta, "kind", kind).unwrap();
         doc.commit();
         let heads = doc.get_heads();
         assert_eq!(
             identity(&doc),
-            Some(RecordCheckout::new(id.clone(), current.clone()))
+            Some(RecordCheckout::new(id.clone(), stamped.clone()))
         );
-        assert!(init_scoped(&mut doc, &id, &current, "workspace", None));
+        assert!(init_scoped(&mut doc, &id, &stamped, "workspace", None));
         doc.commit();
         assert_eq!(doc.get_heads(), heads);
     }
