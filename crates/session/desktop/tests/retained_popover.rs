@@ -170,9 +170,88 @@ struct Kept {
     frames: RetainedFrames,
     overflows: ui::render_bump_recovery::Overflows,
     partial: usize,
+    /// On the CPU, as a page draws on a software adapter or before its pipelines compile: a
+    /// second target drawn whole every frame, which the kept one must equal.
+    cpu: Option<(
+        RetainedRaster,
+        vello::wgpu::Texture,
+        vello::wgpu::TextureView,
+    )>,
+}
+
+/// A target the page's size, as the page keeps its frame in.
+fn page_target(device: &vello::wgpu::Device) -> (vello::wgpu::Texture, vello::wgpu::TextureView) {
+    let texture = device.create_texture(&vello::wgpu::TextureDescriptor {
+        label: Some("kept-page"),
+        size: vello::wgpu::Extent3d {
+            width: DEVICE.0,
+            height: DEVICE.1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: vello::wgpu::TextureDimension::D2,
+        format: vello::wgpu::TextureFormat::Rgba8Unorm,
+        usage: vello::wgpu::TextureUsages::STORAGE_BINDING
+            | vello::wgpu::TextureUsages::COPY_SRC
+            | vello::wgpu::TextureUsages::TEXTURE_BINDING
+            | vello::wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&vello::wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+/// `texture`'s pixels, read back.
+fn read(
+    device: &vello::wgpu::Device,
+    queue: &vello::wgpu::Queue,
+    texture: &vello::wgpu::Texture,
+) -> Vec<u8> {
+    let row = DEVICE.0 * 4;
+    let buffer = device.create_buffer(&vello::wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(row * DEVICE.1),
+        usage: vello::wgpu::BufferUsages::COPY_DST | vello::wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder =
+        device.create_command_encoder(&vello::wgpu::CommandEncoderDescriptor::default());
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        vello::wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: vello::wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(DEVICE.1),
+            },
+        },
+        vello::wgpu::Extent3d {
+            width: DEVICE.0,
+            height: DEVICE.1,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    buffer
+        .slice(..)
+        .map_async(vello::wgpu::MapMode::Read, |_| {});
+    let _ = device.poll(vello::wgpu::PollType::wait_indefinitely());
+    buffer.slice(..).get_mapped_range().to_vec()
 }
 
 impl Kept {
+    /// The kept frame drawn on the CPU, as a page draws on a software adapter or before its
+    /// pipelines compile, beside a second target drawn whole every frame.
+    fn on_cpu() -> Self {
+        let mut kept = Self::new();
+        kept.raster = RetainedRaster::new(true);
+        let (texture, view) = page_target(&kept.device);
+        kept.cpu = Some((RetainedRaster::new(true), texture, view));
+        kept
+    }
+
     fn new() -> Self {
         let gpu = ui::offscreen::shared_gpu().expect("a GPU to keep the frame on");
         let mut renderer = vello::Renderer::new(
@@ -189,24 +268,7 @@ impl Kept {
             .enable_canonical_segment_order(&gpu.device)
             .unwrap();
         renderer.set_sparse_fine_enabled(false);
-        let texture = gpu.device.create_texture(&vello::wgpu::TextureDescriptor {
-            label: Some("kept-page"),
-            size: vello::wgpu::Extent3d {
-                width: DEVICE.0,
-                height: DEVICE.1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: vello::wgpu::TextureDimension::D2,
-            format: vello::wgpu::TextureFormat::Rgba8Unorm,
-            usage: vello::wgpu::TextureUsages::STORAGE_BINDING
-                | vello::wgpu::TextureUsages::COPY_SRC
-                | vello::wgpu::TextureUsages::TEXTURE_BINDING
-                | vello::wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&vello::wgpu::TextureViewDescriptor::default());
+        let (texture, view) = page_target(&gpu.device);
         Self {
             device: gpu.device,
             queue: gpu.queue,
@@ -217,7 +279,44 @@ impl Kept {
             frames: RetainedFrames::default(),
             overflows: ui::render_bump_recovery::Overflows::default(),
             partial: 0,
+            cpu: None,
         }
+    }
+
+    /// On the CPU: draw `whole` whole on the second target, and say whether the kept frame is it.
+    fn check_on_cpu(&mut self, whole: &vello::Scene, background: vello::peniko::Color, what: &str) {
+        let Some((raster, texture, view)) = self.cpu.as_mut() else {
+            return;
+        };
+        raster
+            .rasterize(
+                (&self.device, &self.queue),
+                Some(&mut self.renderer),
+                RetainedTarget { texture, view },
+                FrameContent {
+                    scene: whole,
+                    width: DEVICE.0,
+                    height: DEVICE.1,
+                    base_color: background,
+                    damage_regions: &[],
+                    scroll_copies: &[],
+                    full_redraw: true,
+                    backdrop: &ui::backdrop::BackdropFrame::default(),
+                },
+            )
+            .0
+            .unwrap();
+        let kept = read(&self.device, &self.queue, &self.texture);
+        let whole = read(&self.device, &self.queue, texture);
+        let differing = kept
+            .chunks(4)
+            .zip(whole.chunks(4))
+            .position(|(kept, whole)| kept.iter().zip(whole).any(|(a, b)| a.abs_diff(*b) > 2));
+        assert_eq!(
+            differing.map(|at| (at % DEVICE.0 as usize, at / DEVICE.0 as usize)),
+            None,
+            "on the CPU, after {what}, the kept frame differs from the frame at that pixel"
+        );
     }
 
     /// Draw the next frame as the page does and say whether the kept frame is that frame.
@@ -273,6 +372,10 @@ impl Kept {
         self.partial += 1;
         let mut whole = vello::Scene::new();
         whole.append(input.scene, Some(key.to_device));
+        if self.cpu.is_some() {
+            self.check_on_cpu(&whole, input.background, &format!("{what}: {damage:?}"));
+            return;
+        }
         let scratch = self.overflows.scratch(&self.renderer);
         let check = RasterCheck::start(
             (&self.device, &self.queue),
@@ -312,9 +415,17 @@ impl Kept {
 
 #[test]
 fn the_workspace_menu_over_a_bare_desk_leaves_the_kept_frame_whole() {
+    menu_over_bare_desk(Kept::new());
+}
+
+#[test]
+fn the_workspace_menu_over_a_bare_desk_leaves_the_kept_frame_whole_on_the_cpu() {
+    menu_over_bare_desk(Kept::on_cpu());
+}
+
+fn menu_over_bare_desk(mut kept: Kept) {
     ui::i18n::I18nManager::init("en-US");
     let (mut frame, page) = page();
-    let mut kept = Kept::new();
     kept.step(&mut frame, &page, "the first frame");
     kept.step(&mut frame, &page, "a frame at rest");
     let name = control(&frame, "Workspace: workspaces");
