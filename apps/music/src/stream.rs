@@ -220,6 +220,22 @@ impl StreamWorker {
             tasks: None,
         }
     }
+
+    /// A worker that takes every request and answers none, so a test sees the app's own
+    /// state between asking for a download and hearing back, whatever the host's network
+    /// would say. The queue stays here for the test's life.
+    #[cfg(test)]
+    pub(crate) fn silent_for_test() -> Self {
+        let (tx, request_rx) = std::sync::mpsc::sync_channel::<StreamRequest>(REQUEST_QUEUE_LIMIT);
+        let (_update_tx, rx) = ui::wake::waking_channel::<StreamUpdate>();
+        std::mem::forget(request_rx);
+        Self {
+            tx,
+            rx,
+            startup_error: None,
+            tasks: None,
+        }
+    }
 }
 
 pub(crate) fn valid_native_track(id: &str) -> bool {

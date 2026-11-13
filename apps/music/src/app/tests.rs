@@ -1259,6 +1259,7 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
 fn offline_downloads_and_media_cache_are_honest_and_device_local() {
     {
         let (mut app, mut doc) = app_with_doc();
+        app.use_worker(crate::stream::StreamWorker::silent_for_test());
         assert_eq!(app.cache_state("tk_g2"), CacheState::Streamed);
         let heads = doc.get_heads();
         let keep = crate::actions::effect_payload(&crate::actions::MusicEffect::KeepOffline {
@@ -1278,6 +1279,7 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
 
     {
         let (mut app, _doc) = app_with_doc();
+        app.use_worker(crate::stream::StreamWorker::silent_for_test());
         app.device_cache.insert("tk_g1".into(), CacheState::Cached);
         app.device_cache.insert("tk_g2".into(), CacheState::Cached);
         let keep = crate::actions::effect_payload(&crate::actions::MusicEffect::KeepOffline {
@@ -1343,6 +1345,7 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
 
     {
         let (mut app, mut doc) = app_with_doc();
+        app.use_worker(crate::stream::StreamWorker::silent_for_test());
         app.view = View::Downloads;
         app.update_device_cache("tk_g1", CacheState::Downloading(0.32));
         app.update_device_cache("tk_g2", CacheState::Cached);
@@ -1382,6 +1385,7 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
         use ui::widget::Widget as _;
 
         let (mut app, mut doc) = app_with_doc();
+        app.use_worker(crate::stream::StreamWorker::silent_for_test());
         app.view = View::Downloads;
         app.offline_errors
             .insert("tk_g3".into(), "connection reset while downloading".into());
