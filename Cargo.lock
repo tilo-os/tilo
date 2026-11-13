@@ -18163,6 +18163,7 @@ name = "tilo-compositor"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "khronos-egl",
  "libc",
  "neighbour-wire",
  "qcms",
@@ -18185,6 +18186,7 @@ dependencies = [
  "tilo-winit",
  "tracing",
  "wayland-client",
+ "wayland-egl",
  "wayland-protocols",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
@@ -28409,6 +28411,7 @@ dependencies = [
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-doc-pdf",
+ "tilo-docs",
  "tilo-document",
  "tilo-documents",
  "tilo-durable-writer",

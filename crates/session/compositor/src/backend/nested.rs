@@ -13,7 +13,9 @@ use smithay::backend::allocator::Fourcc;
 use smithay::backend::egl::EGLDevice;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::{Bind as _, ExportMem as _, ImportDma as _, Offscreen as _};
+use smithay::backend::renderer::{
+    Bind as _, ExportMem as _, ImportDma as _, ImportMemWl as _, Offscreen as _,
+};
 use smithay::backend::winit::{
     WinitEvent, WinitEventLoop, WinitGraphicsBackend, init_from_attributes,
 };
@@ -168,6 +170,7 @@ impl NestedBackend {
             .copied()
             .collect();
         state.enable_dmabuf(formats, node);
+        state.offer_shm_formats(window.renderer().shm_formats());
         if let Some(node) = node {
             state.enable_dmabuf_capture(node.dev_id(), render_formats);
         }

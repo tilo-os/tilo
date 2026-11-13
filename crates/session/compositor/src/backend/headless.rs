@@ -41,7 +41,9 @@ use smithay::backend::renderer::element::memory::{
     MemoryRenderBuffer, MemoryRenderBufferRenderElement,
 };
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
-use smithay::backend::renderer::{Bind, ExportMem, ImportDma as _, Offscreen, Texture};
+use smithay::backend::renderer::{
+    Bind, ExportMem, ImportDma as _, ImportMemWl as _, Offscreen, Texture,
+};
 use smithay::output::Output;
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Size, Transform};
 use tilo_color_pipeline::hdr_surface::{HdrLayer, HdrLayerRecording};
@@ -189,6 +191,7 @@ impl HeadlessBackend {
         if let Some(node) = node {
             state.enable_dmabuf_capture(node.dev_id(), render_formats);
         }
+        state.offer_shm_formats(renderer.shm_formats());
         Ok(Self {
             renderer,
             outputs: Vec::new(),

@@ -310,19 +310,6 @@ pub struct State {
     retired: std::sync::Mutex<Option<(u64, Instant)>>,
 }
 
-/// Besides 8-bit RGB, the 10-bit and half-float buffers an HDR surface's signal is carried in.
-fn shm_formats() -> Vec<smithay::reexports::wayland_server::protocol::wl_shm::Format> {
-    use smithay::reexports::wayland_server::protocol::wl_shm::Format;
-    vec![
-        Format::Xrgb2101010,
-        Format::Xbgr2101010,
-        Format::Argb2101010,
-        Format::Abgr2101010,
-        Format::Xrgb16161616f,
-        Format::Abgr16161616f,
-    ]
-}
-
 /// The seat every client's input arrives on: a keyboard, a pointer and a touch screen. Its
 /// keyboard starts on the US layout, which always compiles; a person's own layout replaces it once
 /// settings reach the compositor. Stated outright, because an empty name would type the machine's
@@ -347,10 +334,23 @@ fn seat(display: &DisplayHandle) -> (SeatState<State>, Seat<State>) {
 }
 
 impl State {
+    /// Offer `wl_shm` buffers in `formats`, the ones the backend's renderer draws: a client takes
+    /// the deepest format offered (a GL client's EGL offers a 10-bit config first), and one offered
+    /// that the renderer cannot draw leaves its window blank. Called by a backend before any client
+    /// connects; the two formats every client may use are always offered.
+    pub(crate) fn offer_shm_formats(
+        &mut self,
+        formats: impl IntoIterator<Item = smithay::reexports::wayland_server::protocol::wl_shm::Format>,
+    ) {
+        self.shm_state.update_formats(formats);
+    }
+
     pub(crate) fn new(display: &DisplayHandle, policy: Box<dyn WindowPolicy>) -> Self {
         let compositor_state = CompositorState::new::<Self>(display);
         let xdg_shell_state = XdgShellState::new::<Self>(display);
-        let shm_state = ShmState::new::<Self>(display, shm_formats());
+        // Only the formats every renderer takes until the backend says which its renderer draws
+        // ([`State::offer_shm_formats`]).
+        let shm_state = ShmState::new::<Self>(display, []);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(display);
         let data_device_state = DataDeviceState::new::<Self>(display);
         let (seat_state, seat) = seat(display);

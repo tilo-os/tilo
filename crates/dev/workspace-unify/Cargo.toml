@@ -1109,6 +1109,7 @@ doc = false
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
 "tilo-agent-participant" = { path = "../../../crates/agent/agent-participant", default-features = false, features = [] }
 "tilo-ai-bench" = { path = "../../../crates/dev/ai-bench", default-features = false, features = [] }
+"tilo-api" = { path = "../../../crates/hosting/tilo-api", default-features = false, features = [] }
 "tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "chrono", "default", "gpu-video", "mpris", "native", "realtime-video", "test-support"] }
 "tilo-app-launch" = { path = "../../../crates/session/app-launch", default-features = false, features = ["test-support"] }
 "tilo-app-module" = { path = "../../../crates/platform/tilo-app-module", default-features = false, features = [] }
@@ -1176,6 +1177,7 @@ doc = false
 "tilo-doc" = { path = "../../../crates/doc/tilo-doc", default-features = false, features = ["bulk-instrumentation"] }
 "tilo-doc-codecs" = { path = "../../../crates/doc/tilo-doc-codecs", default-features = false, features = ["all", "default", "docx", "epub", "html", "markdown", "ods", "odt", "office", "rtf", "xlsx"] }
 "tilo-doc-pdf" = { path = "../../../crates/doc/tilo-doc-pdf", default-features = false, features = [] }
+"tilo-docs" = { path = "../../../crates/doc/tilo-docs", default-features = false, features = [] }
 "tilo-document" = { path = "../../../crates/doc/tilo-document", default-features = false, features = [] }
 "tilo-documents" = { path = "../../../crates/system/documents", default-features = false, features = ["mount"] }
 "tilo-durable-writer" = { path = "../../../crates/platform/tilo-durable-writer", default-features = false, features = [] }
@@ -1197,7 +1199,6 @@ doc = false
 "tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false, features = ["faces"] }
 "tilo-formats" = { path = "../../../crates/sdk/tilo-formats", default-features = false, features = [] }
 "tilo-frame-metrics" = { path = "../../../crates/session/frame-metrics", default-features = false, features = [] }
-"tilo-api" = { path = "../../../crates/hosting/tilo-api", default-features = false, features = [] }
 "tilo-fs" = { path = "../../../crates/system/fs", default-features = false, features = ["default", "document-media", "filesystem"] }
 "tilo-fs-client" = { path = "../../../crates/runtime/tilo-fs-client", default-features = false, features = [] }
 "tilo-handoff" = { path = "../../../crates/platform/tilo-handoff", default-features = false, features = ["default", "peer"] }
@@ -1506,7 +1507,7 @@ doc = false
 "wast-252_0_0" = { package = "wast", version = "^252.0.0", default-features = false, features = ["component-model", "wasm-module"] }
 "wat-1_252_0" = { package = "wat", version = "^1.252.0", default-features = false, features = ["component-model", "default"] }
 "wayland-backend-0_3_15" = { package = "wayland-backend", path = "../../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
-"wayland-client-0_31_14" = { package = "wayland-client", version = "^0.31.14", default-features = false, features = [] }
+"wayland-client-0_31_14" = { package = "wayland-client", version = "^0.31.14", default-features = false, features = ["system"] }
 "wayland-csd-frame-0_3_0" = { package = "wayland-csd-frame", version = "^0.3.0", default-features = false, features = [] }
 "wayland-cursor-0_31_12" = { package = "wayland-cursor", version = "^0.31.12", default-features = false, features = [] }
 "wayland-egl-0_32_11" = { package = "wayland-egl", version = "^0.32.11", default-features = false, features = [] }
