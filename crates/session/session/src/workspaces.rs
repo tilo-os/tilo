@@ -1006,7 +1006,13 @@ impl crate::Shared {
                     workspace.slot,
                     workspace.id(),
                 );
-                let (name, endpoint) = (workspace.name.clone(), endpoint.clone());
+                // The name it is founded under is the one a person reads: a workspace nobody
+                // named keeps no name of its own, and a workspace is founded under a name, so
+                // the word the desk reads for it stands in until one is given.
+                let (name, endpoint) = (
+                    tilo_desktop_surface::names::workspace(&workspace.name),
+                    endpoint.clone(),
+                );
                 let founded = crate::landing::off_loop(async move {
                     engine.found(slot, id, &name, endpoint.as_ref()).await;
                 });
