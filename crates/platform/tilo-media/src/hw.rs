@@ -466,4 +466,88 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn a_policy_ranks_every_hardware_family_whatever_rank_it_shipped_with() {
+        const HARDWARE: [DecoderKind; 6] = [
+            DecoderKind::Va,
+            DecoderKind::NvCodec,
+            DecoderKind::V4l2,
+            DecoderKind::Vulkan,
+            DecoderKind::D3d,
+            DecoderKind::VideoToolbox,
+        ];
+        // `GStreamer`'s scale (none, marginal, secondary, primary), one above it as
+        // dav1d ships, and the most a plugin could claim.
+        const SHIPPED: [u32; 6] = [0, 64, 128, 256, 257, u32::MAX];
+        // The lowest and the highest rank a software decoder that autoplugs ships with.
+        const MARGINAL: u32 = 64;
+        const DAV1D: u32 = 257;
+
+        let mut policies = vec![HwPolicy::Auto, HwPolicy::Off];
+        policies.extend(HARDWARE.map(HwPolicy::Force));
+        for policy in &policies {
+            for shipped in SHIPPED {
+                assert_eq!(
+                    effective_rank(*policy, DecoderKind::Software, shipped),
+                    shipped,
+                    "{policy:?} must leave a software decoder at the rank it shipped with"
+                );
+            }
+        }
+        for kind in HARDWARE {
+            assert!(kind.is_hardware(), "{}", kind.as_str());
+            for shipped in SHIPPED {
+                let row = format!("{} shipped at rank {shipped}", kind.as_str());
+                assert!(
+                    effective_rank(HwPolicy::Off, kind, shipped) < MARGINAL,
+                    "off: {row} must lose to every software decoder that autoplugs"
+                );
+                assert!(
+                    effective_rank(HwPolicy::Auto, kind, shipped) > DAV1D,
+                    "auto: {row} must still outrank the best software decoder"
+                );
+                assert!(
+                    effective_rank(HwPolicy::Force(kind), kind, shipped) > DAV1D,
+                    "forced: {row} must outrank the best software decoder"
+                );
+                for other in HARDWARE {
+                    if other != kind {
+                        assert!(
+                            effective_rank(HwPolicy::Force(other), kind, shipped) < MARGINAL,
+                            "{} forced: {row} must fall below every software decoder",
+                            other.as_str()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn elements_that_are_not_video_decoders_leave_the_report_empty() {
+        let mut report = HwReport::default();
+        for name in [
+            "h264parse0",
+            "qtdemux0",
+            "videoconvert0",
+            "avdec_aac0",
+            "decodebin3-0",
+        ] {
+            assert!(!report.note_element(name), "{name} is not the decoder");
+        }
+        assert_eq!(
+            report,
+            HwReport::default(),
+            "nothing that passed by was recorded"
+        );
+        assert_eq!(report.describe(), "no decoder plugged yet");
+
+        // The decoder plugged after them is still the first, and so the chosen one.
+        assert!(report.note_element("vp9dec0"));
+        assert_eq!(report.decoder_element.as_deref(), Some("vp9dec0"));
+        assert_eq!(report.decoder_kind, Some(DecoderKind::Software));
+        assert!(!report.is_hardware());
+        assert_eq!(report.decoder_candidates, ["vp9dec0"]);
+    }
 }

@@ -775,6 +775,45 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_kilobit_rate_floors_to_whole_kilobits_and_a_bit_rate_passes_through() {
+        // (bits per second asked for, what a kilobit encoder is given, what a bit one is)
+        let rows: [(u64, u64, u64); 8] = [
+            (0, 0, 0),
+            (1, 1, 1),
+            (999, 1, 999),
+            (1_000, 1, 1_000),
+            (1_001, 1, 1_001),
+            (1_999, 1, 1_999),
+            (2_000, 2, 2_000),
+            (u64::MAX, 18_446_744_073_709_551, u64::MAX),
+        ];
+        for (bits_per_second, kilobits, in_bits) in rows {
+            assert_eq!(
+                AV1_BASELINE.bitrate_value(bits_per_second),
+                kilobits,
+                "{bits_per_second} bit/s in kilobits: never rounded up past what was asked, \
+                 and never auto unless auto was asked",
+            );
+            assert_eq!(
+                OPUS_BASELINE.bitrate_value(bits_per_second),
+                in_bits,
+                "{bits_per_second} bit/s in bits",
+            );
+        }
+        assert_eq!(
+            AV1_BASELINE.launch_args(16_000_000),
+            "target-bitrate=16000",
+            "svtav1enc spells the property as libvpx does and counts in kilobits",
+        );
+        assert_eq!(
+            VP9_BASELINE.launch_args(16_000_000),
+            "target-bitrate=16000000",
+            "vp9enc counts in bits",
+        );
+        assert_eq!(OPUS_BASELINE.launch_args(128_000), "bitrate=128000");
+    }
+
     #[cfg(feature = "encode")]
     #[test]
     #[allow(

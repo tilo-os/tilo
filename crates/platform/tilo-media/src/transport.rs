@@ -110,4 +110,111 @@ mod tests {
             assert_eq!(correction(20_000, 18_800), Correction::Seek(18_800));
         }
     }
+
+    #[test]
+    fn the_projected_playhead_holds_at_the_edges_of_its_inputs() {
+        let state = |playing: bool, rate: f32| TransportState {
+            playing,
+            position_ms: 4_000,
+            rate,
+            epoch_ms: 10_000,
+        };
+        // (row, playing, rate, now, projected position)
+        let projections: [(&str, bool, f32, u64, u64); 8] = [
+            ("at the epoch nothing has elapsed", true, 1.0, 10_000, 4_000),
+            (
+                "a clock behind the host's epoch holds",
+                true,
+                1.0,
+                9_000,
+                4_000,
+            ),
+            ("a clock at zero holds", true, 1.0, 0, 4_000),
+            (
+                "a negative rate never plays backwards",
+                true,
+                -1.0,
+                12_000,
+                4_000,
+            ),
+            ("a zero rate holds", true, 0.0, 12_000, 4_000),
+            (
+                "a rate that is not a number holds",
+                true,
+                f32::NAN,
+                12_000,
+                4_000,
+            ),
+            ("half rate advances half as far", true, 0.5, 12_000, 5_000),
+            (
+                "a paused playhead ignores its rate",
+                false,
+                2.0,
+                12_000,
+                4_000,
+            ),
+        ];
+        for (row, playing, rate, now_ms, projected) in projections {
+            assert_eq!(
+                state(playing, rate).projected_position(now_ms),
+                projected,
+                "{row}"
+            );
+        }
+        let end_of_range = TransportState {
+            playing: true,
+            position_ms: u64::MAX,
+            rate: 1.0,
+            epoch_ms: 0,
+        };
+        assert_eq!(
+            end_of_range.projected_position(1_000),
+            u64::MAX,
+            "a playhead at the end of the range stays there instead of wrapping"
+        );
+    }
+
+    #[test]
+    fn drift_of_exactly_the_threshold_rides_and_a_millisecond_more_seeks() {
+        let host = 60_000u64;
+        let threshold = DRIFT_SEEK_THRESHOLD_MS;
+        let beyond = threshold.saturating_add(1);
+        // (row, the follower's playhead, correction towards the host's)
+        let corrections = [
+            ("no drift", host, Correction::InSync),
+            (
+                "exactly the threshold behind rides",
+                host.saturating_sub(threshold),
+                Correction::InSync,
+            ),
+            (
+                "exactly the threshold ahead rides",
+                host.saturating_add(threshold),
+                Correction::InSync,
+            ),
+            (
+                "a millisecond past the threshold behind seeks",
+                host.saturating_sub(beyond),
+                Correction::Seek(host),
+            ),
+            (
+                "a millisecond past the threshold ahead seeks",
+                host.saturating_add(beyond),
+                Correction::Seek(host),
+            ),
+        ];
+        for (row, local_ms, expected) in corrections {
+            assert_eq!(correction(local_ms, host), expected, "{row}");
+        }
+        assert_eq!(
+            correction(0, u64::MAX),
+            Correction::Seek(u64::MAX),
+            "the whole range apart is a seek, not an overflow"
+        );
+        assert_eq!(
+            correction(u64::MAX, 0),
+            Correction::Seek(0),
+            "and in the other direction"
+        );
+    }
 }
