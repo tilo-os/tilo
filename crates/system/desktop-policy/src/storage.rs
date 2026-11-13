@@ -1,9 +1,9 @@
-//! Truthful storage accounting and a preview-before-delete cache cleaner.
+//! Storage accounting and a preview-before-delete cache cleaner.
 //!
-//! Trees are measured with `symlink_metadata`; symbolic links are counted but
-//! never followed. Cleanup can only target direct children of the configured
-//! cache root and revalidates identity, metadata, and measured contents
-//! immediately before removal.
+//! Trees are measured with `symlink_metadata`: symbolic links are counted but never
+//! followed. Cleanup can only target direct children of the configured cache root
+//! and revalidates identity, metadata and measured contents immediately before
+//! removal.
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StorageRoots {
-    /// The package store root (`tilo-apps`); installed apps are read from
-    /// its registry.
+    /// The package store root (`tilo-apps`); installed apps are read from its
+    /// registry.
     pub app_payloads: Option<PathBuf>,
     pub room_data: Option<PathBuf>,
     pub app_cache: Option<PathBuf>,
@@ -148,10 +148,10 @@ fn scan_children(
     }
 }
 
-/// One entry per installed package, attributed by the package store's
-/// registry: a tree is named by its package id, so only the registry knows
-/// whose it is. Payload bytes shared between packages live once in the
-/// store's content; each tree is measured as the app sees it.
+/// One entry per installed package, attributed by the package store's registry: a
+/// tree is named by its package id, so only the registry knows whose it is. Payload
+/// bytes shared between packages live once in the store's content; each tree is
+/// measured as the app sees it.
 fn scan_installed_apps(snapshot: &mut StorageSnapshot, root: Option<&Path>) {
     let Some(root) = root else {
         snapshot.unavailable.push(StorageCategory::InstalledApps);
@@ -253,9 +253,9 @@ pub struct CleanupPreview {
 }
 
 impl CleanupPreview {
-    /// A preview of `items` (path and size) under `root` for a capture or a
-    /// test: what Storage shows before a cleanup, with nothing on disk behind
-    /// it. Cleaning it refuses every item as changed since the preview.
+    /// A preview of `items` (path and size) under `root` for a capture or a test:
+    /// what Storage shows before a cleanup, with nothing on disk behind it. Cleaning
+    /// it refuses every item as changed since the preview.
     #[must_use]
     pub fn fixture(
         root: impl Into<PathBuf>,
@@ -308,10 +308,9 @@ pub enum CleanupError {
 
 /// # Errors
 ///
-/// Returns [`CleanupError::Unavailable`] if `cache_root` can't be stat'd or
-/// canonicalized, [`CleanupError::UnsafeRoot`] if it is not a plain
-/// directory, or [`CleanupError::Io`] if listing its children or stat'ing
-/// one fails.
+/// [`CleanupError::Unavailable`] if `cache_root` can't be stat'd or canonicalized,
+/// [`CleanupError::UnsafeRoot`] if it is not a plain directory, or
+/// [`CleanupError::Io`] if listing its children or stat'ing one fails.
 pub fn preview_cache_cleanup(cache_root: &Path) -> Result<CleanupPreview, CleanupError> {
     let root_meta = std::fs::symlink_metadata(cache_root).map_err(|_| CleanupError::Unavailable)?;
     if !root_meta.is_dir() || root_meta.file_type().is_symlink() {

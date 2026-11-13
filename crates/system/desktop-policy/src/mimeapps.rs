@@ -1,26 +1,23 @@
 //! freedesktop.org MIME association lists (`mimeapps.list`).
 //!
-//! Host applications and the tools they call (`xdg-open`, `GLib`, Qt) decide
-//! which program opens a file from an ordered chain of these lists. Tilo reads
-//! the same chain so an association made with `xdg-mime` or a host app's own
-//! "always open with" is honoured, and writes its resolved host defaults to
+//! Host applications and the tools they call (`xdg-open`, GLib, Qt) decide which
+//! program opens a file from an ordered chain of these lists. Tilo reads the same
+//! chain, so an association made with `xdg-mime` or a host app's "always open with"
+//! is honoured, and writes its resolved host defaults to
 //! `$XDG_CONFIG_HOME/tilo-mimeapps.list` so those tools agree with the desktop.
 //!
-//! Host applications are named in policy by their desktop-file name,
-//! `org.example.App.desktop`, which is exactly how these lists spell them.
+//! Host applications are named by their desktop-file name, `org.example.App.desktop`,
+//! which is how these lists spell them.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// Suffix that marks a policy id as a host desktop entry rather than a Tilo package.
 pub const HOST_APP_SUFFIX: &str = ".desktop";
 
-/// The policy id of a host application with desktop-file id `desktop_id`.
 pub fn host_app_id(desktop_id: &str) -> String {
     format!("{desktop_id}{HOST_APP_SUFFIX}")
 }
 
-/// The desktop-file id behind a host policy id, or `None` for a Tilo package.
 pub fn host_desktop_id(policy_id: &str) -> Option<&str> {
     policy_id
         .strip_suffix(HOST_APP_SUFFIX)
@@ -31,7 +28,6 @@ const DEFAULT_APPLICATIONS: &str = "Default Applications";
 const ADDED_ASSOCIATIONS: &str = "Added Associations";
 const REMOVED_ASSOCIATIONS: &str = "Removed Associations";
 
-/// One parsed `mimeapps.list`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MimeAppsList {
     pub defaults: BTreeMap<String, Vec<String>>,
@@ -76,7 +72,6 @@ impl MimeAppsList {
         list
     }
 
-    /// Serialise in the keyfile form every consumer of the spec reads.
     pub fn render(&self) -> String {
         let mut out = String::new();
         for (name, group) in [
@@ -114,9 +109,9 @@ impl MimeAppsList {
     }
 }
 
-/// The lookup order the specification defines, most important first. `desktops` are the
-/// `XDG_CURRENT_DESKTOP` entries; each contributes a `<desktop>-mimeapps.list` ahead of the
-/// plain one in every directory.
+/// The lookup order the specification defines, most important first. `desktops`
+/// are the `XDG_CURRENT_DESKTOP` entries; each contributes a
+/// `<desktop>-mimeapps.list` ahead of the plain one in every directory.
 pub fn search_path(
     desktops: &[String],
     config_home: Option<&Path>,
@@ -150,7 +145,6 @@ pub fn search_path(
     out
 }
 
-/// The ordered chain, most important list first.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MimeAppsChain {
     lists: Vec<MimeAppsList>,
@@ -161,14 +155,14 @@ impl MimeAppsChain {
         Self { lists }
     }
 
-    /// Load every list on `paths`, in order.
     pub fn load(paths: &[PathBuf]) -> Self {
         Self::new(paths.iter().map(|path| MimeAppsList::load(path)).collect())
     }
 
-    /// Whether host app `desktop_file` (`foo.desktop`) handles `mime`, given whether its own
-    /// `MimeType=` declares it. An association added by a list survives only removals made in
-    /// that list or a more important one; a declared type is removed by any list.
+    /// Whether host app `desktop_file` (`foo.desktop`) handles `mime`, given
+    /// whether its own `MimeType=` declares it. An association a list adds survives
+    /// unless that list or a more important one removes it; a declared type is
+    /// removed by any list.
     pub fn handles(&self, desktop_file: &str, mime: &str, declared: bool) -> bool {
         let mut removed = false;
         for list in &self.lists {
@@ -185,7 +179,6 @@ impl MimeAppsChain {
         declared && !removed
     }
 
-    /// Every MIME type some list adds for `desktop_file`, before removals are applied.
     pub fn added_types(&self, desktop_file: &str) -> BTreeSet<String> {
         self.lists
             .iter()
@@ -195,9 +188,9 @@ impl MimeAppsChain {
             .collect()
     }
 
-    /// The first `Default Applications` entry for `mime`, in chain order, that `usable`
-    /// accepts. Entries naming an application that is not installed, or no longer handles the
-    /// type, are skipped as the specification requires.
+    /// The first `Default Applications` entry for `mime`, in chain order, that
+    /// `usable` accepts. Entries naming an application that is not installed, or no
+    /// longer handles the type, are skipped as the specification requires.
     pub fn default_for(&self, mime: &str, usable: impl Fn(&str) -> bool) -> Option<&str> {
         self.lists
             .iter()
@@ -208,18 +201,18 @@ impl MimeAppsChain {
     }
 }
 
-/// The desktop name Tilo announces in `XDG_CURRENT_DESKTOP`.
 pub const CURRENT_DESKTOP: &str = "tilo";
 
-/// Where Tilo publishes its resolved host defaults: the first list on the chain for
-/// `XDG_CURRENT_DESKTOP=tilo`, so `xdg-open`, `GLib` and Qt agree with the desktop.
+/// Where Tilo publishes its resolved host defaults: the first list on the chain
+/// for `XDG_CURRENT_DESKTOP=tilo`, so `xdg-open`, GLib and Qt agree with the
+/// desktop.
 #[cfg(feature = "host-storage")]
 pub fn published_list_path() -> Option<PathBuf> {
     Some(tilo_paths::xdg::config_home()?.join(format!("{CURRENT_DESKTOP}-mimeapps.list")))
 }
 
-/// The session's chain as input to Tilo's own resolution. The list Tilo publishes is
-/// derived from this resolution, so it is left out: reading it back would freeze
+/// The session's chain, as input to Tilo's own resolution. The list Tilo publishes
+/// comes from this resolution, so it is left out: reading it back would freeze
 /// yesterday's fallback into today's choice.
 #[cfg(feature = "host-storage")]
 pub fn session_chain() -> MimeAppsChain {
