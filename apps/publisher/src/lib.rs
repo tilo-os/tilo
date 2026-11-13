@@ -1,15 +1,7 @@
-//! App Publisher: the key that signs your apps, and the namespaces the
-//! registry lets it publish under.
-//!
-//! The key lives in this app's secrets on this device, where `tilo-app` finds
-//! it too ([`app_registry::publisher::key`]). It never enters the resource: the
-//! resource is synced to collaborators and kept in history, and holds only
-//! what an application for a namespace needs.
+//! App Publisher: the key that signs your apps, and the namespaces the registry lets it
+//! publish under.
 
-/// The application id: also the app whose secrets `tilo-app` reads the
-/// publisher key from.
 pub const APP_ID: &str = app_registry::publisher::key::SECRETS_APP;
-/// The window and launcher title.
 pub const APP_TITLE: &str = "App Publisher";
 
 pub mod locales;
@@ -20,9 +12,8 @@ use ui::prelude::*;
 use ui::secrets::SecretStore;
 use ui::widget::{BannerKind, Field};
 
-/// What to apply for, and where. Stored, synced and undoable; the key is not
-/// part of it. Each field is edited at its path; the registry must stay an
-/// address the client accepts, however it is changed.
+/// What to apply for, and where. Each field is edited at its path; the registry must stay
+/// an address the client accepts, however it is changed.
 #[derive(Model, Debug, Clone, PartialEq)]
 #[model(check = Publisher::valid)]
 pub struct Publisher {
@@ -48,13 +39,8 @@ impl Default for Publisher {
 }
 
 impl Publisher {
-    /// What the record holds: the registry the key publishes to, and the namespaces claimed on
-    /// it.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds: the registry the key publishes to, and the namespaces claimed
+    /// on it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -82,10 +68,7 @@ impl Publisher {
 #[derive(Clone, Debug, PartialEq)]
 pub enum KeyState {
     Missing,
-    Present {
-        public: String,
-    },
-    /// A file is there but is not a publisher key.
+    Present { public: String },
     Unreadable,
 }
 
@@ -101,8 +84,8 @@ impl KeyState {
     }
 }
 
-/// The outcome of the last operation, as the banner that reports it: a
-/// severity, a headline and the detail that explains it.
+/// The outcome of the last operation, as the banner that reports it: a severity, a headline
+/// and the detail that explains it.
 #[derive(Clone, Debug, PartialEq)]
 struct Notice {
     kind: BannerKind,
@@ -158,32 +141,23 @@ struct Pane {
     key: KeyState,
     busy: bool,
     notice: Option<Notice>,
-    /// Every application status this window read, newest last: the timeline
-    /// the person can see instead of only the last answer.
     history: Vec<(u64, String)>,
 }
 
-/// What the publisher does with the key on this machine and the registry,
-/// for every caller: the buttons, the palette, scripts and agents. Creating
-/// or revealing the key needs an owner and a confirmation.
+/// What the publisher does with the key on this machine and the registry, for every caller:
+/// the buttons, the palette, scripts and agents.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.publisher.key")]
 pub enum KeyEffect {
-    /// Create publisher key.
     #[effect(privileged, label = "publisher-create-key")]
     CreateKey,
-    /// Copy namespace proof.
     CopyProof,
-    /// Copy key for CI.
     #[effect(attended, privileged, label = "publisher-copy-secret")]
     CopySecret,
-    /// Export the key to a file the person chooses.
     #[effect(job, attended, privileged)]
     ExportKey,
-    /// Apply for namespaces.
     #[effect(job)]
     ApplyForNamespaces,
-    /// Check application status.
     #[effect(job)]
     CheckStatus,
 }
@@ -232,8 +206,6 @@ fn check_status(registry: &str, secrets: &SecretStore) -> Result<Option<String>,
     Ok(status.as_ref().map(app_registry::publisher::status_summary))
 }
 
-/// How long a copied secret key stays on the clipboard: time to paste it into
-/// a CI secret in a browser.
 const KEY_ON_CLIPBOARD_FOR: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Create or copy the key now, on the UI thread: the clipboard lives there.
@@ -241,8 +213,6 @@ fn local(effect: &KeyEffect, secrets: &SecretStore) -> Result<Notice, String> {
     match effect {
         KeyEffect::CreateKey => {
             let key = key::create(secrets).map_err(|error| format!("{error:#}"))?;
-            // The key exists only in this device's keychain. Say that, and
-            // point at the export that writes a real backup file.
             Ok(Notice::info("publisher-key-created")
                 .explained("publisher-key-created-detail")
                 .detailed(format!(
@@ -439,8 +409,8 @@ fn profile_proof_places(profile: &Publisher) -> Vec<String> {
     places
 }
 
-/// Run one of the key pane's effects, keeping `pane_state` busy while it
-/// runs and recording what it says.
+/// Run one of the key pane's effects, keeping `pane_state` busy while it runs and recording
+/// what it says.
 fn handle_key_effect(
     effect: KeyEffect,
     cx: &mut EffectCx<Publisher>,
@@ -497,8 +467,6 @@ fn handle_key_effect(
         }));
     }
     if matches!(effect, KeyEffect::CopySecret) {
-        // The copy settles without the UI thread waiting on it; the
-        // effect finishes once it has.
         let copy = copy_secret(secrets)?;
         pane_state.set(Pane {
             busy: true,
@@ -531,9 +499,8 @@ fn handle_key_effect(
     result.map(|_| Effected::done())
 }
 
-/// Where to publish the proof line, following the domain and forge fields as
-/// they are edited. The projection reads the document, so the places are
-/// the current claims rather than the state at window construction.
+/// Where to publish the proof line, following the domain and forge fields as they are
+/// edited.
 fn proof_places_section() -> ModelView<Vec<String>> {
     ModelView::from_document(
         |doc, _| {
@@ -574,8 +541,7 @@ fn proof_places_section() -> ModelView<Vec<String>> {
     )
 }
 
-/// The application status readings this window made, newest first, each with
-/// its own as-of.
+/// The application status readings this window made, newest first, each with its own as-of.
 fn status_timeline(pane: &Pane) -> Element {
     if pane.history.is_empty() {
         return Box::new(
@@ -634,8 +600,6 @@ fn namespace_form(cx: &ViewCx<Publisher>) -> Column {
         .input(paths.contact)
         .with_id("contact-input")
         .with_placeholder("publisher-contact-placeholder");
-    // One form, so the four labels share a column; on the key section's
-    // content edge, not indented under it.
     let fields = ui::widget::Form::new().section(
         ui::widget::FormSection::untitled()
             .field(labeled_field("publisher-domain-label", domain))
@@ -682,8 +646,8 @@ impl ResourceApp for App {
         fixture.provide(key);
     }
 
-    /// A capture never reads this machine's key file or settings: the claims
-    /// are filled in here, the key and the last outcome in `staged`.
+    /// A capture never reads this machine's key file or settings: the claims are filled in
+    /// here, the key and the last outcome in `staged`.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Publisher>> {
         if name == Some("no-key") {
             return Vec::new();
@@ -701,8 +665,6 @@ impl ResourceApp for App {
 
     fn view(cx: &mut ViewCx<Publisher>) -> Element {
         let form = namespace_form(cx);
-        // The key is this machine's, not the version's: a past version shows
-        // the application it held and nothing that acts on the key.
         let secrets = cx.storage().secrets();
         let key = match cx.mode() {
             RunMode::Past => return Box::new(form),
