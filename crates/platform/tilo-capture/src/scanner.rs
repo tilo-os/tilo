@@ -1,18 +1,14 @@
 //! Document scanners: one page at a time, as PNG.
 //!
-//! Linux reaches scanners through SANE (feature `scanner`); macOS and the
-//! web have no scanner access here yet and report none. The controls are a
-//! small typed set so no caller can pass scanner options through a string.
+//! Linux reaches scanners through SANE; macOS and the web report none. The controls
+//! are a small typed set, so no caller can pass scanner options through a string.
 
-/// A scanner the system knows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scanner {
-    /// What [`scan_page`] takes.
     pub device: String,
     pub description: String,
 }
 
-/// How to scan one page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScanSettings {
     pub resolution_dpi: u16,
@@ -34,7 +30,6 @@ pub enum ScanSource {
     FeederDuplex,
 }
 
-/// The scanners attached now.
 pub fn scanners() -> Result<Vec<Scanner>, String> {
     imp::scanners()
 }
@@ -43,8 +38,8 @@ pub fn scan_page(device: &str, settings: ScanSettings) -> Result<Vec<u8>, String
     imp::scan_page(device, settings)
 }
 
-/// SANE through `scanimage`. The device is one argv value and every option
-/// comes from the typed set, so no caller reaches a free-form argument.
+// SANE through `scanimage`: the device is one argv value and every option comes
+// from the typed set, so no caller reaches a free-form argument.
 #[cfg(sane_scanner)]
 mod imp {
     use std::process::Command;
@@ -140,7 +135,6 @@ mod imp {
         Ok(command)
     }
 
-    /// The scanners in `scanimage -L` output.
     fn parse_scanners(text: &str) -> Vec<Scanner> {
         text.lines()
             .filter_map(|line| {
@@ -154,8 +148,6 @@ mod imp {
             .collect()
     }
 
-    /// `raw` without control characters, at most `limit` characters, its
-    /// whitespace collapsed.
     fn sanitize(raw: &str, limit: usize) -> String {
         raw.chars()
             .filter(|character| !character.is_control())
