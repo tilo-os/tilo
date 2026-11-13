@@ -57,10 +57,9 @@ pub(crate) struct Bound {
     /// does not depend on which items those have.
     pub loops: Vec<Rc<LoopRows>>,
     pub space_reads: Vec<(String, f64)>,
-    /// The participants whose names it asked the window for (`who.name()`).
-    pub name_reads: Vec<Principal>,
-    /// Whether it wrote a day or a time of day in the person's format.
-    pub format_reads: bool,
+    /// Whether it showed something only the window knows: a participant's name, a day or a time
+    /// of day in the person's formats, a word in the language their window speaks.
+    pub person_reads: bool,
     pub state_reads: Vec<(StateKey, u64)>,
     pub state_seen: Vec<(StateKey, Value)>,
     /// When the time it read next reads differently (seconds since 1970, UTC): it runs again
@@ -92,8 +91,7 @@ impl Bound {
             colls: Vec::new(),
             loops: Vec::new(),
             space_reads: Vec::new(),
-            name_reads: Vec::new(),
-            format_reads: false,
+            person_reads: false,
             state_reads: Vec::new(),
             state_seen: Vec::new(),
             changes_at: None,
@@ -146,10 +144,8 @@ struct Index {
     docs: FastMap<String, HashSet<BoundId>>,
     states: HashMap<StateKey, HashSet<BoundId>>,
     space: HashSet<BoundId>,
-    /// The boundaries that read a name (`who.name()`), and those that write a day or a time of
-    /// day in the person's format: what the window says, where a field is what the record says.
-    names: HashSet<BoundId>,
-    formats: HashSet<BoundId>,
+    /// The boundaries that show something only the window knows: a name, a format, a word.
+    people: HashSet<BoundId>,
     /// The boundaries that read the time, by when it next reads differently for them: the
     /// first is when the view next needs to run without anything else changing.
     times: BTreeSet<(i64, BoundId)>,
@@ -200,11 +196,8 @@ impl Index {
         if !b.space_reads.is_empty() {
             self.space.insert(id);
         }
-        if !b.name_reads.is_empty() {
-            self.names.insert(id);
-        }
-        if b.format_reads {
-            self.formats.insert(id);
+        if b.person_reads {
+            self.people.insert(id);
         }
         if let Some(at) = b.changes_at {
             self.times.insert((at, id));
@@ -246,8 +239,7 @@ impl Index {
             drop_from(&mut self.states, key, id);
         }
         self.space.remove(&id);
-        self.names.remove(&id);
-        self.formats.remove(&id);
+        self.people.remove(&id);
         if let Some(at) = b.changes_at {
             self.times.remove(&(at, id));
         }
@@ -452,8 +444,7 @@ impl Live {
             colls: Vec::new(),
             loops: Vec::new(),
             space_reads: Vec::new(),
-            name_reads: Vec::new(),
-            format_reads: false,
+            person_reads: false,
             state_reads: Vec::new(),
             state_seen: Vec::new(),
             changes_at: None,
@@ -580,7 +571,7 @@ impl Live {
                     b.colls.len(),
                     b.loops.len(),
                     b.space_reads.len(),
-                    b.name_reads.len(),
+                    usize::from(b.person_reads),
                     b.state_reads.len(),
                 ]
                 .into_iter()
@@ -907,17 +898,11 @@ impl Live {
         }
     }
 
-    /// Mark the boundaries that read a name: the window calls a participant something else, and
-    /// the views showing a name show it again. A view that shows no name is not run.
-    pub fn names_moved(&mut self) {
-        let hit: Vec<BoundId> = self.index.names.iter().copied().collect();
-        self.dirty.extend(hit);
-    }
-
-    /// Mark the boundaries that write a day or a time of day in the person's format: they chose
-    /// another, and what shows one shows it again.
-    pub fn formats_moved(&mut self) {
-        let hit: Vec<BoundId> = self.index.formats.iter().copied().collect();
+    /// Mark the boundaries that show something only the window knows: the person chose another
+    /// language, another clock or another date style, or the window calls a participant
+    /// something else, and what shows one shows it again. A view that shows none is not run.
+    pub fn person_moved(&mut self) {
+        let hit: Vec<BoundId> = self.index.people.iter().copied().collect();
         self.dirty.extend(hit);
     }
 
@@ -1012,8 +997,7 @@ impl Live {
             reads,
             colls,
             space_reads,
-            name_reads,
-            format_reads,
+            person_reads,
             retained,
             state_reads,
             state_seen,
@@ -1030,8 +1014,7 @@ impl Live {
             b.colls = colls;
             b.loops = loops;
             b.space_reads = space_reads;
-            b.name_reads = name_reads;
-            b.format_reads = format_reads;
+            b.person_reads = person_reads;
             b.state_reads = state_reads;
             b.state_seen = state_seen;
             b.changes_at = changes_at;
@@ -1101,8 +1084,7 @@ impl Live {
             b.colls.clear();
             b.loops.clear();
             b.space_reads.clear();
-            b.name_reads.clear();
-            b.format_reads = false;
+            b.person_reads = false;
             b.state_reads.clear();
             b.changes_at = None;
             b.rendered = false;

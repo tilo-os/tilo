@@ -914,10 +914,10 @@ impl Hosted {
         self.instance.add_origin(origin);
     }
 
-    /// The person's formats changed: what the instance wrote of a time or a day is written again
-    /// in the new style, and its window shows it.
-    pub fn formats_changed(&mut self) {
-        self.instance.formats_changed();
+    /// The person's environment changed — their formats, or the name the window calls someone:
+    /// every view that shows what only the window knows runs again, and its window shows it.
+    pub fn person_changed(&mut self) {
+        self.instance.person_changed();
     }
 
     /// The person chose `language` (`de-DE`) in Settings: the window reads its words in it where
@@ -1424,7 +1424,7 @@ impl Hosted {
             // Apps installed or removed since the last frame: what the views show of who made a
             // change is published again.
             if collaboration::history_source::authors::set_installed_apps(apps.clone()) {
-                self.instance.names_changed();
+                self.instance.person_changed();
             }
             return true;
         }

@@ -194,16 +194,12 @@ impl ViewInstance {
         self.live.shows(reads);
     }
 
-    /// Run again the boundaries that read a name (`who.name()`), and no others: the window calls
-    /// a participant something else than it did.
-    pub fn names_moved(&mut self) {
-        self.live.names_moved();
-    }
-
-    /// Run again the boundaries that wrote a day or a time of day: the person chose another
-    /// format for one.
-    pub fn formats_moved(&mut self) {
-        self.live.formats_moved();
+    /// Run again the boundaries that show something only the window knows — a participant's
+    /// name, a day or a time of day in the person's formats, a word in the language their window
+    /// speaks — and no others: the person reads another language, chose another clock, or the
+    /// window calls someone something else than it did.
+    pub fn person_moved(&mut self) {
+        self.live.person_moved();
     }
 
     /// When the time some boundary read (`today` in a query or a filter) next reads

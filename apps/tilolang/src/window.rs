@@ -924,7 +924,7 @@ impl Widget for Window {
         presence: &ui::presence::PresenceCtx,
     ) {
         if self.names.follow(presence) {
-            self.instance.names_changed();
+            self.instance.person_changed();
         }
         // A conversation's "… is typing": who presence says is composing a message in the
         // resource this window shows, by their person.

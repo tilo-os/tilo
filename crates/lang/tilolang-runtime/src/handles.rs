@@ -144,12 +144,11 @@ pub struct ViewState {
     pub state_seen: Vec<(StateKey, Value)>,
     /// Every `space` field read, with the value it had.
     pub space_reads: Vec<(String, f64)>,
-    /// The participants whose names this run asked the window for (`who.name()`), each once: a
-    /// boundary runs again when the window calls one of them something else.
-    pub name_reads: Vec<Principal>,
-    /// Whether it wrote a day or a time of day in the person's format: a boundary runs again
-    /// when they change it.
-    pub format_reads: bool,
+    /// Whether it showed anything only the window knows: what it calls a participant
+    /// (`who.name()`), a day or a time of day in the person's formats, a word in the language
+    /// their window speaks. A boundary runs again when the person's environment changes, and no
+    /// other does.
+    pub person_reads: bool,
     /// Every `(resource, field)` read (the resource as `ResourceRef::id_string`), the view's
     /// dependencies.
     pub reads: Vec<(String, String)>,
@@ -172,17 +171,10 @@ pub struct ViewState {
 }
 
 impl ViewState {
-    /// Note that this run read the name of `who`, once per participant: a boundary runs again
-    /// when the window calls someone it showed something else.
-    pub(crate) fn read_name(&mut self, who: &Principal) {
-        if !self.name_reads.contains(who) {
-            self.name_reads.push(who.clone());
-        }
-    }
-
-    /// Note that this run wrote a day or a time of day in the person's format.
-    pub(crate) fn read_format(&mut self) {
-        self.format_reads = true;
+    /// Note that this run showed something only the window knows: a participant's name, a day or
+    /// a time of day in the person's formats, a word in the language their window speaks.
+    pub(crate) fn read_person(&mut self) {
+        self.person_reads = true;
     }
 }
 
