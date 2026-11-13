@@ -68,28 +68,28 @@ pub struct PersonRecords {
     /// own there ([`RecordId::of_member`]).
     member: bool,
     /// The app these are the person's records of: `open`'s package, carried
-    /// across [`Self::of_package`], which opens another app's.
-    own_package: String,
+    /// across [`Self::of_app`], which opens another app's.
+    own_app: String,
 }
 
 impl PersonRecords {
-    /// `package_id`'s records of the person `author`, kept in `owners`.
+    /// `app_id`'s records of the person `author`, kept in `owners`.
     ///
     /// # Errors
     /// Rejects an invalid package.
     pub fn open(
         owners: &mut RecordOwners,
-        package_id: &str,
+        app_id: &str,
         author: UserId,
     ) -> Result<Self, RecordOpenError> {
         Ok(Self {
-            store: owners.open_personal(package_id, &author.0)?,
+            store: owners.open_personal(app_id, &author.0)?,
             owners: owners.clone(),
             replica: false,
             author,
             others: None,
             member: false,
-            own_package: package_id.to_owned(),
+            own_app: app_id.to_owned(),
         })
     }
 
@@ -99,17 +99,17 @@ impl PersonRecords {
     ///
     /// # Errors
     /// Rejects an invalid package.
-    pub fn replica(package_id: &str, author: UserId) -> Result<Self, RecordOpenError> {
-        Self::replica_in(package_id, PERSONAL_SCOPE, author)
+    pub fn replica(app_id: &str, author: UserId) -> Result<Self, RecordOpenError> {
+        Self::replica_in(app_id, PERSONAL_SCOPE, author)
     }
 
     /// [`Self::replica`], of the records kept in `scope`.
-    fn replica_in(package_id: &str, scope: &str, author: UserId) -> Result<Self, RecordOpenError> {
+    fn replica_in(app_id: &str, scope: &str, author: UserId) -> Result<Self, RecordOpenError> {
         let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
         let store = if scope == PERSONAL_SCOPE {
-            owners.open_personal(package_id, &author.0)?
+            owners.open_personal(app_id, &author.0)?
         } else {
-            owners.open_person(package_id, scope)?
+            owners.open_person(app_id, scope)?
         };
         Ok(Self {
             store,
@@ -118,11 +118,11 @@ impl PersonRecords {
             author,
             others: None,
             member: false,
-            own_package: package_id.to_owned(),
+            own_app: app_id.to_owned(),
         })
     }
 
-    /// The person's records `package_id` keeps, held in this app's store
+    /// The person's records `app_id` keeps, held in this app's store
     /// beside its own. In one host, these use the original profile-scoped
     /// owner registry; another mounted app never opens a second writer or
     /// empty fallback replica for the same record. Separate hosts/devices
@@ -132,19 +132,19 @@ impl PersonRecords {
     ///
     /// # Errors
     /// Rejects an invalid package.
-    pub fn of_package(&self, package_id: &str) -> Result<Self, RecordOpenError> {
+    pub fn of_app(&self, app_id: &str) -> Result<Self, RecordOpenError> {
         if self.store.backend().is_none() {
-            return Self::replica(package_id, self.author.clone());
+            return Self::replica(app_id, self.author.clone());
         }
         let mut owners = self.others.clone().unwrap_or_else(|| self.owners.clone());
         Ok(Self {
-            store: owners.open_personal(package_id, &self.author.0)?,
+            store: owners.open_personal(app_id, &self.author.0)?,
             owners,
             replica: self.replica,
             author: self.author.clone(),
             others: None,
             member: false,
-            own_package: self.own_package.clone(),
+            own_app: self.own_app.clone(),
         })
     }
 
@@ -178,7 +178,7 @@ impl PersonRecords {
                 author: self.author.clone(),
                 others: None,
                 member: false,
-                own_package: self.own_package.clone(),
+                own_app: self.own_app.clone(),
             }
         };
         Ok(Self {
@@ -199,7 +199,7 @@ impl PersonRecords {
     }
 
     /// These records, with the person's records of other apps
-    /// ([`Self::of_package`]) opened where `others` keeps them: the host
+    /// ([`Self::of_app`]) opened where `others` keeps them: the host
     /// holds those itself and lends them to every app it shows in its
     /// process, so the process has one copy of each.
     #[must_use]
@@ -234,10 +234,10 @@ impl PersonRecords {
     }
 
     /// Whether these are this app's own records: another app's, opened
-    /// beside them ([`Self::of_package`]), are a copy this app reads.
+    /// beside them ([`Self::of_app`]), are a copy this app reads.
     fn owns_records(&self) -> bool {
         let (package, _) = self.store.package_and_home();
-        package == self.own_package
+        package == self.own_app
     }
 
     /// Open the person's record of `kind`, created with `initialize` — its
@@ -262,7 +262,7 @@ impl PersonRecords {
                     member: self.member,
                     // Whose records these are does not change with the
                     // store they could not be opened in.
-                    own_package: self.own_package.clone(),
+                    own_app: self.own_app.clone(),
                     ..Self::replica_in(&package, &home, self.author.clone())?
                 };
                 open_in(&replica.store, &checkout, initialize)?;
@@ -303,7 +303,7 @@ impl PersonRecords {
                 let (package, home) = self.store.package_and_home();
                 let replica = Self {
                     member: self.member,
-                    own_package: self.own_package.clone(),
+                    own_app: self.own_app.clone(),
                     ..Self::replica_in(&package, &home, self.author.clone())?
                 };
                 match replica.store.try_open_record(&checkout) {

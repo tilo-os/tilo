@@ -495,7 +495,7 @@ fn owned_and_read(kind: &str) -> (StoredRecord, StoredRecord) {
     let mut reader_owners = RecordOwners::with_store(Rc::clone(&store));
     let read = PersonRecords::open(&mut reader_owners, APP, person())
         .unwrap()
-        .of_package(OWNER_APP)
+        .of_app(OWNER_APP)
         .unwrap()
         .open_record(RecordKind::new(kind), &initialize)
         .unwrap();

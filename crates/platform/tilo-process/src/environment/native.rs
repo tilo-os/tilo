@@ -39,7 +39,7 @@ pub fn process_environment() -> super::HostEnvironment {
         .and_then(|hex| super::decode_continuation(&hex, &text("TILO_CONTINUITY_RESUME_SCHEMA")?));
     super::HostEnvironment {
         identity: super::HostIdentity {
-            package_id: text("TILO_PACKAGE_ID"),
+            app_id: text("TILO_PACKAGE_ID"),
             development_app_id: text("QUICK_APP_ID"),
             app_name: text("TILO_APP_NAME"),
             workspace_id: text("TILO_WORKSPACE_ID"),

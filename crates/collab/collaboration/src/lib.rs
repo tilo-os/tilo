@@ -1974,7 +1974,7 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
     let environment = crate::host::environment();
     let identity = &environment.identity;
     let app_id = identity
-        .package_id
+        .app_id
         .clone()
         .or_else(|| identity.development_app_id.clone())
         .unwrap_or_else(|| {

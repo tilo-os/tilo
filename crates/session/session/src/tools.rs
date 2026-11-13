@@ -33,7 +33,7 @@ use crate::drives::{Medium, files_on};
 
 /// The app the person's own app list is answered to. Every other app is told nothing of it.
 fn files() -> String {
-    Builtin::FileExplorer.app_id()
+    String::from(Builtin::FileExplorer.app_id())
 }
 
 /// The `tools` socket's name: the launcher hands an app its number as `TILO_SVC_TOOLS_FD` .

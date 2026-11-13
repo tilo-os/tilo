@@ -1493,7 +1493,7 @@ impl App {
             };
             let app = publishing_app(&subject, &published)
                 .map(str::to_owned)
-                .or_else(|| crate::host::environment().identity.package_id.clone());
+                .or_else(|| crate::host::environment().identity.app_id.clone());
             if let Some(sent) = subject.to_attached(app.as_deref(), None) {
                 attached.push(sent);
             }

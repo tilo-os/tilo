@@ -384,7 +384,7 @@ impl SessionLink {
                         .filter_map(Capability::device_scope)
                         .map(str::to_owned)
                         .collect();
-                    grants.insert((workspace.id().to_string(), app_id), scopes);
+                    grants.insert((workspace.id().to_string(), String::from(app_id)), scopes);
                 }
             }
             (workspaces, grants)

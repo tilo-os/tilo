@@ -611,6 +611,7 @@ fn desk_apps(session: &Session) -> Vec<String> {
             .flat_map(|strip| &strip.window_groups)
             .flat_map(|group| &group.tabs)
             .filter_map(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile))
+            .map(String::from)
             .collect()
     })
 }
