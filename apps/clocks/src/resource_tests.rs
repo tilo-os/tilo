@@ -16,140 +16,6 @@ fn only_id<T>(items: &Collection<T>) -> Id {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn every_edit_is_an_action_stamped_with_its_own_time() {
-    // Phase: a timer counts down to an absolute deadline taken from the
-    // action's time, so it replays to the same moment on every device.
-    let mut device = replica();
-    let mut other = device.fork();
-    device
-        .apply(Clocks::ADD_TIMER.with(("Tea".into(), 300)))
-        .unwrap();
-    let state = device.state().unwrap();
-    let id = only_id(&state.timers);
-    assert_eq!(
-        state.timers.get(&id).unwrap().ends_at_ms,
-        Some(T0 + 300_000)
-    );
-
-    device.set_now_ms(T0 + 100_000);
-    device.apply(Clocks::PAUSE_TIMER.with(id.clone())).unwrap();
-    let timer = device.state().unwrap().timers.get(&id).cloned().unwrap();
-    assert_eq!(timer.ends_at_ms, None, "paused: no deadline");
-    assert_eq!(
-        timer.paused_remaining_ms,
-        Some(200_000),
-        "paused: what is left"
-    );
-
-    device.set_now_ms(T0 + 500_000);
-    device.apply(Clocks::RESUME_TIMER.with(id.clone())).unwrap();
-    device.apply(Clocks::ADD_MINUTE.with(id.clone())).unwrap();
-    let timer = device.state().unwrap().timers.get(&id).cloned().unwrap();
-    assert_eq!(
-        timer.ends_at_ms,
-        Some(T0 + 500_000 + 260_000),
-        "resumed with what was left, plus a minute"
-    );
-
-    // Phase: another device replays the same actions to the same state.
-    for envelope in device.log() {
-        other.replay(envelope).unwrap();
-    }
-    assert_eq!(other.state().unwrap(), device.state().unwrap());
-
-    // Phase: a finished timer starts over with its full duration.
-    device.set_now_ms(T0 + 2_000_000);
-    device.apply(Clocks::RESUME_TIMER.with(id.clone())).unwrap();
-    assert_eq!(
-        device.state().unwrap().timers.get(&id).unwrap().ends_at_ms,
-        Some(T0 + 2_000_000 + 300_000)
-    );
-    device.apply(Clocks::REMOVE_TIMER.with(id.clone())).unwrap();
-    assert!(device.state().unwrap().timers.is_empty());
-    assert!(
-        device.apply(Clocks::REMOVE_TIMER.with(id)).is_err(),
-        "a removed timer cannot be removed again"
-    );
-
-    // Phase: the stopwatch accumulates across pauses and laps are totals.
-    device.set_now_ms(T0);
-    device.apply(Clocks::START_STOPWATCH.invoke()).unwrap();
-    device.set_now_ms(T0 + 3_000);
-    device.apply(Clocks::LAP.invoke()).unwrap();
-    device.set_now_ms(T0 + 8_000);
-    device.apply(Clocks::LAP.invoke()).unwrap();
-    device.set_now_ms(T0 + 12_000);
-    device.apply(Clocks::PAUSE_STOPWATCH.invoke()).unwrap();
-    device.set_now_ms(T0 + 20_000);
-    device.apply(Clocks::LAP.invoke()).unwrap();
-    device.apply(Clocks::START_STOPWATCH.invoke()).unwrap();
-    let stopwatch = device.state().unwrap().stopwatch;
-    assert_eq!(stopwatch.laps_ms, vec![3_000, 8_000], "no lap while paused");
-    assert_eq!(
-        stopwatch.elapsed(crate::model::instant(T0 + 25_000)),
-        Duration::from_secs(17)
-    );
-    device.apply(Clocks::RESET_STOPWATCH.invoke()).unwrap();
-    assert_eq!(device.state().unwrap().stopwatch, Stopwatch::default());
-
-    // Phase: alarms remember their repeat days and when they were turned on.
-    device.set_now_ms(T0);
-    device
-        .apply(Clocks::ADD_ALARM.with((
-            "  School run ".into(),
-            7,
-            45,
-            vec![WeekdayKey::Wed, WeekdayKey::Mon],
-        )))
-        .unwrap();
-    let state = device.state().unwrap();
-    let alarm_id = only_id(&state.alarms);
-    let alarm = state.alarms.get(&alarm_id).unwrap();
-    assert_eq!(alarm.label, "School run");
-    assert_eq!(
-        alarm.weekdays(),
-        [WeekdayKey::Mon, WeekdayKey::Wed].into_iter().collect()
-    );
-    assert_eq!(alarm.enabled_at_ms, T0);
-    device
-        .apply(Clocks::SET_ALARM_ENABLED.with((alarm_id.clone(), false)))
-        .unwrap();
-    device.set_now_ms(T0 + 60_000);
-    device
-        .apply(Clocks::SET_ALARM_ENABLED.with((alarm_id.clone(), true)))
-        .unwrap();
-    let alarm = device
-        .state()
-        .unwrap()
-        .alarms
-        .get(&alarm_id)
-        .cloned()
-        .unwrap();
-    assert!(alarm.enabled);
-    assert_eq!(alarm.enabled_at_ms, T0 + 60_000, "turned on again later");
-
-    // Phase: a city is added once, under its time zone.
-    for _ in 0..2 {
-        device
-            .apply(Clocks::ADD_WORLD_CLOCK.with(("Tokyo".into(), "Asia/Tokyo".into())))
-            .unwrap();
-    }
-    let state = device.state().unwrap();
-    assert_eq!(
-        state.world_clocks.len(),
-        1,
-        "a city already shown stays once"
-    );
-    let city = only_id(&state.world_clocks);
-    device.apply(Clocks::REMOVE_WORLD_CLOCK.with(city)).unwrap();
-    assert!(device.state().unwrap().world_clocks.is_empty());
-}
-
-#[test]
 fn adding_a_minute_preserves_a_paused_timer() {
     let mut device = replica();
     device
@@ -178,46 +44,6 @@ fn adding_a_minute_preserves_a_paused_timer() {
         device.state().unwrap().timers.get(&id).unwrap().ends_at_ms,
         Some(T0 + 960_000)
     );
-}
-
-#[test]
-fn edits_that_make_no_sense_are_refused() {
-    let mut device = replica();
-    for (case, result) in [
-        (
-            "zero timer",
-            device
-                .apply(Clocks::ADD_TIMER.with(("Tea".into(), 0)))
-                .map(drop),
-        ),
-        (
-            "alarm hour",
-            device
-                .apply(Clocks::ADD_ALARM.with(("Late".into(), 24, 0, Vec::new())))
-                .map(drop),
-        ),
-        (
-            "alarm minute",
-            device
-                .apply(Clocks::ADD_ALARM.with(("Late".into(), 23, 60, Vec::new())))
-                .map(drop),
-        ),
-        (
-            "time zone",
-            device
-                .apply(Clocks::ADD_WORLD_CLOCK.with(("Nowhere".into(), "Mars/Base".into())))
-                .map(drop),
-        ),
-        (
-            "unknown timer",
-            device
-                .apply(Clocks::PAUSE_TIMER.with(Id::from_raw("missing")))
-                .map(drop),
-        ),
-    ] {
-        assert!(result.is_err(), "case {case}: refused");
-    }
-    assert_eq!(device.state().unwrap(), Clocks::default());
 }
 
 fn published(app: &mut TestApp<ClocksShell>) -> Vec<(String, String)> {
@@ -392,123 +218,301 @@ fn every_scenario_stages_its_scene_through_actions_and_view_state() {
     assert_eq!(ClocksShell::shot_viewport(Some("world")), (1280, 800));
 }
 
-#[test]
-fn names_times_and_days_are_field_edits_held_to_the_invariants() {
-    let mut device = replica();
-    device
-        .apply(Clocks::ADD_ALARM.with(("Wake up".into(), 7, 0, Vec::new())))
-        .unwrap();
-    device
-        .apply(Clocks::ADD_WORLD_CLOCK.with(("Tokyo".into(), "Asia/Tokyo".into())))
-        .unwrap();
-    let state = device.state().unwrap();
-    let alarm = Clocks::paths().alarms.item(&only_id(&state.alarms));
-    let city = Clocks::paths()
-        .world_clocks
-        .item(&only_id(&state.world_clocks));
-    let edit = |device: &mut Replica<Clocks>, edit: &ui::tilo_resource::Edit<Clocks>| {
-        device.apply(Invoke::edit(edit).unwrap()).map(drop)
-    };
-    edit(&mut device, &alarm.hour.set(6)).unwrap();
-    edit(&mut device, &alarm.minute.set(30)).unwrap();
-    edit(&mut device, &alarm.label.replace("Early")).unwrap();
-    edit(&mut device, &city.city.replace("Home")).unwrap();
-    for refused in [
-        alarm.hour.set(24),
-        alarm.minute.set(60),
-        alarm.repeat.set(0x80),
-        alarm.label.replace(" "),
-        alarm.enabled.set(false),
-        city.timezone.set(Atom("Mars/Base".into())),
-    ] {
-        assert!(edit(&mut device, &refused).is_err(), "{refused:?}");
-    }
-    let state = device.state().unwrap();
-    let alarm = state.alarms.values().next().unwrap();
-    assert_eq!(
-        (
-            alarm.label.as_str(),
-            alarm.hour,
-            alarm.minute,
-            alarm.enabled
-        ),
-        ("Early", 6, 30, true)
-    );
-    assert_eq!(state.world_clocks.values().next().unwrap().city, "Home");
-}
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn the_clocks_record_changes_only_through_its_actions;
 
-#[test]
-fn history_says_what_each_clock_did() {
-    let mut device = replica();
-    device
-        .apply(Clocks::ADD_ALARM.with(("Wake up".into(), 7, 0, Vec::new())))
-        .unwrap();
-    let alarm = only_id(&device.state().unwrap().alarms);
-    device
-        .apply(Invoke::edit(&Clocks::paths().alarms.item(&alarm).hour.set(6)).unwrap())
-        .unwrap();
-    device
-        .apply(Clocks::SET_ALARM_ENABLED.with((alarm, false)))
-        .unwrap();
-    device
-        .apply(Clocks::ADD_TIMER.with(("Tea".into(), 300)))
-        .unwrap();
-    device.apply(Clocks::START_STOPWATCH.invoke()).unwrap();
-    let catalogue = tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
-    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
-    let sentences: Vec<String> = device
-        .versions()
-        .into_iter()
-        .filter_map(|version| version.context)
-        .filter(|entry| entry.what.is_some())
-        .map(|entry| reader.sentence(&entry))
-        .collect();
-    assert_eq!(
-        sentences,
-        [
-            "Added the alarm Wake up",
-            "Set Wake up to ring at 6 o’clock",
-            "Turned off Wake up",
-            "Started the timer Tea",
-            "Started the stopwatch",
-        ]
-    );
-}
-
-#[test]
-fn editing_an_alarm_keeps_when_it_was_turned_on_and_its_repeat_days() {
-    let mut device = replica();
-    device
-        .apply(Clocks::ADD_ALARM.with((
-            "Wake up".into(),
-            7,
-            30,
-            vec![WeekdayKey::Mon, WeekdayKey::Fri],
-        )))
-        .unwrap();
-    let id = only_id(&device.state().unwrap().alarms);
-    device.set_now_ms(T0 + 120_000);
-    device
-        .apply(Clocks::EDIT_ALARM.with((id.clone(), "Gym".into(), 8, 0, vec![WeekdayKey::Tue])))
-        .unwrap();
-    let alarm = device.state().unwrap().alarms.get(&id).cloned().unwrap();
-    assert_eq!(alarm.label, "Gym");
-    assert_eq!((alarm.hour, alarm.minute), (8, 0));
-    assert_eq!(alarm.weekdays(), [WeekdayKey::Tue].into_iter().collect());
-    assert_eq!(
-        alarm.enabled_at_ms, T0,
-        "an edit adjusts the alarm rather than recreating it"
-    );
-    assert!(alarm.enabled);
-    assert!(
+    phase every_edit_is_an_action_stamped_with_its_own_time;
+    {
+        // Phase: a timer counts down to an absolute deadline taken from the
+        // action's time, so it replays to the same moment on every device.
+        let mut device = replica();
+        let mut other = device.fork();
         device
-            .apply(Clocks::EDIT_ALARM.with((
-                Id::from_raw("missing"),
-                "Nowhere".into(),
-                9,
-                0,
-                Vec::new(),
+            .apply(Clocks::ADD_TIMER.with(("Tea".into(), 300)))
+            .unwrap();
+        let state = device.state().unwrap();
+        let id = only_id(&state.timers);
+        assert_eq!(
+            state.timers.get(&id).unwrap().ends_at_ms,
+            Some(T0 + 300_000)
+        );
+
+        device.set_now_ms(T0 + 100_000);
+        device.apply(Clocks::PAUSE_TIMER.with(id.clone())).unwrap();
+        let timer = device.state().unwrap().timers.get(&id).cloned().unwrap();
+        assert_eq!(timer.ends_at_ms, None, "paused: no deadline");
+        assert_eq!(
+            timer.paused_remaining_ms,
+            Some(200_000),
+            "paused: what is left"
+        );
+
+        device.set_now_ms(T0 + 500_000);
+        device.apply(Clocks::RESUME_TIMER.with(id.clone())).unwrap();
+        device.apply(Clocks::ADD_MINUTE.with(id.clone())).unwrap();
+        let timer = device.state().unwrap().timers.get(&id).cloned().unwrap();
+        assert_eq!(
+            timer.ends_at_ms,
+            Some(T0 + 500_000 + 260_000),
+            "resumed with what was left, plus a minute"
+        );
+
+        // Phase: another device replays the same actions to the same state.
+        for envelope in device.log() {
+            other.replay(envelope).unwrap();
+        }
+        assert_eq!(other.state().unwrap(), device.state().unwrap());
+
+        // Phase: a finished timer starts over with its full duration.
+        device.set_now_ms(T0 + 2_000_000);
+        device.apply(Clocks::RESUME_TIMER.with(id.clone())).unwrap();
+        assert_eq!(
+            device.state().unwrap().timers.get(&id).unwrap().ends_at_ms,
+            Some(T0 + 2_000_000 + 300_000)
+        );
+        device.apply(Clocks::REMOVE_TIMER.with(id.clone())).unwrap();
+        assert!(device.state().unwrap().timers.is_empty());
+        assert!(
+            device.apply(Clocks::REMOVE_TIMER.with(id)).is_err(),
+            "a removed timer cannot be removed again"
+        );
+
+        // Phase: the stopwatch accumulates across pauses and laps are totals.
+        device.set_now_ms(T0);
+        device.apply(Clocks::START_STOPWATCH.invoke()).unwrap();
+        device.set_now_ms(T0 + 3_000);
+        device.apply(Clocks::LAP.invoke()).unwrap();
+        device.set_now_ms(T0 + 8_000);
+        device.apply(Clocks::LAP.invoke()).unwrap();
+        device.set_now_ms(T0 + 12_000);
+        device.apply(Clocks::PAUSE_STOPWATCH.invoke()).unwrap();
+        device.set_now_ms(T0 + 20_000);
+        device.apply(Clocks::LAP.invoke()).unwrap();
+        device.apply(Clocks::START_STOPWATCH.invoke()).unwrap();
+        let stopwatch = device.state().unwrap().stopwatch;
+        assert_eq!(stopwatch.laps_ms, vec![3_000, 8_000], "no lap while paused");
+        assert_eq!(
+            stopwatch.elapsed(crate::model::instant(T0 + 25_000)),
+            Duration::from_secs(17)
+        );
+        device.apply(Clocks::RESET_STOPWATCH.invoke()).unwrap();
+        assert_eq!(device.state().unwrap().stopwatch, Stopwatch::default());
+
+        // Phase: alarms remember their repeat days and when they were turned on.
+        device.set_now_ms(T0);
+        device
+            .apply(Clocks::ADD_ALARM.with((
+                "  School run ".into(),
+                7,
+                45,
+                vec![WeekdayKey::Wed, WeekdayKey::Mon],
             )))
-            .is_err()
-    );
+            .unwrap();
+        let state = device.state().unwrap();
+        let alarm_id = only_id(&state.alarms);
+        let alarm = state.alarms.get(&alarm_id).unwrap();
+        assert_eq!(alarm.label, "School run");
+        assert_eq!(
+            alarm.weekdays(),
+            [WeekdayKey::Mon, WeekdayKey::Wed].into_iter().collect()
+        );
+        assert_eq!(alarm.enabled_at_ms, T0);
+        device
+            .apply(Clocks::SET_ALARM_ENABLED.with((alarm_id.clone(), false)))
+            .unwrap();
+        device.set_now_ms(T0 + 60_000);
+        device
+            .apply(Clocks::SET_ALARM_ENABLED.with((alarm_id.clone(), true)))
+            .unwrap();
+        let alarm = device
+            .state()
+            .unwrap()
+            .alarms
+            .get(&alarm_id)
+            .cloned()
+            .unwrap();
+        assert!(alarm.enabled);
+        assert_eq!(alarm.enabled_at_ms, T0 + 60_000, "turned on again later");
+
+        // Phase: a city is added once, under its time zone.
+        for _ in 0..2 {
+            device
+                .apply(Clocks::ADD_WORLD_CLOCK.with(("Tokyo".into(), "Asia/Tokyo".into())))
+                .unwrap();
+        }
+        let state = device.state().unwrap();
+        assert_eq!(
+            state.world_clocks.len(),
+            1,
+            "a city already shown stays once"
+        );
+        let city = only_id(&state.world_clocks);
+        device.apply(Clocks::REMOVE_WORLD_CLOCK.with(city)).unwrap();
+        assert!(device.state().unwrap().world_clocks.is_empty());
+    }
+
+    phase edits_that_make_no_sense_are_refused;
+    {
+        let mut device = replica();
+        for (case, result) in [
+            (
+                "zero timer",
+                device
+                    .apply(Clocks::ADD_TIMER.with(("Tea".into(), 0)))
+                    .map(drop),
+            ),
+            (
+                "alarm hour",
+                device
+                    .apply(Clocks::ADD_ALARM.with(("Late".into(), 24, 0, Vec::new())))
+                    .map(drop),
+            ),
+            (
+                "alarm minute",
+                device
+                    .apply(Clocks::ADD_ALARM.with(("Late".into(), 23, 60, Vec::new())))
+                    .map(drop),
+            ),
+            (
+                "time zone",
+                device
+                    .apply(Clocks::ADD_WORLD_CLOCK.with(("Nowhere".into(), "Mars/Base".into())))
+                    .map(drop),
+            ),
+            (
+                "unknown timer",
+                device
+                    .apply(Clocks::PAUSE_TIMER.with(Id::from_raw("missing")))
+                    .map(drop),
+            ),
+        ] {
+            assert!(result.is_err(), "case {case}: refused");
+        }
+        assert_eq!(device.state().unwrap(), Clocks::default());
+    }
+
+    phase names_times_and_days_are_field_edits_held_to_the_invariants;
+    {
+        let mut device = replica();
+        device
+            .apply(Clocks::ADD_ALARM.with(("Wake up".into(), 7, 0, Vec::new())))
+            .unwrap();
+        device
+            .apply(Clocks::ADD_WORLD_CLOCK.with(("Tokyo".into(), "Asia/Tokyo".into())))
+            .unwrap();
+        let state = device.state().unwrap();
+        let alarm = Clocks::paths().alarms.item(&only_id(&state.alarms));
+        let city = Clocks::paths()
+            .world_clocks
+            .item(&only_id(&state.world_clocks));
+        let edit = |device: &mut Replica<Clocks>, edit: &ui::tilo_resource::Edit<Clocks>| {
+            device.apply(Invoke::edit(edit).unwrap()).map(drop)
+        };
+        edit(&mut device, &alarm.hour.set(6)).unwrap();
+        edit(&mut device, &alarm.minute.set(30)).unwrap();
+        edit(&mut device, &alarm.label.replace("Early")).unwrap();
+        edit(&mut device, &city.city.replace("Home")).unwrap();
+        for refused in [
+            alarm.hour.set(24),
+            alarm.minute.set(60),
+            alarm.repeat.set(0x80),
+            alarm.label.replace(" "),
+            alarm.enabled.set(false),
+            city.timezone.set(Atom("Mars/Base".into())),
+        ] {
+            assert!(edit(&mut device, &refused).is_err(), "{refused:?}");
+        }
+        let state = device.state().unwrap();
+        let alarm = state.alarms.values().next().unwrap();
+        assert_eq!(
+            (
+                alarm.label.as_str(),
+                alarm.hour,
+                alarm.minute,
+                alarm.enabled
+            ),
+            ("Early", 6, 30, true)
+        );
+        assert_eq!(state.world_clocks.values().next().unwrap().city, "Home");
+    }
+
+    phase history_says_what_each_clock_did;
+    {
+        let mut device = replica();
+        device
+            .apply(Clocks::ADD_ALARM.with(("Wake up".into(), 7, 0, Vec::new())))
+            .unwrap();
+        let alarm = only_id(&device.state().unwrap().alarms);
+        device
+            .apply(Invoke::edit(&Clocks::paths().alarms.item(&alarm).hour.set(6)).unwrap())
+            .unwrap();
+        device
+            .apply(Clocks::SET_ALARM_ENABLED.with((alarm, false)))
+            .unwrap();
+        device
+            .apply(Clocks::ADD_TIMER.with(("Tea".into(), 300)))
+            .unwrap();
+        device.apply(Clocks::START_STOPWATCH.invoke()).unwrap();
+        let catalogue = tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
+        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        let sentences: Vec<String> = device
+            .versions()
+            .into_iter()
+            .filter_map(|version| version.context)
+            .filter(|entry| entry.what.is_some())
+            .map(|entry| reader.sentence(&entry))
+            .collect();
+        assert_eq!(
+            sentences,
+            [
+                "Added the alarm Wake up",
+                "Set Wake up to ring at 6 o’clock",
+                "Turned off Wake up",
+                "Started the timer Tea",
+                "Started the stopwatch",
+            ]
+        );
+    }
+
+    phase editing_an_alarm_keeps_when_it_was_turned_on_and_its_repeat_days;
+    {
+        let mut device = replica();
+        device
+            .apply(Clocks::ADD_ALARM.with((
+                "Wake up".into(),
+                7,
+                30,
+                vec![WeekdayKey::Mon, WeekdayKey::Fri],
+            )))
+            .unwrap();
+        let id = only_id(&device.state().unwrap().alarms);
+        device.set_now_ms(T0 + 120_000);
+        device
+            .apply(Clocks::EDIT_ALARM.with((id.clone(), "Gym".into(), 8, 0, vec![WeekdayKey::Tue])))
+            .unwrap();
+        let alarm = device.state().unwrap().alarms.get(&id).cloned().unwrap();
+        assert_eq!(alarm.label, "Gym");
+        assert_eq!((alarm.hour, alarm.minute), (8, 0));
+        assert_eq!(alarm.weekdays(), [WeekdayKey::Tue].into_iter().collect());
+        assert_eq!(
+            alarm.enabled_at_ms, T0,
+            "an edit adjusts the alarm rather than recreating it"
+        );
+        assert!(alarm.enabled);
+        assert!(
+            device
+                .apply(Clocks::EDIT_ALARM.with((
+                    Id::from_raw("missing"),
+                    "Nowhere".into(),
+                    9,
+                    0,
+                    Vec::new(),
+                )))
+                .is_err()
+        );
+    }
 }
