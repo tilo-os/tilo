@@ -5,9 +5,12 @@
 //! surface it publishes, `--bench` captures its fixtures, and `--data-dir`
 //! and `--shots` open it on a profile of their own.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Mutex, OnceLock};
 
+use tilo_lock::MutexRecover as _;
 use tilo_resource::{Effect, Invoke, Resource};
 use ui_core::application::{
     ApplicationHost, Capture, ComponentRunnerInputs, HostContext, OpenFile, PlaybackHandoff,
@@ -22,8 +25,7 @@ pub(super) const AUTHOR: &str = "test-author";
 use ui_core::record::{RecordCheckout, RecordId, RecordStore};
 
 use super::app::{
-    DATA_DIR_INSTANCE, DATA_DIR_WORKSPACE, ResourceApp, data_dir_host, definition, hand_launch,
-    prepare_on, role_permissions, settle_launch,
+    ResourceApp, definition, hand_launch, prepare_on, role_permissions, settle_launch,
 };
 use super::launch::LaunchInput;
 use super::root::ResourceRoot;
@@ -96,6 +98,66 @@ pub(crate) fn data_dir_root(directory: &std::path::Path) -> std::path::PathBuf {
 pub(crate) fn data_dir_content(directory: &std::path::Path) -> tilo_content::ContentStore {
     super::app::profile_content(
         &std::path::absolute(directory).unwrap_or_else(|_| directory.to_path_buf()),
+    )
+}
+
+/// The instance a `--data-dir` profile mounts.
+pub(crate) const DATA_DIR_INSTANCE: u64 = 0;
+/// The workspace a `--data-dir` profile keeps its records in. A workspace is
+/// named by a UUID, so the records kept in it have a route to travel on.
+pub const DATA_DIR_WORKSPACE: &str = "a7d3e1f4-6b28-4c05-9e3a-71f2b8c4d590";
+
+/// The host of an explicit `--data-dir` profile: one personal workspace in
+/// that directory. Tools that seed or inspect such a profile open it the same
+/// way the app does.
+pub(crate) fn data_dir_host(
+    directory: &std::path::Path,
+    author: &UserId,
+    permissions: SharedPermissions,
+) -> Result<ApplicationHost, LaunchError> {
+    ApplicationHost::new(
+        data_dir_root(directory),
+        "local-device".into(),
+        DATA_DIR_WORKSPACE,
+        author.clone(),
+        permissions,
+        tilo_actions::ActionContext::default(),
+    )
+}
+
+/// Hold `workspace`'s content secret on the route of `context`'s record, as a
+/// host that keeps the workspace itself does: what the window stores is then
+/// sealed once for that workspace, so the same bytes stored twice are one item
+/// under one reference. A workspace whose keys come from the collaboration
+/// plane holds its members' secret instead, once they arrive
+/// (`collaboration::broker_key_fetch`).
+///
+/// # Errors
+/// A record with no route ([`super::app::record_route`]).
+pub(super) fn hold_workspace_keys(
+    context: &HostContext,
+    workspace: &str,
+) -> Result<(), LaunchError> {
+    let route = super::app::record_route(context)?;
+    ui_core::collaboration::record_content::ContentLane::of(&route)
+        .hold_secret(workspace_secret(workspace));
+    Ok(())
+}
+
+/// The content secret of `workspace`'s members, which every window of it in
+/// this process holds: a workspace this device keeps itself — a profile of its
+/// own, a launch outside every workspace — has no other member to take one
+/// from.
+fn workspace_secret(workspace: &str) -> Option<tilo_seal::SymmetricKey> {
+    static SECRETS: OnceLock<Mutex<HashMap<String, tilo_seal::SymmetricKey>>> = OnceLock::new();
+    let generated = tilo_seal::SymmetricKey::generate().ok()?;
+    Some(
+        SECRETS
+            .get_or_init(Mutex::default)
+            .lock_recover()
+            .entry(workspace.to_owned())
+            .or_insert(generated)
+            .clone(),
     )
 }
 
@@ -2150,7 +2212,7 @@ fn open_app(
         (_, named) => prepare_on(&mut host, definition, instance, named, inputs)?,
     };
     let checkout = prepared.context.record().clone();
-    super::app::hold_workspace_keys(&prepared.context, profile.workspace())?;
+    hold_workspace_keys(&prepared.context, profile.workspace())?;
     hand_launch(definition, arguments, &mut prepared)?;
     prepared.context.provide_launch_options(options);
     if private {
