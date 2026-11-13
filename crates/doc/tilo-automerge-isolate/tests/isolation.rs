@@ -30,7 +30,6 @@ fn isolate() -> Isolate {
     })
 }
 
-/// An isolate for inputs that spin: its deadline is what stops them.
 fn spin_stopping_isolate() -> Isolate {
     Isolate::new(Limits {
         timeout: Duration::from_secs(2),
@@ -55,7 +54,6 @@ fn remote_change(doc: &mut AutoCommit, key: &str) -> Vec<u8> {
     remote.save_after(&doc.get_heads())
 }
 
-/// Good input still goes through after `isolate` rejected something.
 fn still_admits(isolate: &Isolate) {
     let mut doc = seeded_doc();
     let change = remote_change(&mut doc, "after");
@@ -173,7 +171,6 @@ fn a_spinning_decoder_is_stopped_by_the_deadline() {
     still_admits(&isolate);
 }
 
-/// Frame `body` as a chunk of `kind` with a genuine checksum.
 fn chunk(kind: u8, body: &[u8]) -> Vec<u8> {
     use sha2::Digest as _;
     let mut length = Vec::new();
@@ -382,10 +379,6 @@ fn a_malformed_tail_refuses_the_whole_input() {
     assert_eq!(doc.save(), before);
 }
 
-/// Into a document that is not blank, `load_incremental` stops at a chunk
-/// whose stored checksum is wrong and keeps what came before it, without an
-/// error. A change with a bad checksum, new or already known, plain or
-/// compressed, must refuse the whole input instead.
 #[test]
 fn a_bad_change_checksum_refuses_the_whole_input() {
     let isolate = isolate();
@@ -419,8 +412,6 @@ fn a_bad_change_checksum_refuses_the_whole_input() {
     still_admits(&isolate);
 }
 
-/// A document big enough that the worker's allocator frees and shrinks heap
-/// while rebuilding it, which reaches libc paths small inputs never do.
 #[test]
 fn a_large_document_is_admitted_by_a_confined_worker() {
     let isolate = isolate();
@@ -445,9 +436,6 @@ fn a_large_document_is_admitted_by_a_confined_worker() {
     assert!(isolate.load(&doc.save()).is_ok());
 }
 
-/// A whole history of changes into a blank document, larger than the base
-/// deadline alone would allow on a slow machine, is admitted: the deadline
-/// grows with the input.
 #[test]
 fn a_long_history_into_a_blank_document_is_admitted() {
     let mut source = AutoCommit::new().with_actor(ActorId::from(vec![0x33; 16]));
@@ -475,11 +463,9 @@ fn a_long_history_into_a_blank_document_is_admitted() {
         Ok(Applied::Changed(true))
     );
     assert_eq!(doc.get_heads(), source.get_heads());
-    // Applying into a blank document keeps the caller's actor.
     assert_eq!(doc.get_actor(), &ActorId::from(vec![0x44; 16]));
 }
 
-/// Copies of one document each take a change; the worker serves them all.
 #[test]
 fn copies_of_one_document_are_each_admitted() {
     let isolate = isolate();
@@ -565,7 +551,6 @@ fn crafted_sequence_changes_are_refused_without_a_crash() {
         pred: SortedVec::from(pred),
         insert,
     };
-    // The list object itself, which is no element of it.
     let ghost = ElementId::Id(OpId(1, aa.clone()));
     let item = ElementId::Id(OpId(2, aa.clone()));
     let base = hex::decode(LIST_BASE).unwrap();
