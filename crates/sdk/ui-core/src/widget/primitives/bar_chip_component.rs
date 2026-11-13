@@ -338,27 +338,31 @@ impl Described for BarChip {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_bar_chip_describes_its_faces_label_and_press() {
-        let description = BarChipProps::describe();
-        assert_eq!(description.name, "BarChip");
-        assert!(description.prop("name").is_some());
-        assert!(description.prop("who").is_some());
-        assert!(description.event("press").is_some());
-    }
+    tilo_test_env::scenario! {
+        fn a_bar_chip_component_describes_and_carries_its_press;
 
-    #[test]
-    fn a_chip_carries_its_press_into_who_it_names() {
-        let queue = crate::Intents::default();
-        let press = Event::View(crate::component::Intent::new(&queue, "chip", "press"));
-        let props = BarChipProps {
-            name: "Who is here".into(),
-            press,
-            ..BarChipProps::default()
-        };
-        let chip = BarChip::from_props("chip", props);
-        assert_eq!(chip.props.name, "Who is here");
-        assert!(!chip.is_focused());
+        phase a_bar_chip_describes_its_faces_label_and_press;
+        {
+            let description = BarChipProps::describe();
+            assert_eq!(description.name, "BarChip");
+            assert!(description.prop("name").is_some());
+            assert!(description.prop("who").is_some());
+            assert!(description.event("press").is_some());
+        }
+
+        phase a_chip_carries_its_press_into_who_it_names;
+        {
+            let queue = crate::Intents::default();
+            let press = Event::View(crate::component::Intent::new(&queue, "chip", "press"));
+            let props = BarChipProps {
+                name: "Who is here".into(),
+                press,
+                ..BarChipProps::default()
+            };
+            let chip = BarChip::from_props("chip", props);
+            assert_eq!(chip.props.name, "Who is here");
+            assert!(!chip.is_focused());
+        }
     }
 }
 

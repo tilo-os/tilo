@@ -453,46 +453,50 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_chip_names_itself_and_says_everyone_it_stands_for() {
-        let people = faces(&["Ada Lovelace"]);
-        let chip = BarChipFace::new("Who is here", &people);
-        assert_eq!(chip.name(), "Who is here");
-    }
+    tilo_test_env::scenario! {
+        fn a_bar_chip_names_sizes_and_paints_itself;
 
-    #[test]
-    fn a_chip_hugs_its_faces_and_its_label_at_the_bar_control_height() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let people = faces(&["Ada Lovelace"]);
-        let bare = BarChipFace::new("Who is here", &people);
-        let labelled = bare.label("Editing");
-        assert!(labelled.width(&mut text, &theme) > bare.width(&mut text, &theme));
-        assert!((BarChipFace::height(&theme) - 28.0).abs() < 1e-6);
-        let alone = BarChipFace::new("Watch", &[]);
-        assert!((alone.width(&mut text, &theme) - 28.0).abs() < 1e-6);
-    }
+        phase a_chip_names_itself_and_says_everyone_it_stands_for;
+        {
+            let people = faces(&["Ada Lovelace"]);
+            let chip = BarChipFace::new("Who is here", &people);
+            assert_eq!(chip.name(), "Who is here");
+        }
 
-    #[test]
-    fn a_chip_paints_no_ground_at_rest_and_lifts_under_the_pointer() {
-        let theme = Theme::dark();
-        let ground = theme.tokens.colors.surfaces.base;
-        let people = faces(&["Ada Lovelace"]);
-        let paint = |chip: BarChipFace<'_>| {
-            let mut scene = vello::Scene::new();
+        phase a_chip_hugs_its_faces_and_its_label_at_the_bar_control_height;
+        {
+            let theme = Theme::dark();
             let mut text = TextRenderer::new();
-            let mut ctx = PaintCtx::new(
-                &mut scene,
-                vello::kurbo::Affine::IDENTITY,
-                &mut text,
-                &theme,
-            );
-            let rect = Rect::new(0.0, 0.0, 120.0, BarChipFace::height(&theme));
-            let _ = chip.paint(&mut ctx, rect, ground);
-            scene.encoding().draw_tags.len()
-        };
-        let rest = paint(BarChipFace::new("Who is here", &people));
-        let hovered = paint(BarChipFace::new("Who is here", &people).hovered(true));
-        assert!(hovered > rest, "a hover adds the control's lift");
+            let people = faces(&["Ada Lovelace"]);
+            let bare = BarChipFace::new("Who is here", &people);
+            let labelled = bare.label("Editing");
+            assert!(labelled.width(&mut text, &theme) > bare.width(&mut text, &theme));
+            assert!((BarChipFace::height(&theme) - 28.0).abs() < 1e-6);
+            let alone = BarChipFace::new("Watch", &[]);
+            assert!((alone.width(&mut text, &theme) - 28.0).abs() < 1e-6);
+        }
+
+        phase a_chip_paints_no_ground_at_rest_and_lifts_under_the_pointer;
+        {
+            let theme = Theme::dark();
+            let ground = theme.tokens.colors.surfaces.base;
+            let people = faces(&["Ada Lovelace"]);
+            let paint = |chip: BarChipFace<'_>| {
+                let mut scene = vello::Scene::new();
+                let mut text = TextRenderer::new();
+                let mut ctx = PaintCtx::new(
+                    &mut scene,
+                    vello::kurbo::Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                );
+                let rect = Rect::new(0.0, 0.0, 120.0, BarChipFace::height(&theme));
+                let _ = chip.paint(&mut ctx, rect, ground);
+                scene.encoding().draw_tags.len()
+            };
+            let rest = paint(BarChipFace::new("Who is here", &people));
+            let hovered = paint(BarChipFace::new("Who is here", &people).hovered(true));
+            assert!(hovered > rest, "a hover adds the control's lift");
+        }
     }
 }

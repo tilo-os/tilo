@@ -700,81 +700,85 @@ impl Widget for FloatingPanel {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_header_rule_shows_only_with_a_body() {
-        let theme = Theme::dark();
-        let panel = Rect::new(0.0, 0.0, 400.0, 300.0);
-        let with_body = FloatingPanelFace::new().header(32.0).layout(panel, &theme);
-        assert!(
-            with_body.rule.is_some(),
-            "a body under the header gets a rule"
-        );
-        let alone = FloatingPanelFace::new()
-            .header(32.0)
-            .body_empty(true)
-            .layout(panel, &theme);
-        assert!(alone.rule.is_none(), "a header standing alone has no rule");
-        assert!((with_body.header.x0 - 8.0).abs() < 1e-6);
-        assert!((with_body.body.x0 - 8.0).abs() < 1e-6);
-        assert!((with_body.header.height() - 32.0).abs() < 1e-6);
-    }
+    tilo_test_env::scenario! {
+        fn a_floating_panel_sizes_embeds_and_arrives_where_it_stands;
 
-    #[test]
-    fn the_panel_is_as_tall_as_its_parts() {
-        let theme = Theme::dark();
-        let face = FloatingPanelFace::new().header(32.0).footer(28.0);
-        // header 32 + 2·8, body 100 + 2·8, footer 28 + 2·8.
-        assert!((face.height_for(100.0, &theme) - (48.0 + 116.0 + 44.0)).abs() < 1e-6);
-        let empty = face.body_empty(true);
-        assert!((empty.height_for(100.0, &theme) - (48.0 + 44.0)).abs() < 1e-6);
-    }
+        phase the_header_rule_shows_only_with_a_body;
+        {
+            let theme = Theme::dark();
+            let panel = Rect::new(0.0, 0.0, 400.0, 300.0);
+            let with_body = FloatingPanelFace::new().header(32.0).layout(panel, &theme);
+            assert!(
+                with_body.rule.is_some(),
+                "a body under the header gets a rule"
+            );
+            let alone = FloatingPanelFace::new()
+                .header(32.0)
+                .body_empty(true)
+                .layout(panel, &theme);
+            assert!(alone.rule.is_none(), "a header standing alone has no rule");
+            assert!((with_body.header.x0 - 8.0).abs() < 1e-6);
+            assert!((with_body.body.x0 - 8.0).abs() < 1e-6);
+            assert!((with_body.header.height() - 32.0).abs() < 1e-6);
+        }
 
-    #[test]
-    fn a_field_in_the_header_slot_is_embedded() {
-        let field = crate::widget::TextInput::local();
-        let panel = FloatingPanel::new(Box::new(crate::widget::Spacer::fixed(20.0)))
-            .header(Box::new(field));
-        let header = panel.header.as_ref().map(|h| h.as_ref());
-        let plain = header
-            .and_then(|h| h.as_any())
-            .and_then(|a| a.downcast_ref::<crate::widget::TextInput>())
-            .is_some_and(crate::widget::TextInput::is_plain);
-        assert!(plain, "no fill and no outline of its own");
-    }
+        phase the_panel_is_as_tall_as_its_parts;
+        {
+            let theme = Theme::dark();
+            let face = FloatingPanelFace::new().header(32.0).footer(28.0);
+            // header 32 + 2·8, body 100 + 2·8, footer 28 + 2·8.
+            assert!((face.height_for(100.0, &theme) - (48.0 + 116.0 + 44.0)).abs() < 1e-6);
+            let empty = face.body_empty(true);
+            assert!((empty.height_for(100.0, &theme) - (48.0 + 44.0)).abs() < 1e-6);
+        }
 
-    /// A panel a view places after the window has shown comes in over the frames between, and
-    /// rests asking for no frames; a still theme lands it at once.
-    #[test]
-    fn a_panel_comes_in_where_it_stands_and_rests() {
-        let _frame = crate::motion::pin_frame();
-        let mut panel = FloatingPanel::new(Box::new(crate::widget::Spacer::new()));
-        let now = crate::motion::frame_now();
-        let rect = Rect::new(0.0, 0.0, 360.0, 300.0);
-        panel.placed.follow(
-            rect,
-            true,
-            Theme::dark().motion(),
-            crate::motion::input_source(),
-            now,
-        );
-        assert!(!panel.placed.is_moving(now));
+        phase a_field_in_the_header_slot_is_embedded;
+        {
+            let field = crate::widget::TextInput::local();
+            let panel = FloatingPanel::new(Box::new(crate::widget::Spacer::fixed(20.0)))
+                .header(Box::new(field));
+            let header = panel.header.as_ref().map(|h| h.as_ref());
+            let plain = header
+                .and_then(|h| h.as_any())
+                .and_then(|a| a.downcast_ref::<crate::widget::TextInput>())
+                .is_some_and(crate::widget::TextInput::is_plain);
+            assert!(plain, "no fill and no outline of its own");
+        }
 
-        panel.placed.snap(rect, false);
-        panel.placed.follow(
-            rect,
-            true,
-            Theme::dark().motion(),
-            crate::tokens::MotionSource::Pointer,
-            now,
-        );
-        assert!(
-            panel.placed.is_moving(now),
-            "it comes in over the frames between"
-        );
-        assert!(
-            panel.placed.settles_at().is_some(),
-            "and it will arrive at a time of the motion's own"
-        );
+        // A panel a view places after the window has shown comes in over the frames between, and
+        // rests asking for no frames; a still theme lands it at once.
+        phase a_panel_comes_in_where_it_stands_and_rests;
+        {
+            let _frame = crate::motion::pin_frame();
+            let mut panel = FloatingPanel::new(Box::new(crate::widget::Spacer::new()));
+            let now = crate::motion::frame_now();
+            let rect = Rect::new(0.0, 0.0, 360.0, 300.0);
+            panel.placed.follow(
+                rect,
+                true,
+                Theme::dark().motion(),
+                crate::motion::input_source(),
+                now,
+            );
+            assert!(!panel.placed.is_moving(now));
+
+            panel.placed.snap(rect, false);
+            panel.placed.follow(
+                rect,
+                true,
+                Theme::dark().motion(),
+                crate::tokens::MotionSource::Pointer,
+                now,
+            );
+            assert!(
+                panel.placed.is_moving(now),
+                "it comes in over the frames between"
+            );
+            assert!(
+                panel.placed.settles_at().is_some(),
+                "and it will arrive at a time of the motion's own"
+            );
+        }
     }
 
     /// A card shrinking to a shorter page moves inside its window, which keeps its height until

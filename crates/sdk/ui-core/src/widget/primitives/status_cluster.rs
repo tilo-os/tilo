@@ -697,45 +697,204 @@ mod tests {
         (layout, scene.encoding().draw_tags.len())
     }
 
-    #[test]
-    fn a_cluster_is_as_wide_as_its_slots_and_grows_for_the_percentage() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let bell = StatusClusterFace::new(&[BELL], StatusCluster::new());
-        let bell_and_battery = StatusClusterFace::new(
-            &[
-                BELL,
-                StatusSlot::Battery {
-                    percent: 82,
-                    charging: true,
-                },
-            ],
-            StatusCluster::new().battery(82, true),
-        );
-        assert!(
-            bell_and_battery.width(&mut text, &theme) > bell.width(&mut text, &theme),
-            "the percentage takes room past the gauge"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_status_cluster_draws_its_slots_glyphs_and_counts;
 
-    #[test]
-    fn the_critical_battery_wears_the_danger_wash_on_the_whole_control() {
-        let slots = [StatusSlot::Battery {
-            percent: 3,
-            charging: false,
-        }];
-        assert!(
-            StatusClusterFace::new(&slots, StatusCluster::new().battery(3, false)).is_critical()
-        );
-        assert!(
-            !StatusClusterFace::new(&slots, StatusCluster::new().battery(40, false)).is_critical()
-        );
-    }
+        phase a_cluster_is_as_wide_as_its_slots_and_grows_for_the_percentage;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let bell = StatusClusterFace::new(&[BELL], StatusCluster::new());
+            let bell_and_battery = StatusClusterFace::new(
+                &[
+                    BELL,
+                    StatusSlot::Battery {
+                        percent: 82,
+                        charging: true,
+                    },
+                ],
+                StatusCluster::new().battery(82, true),
+            );
+            assert!(
+                bell_and_battery.width(&mut text, &theme) > bell.width(&mut text, &theme),
+                "the percentage takes room past the gauge"
+            );
+        }
 
-    #[test]
-    fn the_badge_counts_nine_and_then_says_nine_plus() {
-        assert_eq!(badge_label(7), "7");
-        assert_eq!(badge_label(120), "9+");
+        phase the_critical_battery_wears_the_danger_wash_on_the_whole_control;
+        {
+            let slots = [StatusSlot::Battery {
+                percent: 3,
+                charging: false,
+            }];
+            assert!(
+                StatusClusterFace::new(&slots, StatusCluster::new().battery(3, false)).is_critical()
+            );
+            assert!(
+                !StatusClusterFace::new(&slots, StatusCluster::new().battery(40, false)).is_critical()
+            );
+        }
+
+        phase the_badge_counts_nine_and_then_says_nine_plus;
+        {
+            assert_eq!(badge_label(7), "7");
+            assert_eq!(badge_label(120), "9+");
+        }
+
+        // The link slot draws what kind of connection the machine has: a cable's
+        // port, Wi-Fi's arcs, or the crossed-out arcs when nothing is connected.
+        phase the_link_slot_draws_the_glyph_of_its_kind;
+        {
+            assert_eq!(LinkKind::Wired.icon(), Icon::EthernetPort);
+            assert_eq!(LinkKind::Wifi.icon(), Icon::Wifi);
+            assert_eq!(LinkKind::Offline.icon(), Icon::WifiOff);
+            let of = |kind, bars| paths(&[StatusSlot::Link { kind, bars }]);
+            let (wired, wifi, offline) = (
+                of(LinkKind::Wired, 0),
+                of(LinkKind::Wifi, 4),
+                of(LinkKind::Offline, 0),
+            );
+            assert!(!wired.encoding_eq(&wifi), "a cable is not Wi-Fi");
+            assert!(
+                !wifi.encoding_eq(&offline),
+                "nothing connected is not Wi-Fi"
+            );
+            assert!(!wired.encoding_eq(&offline), "a cable is not nothing");
+        }
+
+        // A weak but connected radio shows one bar rather than reading exactly
+        // like an offline machine; a cable has no bars to show.
+        phase a_connected_radio_always_shows_at_least_one_bar;
+        {
+            let status = |kind, signal| LinkStatus {
+                kind,
+                name: None,
+                signal,
+            };
+            assert_eq!(status(LinkKind::Wifi, 0).bars(), 1);
+            assert_eq!(status(LinkKind::Wifi, 3).bars(), 3);
+            assert_eq!(status(LinkKind::Wifi, 9).bars(), 4);
+            assert_eq!(status(LinkKind::Wired, 4).bars(), 0);
+            assert_eq!(status(LinkKind::Offline, 0).bars(), 0);
+        }
+
+        // A count takes no width: nothing unread leaves no empty room beside the
+        // bell, and news arriving never moves what stands beside the cluster.
+        phase a_count_takes_no_room;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let mut width = |slots: &[StatusSlot]| {
+                StatusClusterFace::new(slots, StatusCluster::new()).width(&mut text, &theme)
+            };
+            let resting = width(&[StatusSlot::Bell {
+                unread: 0,
+                quiet: false,
+            }]);
+            for unread in [1, 9, 42, 120] {
+                assert_eq!(
+                    width(&[StatusSlot::Bell {
+                        unread,
+                        quiet: false
+                    }]),
+                    resting,
+                    "{unread} unread"
+                );
+            }
+            let glyph = width(&[StatusSlot::Glyph(Icon::Bell)]);
+            assert_eq!(resting, glyph, "the bell is as wide as any one glyph");
+            let (layout, _) = paint(&[BELL], StatusCluster::new());
+            assert!(
+                layout.badge.overlaps(layout.slots[0]),
+                "the count sits on the bell: {:?} on {:?}",
+                layout.badge,
+                layout.slots[0]
+            );
+        }
+
+        // The widest count stands clear of the glyph after the bell, and the room it keeps there is
+        // the same with nothing unread: the bar's volume is never covered.
+        phase the_count_never_reaches_the_next_glyph;
+        {
+            let theme = Theme::dark();
+            let glyph = StatusClusterFace::glyph(&theme);
+            let volume = StatusSlot::Glyph(Icon::Volume2);
+            for unread in [1, 9, 120] {
+                let bell = StatusSlot::Bell {
+                    unread,
+                    quiet: false,
+                };
+                let (layout, _) = paint(&[bell, volume], StatusCluster::new());
+                let next = Rect::from_center_size(layout.slots[1].center(), (glyph, glyph));
+                assert!(
+                    layout.badge.x1 < next.x0,
+                    "{unread} unread: the count {:?} reaches the volume {next:?}",
+                    layout.badge
+                );
+            }
+            let (quiet, _) = paint(
+                &[
+                    StatusSlot::Bell {
+                        unread: 0,
+                        quiet: false,
+                    },
+                    volume,
+                ],
+                StatusCluster::new(),
+            );
+            let (busy, _) = paint(&[BELL, volume], StatusCluster::new());
+            assert_eq!(quiet.slots[1], busy.slots[1], "news arriving moves nothing");
+        }
+
+        // The bell is drawn at the glyph size, and in the stroke, of every other bar control, so
+        // it reads as one set with the people and invite controls beside it.
+        phase the_bell_shares_the_bar_controls_glyph;
+        {
+            let theme = Theme::dark();
+            assert_eq!(
+                StatusClusterFace::glyph(&theme),
+                f64::from(theme.tokens.metrics.icon_control)
+            );
+        }
+
+        // The count covers the bell's corner, not the bell: most of the glyph stays in view, and the
+        // count stays within the room the bar leaves around its controls.
+        phase the_count_leaves_the_bell_in_view;
+        {
+            let theme = Theme::dark();
+            let (layout, _) = paint(&[BELL], StatusCluster::new());
+            let glyph = StatusClusterFace::glyph(&theme);
+            let bell = Rect::from_center_size(layout.slots[0].center(), (glyph, glyph));
+            let covered = layout.badge.intersect(bell);
+            let share = covered.area() / bell.area();
+            assert!(
+                share <= 0.3,
+                "the count covers {:.0}% of the bell: {:?} on {bell:?}",
+                share * 100.0,
+                layout.badge
+            );
+            let reach = f64::from(theme.tokens.spacing.s1);
+            let control = StatusClusterFace::height(&theme);
+            assert!(
+                layout.badge.y0 >= -reach - 0.5 && layout.badge.y1 <= control + reach,
+                "the count stays within the bar: {:?}",
+                layout.badge
+            );
+        }
+
+        phase a_bell_with_a_count_paints_its_badge;
+        {
+            let (layout, _) = paint(&[BELL], StatusCluster::new());
+            assert!(layout.badge.width() > 0.0, "the count sits on the bell");
+            let (quiet, _) = paint(
+                &[StatusSlot::Bell {
+                    unread: 0,
+                    quiet: true,
+                }],
+                StatusCluster::new(),
+            );
+            assert!(quiet.badge.is_zero_area(), "nothing unread: no badge");
+        }
     }
 
     fn paths(slots: &[StatusSlot]) -> vello::Scene {
@@ -748,160 +907,5 @@ mod tests {
         let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
         let _ = face.paint(&mut ctx, rect, theme.tokens.colors.surfaces.base);
         scene
-    }
-
-    /// The link slot draws what kind of connection the machine has: a cable's
-    /// port, Wi-Fi's arcs, or the crossed-out arcs when nothing is connected.
-    #[test]
-    fn the_link_slot_draws_the_glyph_of_its_kind() {
-        assert_eq!(LinkKind::Wired.icon(), Icon::EthernetPort);
-        assert_eq!(LinkKind::Wifi.icon(), Icon::Wifi);
-        assert_eq!(LinkKind::Offline.icon(), Icon::WifiOff);
-        let of = |kind, bars| paths(&[StatusSlot::Link { kind, bars }]);
-        let (wired, wifi, offline) = (
-            of(LinkKind::Wired, 0),
-            of(LinkKind::Wifi, 4),
-            of(LinkKind::Offline, 0),
-        );
-        assert!(!wired.encoding_eq(&wifi), "a cable is not Wi-Fi");
-        assert!(
-            !wifi.encoding_eq(&offline),
-            "nothing connected is not Wi-Fi"
-        );
-        assert!(!wired.encoding_eq(&offline), "a cable is not nothing");
-    }
-
-    /// A weak but connected radio shows one bar rather than reading exactly
-    /// like an offline machine; a cable has no bars to show.
-    #[test]
-    fn a_connected_radio_always_shows_at_least_one_bar() {
-        let status = |kind, signal| LinkStatus {
-            kind,
-            name: None,
-            signal,
-        };
-        assert_eq!(status(LinkKind::Wifi, 0).bars(), 1);
-        assert_eq!(status(LinkKind::Wifi, 3).bars(), 3);
-        assert_eq!(status(LinkKind::Wifi, 9).bars(), 4);
-        assert_eq!(status(LinkKind::Wired, 4).bars(), 0);
-        assert_eq!(status(LinkKind::Offline, 0).bars(), 0);
-    }
-
-    /// A count takes no width: nothing unread leaves no empty room beside the
-    /// bell, and news arriving never moves what stands beside the cluster.
-    #[test]
-    fn a_count_takes_no_room() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let mut width = |slots: &[StatusSlot]| {
-            StatusClusterFace::new(slots, StatusCluster::new()).width(&mut text, &theme)
-        };
-        let resting = width(&[StatusSlot::Bell {
-            unread: 0,
-            quiet: false,
-        }]);
-        for unread in [1, 9, 42, 120] {
-            assert_eq!(
-                width(&[StatusSlot::Bell {
-                    unread,
-                    quiet: false
-                }]),
-                resting,
-                "{unread} unread"
-            );
-        }
-        let glyph = width(&[StatusSlot::Glyph(Icon::Bell)]);
-        assert_eq!(resting, glyph, "the bell is as wide as any one glyph");
-        let (layout, _) = paint(&[BELL], StatusCluster::new());
-        assert!(
-            layout.badge.overlaps(layout.slots[0]),
-            "the count sits on the bell: {:?} on {:?}",
-            layout.badge,
-            layout.slots[0]
-        );
-    }
-
-    /// The widest count stands clear of the glyph after the bell, and the room it keeps there is
-    /// the same with nothing unread: the bar's volume is never covered.
-    #[test]
-    fn the_count_never_reaches_the_next_glyph() {
-        let theme = Theme::dark();
-        let glyph = StatusClusterFace::glyph(&theme);
-        let volume = StatusSlot::Glyph(Icon::Volume2);
-        for unread in [1, 9, 120] {
-            let bell = StatusSlot::Bell {
-                unread,
-                quiet: false,
-            };
-            let (layout, _) = paint(&[bell, volume], StatusCluster::new());
-            let next = Rect::from_center_size(layout.slots[1].center(), (glyph, glyph));
-            assert!(
-                layout.badge.x1 < next.x0,
-                "{unread} unread: the count {:?} reaches the volume {next:?}",
-                layout.badge
-            );
-        }
-        let (quiet, _) = paint(
-            &[
-                StatusSlot::Bell {
-                    unread: 0,
-                    quiet: false,
-                },
-                volume,
-            ],
-            StatusCluster::new(),
-        );
-        let (busy, _) = paint(&[BELL, volume], StatusCluster::new());
-        assert_eq!(quiet.slots[1], busy.slots[1], "news arriving moves nothing");
-    }
-
-    /// The bell is drawn at the glyph size, and in the stroke, of every other bar control, so
-    /// it reads as one set with the people and invite controls beside it.
-    #[test]
-    fn the_bell_shares_the_bar_controls_glyph() {
-        let theme = Theme::dark();
-        assert_eq!(
-            StatusClusterFace::glyph(&theme),
-            f64::from(theme.tokens.metrics.icon_control)
-        );
-    }
-
-    /// The count covers the bell's corner, not the bell: most of the glyph stays in view, and the
-    /// count stays within the room the bar leaves around its controls.
-    #[test]
-    fn the_count_leaves_the_bell_in_view() {
-        let theme = Theme::dark();
-        let (layout, _) = paint(&[BELL], StatusCluster::new());
-        let glyph = StatusClusterFace::glyph(&theme);
-        let bell = Rect::from_center_size(layout.slots[0].center(), (glyph, glyph));
-        let covered = layout.badge.intersect(bell);
-        let share = covered.area() / bell.area();
-        assert!(
-            share <= 0.3,
-            "the count covers {:.0}% of the bell: {:?} on {bell:?}",
-            share * 100.0,
-            layout.badge
-        );
-        let reach = f64::from(theme.tokens.spacing.s1);
-        let control = StatusClusterFace::height(&theme);
-        assert!(
-            layout.badge.y0 >= -reach - 0.5 && layout.badge.y1 <= control + reach,
-            "the count stays within the bar: {:?}",
-            layout.badge
-        );
-    }
-
-    #[test]
-    fn a_bell_with_a_count_paints_its_badge() {
-        let (layout, _) = paint(&[BELL], StatusCluster::new());
-        assert!(layout.badge.width() > 0.0, "the count sits on the bell");
-        let (quiet, _) = paint(
-            &[StatusSlot::Bell {
-                unread: 0,
-                quiet: true,
-            }],
-            StatusCluster::new(),
-        );
-        assert!(quiet.badge.is_zero_area(), "nothing unread: no badge");
     }
 }
