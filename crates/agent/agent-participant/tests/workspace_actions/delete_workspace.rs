@@ -417,7 +417,7 @@ async fn neither_a_minted_key_nor_a_member_deletes_a_workspace() {
         .tilo_do(json!({"path": "account/workspaces#delete", "args": {"workspace": workspace}}))
         .await;
     assert_eq!(
-        refused["result"]["structuredContent"]["error"]["code"], "forbidden",
+        refused["result"]["structuredContent"]["error"]["code"], "not_permitted",
         "{refused}"
     );
 

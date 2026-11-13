@@ -33,7 +33,7 @@ naming a path.
 | `unknown_action` | The path names no action of that resource |
 | `not_found` | No such workspace, resource or key, or one that is not yours |
 | `beyond_scope` | The key reaches one workspace and this is another one, or an account call |
-| `forbidden` | The key reaches this workspace but may not do this in it |
+| `not_permitted` | The key reaches this workspace but may not do this in it |
 | `rate_limited` | The host is busy with the person's changes; nothing ran |
 | `no_payment_method` | The account's plan does not include it yet; `next_steps` says what adds it |
 

@@ -399,7 +399,7 @@ async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
     let (status, read) = minted_account.post(usage(7)).await;
     assert_eq!(status, 200, "{read}");
     assert_eq!(
-        read["result"]["structuredContent"]["error"]["code"], "forbidden",
+        read["result"]["structuredContent"]["error"]["code"], "not_permitted",
         "a minted key reads no account: {read}"
     );
 

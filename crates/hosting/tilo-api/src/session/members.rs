@@ -99,7 +99,7 @@ impl Session {
                     failed("unavailable", error.message, "try again shortly")
                 } else {
                     failed(
-                        "forbidden",
+                        "not_permitted",
                         format!("the workspace refused: {}", error.message),
                         "a key you created, reaching all your workspaces, invites into the ones \
                          you administer, as an editor at most",

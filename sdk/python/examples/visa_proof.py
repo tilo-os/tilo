@@ -177,7 +177,7 @@ async def refused(call: Any) -> str:
 
 def beyond(refusal: str) -> bool:
     """Whether `refusal` is the API saying the key does not reach that far."""
-    return any(refusal.startswith(code) for code in ("beyond_scope", "forbidden", "not_permitted"))
+    return any(refusal.startswith(code) for code in ("beyond_scope", "not_permitted"))
 
 
 async def reviewer_accepts(link: str) -> dict[str, Any]:
