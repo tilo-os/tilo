@@ -105,22 +105,13 @@ pub enum HomePolicy {
     Ephemeral,
 }
 
-/// Bring an environment of an older version up to this one: version 1 kept its
-/// grants as one JSON string, and versions 1 and 2 stored a grant's subject,
-/// scope and expiry flat beside their variant's name.
-fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
-    use tilo_resource::evolution::{retype_json, retype_variant_fields};
-    let root = tilo_resource::__private::ROOT;
-    if !(1..=2).contains(&from) {
-        return Err(ModelError::invalid(format!(
-            "no environment migration from {from}"
-        )));
-    }
-    if from == 1 {
-        retype_json::<Vec<CapOverride>>(doc, &root, "grants")?;
-    }
-    retype_variant_fields::<Vec<CapOverride>>(doc, &root, "grants")?;
-    Ok(())
+/// Version 4 changed what a grant records: it names a member and an app, not a subject. An
+/// environment written before it cannot be read as one, so it is reported unreadable rather than
+/// read as something else.
+fn upgrade(_doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
+    Err(ModelError::invalid(format!(
+        "an environment from version {from} cannot be read: grants changed shape in version 4"
+    )))
 }
 
 impl Environment {
@@ -137,7 +128,7 @@ impl Environment {
 
 #[resource(
     kind = "environment",
-    version = 3,
+    version = 4,
     migrate = upgrade,
     read_content = Environment::read_document
 )]
@@ -1051,90 +1042,21 @@ mod tests {
         assert_eq!(r.state().unwrap().tools.len(), 1);
     }
 
+    /// An environment written before version 4 kept its grants' subjects; it is reported
+    /// unreadable rather than read as holding capabilities it never recorded.
     #[test]
-    fn grants_kept_as_a_json_string_migrate_to_capabilities() {
+    fn an_environment_from_before_version_four_is_unreadable() {
         use tilo_resource::{Slot, evolution};
         let mut r = replica();
-        r.apply(Environment::GRANT_DIR.with(("/var/home/you/src".into(), true)))
-            .unwrap();
-        let expected = r.state().unwrap();
         let root = tilo_resource::__private::ROOT;
         let doc = r.doc_mut();
-        let grants = Slot::Key(&root, "grants");
-        grants.remove(doc).unwrap();
-        grants
-            .put_scalar(
-                doc,
-                automerge::ScalarValue::Str(
-                    serde_json::to_string(&expected.grants).unwrap().into(),
-                ),
-            )
-            .unwrap();
         Slot::Key(&root, evolution::VERSION_KEY)
-            .remove(doc)
+            .put_scalar(doc, automerge::ScalarValue::Uint(3))
             .unwrap();
         doc.commit();
-        let mut old = doc.fork();
         assert!(
-            evolution::read_checked::<Environment>(&old).is_err(),
-            "unmigrated"
-        );
-        assert!(evolution::migrate::<Environment>(&mut old).unwrap());
-        assert_eq!(
-            evolution::read_checked::<Environment>(&old).unwrap(),
-            expected
-        );
-    }
-
-    /// An environment of version 2 stored a grant's subject and scope with
-    /// their fields flat beside their variant's name. Opened now, it holds
-    /// the same capabilities, stored by their variant; a reader of version 2
-    /// is told it was written by a newer version rather than misreading it.
-    #[test]
-    fn grants_kept_with_flat_fields_migrate_to_fields_stored_by_variant() {
-        use automerge::ReadDoc as _;
-        use tilo_resource::{Model as _, Slot, evolution};
-        let mut r = replica();
-        r.apply(Environment::GRANT_DIR.with(("/var/home/you/src".into(), true)))
-            .unwrap();
-        let expected = r.state().unwrap();
-        let root = tilo_resource::__private::ROOT;
-        let doc = r.doc_mut();
-        Slot::Key(&root, "grants").remove(doc).unwrap();
-        evolution::fixture(
-            doc,
-            &root,
-            &serde_json::json!({ "grants": expected.grants.to_json() }),
-        )
-        .unwrap();
-        Slot::Key(&root, evolution::VERSION_KEY)
-            .put_scalar(doc, automerge::ScalarValue::Uint(2))
-            .unwrap();
-        doc.commit();
-        let mut old = doc.fork();
-        assert!(
-            evolution::read_checked::<Environment>(&old).is_err(),
-            "unmigrated"
-        );
-        assert!(evolution::migrate::<Environment>(&mut old).unwrap());
-        assert_eq!(
-            evolution::read_checked::<Environment>(&old).unwrap(),
-            expected
-        );
-        let (_, grants) = old.get(&root, "grants").unwrap().unwrap();
-        let (_, grant) = old.get(&grants, 0).unwrap().unwrap();
-        for field in ["subject", "scope"] {
-            let (_, value) = old.get(&grant, field).unwrap().unwrap();
-            assert!(
-                old.keys(&value)
-                    .all(|key| key == "$variant" || key.starts_with("$field/")),
-                "a grant's {field} is stored by its variant"
-            );
-        }
-        assert!(
-            evolution::check_version::<Environment>(&old).is_ok()
-                && evolution::stored_version(&old) == 3,
-            "the migrated environment is marked as version 3"
+            evolution::read_checked::<Environment>(r.doc_mut()).is_err(),
+            "a version-3 environment does not read as one"
         );
     }
 
