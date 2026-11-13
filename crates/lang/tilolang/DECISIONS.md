@@ -754,7 +754,12 @@ search.md, "What a type declares" and "Types, references and paths".
 - **A type is called by its name; nothing is declared to be "the one".** A type's noun is its
   name in words and its plural derived (`TypeMeta::noun`, `::plural`, what `meta(r).noun` and
   `.plural` say); what other languages call it is the package's translations' job, not a search
-  line. A query naming an app means its root (`ResourceType::root`), and what the person then
+  line. The one derivation is `tilo-words`, which the compiler writes a catalogue with and the
+  action model words a Rust type with: a name that already names several is one of them and all
+  of them (`Tasks` is a `task` and `tasks`), and English's irregular plurals are in it
+  (`Person` is a `person` and `people`), so a catalogue refines a type's noun only where the app
+  words it its own way (a `Note` it calls a `notebook`). A query naming an app means its root
+  (`ResourceType::root`), and what the person then
   sees is the app's default view of its root: Mail's is the inbox, so "my mails" is the inbox with
   no further declaration. `noun "…" "…"` and `primary <test>` were search lines for this and are
   removed: `noun` was used by no app, and `primary` repeated the word `primary action` already

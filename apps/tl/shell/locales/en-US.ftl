@@ -169,7 +169,6 @@ d-lsd5bmss = Menu
 
 d-tlbg2fms-filter-menu = Menu
 
-# refined
 d-bqittbss = Person
     .doc = Someone else here in the workspace in front.
     .noun = { $count ->

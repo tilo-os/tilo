@@ -17237,6 +17237,7 @@ dependencies = [
  "tilo-selector",
  "tilo-test-env",
  "tilo-wake",
+ "tilo-words",
  "tracing",
  "unicode-normalization",
  "uuid",
@@ -22943,6 +22944,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-words"
+version = "0.1.0"
+dependencies = [
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-workspace-agent"
 version = "0.1.0"
 dependencies = [
@@ -23045,6 +23053,7 @@ dependencies = [
  "tilo-clock",
  "tilo-paths",
  "tilo-ui-graph",
+ "tilo-words",
  "tilolang-lex",
  "unicode-segmentation",
  "wasm-encoder 0.252.0",
@@ -28736,6 +28745,7 @@ dependencies = [
  "tilo-window-share",
  "tilo-winit",
  "tilo-winit-x11",
+ "tilo-words",
  "tilo-workspace-agent",
  "tilo-workspace-directory",
  "tilo-workspace-emoji",

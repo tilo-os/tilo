@@ -550,6 +550,7 @@ members = [
     "crates/text/highlight-grammars",
     "crates/text/pim-lines",
     "crates/text/spellcheck",
+    "crates/text/tilo-words",
 
     # Windows
     "crates/windows/compat-catalogue",

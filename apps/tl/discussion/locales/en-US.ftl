@@ -15,8 +15,8 @@ d-5q4mbecw = Text
 d-d6k3e7fz = Comments
     .doc = Every comment of the workspace, in the order they were made.
     .noun = { $count ->
-        [one] comments
-       *[other] commentses
+        [one] comment
+       *[other] comments
     }
 
 d-3g3duquj = Items

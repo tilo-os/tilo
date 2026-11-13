@@ -153,7 +153,8 @@ fn notebooks_find_notes() {
         .resource_type
         .as_ref()
         .expect("a notebook says what it is");
-    // What English cannot derive from "notes" ("noteses"): the catalogue's nouns, by count.
+    // The app calls a note a notebook: a noun its own, which the catalogue says, not the derived
+    // one ("note", or "notes" as a plural name would read).
     assert_eq!(
         (ty.noun.one.as_str(), ty.noun.many.as_str()),
         ("notebook", "notebooks")

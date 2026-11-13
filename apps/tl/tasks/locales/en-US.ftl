@@ -89,8 +89,8 @@ d-5wdrqcpl-filter-project = Project
 d-fjqi4yze = Tasks
     .doc = The workspace's tasks and projects.
     .noun = { $count ->
-        [one] tasks
-       *[other] taskses
+        [one] task
+       *[other] tasks
     }
 
 d-lg5gedbh = Items
