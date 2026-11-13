@@ -1,5 +1,5 @@
-//! The machine: state on disk, downloads, assembling parts, activation, and
-//! the commands.
+//! The machine: state on disk, downloads, assembling parts, activation, and the
+//! commands.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -27,11 +27,6 @@ use crate::{At, Error, Result};
 const CHUNK: usize = 1024 * 1024;
 const RECORD_DIR: &str = "usr/share/tilo-extension";
 
-// ---------------------------------------------------------------------------
-// Where everything lives
-// ---------------------------------------------------------------------------
-
-/// Every path the helper uses, under one root (`/` on a device).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layout {
     pub root: PathBuf,
@@ -54,7 +49,6 @@ impl Layout {
         self.root.join(path.trim_start_matches('/'))
     }
 
-    /// Whether this is the running system rather than a root under it.
     pub fn is_host_root(&self) -> bool {
         self.root == Path::new("/")
     }
@@ -79,12 +73,10 @@ impl Layout {
         self.state(ident).join("accepted.json")
     }
 
-    /// Accepted signed manifests, one directory per base fingerprint.
     pub fn bases(&self, ident: &str) -> PathBuf {
         self.state(ident).join("bases")
     }
 
-    /// Verified artifacts, content-addressed, kept while the extension is on.
     pub fn objects(&self, ident: &str) -> PathBuf {
         self.state(ident).join("objects")
     }
@@ -105,7 +97,6 @@ impl Layout {
         self.at("/var/lib/extensions")
     }
 
-    /// Every directory systemd-sysext merges from that is not sealed /usr.
     pub fn sysext_dirs(&self) -> [PathBuf; 4] {
         [
             self.at("/etc/extensions"),
@@ -123,31 +114,22 @@ impl Layout {
         self.at("/usr/share/tilo/extensions.pub")
     }
 
-    /// Tilo's offline release root. An image that carries it verifies
-    /// manifests only through an operational certificate the root issued.
     pub fn release_root(&self) -> PathBuf {
         self.at("/usr/share/tilo/release/root.crt")
     }
 
-    /// The transparency log's key, which dates a certified signature.
     pub fn rekor_key(&self) -> PathBuf {
         self.at("/usr/share/tilo/release/rekor.pub")
     }
 
-    /// The revocation epoch and identity domain certificates must name.
     pub fn release_trust(&self) -> PathBuf {
         self.at("/usr/share/tilo/release/trust.env")
     }
 
-    /// Whether manifests must be certified under the release root, rather
-    /// than signed by the extension-manifest key alone.
     pub fn certified(&self) -> bool {
         self.release_root().symlink_metadata().is_ok()
     }
 
-    /// The file published beside a manifest, and kept beside a verified one,
-    /// that authenticates it: a Rekor bundle with the operational certificate
-    /// on an image with the release root, a bare signature otherwise.
     pub fn signature_suffix(&self) -> &'static str {
         if self.certified() { ".bundle" } else { ".sig" }
     }
@@ -156,10 +138,6 @@ impl Layout {
         self.at("/usr/lib/os-release")
     }
 }
-
-// ---------------------------------------------------------------------------
-// Small file helpers
-// ---------------------------------------------------------------------------
 
 fn now() -> String {
     let seconds = SystemTime::now()
@@ -175,8 +153,6 @@ fn now() -> String {
     )
 }
 
-/// The proleptic Gregorian date `days` after 1970-01-01 (Howard Hinnant's
-/// algorithm, for days on or after the epoch).
 fn civil_from_days(days: u64) -> (u64, u64, u64) {
     let z = days.wrapping_add(719_468);
     let era = z / 146_097;
@@ -210,8 +186,6 @@ fn chmod(path: &Path, mode: u32) -> Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).at(path)
 }
 
-/// `shutil.rmtree(path, ignore_errors=True)`: a symlink or a file is left
-/// alone, as it always was.
 fn rmtree(path: &Path) {
     if fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) {
         let _ = fs::remove_dir_all(path);
@@ -224,7 +198,6 @@ fn file_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Replace `path` with `content` at exactly `mode`, atomically and durably.
 fn write_atomic(path: &Path, content: &[u8], mode: u32) -> Result<()> {
     tilo_files::native::atomic::write_with_mode(path, content, mode)
         .map_err(|error| Error::os(&error, Some(path)))
@@ -258,7 +231,6 @@ fn write_text(path: &Path, text: &str, mode: u32) -> Result<()> {
     chmod(path, mode)
 }
 
-/// [`write_text`], creating the parent directory first.
 fn write_text_creating(path: &Path, text: &str, mode: u32) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).at(parent)?;
@@ -279,10 +251,6 @@ fn off(catalogue: &Catalogue) -> Value {
             .collect(),
     )
 }
-
-// ---------------------------------------------------------------------------
-// Catalogue and status
-// ---------------------------------------------------------------------------
 
 fn catalogue_ids(layout: &Layout) -> Result<Vec<String>> {
     let directory = layout.catalogue_dir();
@@ -309,7 +277,6 @@ fn load_catalogue(layout: &Layout, ident: &str) -> Result<Catalogue> {
     Catalogue::parse(&text, ident)
 }
 
-/// The world-readable status file of one extension.
 struct Status<'a> {
     layout: &'a Layout,
     ident: String,
@@ -376,7 +343,6 @@ impl<'a> Status<'a> {
         self.write(changes([("progress", Value::Object(progress))]))
     }
 
-    /// At most once a second: the desktop shows it, nothing depends on it.
     fn download_progress(&mut self, done: u64, total: u64) -> Result<()> {
         let moment = Instant::now();
         if done < total
@@ -408,7 +374,6 @@ fn locked(layout: &Layout, ident: &str) -> Result<FileLock> {
     FileLock::exclusive(file).at(&path)
 }
 
-/// Turn the installer's opt-in into the owner's recorded choice, once.
 fn adopt_installer_seed(layout: &Layout, ident: &str) -> Result<bool> {
     if !layout.seed(ident).is_file() || layout.seed_adopted(ident).exists() {
         return Ok(false);
@@ -459,9 +424,7 @@ fn probe_base(host: &dyn Host, layout: &Layout) -> Result<Base> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Network and verified objects
-// ---------------------------------------------------------------------------
+// Network and verified objects.
 
 fn fetch_small(host: &dyn Host, url: &str, limit: usize) -> Result<Vec<u8>> {
     let hostname = py::hostname_for_message(url);
@@ -559,7 +522,6 @@ impl Store {
         Ok(false)
     }
 
-    /// Download from the first URL that yields exactly the pinned bytes.
     fn fetch(
         &self,
         host: &dyn Host,
@@ -596,8 +558,6 @@ impl Store {
         }))
     }
 
-    /// One attempt. The inner error is the URL's problem, recorded before the
-    /// next URL is tried; the outer one stops the download altogether.
     fn download(
         host: &dyn Host,
         url: &str,
@@ -717,12 +677,8 @@ impl Store {
     }
 }
 
-/// Move a verified download into the object store.
-///
-/// The cache and the state directory are separate mounts inside the install
-/// unit (`CacheDirectory=`, `StateDirectory=` under `ProtectSystem=strict`), so a
-/// rename between them fails with EXDEV even though both live on /var. Copy
-/// next to the object, then rename.
+/// Move a verified download into the object store. The cache and the state
+/// directory are separate mounts, so the move copies across.
 fn promote(host: &dyn Host, part: &Path, target: &Path) -> Result<()> {
     match host.replace(part, target) {
         Ok(()) => return Ok(()),
@@ -739,10 +695,6 @@ fn promote(host: &dyn Host, part: &Path, target: &Path) -> Result<()> {
     host.replace(&staging, target).at(&staging)?;
     fs::remove_file(part).at(part)
 }
-
-// ---------------------------------------------------------------------------
-// Assembling a part
-// ---------------------------------------------------------------------------
 
 fn relocate_private_libraries(tree: &Path, ld_conf: &[String]) -> Result<Vec<String>> {
     let mut moved = Vec::new();
@@ -771,8 +723,8 @@ fn relocate_private_libraries(tree: &Path, ld_conf: &[String]) -> Result<Vec<Str
                     fs::remove_file(&target).at(&target)?;
                 }
                 fs::rename(&entry, &target).at(&entry)?;
-                // Whatever pointed at the private copy (the VA drivers are
-                // symlinks to libgallium) keeps resolving, to the moved file.
+                // Whatever pointed at the private copy (the VA drivers are symlinks to
+                // libgallium) keeps resolving, to the moved file.
                 symlink(format!("../{name}"), &entry).at(&entry)?;
                 let relative = target.strip_prefix(tree).unwrap_or(&target);
                 moved.push(format!("/{}", relative.display()));
@@ -790,23 +742,18 @@ fn read_record(tree: &Path, part: &str) -> Map<String, Value> {
     read_json(&record_path(tree, part))
 }
 
-/// Where a part that is a prebuilt sysext image lives.
 fn raw_path(layout: &Layout, name: &str) -> PathBuf {
     layout.extensions().join(format!("{name}{RAW_SUFFIX}"))
 }
 
-/// The record of a sysext image part. Dot-prefixed, so `foreign_extensions`
-/// and systemd-sysext both ignore it.
 fn raw_record_path(layout: &Layout, name: &str) -> PathBuf {
     layout.extensions().join(format!(".{name}.record.json"))
 }
 
-/// Whether a part is live, as a directory or as a sysext image.
 fn live_exists(layout: &Layout, name: &str) -> bool {
     layout.extensions().join(name).exists() || raw_path(layout, name).exists()
 }
 
-/// What a live part (directory or sysext image) was assembled from.
 fn live_record(layout: &Layout, name: &str) -> Map<String, Value> {
     if raw_path(layout, name).exists() {
         return read_json(&raw_record_path(layout, name));
@@ -814,7 +761,6 @@ fn live_record(layout: &Layout, name: &str) -> Map<String, Value> {
     read_record(&layout.extensions().join(name), name)
 }
 
-/// Take a part out of the sysext search path, in either form.
 fn live_remove(layout: &Layout, name: &str) -> Result<()> {
     rmtree(&layout.extensions().join(name));
     for path in [raw_path(layout, name), raw_record_path(layout, name)] {
@@ -823,7 +769,6 @@ fn live_remove(layout: &Layout, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// `unlink`, where a missing file is not an error.
 fn remove_if_present(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => Err(Error::os(&error, Some(path))),
@@ -831,12 +776,8 @@ fn remove_if_present(path: &Path) -> Result<()> {
     }
 }
 
-/// Install a prebuilt, manifest-pinned sysext image as `<part>.raw`.
-///
-/// The bytes were pinned by the signed manifest and re-hashed by the caller
-/// (`Store::have`); the image is linked (copied across filesystems) beside the
-/// live one and renamed over it. systemd-sysext itself refuses an image whose
-/// extension-release does not match this OS release and architecture.
+/// Install a prebuilt, manifest-pinned sysext image as `<part>.raw`; the bytes
+/// were pinned by the signed manifest.
 fn build_raw_part(layout: &Layout, assembly: &Assembly<'_>) -> Result<()> {
     let (manifest, part) = (assembly.manifest, assembly.part);
     let [(artifact, path)] = assembly.files.as_slice() else {
@@ -887,7 +828,6 @@ struct Assembly<'a> {
     files: Vec<(&'a Artifact, PathBuf)>,
 }
 
-/// Assemble a directory sysext next to the live one, then swap it in.
 fn build_part(
     host: &dyn Host,
     layout: &Layout,
@@ -952,8 +892,8 @@ fn fill_part(host: &dyn Host, base: &Base, assembly: &Assembly<'_>, staging: &Pa
     let text =
         model::extension_release(&base.os_id, &base.version_id, base.architecture(), &extra)?;
     write_text(&release, &text, 0o644)?;
-    // Media processes rescan plugins when extension-release.d changes (names
-    // and times); the time changes only with what was built.
+    // Media processes rescan plugins when extension-release.d changes (names and
+    // times); the time changes only with what was built.
     let mut digests: Vec<&str> = assembly
         .files
         .iter()
@@ -1007,7 +947,6 @@ fn check_header(header: &Header, artifact: &Artifact, base: &Base) -> Result<()>
     Ok(())
 }
 
-/// What a live part was assembled from: revision and artifact digests.
 type Selection = Option<(Value, Vec<Value>)>;
 
 fn selection_of(record: &Map<String, Value>) -> Selection {
@@ -1061,7 +1000,6 @@ fn accept_revision(layout: &Layout, ident: &str, base: &Base, revision: u64) -> 
     write_json(&path, &Value::Object(accepted), 0o644)
 }
 
-/// Offline: remember the choice and wait; this is not a failure.
 fn waiting_for_network(status: &Status<'_>, installed: bool) -> Result<()> {
     if installed {
         return status.write(changes([("state", json!("installed"))]));
@@ -1084,7 +1022,6 @@ struct Fetched {
     signature: Vec<u8>,
 }
 
-/// Fetch, authenticate and validate the manifest for this base.
 fn fetch_manifest(
     host: &dyn Host,
     layout: &Layout,
@@ -1116,7 +1053,6 @@ fn fetch_manifest(
     })
 }
 
-/// Keep the signed bytes: every activation verifies them again.
 fn keep_manifest(layout: &Layout, ident: &str, base: &Base, fetched: &Fetched) -> Result<()> {
     let directory = layout.bases(ident).join(&base.fingerprint);
     fs::create_dir_all(&directory).at(&directory)?;
@@ -1130,10 +1066,6 @@ fn keep_manifest(layout: &Layout, ident: &str, base: &Base, fetched: &Fetched) -
     write_atomic(&directory.join("manifest.json"), &fetched.data, 0o644)
 }
 
-/// Every kept manifest that still verifies, newest first.
-///
-/// A manifest for exactly this base comes first. Others (kept from the
-/// deployments before an update, or after a rollback) follow by revision.
 fn kept_manifests(
     host: &dyn Host,
     layout: &Layout,
@@ -1196,7 +1128,6 @@ fn kept_manifests(
     Ok(found)
 }
 
-/// Keep the manifests of the last few bases (rollback) and their objects.
 fn prune(host: &dyn Host, layout: &Layout, catalogue: &Catalogue, base: &Base) -> Result<()> {
     let manifests = kept_manifests(host, layout, catalogue, base)?;
     let kept = manifests.get(..3).unwrap_or(&manifests);
@@ -1219,7 +1150,6 @@ fn prune(host: &dyn Host, layout: &Layout, catalogue: &Catalogue, base: &Base) -
     Store::new(layout, &catalogue.id).keep_only(&wanted)
 }
 
-/// The part to merge on this base, or why there is none.
 struct Choice<'a> {
     name: String,
     state: String,
@@ -1247,8 +1177,6 @@ impl<'a> Choice<'a> {
     }
 }
 
-/// For each part: the manifest for exactly this base decides; failing that,
-/// the newest kept manifest whose part still fits this base.
 fn choose_parts<'a>(
     catalogue: &Catalogue,
     base: &Base,
@@ -1286,7 +1214,6 @@ fn choose_parts<'a>(
     choices
 }
 
-/// Anything systemd-sysext would merge that this helper did not build.
 fn foreign_extensions(layout: &Layout, ours: &BTreeSet<String>) -> Result<Vec<String>> {
     let mut found = Vec::new();
     let extensions = layout.extensions();
@@ -1309,8 +1236,8 @@ fn foreign_extensions(layout: &Layout, ours: &BTreeSet<String>) -> Result<Vec<St
                 .strip_suffix(RAW_SUFFIX)
                 .is_some_and(|stem| ours.contains(stem))
                 && entry.is_file();
-            // The live update's layer, linked from /run where only it links,
-            // to where only it builds layers from the verified staged image.
+            // The live update's layer, linked from /run where only it links, to where only
+            // it builds layers from the verified stage.
             if entry == crate::live::link(layout) && crate::live::linked(layout) {
                 continue;
             }
@@ -1326,10 +1253,6 @@ fn foreign_extensions(layout: &Layout, ours: &BTreeSet<String>) -> Result<Vec<St
     Ok(found)
 }
 
-// ---------------------------------------------------------------------------
-// Activation
-// ---------------------------------------------------------------------------
-
 struct Activation {
     states: Map<String, Value>,
     changed: bool,
@@ -1337,7 +1260,6 @@ struct Activation {
     errors: Vec<String>,
 }
 
-/// Rebuild the parts of one extension for the booted base.
 fn activate_one(
     host: &dyn Host,
     layout: &Layout,
@@ -1425,14 +1347,8 @@ fn activate_one(
     })
 }
 
-/// Rebuild every part from verified bytes, then merge exactly those.
-///
-/// Runs at every boot before the desktop starts, and after every install,
-/// refresh and removal. Nothing assembled earlier is trusted: what was written
-/// to /var since then is replaced by what the kept signed manifests pin.
-///
-/// # Errors
-/// Anything that stops activation as a whole; the exit status is 1 then.
+/// Rebuild every part from verified bytes, then merge exactly those; runs at
+/// every boot before the desktop starts.
 pub fn activate(host: &dyn Host, layout: &Layout) -> Result<i32> {
     let mut catalogues = Vec::new();
     for ident in catalogue_ids(layout)? {
@@ -1447,8 +1363,6 @@ pub fn activate(host: &dyn Host, layout: &Layout) -> Result<i32> {
         .collect();
     let any_part_present = || ours.iter().any(|name| live_exists(layout, name));
     let wanted = catalogues.iter().any(|c| layout.desired(&c.id).exists()) || any_part_present();
-    // The live update's layer (crate::live): merged when linked, and merged
-    // away when it was and no longer is.
     let live_linked = crate::live::linked(layout);
     let live_marker = crate::live::merged_marker(layout);
     let live_was_merged = live_marker.exists();
@@ -1460,7 +1374,6 @@ pub fn activate(host: &dyn Host, layout: &Layout) -> Result<i32> {
         let base = match probe_base(host, layout) {
             Ok(base) => base,
             Err(error) => {
-                // Without knowing the base nothing can be shown to fit it: merge none.
                 for name in &ours {
                     live_remove(layout, name)?;
                 }
@@ -1487,8 +1400,8 @@ pub fn activate(host: &dyn Host, layout: &Layout) -> Result<i32> {
             Vec::new()
         };
         if !foreign.is_empty() {
-            // The sealed image merges only what this helper verified; something
-            // else in the search path means /var or /etc was written behind it.
+            // The sealed image merges only what this helper verified; something else in the
+            // search path means /var or /etc was written to.
             for name in &ours {
                 live_remove(layout, name)?;
             }
@@ -1523,8 +1436,6 @@ pub fn activate(host: &dyn Host, layout: &Layout) -> Result<i32> {
     report_activation(layout, &catalogues, outcome)
 }
 
-/// What each extension's status says after an activation; 1 when a part
-/// could not be built.
 fn report_activation(
     layout: &Layout,
     catalogues: &[Catalogue],
@@ -1562,7 +1473,6 @@ fn report_activation(
                 .values()
                 .any(|v| v.as_str() == Some("enabled"))
         {
-            // Merged again: an earlier refusal no longer applies.
             update.insert("state".to_owned(), json!("installed"));
         }
         status.write(update)?;
@@ -1571,8 +1481,6 @@ fn report_activation(
     Ok(i32::from(failed))
 }
 
-/// Have PID 1 run the activation unit: it merges in the host's mount
-/// namespace, which this sandboxed unit does not share.
 fn request_activation(host: &dyn Host, layout: &Layout) -> Result<()> {
     if !layout.is_host_root() || !Path::new("/run/systemd/system").is_dir() {
         if activate(host, layout)? != 0 {
@@ -1583,11 +1491,6 @@ fn request_activation(host: &dyn Host, layout: &Layout) -> Result<()> {
     host.start_activation_unit()
 }
 
-// ---------------------------------------------------------------------------
-// Commands
-// ---------------------------------------------------------------------------
-
-/// Fetch what this base needs. Returns whether activation should run.
 fn refresh(host: &dyn Host, layout: &Layout, ident: &str, explicit: bool) -> Result<bool> {
     let mut status = Status::new(layout, ident);
     let catalogue = load_catalogue(layout, ident)?;
@@ -1622,8 +1525,6 @@ fn refresh(host: &dyn Host, layout: &Layout, ident: &str, explicit: bool) -> Res
         Ok(needs_activation) => Ok(needs_activation),
         Err(error) => {
             let still_installed = installed_parts(layout, &catalogue);
-            // A download that failed because the connection went away is the
-            // same situation as starting offline, not an error to show the owner.
             if !matches!(error, Error::Unpublished(_)) && !is_online(&host.connectivity()) {
                 waiting_for_network(&status, still_installed)?;
                 return Ok(false);
@@ -1742,7 +1643,6 @@ fn fetch_and_verify(
     Ok(!unchanged || !status.read().get("parts").is_some_and(py::truthy))
 }
 
-/// After activation: the state the owner sees.
 fn finish(layout: &Layout, ident: &str) -> Result<()> {
     let status = Status::new(layout, ident);
     let current = status.read();
@@ -1796,8 +1696,6 @@ fn remove(layout: &Layout, ident: &str) -> Result<()> {
     ]))
 }
 
-/// Run one command line (without the program name) against `layout`.
-/// Returns the exit status: 0 done, 1 failed, 2 usage or not root.
 pub fn main(host: &dyn Host, layout: &Layout, argv: &[String]) -> i32 {
     let (verb, ident) = match model::parse_command(argv) {
         Ok(command) => command,
@@ -1870,11 +1768,8 @@ pub fn main(host: &dyn Host, layout: &Layout, argv: &[String]) -> i32 {
     }
 }
 
-/// An exit status already reported.
 struct Exit(i32);
 
-/// The extensions a command applies to; `None` when it was `activate`, which
-/// has already run.
 fn select(
     host: &dyn Host,
     layout: &Layout,
@@ -1915,9 +1810,6 @@ fn run_command(host: &dyn Host, layout: &Layout, verb: &str, ids: &[String]) -> 
             let _lock = locked(layout, one)?;
             match verb {
                 "install" => {
-                    // The installer's seed is consumed by an explicit opt-in
-                    // too, so it cannot re-enable the extension after a later
-                    // Remove.
                     adopt_installer_seed(layout, one)?;
                     write_text(&layout.desired(one), "owner opted in\n", 0o644)?;
                     refresh(host, layout, one, true)

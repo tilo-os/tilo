@@ -15,12 +15,8 @@ const FINGERPRINT_DOMAIN: &[u8] = b"tilo.base-packages.v1\n";
 
 pub const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 pub const MAX_SIGNATURE_BYTES: usize = 4096;
-/// A Rekor bundle carries the signature, the certificate and the log entry,
-/// which holds the certificate again.
 pub const MAX_BUNDLE_BYTES: usize = 64 * 1024;
 pub const MAX_ARTIFACT_BYTES: u64 = 1024 * 1024 * 1024;
-/// A prebuilt sysext image (format "sysext-raw") is one artifact, and large:
-/// the Windows compatibility runtime is a few GiB.
 const MAX_RAW_BYTES: u64 = 6 * 1024 * 1024 * 1024;
 pub const RAW_FORMAT: &str = "sysext-raw";
 pub const RAW_SUFFIX: &str = ".raw";
@@ -28,7 +24,6 @@ const FORMATS: [&str; 2] = ["rpm", RAW_FORMAT];
 const MAX_ARTIFACTS: usize = 512;
 pub const MAX_TEXT: usize = 300;
 
-/// rpm's architecture, and systemd's name for it.
 pub const ARCHITECTURES: [(&str, &str); 2] = [("x86_64", "x86-64"), ("aarch64", "arm64")];
 const PART_STATES: [&str; 3] = ["available", "waiting", "unsupported"];
 
@@ -38,8 +33,6 @@ pub const UNPUBLISHED_MESSAGE: &str = "Not available for this version of Tilo ye
 pub const UPDATE_MESSAGE: &str = "Waiting to be downloaded again for this version of Tilo.";
 pub const OPENH264_WAITING_MESSAGE: &str = "OpenH264 is waiting for Cisco's codec library; the system compatibility stub cannot encode or decode video.";
 
-/// What an install reports while it runs, in order. The desktop shows the
-/// label and "step n of N" (status `progress`).
 pub const PROGRESS_STEPS: [&str; 5] = [
     "Checking this device",
     "Fetching the signed manifest",
@@ -48,11 +41,6 @@ pub const PROGRESS_STEPS: [&str; 5] = [
     "Building the extension",
 ];
 
-// ---------------------------------------------------------------------------
-// The shapes the original checked with regular expressions
-// ---------------------------------------------------------------------------
-
-/// `[a-z0-9][a-z0-9-]{0,62}`
 pub fn is_id(text: &str) -> bool {
     let mut chars = text.chars();
     chars
@@ -62,7 +50,6 @@ pub fn is_id(text: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// `[0-9a-f]{64}`
 pub fn is_sha256(text: &str) -> bool {
     text.len() == 64
         && text
@@ -74,7 +61,6 @@ fn is_evr_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '~' | '^')
 }
 
-/// `[0-9]+:[A-Za-z0-9._+~^]+-[A-Za-z0-9._+~^]+`
 fn is_evr(text: &str) -> bool {
     let Some((epoch, rest)) = text.split_once(':') else {
         return false;
@@ -90,12 +76,10 @@ fn is_evr(text: &str) -> bool {
         && release.chars().all(is_evr_char)
 }
 
-/// `[A-Za-z0-9._+~^-]{1,255}`
 fn is_package(text: &str) -> bool {
     (1..=255).contains(&text.len()) && text.chars().all(|c| is_evr_char(c) || c == '-')
 }
 
-/// `[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+`
 fn is_host(text: &str) -> bool {
     let labels: Vec<&str> = text.split('.').collect();
     labels.len() >= 2
@@ -110,14 +94,9 @@ fn is_host(text: &str) -> bool {
         })
 }
 
-/// Whether every character of a non-empty `text` satisfies `allowed`.
 pub fn all_of(text: &str, allowed: impl Fn(char) -> bool) -> bool {
     !text.is_empty() && text.chars().all(allowed)
 }
-
-// ---------------------------------------------------------------------------
-// Commands and the base
-// ---------------------------------------------------------------------------
 
 /// `("activate", "")` or `(verb, id)`; id "all" only for refresh.
 ///
@@ -159,10 +138,6 @@ pub fn parse_command(argv: &[String]) -> Result<(String, String)> {
     Ok((verb.to_owned(), ident.to_owned()))
 }
 
-/// The base package fingerprint (see the system-extensions README).
-///
-/// `lines` are `rpm -qa --qf '%{NAME} %{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n'`
-/// lines; gpg-pubkey entries are not packages and are left out.
 pub fn base_packages_sha256<S: AsRef<str>>(lines: &[S]) -> String {
     let mut kept: Vec<String> = lines
         .iter()
@@ -179,7 +154,6 @@ pub fn base_packages_sha256<S: AsRef<str>>(lines: &[S]) -> String {
     hex::encode(digest.finalize())
 }
 
-/// name -> epochnum:version-release, from the same rpm -qa lines.
 pub fn parse_installed<S: AsRef<str>>(lines: &[S]) -> BTreeMap<String, String> {
     let mut installed = BTreeMap::new();
     for line in lines {
@@ -196,7 +170,6 @@ pub fn parse_installed<S: AsRef<str>>(lines: &[S]) -> BTreeMap<String, String> {
     installed
 }
 
-/// The booted system a manifest has to fit.
 #[derive(Debug, Clone)]
 pub struct Base {
     pub os_id: String,
@@ -207,7 +180,6 @@ pub struct Base {
 }
 
 impl Base {
-    /// systemd's name for the architecture.
     pub fn architecture(&self) -> &'static str {
         ARCHITECTURES
             .iter()
@@ -233,10 +205,6 @@ pub fn parse_os_release(text: &str) -> BTreeMap<String, String> {
     }
     values
 }
-
-// ---------------------------------------------------------------------------
-// Catalogue and manifest
-// ---------------------------------------------------------------------------
 
 fn bounded(value: Option<&Value>, field: &str, limit: usize) -> Result<String> {
     match value {
@@ -291,7 +259,6 @@ fn field<'a>(map: &'a Map<String, Value>, key: &str) -> &'a Value {
     map.get(key).unwrap_or(&Value::Null)
 }
 
-/// The image-owned catalogue entry: what this image accepts for an id.
 #[derive(Debug, Clone)]
 pub struct Catalogue {
     pub id: String,
@@ -400,7 +367,6 @@ impl Catalogue {
         })
     }
 
-    /// The manifest location for an rpm architecture and base fingerprint.
     pub fn manifest_url(&self, rpm_arch: &str, fingerprint: &str) -> String {
         self.manifest
             .replace("{arch}", rpm_arch)
@@ -425,12 +391,10 @@ pub struct Part {
     pub message: String,
     pub requires_base: BTreeMap<String, String>,
     pub artifacts: Vec<Artifact>,
-    /// "rpm", or "sysext-raw" for a prebuilt image.
     pub format: String,
 }
 
 impl Part {
-    /// Whether this part is one prebuilt sysext image rather than RPMs.
     pub fn is_raw(&self) -> bool {
         self.format == RAW_FORMAT
     }
@@ -440,7 +404,6 @@ impl Part {
 pub struct Manifest {
     pub id: String,
     pub revision: u64,
-    /// The base the manifest pins, as signed.
     pub base: Map<String, Value>,
     pub parts: Vec<Part>,
 }
@@ -450,12 +413,10 @@ impl Manifest {
         self.parts.iter().find(|p| p.name == name)
     }
 
-    /// The pinned base fingerprint, when it is a string.
     pub fn packages_sha256(&self) -> Option<&str> {
         self.base.get("packages_sha256").and_then(Value::as_str)
     }
 
-    /// The four base keys every record and status repeats.
     pub fn base_summary(&self) -> Value {
         let mut summary = Map::new();
         for key in ["os_id", "version_id", "architecture", "packages_sha256"] {
@@ -468,11 +429,6 @@ impl Manifest {
     }
 }
 
-/// An artifact URL the catalogue allows, unchanged.
-///
-/// # Errors
-/// `Pack` for a URL the image does not allow; `Value` for one that does not
-/// split (an invalid port or unbalanced brackets).
 pub fn check_url(url: &Value, hosts: &BTreeSet<String>) -> Result<String> {
     let url = match url {
         Value::String(url) if py::char_len(url) <= 2048 => url,
@@ -607,7 +563,6 @@ pub fn parse_manifest(
     })
 }
 
-/// One part of a manifest, and the bytes its artifacts add up to.
 fn parse_part(
     raw: &Value,
     catalogue: &Catalogue,
@@ -753,7 +708,6 @@ fn parse_artifact(
     })
 }
 
-/// The name in an RPM name-version-release.arch.
 pub fn package_name(nvra: &str) -> &str {
     let stem = nvra.rsplit_once('.').map_or(nvra, |(stem, _)| stem);
     let mut cut = stem;
@@ -766,11 +720,6 @@ pub fn package_name(nvra: &str) -> &str {
     cut
 }
 
-/// Whether a part resolved for another base may be used on `base`.
-///
-/// Offline and exact: the same OS release and architecture, every base package
-/// the part was built against at the same version, and none of its own
-/// packages now shipped by the base itself.
 pub fn manifest_part_fits(manifest: &Manifest, part: &Part, base: &Base) -> bool {
     if part.state != "available" || !codec_runtime_complete(part, base) {
         return false;
@@ -823,7 +772,6 @@ pub fn codec_runtime_complete(part: &Part, base: &Base) -> bool {
         || base.installed.contains_key("openh264")
 }
 
-/// The contents of `usr/lib/extension-release.d/extension-release.<name>`.
 pub fn extension_release(
     os_id: &str,
     version_id: &str,
@@ -866,11 +814,6 @@ pub fn extension_release(
     Ok(lines.join("\n") + "\n")
 }
 
-/// The user-visible state after an event.
-///
-/// A failed background refresh of a working extension leaves it installed
-/// (the error is reported separately); a failed install or removal is
-/// "failed".
 pub fn next_state(current: &str, event: &str, installed: bool) -> &'static str {
     // An unknown current state counts as "not-installed", which only matters
     // for a failed removal.
@@ -887,11 +830,6 @@ pub fn next_state(current: &str, event: &str, installed: bool) -> &'static str {
     }
 }
 
-/// Whether `NetworkManager`'s cached connectivity allows downloading.
-///
-/// "limited" and "portal" have a link but no internet (or one behind a login
-/// page); "unknown", an empty answer or no `NetworkManager` at all count as
-/// online, so a system without `NetworkManager`'s connectivity check still tries.
 pub fn is_online(connectivity: &str) -> bool {
     !matches!(
         py::strip(connectivity).to_lowercase().as_str(),
@@ -899,8 +837,6 @@ pub fn is_online(connectivity: &str) -> bool {
     )
 }
 
-/// An rpm2archive member name ("./usr/...") as relative path components,
-/// normalised as a POSIX path is (empty and "." components dropped).
 pub fn archive_parts(name: &[u8]) -> Vec<&[u8]> {
     let name = name.strip_prefix(b"./").unwrap_or(name);
     let start = name.iter().position(|b| *b != b'/').unwrap_or(name.len());

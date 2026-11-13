@@ -25,16 +25,13 @@ use crate::{At, Error, Result};
 const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_REDIRECTS: usize = 10;
 
-/// The name, and name-version-release.arch, an RPM's header gives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     pub name: String,
     pub nvra: String,
 }
 
-/// An HTTP response body being read.
 pub trait Response: Read {
-    /// The status code of the final response (206 for a range).
     fn status(&self) -> u16;
 }
 
@@ -42,12 +39,13 @@ pub trait Response: Read {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HttpError {
     /// The server answered with an error status (or a refused redirect).
-    Status { code: u16, reason: String },
-    /// The server could not be reached, or the connection failed.
+    Status {
+        code: u16,
+        reason: String,
+    },
     Unreachable(String),
 }
 
-/// A finished command: exit status and its output as text.
 pub struct Output {
     pub success: bool,
     pub stdout: String,
@@ -93,7 +91,6 @@ pub(crate) fn run(argv: &[&OsStr], check: bool) -> Result<Output> {
     Ok(result)
 }
 
-/// `shutil.which`: whether `name` is an executable on `PATH`.
 pub fn which(name: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|path| {
         std::env::split_paths(&path).any(|dir| {
@@ -103,10 +100,7 @@ pub fn which(name: &str) -> bool {
     })
 }
 
-/// The machine, as the helper sees it.
 pub trait Host {
-    /// `rpm -qa` of the base: one `NAME EPOCHNUM:VERSION-RELEASE.ARCH` line
-    /// per package.
     fn rpm_query_all(&self, layout: &Layout) -> Result<Vec<String>> {
         let root = layout.root.as_os_str();
         let output = run(
@@ -126,7 +120,6 @@ pub trait Host {
             .collect())
     }
 
-    /// Open `url`, from byte `offset` on when it is not 0.
     fn http_open(&self, url: &str, offset: u64) -> Result<Box<dyn Response>, HttpError> {
         http_open(url, offset)
     }
@@ -198,14 +191,10 @@ pub trait Host {
         Ok(())
     }
 
-    /// The signature checker.
     fn tilo_crypto(&self) -> PathBuf {
         PathBuf::from("/usr/libexec/tilo/tilo-crypto")
     }
 
-    /// `NetworkManager`'s cached connectivity state (no probe is sent):
-    /// `none`, `portal`, `limited`, `full` or `unknown`. An empty string
-    /// means `NetworkManager` could not be asked.
     fn connectivity(&self) -> String {
         let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -259,12 +248,6 @@ pub trait Host {
         }
     }
 
-    /// Unpack the /usr of the RPM at `path` into `tree`, collecting the text
-    /// of its /etc/ld.so.conf.d files in `ld_conf`.
-    ///
-    /// # Errors
-    /// A member that would land outside the tree, one of an unsupported kind,
-    /// or rpm2archive failing.
     fn extract_rpm(&self, path: &Path, tree: &Path, ld_conf: &mut Vec<String>) -> Result<()> {
         extract_rpm(path, tree, ld_conf)
     }
@@ -308,8 +291,6 @@ pub trait Host {
         Ok(py::strip(&output.stdout).starts_with("masked"))
     }
 
-    /// Have PID 1 run the activation unit: it merges in the host's mount
-    /// namespace, which the sandboxed install unit does not share.
     fn start_activation_unit(&self) -> Result<()> {
         run(
             &[
@@ -322,7 +303,6 @@ pub trait Host {
         .map(drop)
     }
 
-    /// Label the tree as the files it overlays would be, when `SELinux` is on.
     fn relabel(&self, tree: &Path) -> Result<()> {
         let contexts = Path::new("/etc/selinux/targeted/contexts/files/file_contexts");
         if !Path::new("/sys/fs/selinux/enforce").exists()
@@ -345,7 +325,6 @@ pub trait Host {
         .map(drop)
     }
 
-    /// The machine's architecture, as `uname -m` names it.
     fn machine(&self) -> String {
         rustix::system::uname()
             .machine()
@@ -353,18 +332,15 @@ pub trait Host {
             .into_owned()
     }
 
-    /// The effective user id.
     fn euid(&self) -> u32 {
         rustix::process::geteuid().as_raw()
     }
 
-    /// `os.replace`: rename over `to`.
     fn replace(&self, from: &Path, to: &Path) -> io::Result<()> {
         fs::rename(from, to)
     }
 }
 
-/// The production machine.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct System;
 
@@ -468,8 +444,6 @@ fn http_open(url: &str, offset: u64) -> Result<Box<dyn Response>, HttpError> {
     Ok(Box::new(HttpResponse(response)))
 }
 
-/// `Path.resolve()` without `strict`: symlinks that exist are followed, the
-/// rest of the path is taken as written.
 fn resolve(path: &Path) -> PathBuf {
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let mut pending: Vec<PathBuf> = absolute
@@ -512,7 +486,6 @@ fn resolve(path: &Path) -> PathBuf {
     resolved
 }
 
-/// Whether writing `target` stays in `tree`, even through earlier symlinks.
 fn inside(tree: &Path, target: &Path) -> bool {
     let parent = target.parent().unwrap_or(target);
     resolve(parent).starts_with(resolve(tree))
@@ -549,8 +522,6 @@ pub(crate) fn set_times(path: &Path, seconds: i64, nanos: i64, follow: bool) -> 
     .at(path)
 }
 
-/// A member's modification time: the pax record when there is one (it can be
-/// fractional), else the header's.
 fn member_mtime<R: Read>(entry: &mut tar::Entry<'_, R>) -> (i64, i64) {
     if let Ok(Some(extensions)) = entry.pax_extensions() {
         for extension in extensions.flatten() {
@@ -658,7 +629,6 @@ fn unpack<R: Read>(
             io::copy(&mut member, &mut out).at(&target)?;
             out.flush().at(&target)?;
             drop(out);
-            // No set-id bits and no writable-by-others files, ever.
             let mode = if executable { 0o755 } else { 0o644 };
             fs::set_permissions(&target, fs::Permissions::from_mode(mode)).at(&target)?;
             // The package's own times: rebuilding a part at every boot must
@@ -685,7 +655,6 @@ fn unpack<R: Read>(
     Ok(())
 }
 
-/// `shutil.copy2`: contents, permission bits and times.
 fn copy_with_times(source: &Path, target: &Path) -> Result<()> {
     fs::copy(source, target).at(source)?;
     let meta = fs::metadata(source).at(source)?;
@@ -727,7 +696,6 @@ mod tests {
         assert!(!inside(&tree, &tree.join("usr/out/passwd")));
     }
 
-    /// A loopback HTTP server answering each connection by the request path.
     fn serve(answers: usize) -> (String, std::thread::JoinHandle<Vec<String>>) {
         use std::io::{BufRead, BufReader};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
