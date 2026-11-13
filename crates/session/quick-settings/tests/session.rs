@@ -581,6 +581,10 @@ fn the_panel_draws_at_scale_2() {
     // The laptop's own panel: 2944x1840 physical, 1472x920 logical at 2x.
     const PIXELS: (i32, i32) = (2944, 1840);
     const SCALE: f64 = 2.0;
+    // The bar's clock stands still between the desk's frame and the panel's:
+    // a minute that turns over in between repaints the clock, and the columns
+    // it changes read as the panel painting from the middle of the bar.
+    let _clock = tilo_test_env::held_wall_clock();
     let mut laptop = session_of_device_at_scale(&[panel()], Machine::Owned, PIXELS, SCALE);
     let session = &mut laptop.session;
     let desk = at_rest(session);
