@@ -1,13 +1,8 @@
-//! Code a program fetches the first time it is used rather than before its
-//! first frame (the browser desktop's lazily loaded modules).
+//! Code a program fetches after its first frame, through a loader it registers
+//! ([`Deferred::defer`]).
 //!
-//! The toolkit asks [`Deferred::get`] for the code where it needs it. Until
-//! the program installed it, that returns `None` and, once, calls the loader
-//! the program registered ([`Deferred::defer`]); the loader fetches the code
-//! and hands it over ([`Deferred::install`]) or reports that it could not
-//! ([`Deferred::load_failed`]), after which the next use fetches again.
-//! Code that can wait for it, such as a request already running
-//! asynchronously, awaits [`Deferred::wait`] instead.
+//! [`Deferred::get`] is `None` until the code is in, and starts that fetch once;
+//! [`Deferred::wait`] is for code that can wait.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -16,8 +11,6 @@ use std::task::{Poll, Waker};
 
 use crate::MutexRecover as _;
 
-/// One piece of code a program fetches on first use; see the module
-/// documentation.
 pub struct Deferred<T> {
     value: OnceLock<T>,
     load: OnceLock<fn()>,
@@ -25,7 +18,6 @@ pub struct Deferred<T> {
     generation: AtomicU64,
     /// Bumped by every failed fetch, so a waiter learns its fetch failed.
     failures: AtomicU64,
-    /// Tasks waiting in [`Self::wait`].
     waiters: Mutex<Vec<Waker>>,
 }
 
@@ -48,8 +40,8 @@ impl<T: Copy> Deferred<T> {
         }
     }
 
-    /// The code once it is in, fetching it if no fetch is running. `None`
-    /// when this fetch fails or the program registered no loader.
+    /// The code once it is in, fetching it if no fetch is running; `None` if that
+    /// fails or no loader is registered.
     pub fn wait(&self) -> impl Future<Output = Option<T>> + Send + '_
     where
         T: Send + Sync,
@@ -72,9 +64,7 @@ impl<T: Copy> Deferred<T> {
         })
     }
 
-    /// Wake `waker` once the code is in or this fetch failed: for work
-    /// polled once a frame that found the code missing, so it is polled
-    /// again then rather than on whatever frame comes next.
+    // Wake `waker` once the code is in or its fetch failed, so work polled once a frame runs again then.
     pub fn wake_on_arrival(&self, waker: Waker) {
         if self.value.get().is_some() {
             waker.wake();
@@ -94,7 +84,7 @@ impl<T: Copy> Deferred<T> {
         }
     }
 
-    /// The code, or `None` while it is still to come (and then fetched).
+    /// The code, or `None` while it is still to come; a miss starts a fetch.
     #[must_use]
     pub fn get(&self) -> Option<T> {
         let value = self.value.get().copied();
@@ -107,24 +97,21 @@ impl<T: Copy> Deferred<T> {
         value
     }
 
-    /// Whether a fetch of the code is on its way.
     pub fn fetching(&self) -> bool {
         self.value.get().is_none() && self.requested.load(Ordering::Acquire)
     }
 
-    /// Bumped when the code arrives: what was made without it is made again
-    /// once this moved.
+    /// Bumped when the code arrives, so what was made without it is made again.
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
     }
 
-    /// How the program fetches the code: `load` starts the fetch and, once
-    /// the code is in, calls [`Self::install`] (or [`Self::load_failed`]).
+    /// How the program fetches the code: `load` starts the fetch, then calls
+    /// [`Self::install`] or [`Self::load_failed`].
     pub fn defer(&self, load: fn()) {
         let _ = self.load.set(load);
     }
 
-    /// The code is in.
     pub fn install(&self, value: T) {
         if self.value.set(value).is_ok() {
             self.generation.fetch_add(1, Ordering::AcqRel);
