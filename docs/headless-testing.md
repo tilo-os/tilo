@@ -257,7 +257,7 @@ A hosted window's composition moves a control — an app's "new note" stands in 
 - in the accessibility tree, as the node's author id (`AccessNode::action`, AT-SPI's `accessible id`), and in `list_targets`, as `identity`;
 - `click_named` takes that `identity` instead of a `name`, and presses the control wherever the window draws it.
 
-Read the ids the app publishes (`apps/tl/<app>/app.ids`) rather than its words; `scripts/headless-examples/tilolang-e2e.py` builds them with `doing(app, type, action)`.
+Read the ids the app publishes (`apps/tl/<app>/app.ids`) rather than its words; `scripts/headless-examples/tilolang-e2e.py` builds them with `doing(app, type, action)`, naming the app holding the records when the action is another app's (`doing("today", "Tasks", "morning_cleanup", on="tasks")`).
 
 ## Layer 3: the example harnesses
 
