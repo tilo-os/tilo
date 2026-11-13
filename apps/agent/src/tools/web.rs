@@ -526,8 +526,7 @@ mod tests {
         let server = FixtureServer::serve(vec![
             Route::new("/brave", "text/html", BRAVE),
             Route::new("/bing", "text/html", BING),
-        ])
-        .unwrap();
+        ]);
         let mut web = tools(ui::content::ContentStore::memory(), &server);
         let call = Call::read(
             SEARCH_WEB,
@@ -585,8 +584,7 @@ mod tests {
             Route::new("/ada", "text/html", PAGE),
             Route::new("/repos", "application/json", REPOS),
             Route::new("/cv.pdf", "application/pdf", PDF),
-        ])
-        .unwrap();
+        ]);
         let content = ui::content::ContentStore::memory();
         let mut web = tools(content.clone(), &server);
 
