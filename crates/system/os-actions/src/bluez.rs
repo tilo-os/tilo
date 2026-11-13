@@ -7,7 +7,6 @@
 use std::fs;
 use std::path::Path;
 use std::sync::OnceLock;
-use std::time::Duration;
 
 use tilo_bluez::BluezClient;
 pub use tilo_bluez::DeviceInfo;
@@ -128,16 +127,6 @@ pub fn is_scanning() -> Result<bool, String> {
     block(async { c.is_discovering(&adapter).await })
 }
 
-/// Scans for `window`, then stops and returns what is in range: an unbounded scan costs radio time on
-/// every device nearby.
-pub fn scan_for(window: Duration) -> Result<Vec<DeviceInfo>, String> {
-    start_scan()?;
-    std::thread::sleep(window);
-    let found = devices();
-    let _ = stop_scan();
-    found
-}
-
 /// Pairs, trusts and connects, which is what a person means by pairing. Blocks while they compare a
 /// passkey, so not on a thread that is painting.
 pub fn pair(device_path: &str) -> Result<tilo_bluez::PairOutcome, String> {
@@ -197,12 +186,6 @@ pub fn set_discoverable(on: bool) -> Result<(), String> {
     block(async { c.set_discoverable(&adapter, on).await })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HandoffTarget {
-    Paired,
-    Pairable,
-}
-
 fn unique_device_by_address<'a>(
     devices: &'a [DeviceInfo],
     address: &str,
@@ -229,31 +212,6 @@ pub fn valid_address(address: &str) -> bool {
             .all(|octet| octet.len() == 2 && octet.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
-/// Checks an accessory against this device's own `BlueZ` inventory, discovering once if needed; a
-/// peer-provided name or object path is never evidence, and an address on two adapters fails closed.
-pub fn inspect_handoff_target(
-    address: &str,
-    discovery_window: Duration,
-) -> Result<HandoffTarget, String> {
-    if !valid_address(address) {
-        return Err("invalid Bluetooth address".into());
-    }
-    let known = devices()?;
-    if unique_device_by_address(&known, address)?.is_some_and(|device| device.paired) {
-        return Ok(HandoffTarget::Paired);
-    }
-
-    let discovered = scan_for(discovery_window)?;
-    let device = unique_device_by_address(&discovered, address)?
-        .filter(|device| device.rssi.is_some())
-        .ok_or_else(|| format!("Bluetooth device {address} was not discovered locally"))?;
-    Ok(if device.paired {
-        HandoffTarget::Paired
-    } else {
-        HandoffTarget::Pairable
-    })
-}
-
 /// Pairs, trusts and connects one local object for an approved handoff address; callers hold their own
 /// one-shot local authorization.
 pub fn pair_handoff(address: &str) -> Result<(), String> {
@@ -273,6 +231,17 @@ fn connected_pair_outcome(outcome: tilo_bluez::PairOutcome) -> Result<(), String
             "Bluetooth pairing completed but the handoff connection failed: {reason}"
         )),
     }
+}
+
+/// Forgets the device at `address`: bond, keys and trust go, so it must be paired again.
+pub fn forget_address(address: &str) -> Result<(), String> {
+    if !valid_address(address) {
+        return Err("invalid Bluetooth address".into());
+    }
+    let devices = devices()?;
+    let device = unique_device_by_address(&devices, address)?
+        .ok_or_else(|| format!("Bluetooth device {address} is not known to BlueZ"))?;
+    forget(&device.path)
 }
 
 pub fn connect_address(address: &str) -> Result<(), String> {
@@ -350,6 +319,12 @@ mod tests {
                 .contains("accessory stayed busy")
             );
         }
+    }
+
+    #[test]
+    fn forgetting_a_device_needs_a_real_address() {
+        assert!(forget_address("not-an-address").is_err());
+        assert!(forget_address("/org/bluez/hci0/dev_AA_BB").is_err());
     }
 
     #[test]

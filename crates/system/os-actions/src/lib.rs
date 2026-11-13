@@ -14,7 +14,6 @@
 
 pub mod backlight_events;
 pub mod battery;
-pub mod bluetooth;
 pub mod bluez;
 pub mod brightness;
 pub mod bus_follow;
@@ -53,11 +52,6 @@ pub use battery::{
     BatteryHistory, BatteryHistoryPoint, BatteryInfo, CapacityUnit, ChargeCapBackend,
     ChargeCapCapability, PowerDevice, PowerSupplyKind, charge_capability, load_battery_history,
     power_devices, set_charge_limit, set_charge_limit_checked,
-};
-pub use bluetooth::{
-    BluetoothHandoffTarget, BtDeviceInfo, NearbyBtDevice, bt_connect, bt_disconnect,
-    forget_bluetooth, get_bluetooth, inspect_bluetooth_handoff_target, list_bt_devices,
-    nearby_bluetooth, pair_bluetooth_handoff, scan_bluetooth, scanning_bluetooth, set_bluetooth,
 };
 pub use brightness::{
     BrightnessKind, BrightnessService, BrightnessTarget, MonitorBrightness, MonitorLevel,
@@ -225,15 +219,19 @@ pub trait Dispatcher {
         bluez::disconnect_address(address)
     }
     fn scan_bluetooth(&self, on: bool) -> Result<(), String> {
-        bluetooth::scan_bluetooth(on)
+        if on {
+            bluez::start_scan()
+        } else {
+            bluez::stop_scan()
+        }
     }
     /// Pairs the device at `address`, trusting and connecting it; what its agent asks to compare is put
     /// to the person.
     fn pair_bluetooth(&self, address: &str) -> Result<(), String> {
-        bluetooth::pair_bluetooth_handoff(address)
+        bluez::pair_handoff(address)
     }
     fn forget_bluetooth(&self, address: &str) -> Result<(), String> {
-        bluetooth::forget_bluetooth(address)
+        bluez::forget_address(address)
     }
     fn set_wired(&self, enabled: bool) -> Result<(), String> {
         let _ = enabled;
