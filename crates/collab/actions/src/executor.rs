@@ -594,16 +594,12 @@ pub enum Verified {
     ContentMissing(String),
 }
 
-/// The action a change records, encoded as the executor dispatched it.
-fn recorded_action(context: &ActionContext) -> Option<&EncodedAction> {
-    context.action.as_ref()
-}
-
 /// The action as its change records it: itself when it fits the history
 /// budget, else with its large parts kept, sealed, in the content store of
 /// the window that records it ([`crate::content::register`]). Built once, on
 /// the device that invokes the action. An action too large even then is
-/// refused: a change never commits without the action it ran.
+/// refused, and so is one whose parts no store would keep: a change never
+/// commits without the action it ran.
 pub fn recorded_form(action: &EncodedAction) -> Result<EncodedAction, ActionError> {
     if recorded_size(action)? <= crate::context::HISTORY_BUDGET {
         return Ok(action.clone());
@@ -642,7 +638,7 @@ pub fn verify_change(
     let Some(context) = entry_of(doc.committed_document(), hash) else {
         return Ok(Verified::NothingRecorded);
     };
-    let Some(recorded) = recorded_action(&context) else {
+    let Some(recorded) = context.action.as_ref() else {
         return Ok(Verified::NothingRecorded);
     };
     if !registry.contains(&recorded.type_id) {

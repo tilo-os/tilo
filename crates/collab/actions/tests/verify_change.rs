@@ -118,17 +118,23 @@ impl Action for Paste {
 /// it, and one without holds the change until the content arrives.
 #[test]
 fn a_large_action_is_recorded_with_its_parts_as_content() {
+    let window = tilo_wake::WakeScope::new();
+    let store = tilo_content::ContentStore::memory().sealing();
+    tilo_actions::register(&window.handle(), store.clone());
     let mut origin = base();
     let mut transport = LocalTransport::new();
     let paste = Paste("p".repeat(tilo_actions::context::HISTORY_BUDGET + 1));
-    dispatch_with_context(
-        &mut origin,
-        &paste,
-        EncodedAction::encode("test.paste", &paste).unwrap(),
-        &mut transport,
-        ActionContext::for_resource("r", "k", "l"),
-    )
-    .unwrap();
+    {
+        let _in_the_window = window.enter();
+        dispatch_with_context(
+            &mut origin,
+            &paste,
+            EncodedAction::encode("test.paste", &paste).unwrap(),
+            &mut transport,
+            ActionContext::for_resource("r", "k", "l"),
+        )
+        .unwrap();
+    }
     let hash = origin.get_heads()[0];
     let envelope = &transport.replicated[0];
     let recorded = envelope
@@ -136,27 +142,62 @@ fn a_large_action_is_recorded_with_its_parts_as_content() {
         .as_ref()
         .and_then(|context| context.action.clone())
         .expect("the change records its action");
-    assert_eq!(recorded.content_parts().len(), 1);
+    let parts = recorded.content_parts();
+    assert_eq!(parts.len(), 1);
+    assert!(
+        recorded
+            .resolve_content(&|reference| store.read(reference))
+            .unwrap()
+            .is_ok(),
+        "the window's store keeps it"
+    );
     let content = envelope.recorded_content().unwrap();
     assert_eq!(content.len(), 1);
+    let first = parts[0].clone();
 
-    let mut without = ActionRegistry::new();
-    without.register::<Paste>("test.paste");
-    assert_eq!(
-        verify_change(&mut origin, hash, &without).unwrap(),
-        Verified::ContentMissing(recorded.content_parts()[0].clone())
-    );
-    let mut with = ActionRegistry::new();
-    with.register::<Paste>("test.paste");
-    let kept = tilo_content::ContentStore::memory();
-    for (reference, bytes) in content {
-        kept.put_as(&reference, &bytes).unwrap();
-    }
-    with.connect_content(kept);
-    assert_eq!(
-        verify_change(&mut origin, hash, &with).unwrap(),
-        Verified::Reproduced
-    );
+    // Verified on no window's thread, where a part comes from the record's own
+    // content store: without it the change is held, with it reproduced.
+    let (held, reproduced) = std::thread::spawn(move || {
+        let without = ActionRegistry::with(|r| r.register::<Paste>("test.paste"));
+        let held = verify_change(&mut origin, hash, &without).unwrap();
+        let mut with = ActionRegistry::with(|r| r.register::<Paste>("test.paste"));
+        let kept = tilo_content::ContentStore::memory();
+        for (reference, bytes) in content {
+            kept.put_as(&reference, &bytes).unwrap();
+        }
+        with.connect_content(kept);
+        let reproduced = verify_change(&mut origin, hash, &with).unwrap();
+        (held, reproduced)
+    })
+    .join()
+    .unwrap();
+    assert_eq!(held, Verified::ContentMissing(first));
+    assert_eq!(reproduced, Verified::Reproduced);
+}
+
+/// An action over the history budget with nowhere to keep its parts is
+/// refused, with the reason, before it commits anything: no change is
+/// written and nothing is recorded that names a part nothing holds.
+#[test]
+fn a_large_action_with_nowhere_to_keep_its_parts_is_refused() {
+    let mut origin = base();
+    let before = origin.get_heads();
+    let mut transport = LocalTransport::new();
+    let paste = Paste("p".repeat(tilo_actions::context::HISTORY_BUDGET + 1));
+    let refused = dispatch_with_context(
+        &mut origin,
+        &paste,
+        EncodedAction::encode("test.paste", &paste).unwrap(),
+        &mut transport,
+        ActionContext::for_resource("r", "k", "l"),
+    )
+    .expect_err("a part nothing keeps would be lost");
+    let ActionError::Refused(reason) = refused else {
+        panic!("expected a refusal, got {refused:?}");
+    };
+    assert!(reason.contains("no content store"), "{reason}");
+    assert_eq!(origin.get_heads(), before, "nothing was recorded");
+    assert!(transport.replicated.is_empty(), "nothing reached the peers");
 }
 
 /// Types one character at the end of the text `body`: a keystroke.
