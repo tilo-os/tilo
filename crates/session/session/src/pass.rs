@@ -595,7 +595,7 @@ impl Session {
             let documents_served = self
                 .desktop
                 .as_ref()
-                .is_some_and(|desktop| desktop.documents_served());
+                .is_some_and(|desktop| desktop.documents().is_some());
             portal.serve(
                 &mut self.compositor,
                 &self.shared.handle,

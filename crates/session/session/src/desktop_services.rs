@@ -50,7 +50,7 @@ pub struct DesktopServices {
     /// The files people choose for apps, while they are served as a filesystem: the same table the
     /// portal grants through, which a launcher binds an app's view of and the app finds at its own
     /// documents directory. Dropping it unmounts.
-    chosen: Option<tilo_documents::mount::Mounted>,
+    chosen: Option<(tilo_documents::mount::Mounted, tilo_documents::Documents)>,
     notifications: tilo_notifications_service::Notifications,
     roaming: RoamingWifiSlot,
     /// The session bus connection the portal and the daemon serve on, and what keeps the daemon's
@@ -107,7 +107,7 @@ impl DesktopServices {
         // One table of chosen files: what the portal grants through, and what the filesystem a
         // launcher binds an app's view of serves.
         let documents = tilo_portal::documents_store();
-        let chosen = serve_documents(documents.clone());
+        let chosen = serve_documents(documents.clone()).map(|mounted| (mounted, documents.clone()));
         let (portal, session) = runtime.block_on(on_session_bus(OnSessionBus {
             bus: &buses.session,
             questions: &questions,
@@ -201,13 +201,13 @@ impl DesktopServices {
         self.portal.as_ref()
     }
 
-    /// Whether the files people choose for apps are served as a filesystem at
+    /// The files people hand apps, while they are served as a filesystem at
     /// [`tilo_documents::mountpoint`], which a launcher binds an app's view of: only then is a
-    /// sandboxed app answered with a path its own sandbox holds the file at. Without it the chooser
+    /// sandboxed app handed a path its own sandbox holds the file at. Without it the chooser
     /// answers with the host path, which a sandbox cannot open.
     #[must_use]
-    pub const fn documents_served(&self) -> bool {
-        self.chosen.is_some()
+    pub fn documents(&self) -> Option<&tilo_documents::Documents> {
+        self.chosen.as_ref().map(|(_, documents)| documents)
     }
 
     /// An app exited: what it was granted while it ran is forgotten, and its processes no longer
