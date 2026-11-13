@@ -1,5 +1,5 @@
-//! Payloads of the connector's trigger sources (discord-bridge.md §2,
-//! "Trigger sources") and their event ids.
+//! Payloads of the connector's trigger sources (discord-bridge.md §2, "Trigger sources")
+//! and their event ids.
 
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "resource")]
@@ -17,11 +17,9 @@ pub mod source {
     pub const LAYOUT_CHANGED: &str = "layout-changed";
     pub const MEMBER_CHANGED: &str = "member-changed";
     pub const COMMAND: &str = "command";
-    /// Someone signed in with Discord on the workspace's host (OAuth 2): the
-    /// host appends it, not the worker.
+    /// Someone signed in with Discord on the workspace's host (OAuth 2): the host appends
+    /// it, not the worker.
     pub const AUTHORIZED: &str = "authorized";
-    /// Whether, and where, the workspace's host offers signing in with Discord:
-    /// the host appends it when it starts, not the worker.
     pub const SIGN_IN: &str = "sign-in";
     pub const ALL: [&str; 10] = [
         MESSAGE_CREATED,
@@ -37,8 +35,8 @@ pub mod source {
     ];
 }
 
-/// Event ids: the service's identity of an event, which the host's event log
-/// deduplicates by.
+/// Event ids: the service's identity of an event, which the host's event log deduplicates
+/// by.
 pub mod event_id {
     #[must_use]
     pub fn message_created(message: &str) -> String {
@@ -69,8 +67,8 @@ pub mod event_id {
     pub fn authorized(link_check: &str) -> String {
         format!("authorized:{link_check}")
     }
-    /// One event per page the host offers, so a restart with the same
-    /// settings repeats nothing.
+    /// One event per page the host offers, so a restart with the same settings repeats
+    /// nothing.
     #[must_use]
     pub fn sign_in(page: &str) -> String {
         let digest = super::sha256_hex(page.as_bytes());
@@ -78,10 +76,9 @@ pub mod event_id {
     }
 }
 
-/// Discord's consent page for signing in to this workspace's host (OAuth 2's
-/// authorization code flow, `identify` only), without the round trip's
-/// `state`, which each start appends: the application's `client_id`, and
-/// `redirect_uri`, the host's callback.
+/// Discord's consent page for signing in to this workspace's host (OAuth 2's authorization
+/// code flow, `identify` only), without the round trip's `state`, which each start appends:
+/// the application's `client_id`, and `redirect_uri`, the host's callback.
 #[must_use]
 pub fn sign_in_page(authorize_url: &str, client_id: &str, redirect_uri: &str) -> String {
     let query = [
@@ -112,24 +109,17 @@ pub fn query_value(text: &str) -> String {
         .collect()
 }
 
-/// How long a link offer lasts: the button `/link` answers with, or the
-/// return from Discord's consent page, is good for ten minutes. Discord
-/// keeps an interaction's token for fifteen, so the reply can still say
-/// what came of it afterwards.
 pub const LINK_TTL_MS: i64 = 10 * 60 * 1000;
 
-/// The proof of a link token: SHA-256 (lower-case hex) of the token. Who
-/// holds the token hands its proof to `complete-link`, which the record
-/// checks against the offer's [`link_check`]; the token itself never
-/// reaches a record or the event log.
+/// The proof of a link token: SHA-256 (lower-case hex) of the token. Who holds the token
+/// hands its proof to `complete-link`, which the record checks against the offer's
+/// [`link_check`]; the token itself never reaches a record or the event log.
 #[must_use]
 pub fn link_proof(token: &str) -> String {
     sha256_hex(token.trim().as_bytes())
 }
 
-/// What a link offer is kept under: SHA-256 of its [`link_proof`]. Members
-/// read it in the record, and nobody can work the proof out of it, so
-/// nobody but the token's holder completes the link.
+/// What a link offer is kept under: SHA-256 of its [`link_proof`].
 #[must_use]
 pub fn link_check(proof: &str) -> String {
     sha256_hex(proof.as_bytes())
@@ -146,7 +136,6 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct Author {
     pub id: String,
-    /// The member's display name in the guild (nick, else global name, else username).
     pub name: String,
     #[serde(default)]
     pub avatar: Option<String>,
@@ -172,8 +161,8 @@ pub struct AttachmentInfo {
     pub height: u32,
 }
 
-/// The thread a message was posted in: `id` is the thread channel, `parent`
-/// the text channel it hangs off.
+/// The thread a message was posted in: `id` is the thread channel, `parent` the text
+/// channel it hangs off.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct ThreadRef {
@@ -189,11 +178,8 @@ pub struct MessageCreated {
     pub message_id: String,
     pub author: Author,
     pub content: String,
-    /// The message this one replies to (`message_reference`).
     #[serde(default)]
     pub reply_to: Option<String>,
-    /// The answered message's author name and text (`referenced_message`),
-    /// for the quote a reply to a reply starts with in Tilo.
     #[serde(default)]
     pub reply_author: Option<String>,
     #[serde(default)]
@@ -221,7 +207,6 @@ pub struct MessageDeleted {
     pub guild_id: String,
     pub channel_id: String,
     pub message_id: String,
-    /// Who deleted it, from the audit log, when Discord reports one.
     #[serde(default)]
     pub executor: Option<String>,
 }
@@ -238,12 +223,9 @@ pub struct ReactionChanged {
     pub user_name: String,
     #[serde(default)]
     pub user_avatar_url: Option<String>,
-    /// A unicode emoji, or a custom emoji's name as `:name:`.
     pub emoji: String,
-    /// A custom emoji's id; none for a unicode one.
     #[serde(default)]
     pub emoji_id: Option<String>,
-    /// Whether the custom emoji is animated.
     #[serde(default)]
     pub animated: bool,
 }
@@ -292,17 +274,11 @@ pub struct RoleInfo {
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct LayoutChanged {
     pub guild_id: String,
-    /// The bot user's id, for echo suppression.
     pub bot_user: String,
     pub channels: Vec<ChannelInfo>,
     pub roles: Vec<RoleInfo>,
-    /// The guild's custom emoji, which a Tilo reaction of the same `:name:`
-    /// is mirrored as.
     #[serde(default)]
     pub emojis: Vec<EmojiInfo>,
-    /// The layout as the gateway hands it when the bot (re)connects: what
-    /// changed in the server while the bridge was away is taken as the
-    /// server's, the order of its channels included.
     #[serde(default)]
     pub connected: bool,
 }
@@ -326,14 +302,10 @@ pub struct MemberChanged {
     pub roles: Vec<String>,
     #[serde(default)]
     pub banned: bool,
-    /// Left or was kicked: Discord does not tell the two apart without the audit log.
     #[serde(default)]
     pub left: bool,
-    /// The member's names, when the event carries them.
     #[serde(default)]
     pub user: Option<UserName>,
-    /// Their Discord avatar hash, when the event carries their user and
-    /// they set one.
     #[serde(default)]
     pub avatar: Option<String>,
 }
@@ -343,25 +315,19 @@ pub struct MemberChanged {
 pub struct Command {
     pub guild_id: String,
     pub user_id: String,
-    /// `link` or `unlink`.
     pub name: String,
-    /// The interaction, whose reply the bridge edits to what came of it.
     #[serde(default)]
     pub interaction: String,
-    /// For `/link`: [`link_check`] of the token in the reply's button. The
-    /// worker made the token and keeps it out of the event log.
     #[serde(default)]
     pub link_check: Option<String>,
-    /// Who ran it, as Discord names them.
     #[serde(default)]
     pub user: Option<UserName>,
-    /// Their Discord avatar hash, if they set one.
     #[serde(default)]
     pub avatar: Option<String>,
 }
 
-/// What the workspace's host offers for signing in with Discord: the consent
-/// page ([`sign_in_page`]), or empty when it offers none.
+/// What the workspace's host offers for signing in with Discord: the consent page
+/// ([`sign_in_page`]), or empty when it offers none.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct SignInOffered {
@@ -369,10 +335,9 @@ pub struct SignInOffered {
     pub page: String,
 }
 
-/// Someone signed in with Discord through the workspace's host (OAuth 2 with
-/// the `identify` scope): the account Discord vouched for, the round
-/// trip's state that names who started it, and the token the host handed
-/// back to the browser that came back.
+/// Someone signed in with Discord through the workspace's host (OAuth 2 with the `identify`
+/// scope): the account Discord vouched for, the round trip's state that names who started
+/// it, and the token the host handed back to the browser that came back.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct Authorized {
@@ -383,12 +348,11 @@ pub struct Authorized {
     pub avatar: Option<String>,
     /// SHA-256 (hex) of the OAuth 2 `state` the round trip came back with.
     pub state_sha256: String,
-    /// [`link_check`] of the token the browser came back with.
     pub link_check: String,
 }
 
-/// A Discord user's names: their unique username, and the name they show
-/// when it is another (their server nickname, else their global name).
+/// A Discord user's names: their unique username, and the name they show when it is another
+/// (their server nickname, else their global name).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct UserName {
@@ -398,8 +362,8 @@ pub struct UserName {
 }
 
 impl UserName {
-    /// The names a member object (`{nick, user: {username, global_name}}`)
-    /// gives, or `None` without a username.
+    /// The names a member object (`{nick, user: {username, global_name}}`) gives, or `None`
+    /// without a username.
     #[must_use]
     pub fn of_member(member: &serde_json::Value) -> Option<Self> {
         let user = member.get("user")?;

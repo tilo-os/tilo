@@ -1,18 +1,11 @@
-//! The Discord connector's vocabulary, shared by the app (which queues ops
-//! and reads events), the outside worker (which performs ops and reports
-//! events) and the bridge program's tests. Plain serde types: nothing here
-//! talks to Discord or to a workspace.
-//!
-//! This crate has no window and no surface of its own: it ships no
-//! `tilo-app.toml` and no `surface.toml`. What a person sees of Discord is
-//! `apps/discord`'s page over a `discord.guild` record, so an affordance
-//! missing from that page is that app's finding, not this vocabulary's.
+//! The Discord connector's vocabulary, shared by the app (which queues ops and reads
+//! events), the outside worker (which performs ops and reports events) and the bridge
+//! program's tests.
 
 pub mod event;
 pub mod op;
 pub mod perm;
 
-/// Discord's epoch, the zero of a snowflake's timestamp.
 pub const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
 
 /// The creation time of a snowflake (any Discord id), in Unix milliseconds.
