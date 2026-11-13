@@ -70,10 +70,10 @@ fn a_badge_column_fits_every_badge_of_the_list() {
         .badge("SH")
         .badge_column(Rc::clone(&badges));
     let h = FrameHarness::for_root(crate::State::new(), row, (480, 60), theme.clone());
-    let wide = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+    let wide = crate::text_render::with_layout_renderer(&theme, |text| {
         badge_column_width(text, &theme, &["SH", "RUST"])
     });
-    let own = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+    let own = crate::text_render::with_layout_renderer(&theme, |text| {
         badge_column_width(text, &theme, &["SH"])
     });
     assert!(wide > own);

@@ -209,11 +209,22 @@ impl Mount {
     /// again, inside the input's own task: the browser lays out and paints
     /// the elements this writes when the task ends, as it does for a plain
     /// page that changes its own DOM in the handler, and nothing waits for an
-    /// animation frame. A mount drawn on the canvas waits for its animation
-    /// frame.
+    /// animation frame. A mount drawn on the canvas draws and submits its
+    /// frame here too, and the canvas shows it at that same paint: waiting
+    /// for the animation frame to start drawing put the frame's whole work
+    /// after the wait for the display, where it now runs during it.
     pub(super) fn present_after_input(&mut self) {
         if !shows(self.id) {
             self.pending = true;
+            if input_sync() && self.gpu.is_some() {
+                // A frame the GPU or the surface held stays asked for.
+                match self.draw() {
+                    Ok(()) if !self.pending => {}
+                    Ok(()) => self.window.request_redraw(),
+                    Err(error) => self.frame_failed(self.id, error),
+                }
+                return;
+            }
             self.window.request_redraw();
             return;
         }

@@ -283,7 +283,7 @@ continuity-app-continuations-description = In einer App auf einem anderen Gerät
 # Speakers pane
 speakers-overview-title = Lautsprecher auf deinen Geräten
 speakers-overview-empty = Nutze Lautsprecher mehrerer deiner Geräte zusammen: als Stereopaar, Surround oder im ganzen Raum verteilt.
-speakers-media-off = Schalte Medien unter Geräte & Sync ein, um über Lautsprecher mehrerer deiner Geräte abzuspielen.
+speakers-media-off = Schalte Medien unter „Abgleich zwischen Geräten“ ein, um über Lautsprecher mehrerer deiner Geräte abzuspielen.
 speakers-begin = Lautsprecher einrichten
 speakers-member-summary = { $device } ({ $role })
 speakers-ready-count = { $ready } von { $total } bereit
@@ -307,7 +307,7 @@ speakers-arrangement-stereo-description = Zwei Lautsprecher spielen links und re
 speakers-arrangement-surround-description = Drei bis sechs Lautsprecher an festen Positionen
 speakers-arrangement-room-description = Lautsprecher beliebig um dich herum
 speakers-choose-title = Lautsprecher auswählen
-speakers-no-outputs = Keine Lautsprecher verfügbar. Schalte Medien unter Geräte & Sync auf jedem Gerät ein, das du nutzen möchtest.
+speakers-no-outputs = Keine Lautsprecher verfügbar. Schalte Medien unter „Abgleich zwischen Geräten“ auf jedem Gerät ein, das du nutzen möchtest.
 speakers-output-this-device = Dieses Gerät
 speakers-output-asks = Fragt beim Speichern auf diesem Gerät um Erlaubnis
 speakers-output-use = { $label } verwenden
@@ -2957,6 +2957,7 @@ settings-effect-set-home-relay-hosting = Heim-Relay einen Arbeitsbereich hosten 
 settings-effect-review-removal = Gerät entfernen
 settings-effect-cancel-removal = Abbrechen
 settings-effect-revoke-device = Gerät entziehen
+settings-effect-revoke-browser = Browser entfernen
 settings-effect-revoke-agent = Agenten entziehen
 settings-effect-stop-run = Lauf stoppen
 settings-effect-answer-device = Gerät antworten lassen
@@ -3146,3 +3147,14 @@ settings-root = Einstellungen
 
 ## What the app is called in a window and in the launcher
 settings-app-title = Einstellungen
+## Actions bound to what the person is looking at
+
+settings-input-device-set-tablet-keep-aspect = Seitenverhältnis des Tabletts beibehalten oder strecken
+settings-input-device-set-tablet-left-handed = Tablett für die linke Hand drehen oder zurück
+settings-input-device-set-tablet-tip-feel = Festlegen, wie fest der Stift drücken muss
+settings-input-device-set-tablet-button = Festlegen, was eine Stifttaste tut
+settings-input-device-set-tablet-eraser = Festlegen, was das Radiererende des Stifts tut
+settings-input-device-set-pad-button = Festlegen, was eine Pad-Taste tut
+settings-input-device-set-pad-dial = Festlegen, was ein Ring oder Streifen in einem Modus tut
+settings-notifications-unmute-app-now = Mitteilungen wieder einschalten
+settings-notifications-mute-app-hour = Mitteilungen eine Stunde stummschalten

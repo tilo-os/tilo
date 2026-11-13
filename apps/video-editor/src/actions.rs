@@ -250,29 +250,50 @@ pub fn surface_declarations(ctx: &VideoResourceCtx) -> Vec<ActionDecl<Project>> 
     let mut add = |decl: Option<ActionDecl<Project>>| decls.extend(decl);
     add(Project::MARK_IN
         .bind(video_project::MarkIn::paths().at, playhead)
-        .declaration("mark-in-here", "Mark in at playhead"));
+        .declaration(
+            "mark-in-here",
+            ui::tilo_resource::word!("video-editor-project-mark-in-here"),
+        ));
     add(Project::MARK_OUT
         .bind(video_project::MarkOut::paths().at, playhead)
-        .declaration("mark-out-here", "Mark out at playhead"));
+        .declaration(
+            "mark-out-here",
+            ui::tilo_resource::word!("video-editor-project-mark-out-here"),
+        ));
     add(Project::PLACE_MARKER
         .bind(video_project::PlaceMarker::paths().at, playhead)
-        .declaration("add-marker-here", "Add marker at playhead"));
+        .declaration(
+            "add-marker-here",
+            ui::tilo_resource::word!("video-editor-marker-add"),
+        ));
     add(Project::CUT
         .bind(video_project::Cut::paths().at, playhead)
-        .declaration("split-here", "Split clip at playhead"));
+        .declaration(
+            "split-here",
+            ui::tilo_resource::word!("video-editor-project-split-here"),
+        ));
     add(Project::TRIM_HEAD
         .bind(video_project::TrimHead::paths().at, playhead)
-        .declaration("trim-in-here", "Trim clip in to playhead"));
+        .declaration(
+            "trim-in-here",
+            ui::tilo_resource::word!("video-editor-project-trim-in-here"),
+        ));
     add(Project::TRIM_TAIL
         .bind(video_project::TrimTail::paths().at, playhead)
-        .declaration("trim-out-here", "Trim clip out to playhead"));
+        .declaration(
+            "trim-out-here",
+            ui::tilo_resource::word!("video-editor-project-trim-out-here"),
+        ));
     // Two angles of one moment, side by side: offered only where two
     // pictures meet that may be moved to their halves, so the control is
     // absent rather than inert.
     if ctx.project.side_by_side_available(playhead) {
         add(Project::PLACE_SIDE_BY_SIDE
             .bind(video_project::PlaceSideBySide::paths().at, playhead)
-            .declaration("place-two-angles-here", "Place side by side"));
+            .declaration(
+                "place-two-angles-here",
+                ui::tilo_resource::word!("video-editor-project-place-two-angles-here"),
+            ));
     }
     if let Some(marker) = ctx
         .project
@@ -287,7 +308,10 @@ pub fn surface_declarations(ctx: &VideoResourceCtx) -> Vec<ActionDecl<Project>> 
             )
             .declaration(
                 "remove-marker-here",
-                format!("Remove marker \u{201c}{}\u{201d}", marker.name),
+                ui::tilo_resource::word!(
+                    "video-editor-project-remove-marker-here",
+                    name = marker.name.as_str()
+                ),
             ));
     }
     if ctx.mix.clipped() {
@@ -307,7 +331,10 @@ pub fn surface_declarations(ctx: &VideoResourceCtx) -> Vec<ActionDecl<Project>> 
         add(Project::TRIM_LANES
             .bind(video_project::TrimLanes::paths().tracks, lanes)
             .and(video_project::TrimLanes::paths().db, over)
-            .declaration("trim-mix", "Trim the mix to fit")
+            .declaration(
+                "trim-mix",
+                ui::tilo_resource::word!("video-editor-project-trim-mix"),
+            )
             .map(|decl| {
                 decl.describe(format!(
                     "the mix was measured {over:+.1} dB over full scale in {places} place{}\

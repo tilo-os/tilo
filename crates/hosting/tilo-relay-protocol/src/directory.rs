@@ -314,8 +314,10 @@ pub const MAX_PAGE_ERROR_BYTES: usize = 4096;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageError {
-    /// What happened: `error`, `unhandledrejection`, or `panic` for a runtime
-    /// panic the page heard but the browser could not throw.
+    /// What happened: `error`, `unhandledrejection`, `panic` for a runtime
+    /// panic the page heard but the browser could not throw, or `failed`
+    /// when the page stopped on its failure screen (`message` then starts
+    /// with the cause it showed, `source` names the host it was reaching).
     #[serde(default)]
     pub kind: String,
     #[serde(default)]
@@ -358,7 +360,7 @@ impl PageError {
     #[must_use]
     pub fn kind(&self) -> &str {
         match self.kind.as_str() {
-            "error" | "unhandledrejection" => self.kind.as_str(),
+            "error" | "unhandledrejection" | "panic" | "failed" => self.kind.as_str(),
             _ => "other",
         }
     }

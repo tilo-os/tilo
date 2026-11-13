@@ -259,7 +259,7 @@ impl Instance {
             };
             // What the view reads changed: the tree may stand as it was (a row's control reads
             // the item's field it is bound to), and the window still needs the values it shows.
-            let stale = view.view.borrow().is_stale();
+            let stale = view.view.borrow_mut().is_stale();
             let patches = match view.view.borrow_mut().poll_patches() {
                 Ok(patches) => patches,
                 Err(error) => {
@@ -272,14 +272,15 @@ impl Instance {
                     continue;
                 }
             };
-            // The item its page draws, when it lists the items it shows: a press that selects a
-            // row moves the page, and what is typed into it is that item's.
-            view.in_place = in_place_of(view.view.borrow().tree());
             if patches.is_empty() {
                 changed |= stale;
                 continue;
             }
             changed = true;
+            // The item its page draws, when it lists the items it shows: a press that selects a
+            // row moves the page, and what is typed into it is that item's. A tree no patch
+            // changed draws the page it drew.
+            view.in_place = in_place_of(view.view.borrow().tree());
             let lists = virtual_list_paths(view.view.borrow().tree());
             let sorted = sort(patches, &lists);
             let mut messages = Vec::new();
@@ -295,7 +296,7 @@ impl Instance {
                     let changed = rows.changed(&changes.rows);
                     convert_with(&host, &*names, &handle, |convert, _| {
                         structural.extend(changed.iter().map(|row| ui::RowChange::Changed {
-                            row: convert.node(row),
+                            row: Box::new(convert.node(row)),
                         }));
                     });
                     structural

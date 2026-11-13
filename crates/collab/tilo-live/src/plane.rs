@@ -33,11 +33,10 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
 
-use crate::frame::{Opener, Refusal, Sealer, Stream, TrackName};
+use crate::frame::{Opener, PlaneKeys, Refusal, Sealer, Stream, TrackName};
 use crate::page::{self, PageObject};
 use crate::roster::Roster;
 use crate::video::{self, Layer, Source, VideoObject};
-use channel_crypto::ChannelContentKeys;
 use moq_net::origin::{Consumer, Producer};
 use tilo_lock::MutexRecover as _;
 
@@ -112,13 +111,15 @@ impl From<Refusal> for PlaneError {
     }
 }
 
-/// What one plane joins: the scope, this device, the scope's keys and who may
-/// send in it.
+/// What one plane joins: the scope, this device, the keys it seals and opens
+/// under, and who may send in it.
 #[derive(Clone)]
 pub struct Join {
     pub scope: Scope,
     pub device: [u8; 32],
-    pub keys: ChannelContentKeys,
+    /// The scope's channel content keys, or — for a device that publishes
+    /// without them — its own media keys ([`PlaneKeys`]).
+    pub keys: PlaneKeys,
     pub roster: Roster,
     /// Whether this device publishes its own broadcast, or only listens.
     pub publish: bool,
@@ -227,7 +228,7 @@ pub(crate) struct Shared {
     opener: Mutex<Opener>,
     /// The keys `publish` seals under: the join's, until the channel's epoch
     /// moves ([`Plane::set_keys`]).
-    keys: Mutex<ChannelContentKeys>,
+    keys: Mutex<PlaneKeys>,
     roster: Mutex<Roster>,
     /// How many readers each device the roster named has running now: a
     /// device is read by exactly one set of them.
@@ -1099,8 +1100,10 @@ impl Plane {
         read_roster(&self.shared, &mut self.readers.lock_recover());
     }
 
-    /// Seal and open under `keys` from now on: a channel whose epoch moved.
-    pub fn set_keys(&self, keys: ChannelContentKeys) {
+    /// Seal and open under `keys` from now on: a channel whose epoch moved,
+    /// or one sender's media keys where it holds those.
+    pub fn set_keys(&self, keys: impl Into<PlaneKeys>) {
+        let keys = keys.into();
         let roster = self.shared.roster.lock_recover().clone();
         *self.shared.keys.lock_recover() = keys.clone();
         *self.shared.opener.lock_recover() = Opener::new(keys, roster);

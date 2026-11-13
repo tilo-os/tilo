@@ -86,6 +86,22 @@ pub(crate) fn shared_name_label(id: &str, name: &str) -> String {
     }
 }
 
+/// What to call software that wrote as `name`, acting for `person`: its name with the person's,
+/// as the surface showing it names them — "Helper for Ada", and "Helper for you" to Ada, as
+/// Chat's window names a message's author. Software that acted for nobody is named alone, with
+/// what it is: "Helper (agent)".
+pub(crate) fn acting_label(
+    name: &str,
+    person: Option<&str>,
+    name_of: impl Fn(&str) -> String,
+    is_me: impl Fn(&str) -> bool,
+) -> String {
+    person.map_or_else(
+        || crate::i18n::t_args("chat-agent-author", &[("name", name.into())]),
+        |person| ui::acting_line(name, Some(&name_of(person)), is_me(person)),
+    )
+}
+
 fn participant_tag(id: &str) -> String {
     let body = id.rsplit(['@', ':']).next().unwrap_or(id);
     let tail: String = body

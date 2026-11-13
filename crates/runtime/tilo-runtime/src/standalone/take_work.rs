@@ -191,12 +191,19 @@ pub(in crate::standalone) fn plane(
             "a member that takes work runs the workspace's shell on Linux",
         )
     })?;
+    let (device, endpoint) = (relay.device, relay.endpoint);
     let entering = Arc::new(super::joined::enter::Entering::new(
         Arc::clone(joined),
         relay,
     ));
-    let _entered = tilo_rt::app().handle().enter();
-    Ok(ActionPlane::over(joined.signer(), dispatcher, entering))
+    let plane = {
+        let _entered = tilo_rt::app().handle().enter();
+        ActionPlane::over(joined.signer(), dispatcher, entering)
+    };
+    // The relay asks from its endpoint, which a Tilo relay keys apart from
+    // the device it signs its runs as.
+    plane.reach_device_at(device, endpoint);
+    Ok(plane)
 }
 
 /// The runs this member answers with: the workspace's shell, asked by the

@@ -89,7 +89,7 @@ impl ui::storage::SettingsSchema for ShellViews {
     ui::settings_codec!();
 }
 
-#[ui::tilo_resource::resource(kind = "shell-views", label = "Shell views")]
+#[ui::tilo_resource::resource(kind = "shell-views")]
 impl ShellViews {
     /// Bind `slot` to the view `view` of `app`, on every device or on the
     /// kind of device `on` names.

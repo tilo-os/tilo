@@ -67,8 +67,7 @@ These hold for every app, the shell and the SDK. When a doc or code disagrees, t
   A plain `cargo test` builds no other package's binaries, so first build the apps a few of
   the session's tests start (the lock screen, the on-screen keyboard, the quick-settings
   panel): `bash tools/build-sibling-binaries.sh tilo-lock-screen:tilo-lock-screen osk:osk
-  tilo-quick-settings:tilo-quick-settings`. `scripts/test-local.sh -p tilo-session` and
-  `cargo nextest` build them themselves.
+  tilo-quick-settings:tilo-quick-settings`. `cargo nextest` builds them itself.
 - Browser crates: also check them for `--target wasm32-unknown-unknown`.
 - Never ignore a failure, weaken an assertion, or lean on a tautological helper.
 - Test through production interfaces, including cancellation and denial.

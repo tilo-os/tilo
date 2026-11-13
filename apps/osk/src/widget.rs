@@ -313,9 +313,11 @@ pub struct OskWidget {
     /// This user's recently picked emoji, persisted with the preferences.
     emoji_recents: emoji::Recents,
     /// The theme's spacing scale and metrics, captured at `build_layout`,
-    /// for the emoji panel.
+    /// for the emoji panel; and the whole theme, so the panel's search field
+    /// places its controls in the type the frame measures with.
     spacing: ui::tokens::Spacing,
     metrics: ui::tokens::Metrics,
+    layout_theme: Theme,
 
     // --- output ---
     mirror: TextMirror,
@@ -461,6 +463,7 @@ impl OskWidget {
             emoji_recents: emoji::Recents::default(),
             spacing: ui::tokens::Spacing::BASE,
             metrics: ui::tokens::Metrics::BASE,
+            layout_theme: Theme::default(),
             mirror: TextMirror::new(MAX_PENDING_TEXT_BYTES),
             output: VecDeque::new(),
             dropped_outputs: 0,
@@ -2456,7 +2459,8 @@ impl OskWidget {
         } else {
             &none
         };
-        self.emoji_panel.layout(bands, recents);
+        let theme = self.layout_theme.clone();
+        self.emoji_panel.layout(bands, recents, &theme);
     }
 
     /// The left button came up: finish whatever its press started — an
@@ -2892,6 +2896,7 @@ impl Widget for OskWidget {
     ) -> NodeId {
         self.spacing = theme.tokens.spacing;
         self.metrics = theme.tokens.metrics;
+        self.layout_theme = theme.clone();
         self.target_key_height = key_row_height(&self.metrics) * self.key_size.scale();
         self.toolbar_height = toolbar_row_height(&self.spacing);
         self.suggestion_height =

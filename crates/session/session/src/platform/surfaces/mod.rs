@@ -104,7 +104,7 @@ pub trait Layer {
     fn accessible_labels(&self) -> Vec<String>;
 
     /// The controls it shows, where they stand.
-    fn controls(&self) -> Vec<(String, (f64, f64, f64, f64))>;
+    fn controls(&self) -> Vec<ui::window_targets::WindowControl>;
 
     /// Press the control `name`.
     ///

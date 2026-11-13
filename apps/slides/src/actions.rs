@@ -320,26 +320,36 @@ pub fn inserted_element_template(kind: ElementKind) -> Element {
     }
 }
 
-/// A one-line label for an element: a text element shows its first line
-/// (trimmed / capped), a shape shows its kind.
+/// What the element selected in the editor is called in the edits bound to
+/// it: a text box's first line, else the word its kind goes by.
+#[must_use]
 pub fn element_label(kind: ElementKind, text: &str) -> String {
-    if kind == ElementKind::Text {
-        let line = text.lines().next().unwrap_or("").trim();
-        if line.is_empty() {
-            "Text".to_string()
-        } else if line.chars().count() > 32 {
-            let short: String = line.chars().take(32).collect();
-            format!("{short}…")
-        } else {
-            line.to_string()
-        }
-    } else {
-        kind.label().to_string()
+    let kind_word = || {
+        crate::strings::tr(match kind {
+            ElementKind::Text => "slides-tool-text",
+            ElementKind::Rect => "slides-tool-rectangle",
+            ElementKind::Ellipse => "slides-tool-ellipse",
+            ElementKind::Line => "slides-tool-line",
+            ElementKind::Image => "slides-tool-image",
+        })
+    };
+    if kind != ElementKind::Text {
+        return kind_word();
     }
+    let line = text.lines().next().unwrap_or("").trim();
+    if line.is_empty() {
+        return kind_word();
+    }
+    if line.chars().count() > 32 {
+        let short: String = line.chars().take(32).collect();
+        return format!("{short}…");
+    }
+    line.to_string()
 }
 
 /// The most elements, across slides, one deck holds.
 pub const MAX_TOTAL_ELEMENTS: usize = 20_000;
+
 /// The most characters of words and notes one deck holds.
 pub const MAX_TOTAL_TEXT_CHARS: usize = 2_000_000;
 /// The most pictures one deck shows.

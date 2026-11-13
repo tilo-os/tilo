@@ -23,8 +23,6 @@ pub struct StatusState {
     /// True while the server is starting or busy — the readout surfaces the
     /// server's state only then, so a resting "ready" doesn't clutter it.
     pub lsp_working: bool,
-    /// The last file-operation message ("Saved main.rs", "Could not save …").
-    pub notice: String,
     /// True when the active buffer has unsaved edits.
     pub dirty: bool,
     /// What the status bar says while the language server can't run, so
@@ -69,22 +67,18 @@ impl StatusModel {
     }
 
     /// The readout that leads the status bar while code help is missing
-    /// ("Rust: code help unavailable"). A click on it says why; a fresh
-    /// notice takes its place while it lingers.
+    /// ("Rust: code help unavailable"). A click on it says why.
     pub fn trouble(&self) -> Option<String> {
         let s = &self.state;
-        (!s.code_help.is_empty() && s.notice.is_empty()).then(|| s.code_help.clone())
+        (!s.code_help.is_empty()).then(|| s.code_help.clone())
     }
 
-    /// The readout at the leading edge. A fresh file-operation notice leads (so
-    /// a save is visibly a save and a failed one a failure); otherwise the
-    /// language, then only the signals worth acting on: unsaved edits,
-    /// problems, and a language server that is still working.
+    /// The readout at the leading edge: the language, then only the signals
+    /// worth acting on: unsaved edits, problems, and a language server that is
+    /// still working. What a file operation came to is said in the window's
+    /// bar, which is where a message about an operation belongs.
     pub fn left(&self) -> String {
         let s = &self.state;
-        if !s.notice.is_empty() {
-            return s.notice.clone();
-        }
         let mut parts: Vec<String> = Vec::new();
         // A missing code help names the language itself, in [`Self::trouble`].
         if !s.language.is_empty() && self.trouble().is_none() {
@@ -134,8 +128,8 @@ mod tests {
                 "Ln 12, Col 5",
             ),
             ("no buffer open", caret(0, 0, ""), "", ""),
-            // No problems, no selection, an idle (not working) server, a clean
-            // buffer and no notice => nothing beyond the caret and language.
+            // No problems, no selection, an idle (not working) server and a
+            // clean buffer => nothing beyond the caret and language.
             (
                 "omits default and clean signals",
                 StatusState {
@@ -165,15 +159,6 @@ mod tests {
                 },
                 "Rust, Unsaved changes, 4 problems, Loading project 42%",
                 "Ln 8, Col 2, 20 selected, 3 cursors",
-            ),
-            (
-                "a notice leads",
-                StatusState {
-                    notice: "Reloaded main.rs from disk".into(),
-                    ..caret(2, 1, "Rust")
-                },
-                "Reloaded main.rs from disk",
-                "Ln 2, Col 1",
             ),
             (
                 "problems count singularizes",
@@ -207,12 +192,5 @@ mod tests {
             ..caret(4, 1, "Rust")
         });
         assert_eq!(m.trouble().as_deref(), Some("Rust: code help unavailable"));
-        m.set_state(StatusState {
-            code_help: "Rust: code help unavailable".into(),
-            notice: "Saved main.rs".into(),
-            ..caret(4, 1, "Rust")
-        });
-        assert_eq!(m.trouble(), None, "a fresh notice takes its place");
-        assert_eq!(m.left(), "Saved main.rs");
     }
 }

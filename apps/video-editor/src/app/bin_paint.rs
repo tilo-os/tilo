@@ -233,13 +233,22 @@ impl VideoEditorApp {
             Some((MEDIA_NOT_LOCAL, MEDIA_NOT_LOCAL_SHORT))
         } else {
             None
-        };
+        }
+        .map(|(long, short)| {
+            (
+                crate::resource::CATALOG.t(long),
+                crate::resource::CATALOG.t(short),
+            )
+        });
         if let Some((long, short)) = problem {
             let room = right - text_x;
-            let label = [long, short]
+            // The phrase where the column can hold it, the short form where
+            // it cannot — never nothing, because the badge is the disclosure.
+            let label = [&long, &short]
                 .into_iter()
                 .find(|l| ui::widget::BadgeFace::intrinsic_width(l, ctx.text, ctx.theme) <= room)
-                .unwrap_or(short);
+                .unwrap_or(&short);
+            let label = label.as_str();
             let w = ui::widget::BadgeFace::intrinsic_width(label, ctx.text, ctx.theme).min(room);
             let h = ui::widget::BadgeFace::height(ctx.theme);
             let cy = sub_top + sub_h / 2.0;

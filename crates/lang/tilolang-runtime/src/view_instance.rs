@@ -150,9 +150,7 @@ impl ViewInstance {
     /// Mark what the changes heard since the last call reach.
     fn absorb(&mut self) {
         let heard = std::mem::take(&mut *self.changes.borrow_mut());
-        for change in &heard {
-            self.live.absorb(&self.core, change);
-        }
+        self.live.absorb(&self.core, &heard);
         self.live.check_states(&self.core);
         if let Some(now) = self.time_passed() {
             self.live.pass_time(now);
@@ -194,16 +192,12 @@ impl ViewInstance {
         self.live.shows(reads);
     }
 
-    /// Run again the boundaries that read a name (`who.name()`), and no others: the window calls
-    /// a participant something else than it did.
-    pub fn names_moved(&mut self) {
-        self.live.names_moved();
-    }
-
-    /// Run again the boundaries that wrote a day or a time of day: the person chose another
-    /// format for one.
-    pub fn formats_moved(&mut self) {
-        self.live.formats_moved();
+    /// Run again the boundaries that show something only the window knows — a participant's
+    /// name, a day or a time of day in the person's formats, a word in the language their window
+    /// speaks — and no others: the person reads another language, chose another clock, or the
+    /// window calls someone something else than it did.
+    pub fn person_moved(&mut self) {
+        self.live.person_moved();
     }
 
     /// When the time some boundary read (`today` in a query or a filter) next reads
@@ -224,16 +218,11 @@ impl ViewInstance {
     }
 
     /// Whether a field or view state some boundary read has changed since it last ran, or the
-    /// time one read has moved on.
-    pub fn is_stale(&self) -> bool {
+    /// time one read has moved on: what changed is taken in, marking the boundaries to run
+    /// again, so the run that follows does not work it out a second time.
+    pub fn is_stale(&mut self) -> bool {
+        self.absorb();
         self.live.is_dirty()
-            || self.time_passed().is_some()
-            || self
-                .changes
-                .borrow()
-                .iter()
-                .any(|c| self.live.reaches(&self.core, c))
-            || self.live.states_moved(&self.core)
     }
 
     /// Re-run the boundaries whose reads changed, and only those, and return the patches from

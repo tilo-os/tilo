@@ -88,6 +88,25 @@ const note = await workspace.read("notes/Hello");
 console.log("note:", note.kind, "title:", note.fields.title);
 ```
 
+```curl example=first-workspace
+api=$TILO_API_URL/v1
+auth="Authorization: Bearer $TILO_API_KEY"   # the key in TILO_API_KEY
+
+# The same Idempotency-Key again answers this workspace rather than making another.
+created=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Idempotency-Key: first-steps" \
+  -H "Content-Type: application/json" -d '{"name": "First steps"}')
+workspace=$(jq -r .id <<<"$created")
+echo "workspace: $(jq -r .name <<<"$created") $workspace"
+
+apps=$(curl -sS --fail-with-body "$api/workspaces/$workspace/resources" -H "$auth")
+echo "apps: $(jq '.rows | length' <<<"$apps")"
+
+curl -sS --fail-with-body "$api/workspaces/$workspace/resources/notes/actions/new-note" -H "$auth" \
+  -H "Content-Type: application/json" -d '{"title": "Hello"}' > /dev/null
+note=$(curl -sS --fail-with-body "$api/workspaces/$workspace/resources/notes/Hello" -H "$auth")
+echo "note: $(jq -r .kind <<<"$note") title: $(jq -r .fields.title <<<"$note")"
+```
+
 Open the workspace at [tilo.sh](https://tilo.sh), and the note is there, with the run that made it in
 its history.
 

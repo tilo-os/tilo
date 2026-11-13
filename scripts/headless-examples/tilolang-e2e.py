@@ -197,6 +197,16 @@ def toolkit_word(name: str, key: str) -> str:
     return say("crates/sdk/ui-core", key, window_language(name))
 
 
+def doing(name: str, ty: str, action: str) -> str:
+    """What the app `name`'s action `action` on its records of `ty` is known by: the record kind it
+    acts on and the operation, in the app's own ids, which no composition and no language changes.
+
+    `ty` is the type as the app declares it (`Tasks`, `Notebook`): the kind the app publishes its
+    records under is `tl.` and the app's id before it. `action` is looked up in the app's ids lock
+    (`apps/tl/<name>/app.ids`), as every declaration there is named (`new_task = qymo5lg2`)."""
+    return "\x1f".join((f"tl.{app_id(name)}.{ty}", app_id_of(name, action)))
+
+
 def app_word(name: str, declared: str, attribute: str | None = None, **args) -> str:
     """What a window of the tilolang app `name` calls its declaration `declared` (an action, a
     view), or one of the words it says there (`attribute`, `w-<slug>`), with `args` placed."""
@@ -593,8 +603,8 @@ def check_record_open(session: Session, out: Path) -> dict:
     before = tasks_windows()
     if [w.get("title") for w in before] != [tasks_place("today")] * len(before):
         raise Failed(f"Tasks' windows do not all stand on Today: {before}")
-    new_task = app_word("tasks", "new_task")
-    made = until(new_task, lambda: app_action(session, tasks, new_task, "Document"))
+    new_task = doing("tasks", "Tasks", "new_task")
+    made = until(new_task, lambda: app_action(session, tasks, "new_task", "Document"))
     invoke_found(session, made, {"title": title})
     search_beside(session, title, beside=False)
     shown = until(f"a window of Tasks named {title!r}", lambda: next(
@@ -713,8 +723,8 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     focus(session, next(w for w in session.windows() if w.get("app_id") == today))
     until("Tasks' tasks in Today's card", lambda: (lambda shown: shown if all(
         title in shown for title in held) else None)(named(session)), 30)
-    cleanup = app_word("today", "morning_cleanup")
-    session.wait_target(cleanup)
+    cleanup = doing("today", "Today", "morning_cleanup")
+    session.wait_doing(cleanup)
     done = mark_done(session, held[0])
     menu = menu_complete(session, held[1])
     # The tasks the two checks above finished: what the cleanup counts, in the words Today files
@@ -725,7 +735,7 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     named_before = named(session)
     # The cleanup, pressed on Today's window: the app runs it, which either files its note in
     # Notes and clears the tasks done, or asks the person's leave for the two apps it changes.
-    session.click_named(cleanup)
+    session.click_doing(cleanup)
 
     def ran():
         shown = named(session)
@@ -818,6 +828,9 @@ def menu_complete(session: Session, title: str) -> dict:
     tasks = app_id("tasks")
     focus(session, next(w for w in session.windows() if w.get("app_id") == tasks))
     session.wait_target(title)
+    # A row's own command: every task's menu offers it, so its identity names the action and not
+    # the row it stands on. It is pressed here where the one open menu draws it, by the words it
+    # reads in — the check that nothing else of the window offers those words is below.
     complete = app_word("tasks", "check", "w-complete")
     shown = named(session)
     if complete in shown:
@@ -850,7 +863,7 @@ def history_total(session: Session, name: str) -> int:
 
 def check_actions(session: Session) -> dict:
     out = {}
-    news = {name: app_word(name, action) for name, action in
+    news = {name: action for name, action in
             [("notes", "new_note"), ("chat", "new_channel"), ("tasks", "new_task")]}
     for name in APPS:
         published = until(
@@ -886,15 +899,22 @@ def app_operation(session: Session, app: str, operation: str):
     return None
 
 
-def app_action(session: Session, app: str, title: str, kind: str | None = None):
-    """The first action called `title` that the window of `app` publishes, of the kind its effect
-    has when `kind` names one (`View`, `Document`). Its application is `app` exactly: so.tilo.notes
-    never matches so.tilo.lang.notes."""
-    for action in session.actions(title):
-        if (action.get("application") == app and action.get("title") == title
+def app_action(session: Session, app: str, declared: str, kind: str | None = None):
+    """The action `declared` (`new_task`, as the app's source writes it) that the window of `app`
+    publishes, of the kind its effect has when `kind` names one (`View`, `Document`). The action is
+    found by the id the app publishes it under, never by the words its title reads in. Its
+    application is `app` exactly: so.tilo.notes never matches so.tilo.lang.notes."""
+    wanted = app_id_of(app_dir(app), declared)
+    for action in session.actions(""):
+        if (action.get("application") == app and action.get("operation") == wanted
                 and kind in (None, action.get("operation_kind"))):
             return action
     return None
+
+
+def app_dir(app: str) -> str:
+    """The directory under `apps/tl` of the app `app`."""
+    return app.removeprefix("so.tilo.lang.")
 
 
 def focus(session: Session, window: dict) -> None:

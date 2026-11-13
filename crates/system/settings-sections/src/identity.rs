@@ -41,7 +41,7 @@ impl ui::storage::SettingsSchema for IdentityPrefs {
     ui::settings_codec!();
 }
 
-#[tilo_resource::resource(kind = "settings.identity", label = "Your colour")]
+#[tilo_resource::resource(kind = "settings.identity")]
 impl IdentityPrefs {}
 
 /// The offered colours.

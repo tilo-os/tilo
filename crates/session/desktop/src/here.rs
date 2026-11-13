@@ -231,6 +231,10 @@ pub struct HereState {
     /// Each person's accounts elsewhere as their profile names them, by their root key (lower-case
     /// hex).
     linked: HashMap<String, Vec<tilo_app::linked_accounts::ProfileLink>>,
+    /// The name each person's profile keeps, by their root key (lower-case hex), for someone the
+    /// page asked about who is not here to say it ([`HereState::set_profile_name`]); an empty one
+    /// says their profile names none.
+    profile_names: HashMap<String, String>,
     /// This person's own agents already met on this page, by publisher
     /// ([`HereState::take_own_agents_arrived`]).
     met_agents: std::collections::BTreeSet<String>,
@@ -474,6 +478,28 @@ impl HereState {
         }
         self.revision = self.revision.wrapping_add(1);
         true
+    }
+
+    /// The name `user`'s profile keeps, as the page fetched it: empty when it keeps none. Whether
+    /// that changed anything.
+    pub fn set_profile_name(&mut self, user: &str, name: &str) -> bool {
+        let user = user.to_ascii_lowercase();
+        let name = name.trim();
+        if self.profile_names.get(&user).map(String::as_str) == Some(name) {
+            return false;
+        }
+        self.profile_names.insert(user, name.to_owned());
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+
+    /// The name `user`'s profile keeps, once the page asked: `Some("")` when it keeps none,
+    /// `None` when nobody asked yet.
+    #[must_use]
+    pub fn profile_name(&self, user: &str) -> Option<&str> {
+        self.profile_names
+            .get(&user.to_ascii_lowercase())
+            .map(String::as_str)
     }
 
     /// The accounts elsewhere `user` 's profile names.
@@ -915,7 +941,7 @@ impl HereState {
                     id,
                     key,
                     claimed,
-                    ui::presence::participant_color(key, agent),
+                    ui::presence::participant_color(key, agent, None),
                 ))
             })
             .collect();
@@ -1876,7 +1902,7 @@ mod tests {
     #[test]
     fn an_agent_wears_one_colour_on_every_surface() {
         let helper = "agent:helper@host";
-        let (r, g, b) = ui::presence::participant_color(helper, true);
+        let (r, g, b) = ui::presence::participant_color(helper, true, None);
         let announced = hex_of((r, g, b));
         let me = LiveMember {
             user: Some("me-root".into()),
@@ -1904,7 +1930,7 @@ mod tests {
                 here.colors().get(helper).copied(),
                 listed.rgb,
                 presence.color_for(&UserId(helper.into())),
-                ui::presence::participant_color(helper, true),
+                ui::presence::participant_color(helper, true, None),
             ),
             (Some((r, g, b)), (r, g, b), (r, g, b), (r, g, b)),
             "the board, its people row, the windows and every app settle one colour"

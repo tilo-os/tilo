@@ -4,6 +4,19 @@ use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert, sign_revocation_entry,
 };
 
+/// The fleet document of `identity_id` a device hands another: `certificates`
+/// and `revocations`, as an approving device's fleet holds them.
+fn fleet_document(
+    identity_id: &str,
+    certificates: Vec<DeviceCert>,
+    revocations: Vec<RevocationEntry>,
+) -> Vec<u8> {
+    let mut fleet = DeviceFleet::new(identity_id.to_owned());
+    fleet.certificates = certificates;
+    fleet.revocations = revocations;
+    serde_json::to_vec_pretty(&fleet).unwrap()
+}
+
 #[test]
 fn host_record_approval_keeps_admission_and_revocation_checks() {
     let temp = tempfile::tempdir().unwrap();
@@ -49,15 +62,17 @@ fn host_record_approval_keeps_admission_and_revocation_checks() {
         .unwrap()
         .sign_message(&tilo_user_identity::revocation_signing_digest(&revocation).unwrap())
         .unwrap();
-    let path = fleet_path(&identities, identity.user_public_key);
-    let mut fleet: FleetProjection =
-        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let store = fleet_store(&root, &identities);
+    let identity_id = hex::encode(identity.user_public_key);
+    let mut fleet = store.load(&identity_id).unwrap();
     fleet.revocations.push(revocation);
-    std::fs::write(&path, serde_json::to_vec(&fleet).unwrap()).unwrap();
-    let error = load_approval_identity(&options).err().unwrap();
-    assert!(error.to_string().contains("revoked"));
+    store.adopt_transferred(&fleet).unwrap();
+    let refused = |error: anyhow::Error, why: &str| {
+        assert!(format!("{error:#}").contains(why), "{error:#}");
+    };
+    refused(load_approval_identity(&options).err().unwrap(), "revoked");
     fleet.revocations.clear();
-    std::fs::write(&path, serde_json::to_vec(&fleet).unwrap()).unwrap();
+    store.adopt_transferred(&fleet).unwrap();
     let mut issuer = tilo_user_identity::persist::read_device_cert(&paths.device_cert).unwrap();
     issuer.capabilities = DeviceCapabilities::member();
     sign_root_cert(&mut issuer, identity.root.as_deref().unwrap()).unwrap();
@@ -66,8 +81,10 @@ fn host_record_approval_keeps_admission_and_revocation_checks() {
         &issuer,
     )
     .unwrap();
-    let error = load_approval_identity(&options).err().unwrap();
-    assert!(error.to_string().contains("not authorised"));
+    refused(
+        load_approval_identity(&options).err().unwrap(),
+        "not authorised",
+    );
     issuer.capabilities = DeviceCapabilities::primary();
     issuer.issued_at_ns = 1;
     issuer.expires_at_ns = Some(2);
@@ -77,8 +94,7 @@ fn host_record_approval_keeps_admission_and_revocation_checks() {
         &issuer,
     )
     .unwrap();
-    let error = load_approval_identity(&options).err().unwrap();
-    assert!(error.to_string().contains("validity"));
+    refused(load_approval_identity(&options).err().unwrap(), "validity");
     let unrelated_root = ed25519_dalek::SigningKey::from_bytes(&[76; 32]);
     issuer.expires_at_ns = None;
     issuer.user_public_key = unrelated_root.verifying_key().to_bytes();
@@ -88,8 +104,10 @@ fn host_record_approval_keeps_admission_and_revocation_checks() {
         &issuer,
     )
     .unwrap();
-    let error = load_approval_identity(&options).err().unwrap();
-    assert!(error.to_string().contains("not authorised"));
+    refused(
+        load_approval_identity(&options).err().unwrap(),
+        "not authorised",
+    );
     assert!(!paths.user_privkey.exists());
 }
 
@@ -129,10 +147,9 @@ fn a_held_root_certifies_an_administrator_into_the_fleet() {
     verify_device_cert(&cert).unwrap();
     assert_eq!(cert.user_public_key, root.verifying_key().to_bytes());
     assert_eq!(cert.capabilities, DeviceCapabilities::administrator());
-    let fleet: FleetProjection = serde_json::from_slice(
-        &std::fs::read(fleet_path(identity_dir.path(), cert.user_public_key)).unwrap(),
-    )
-    .unwrap();
+    let fleet = fleet_store(identity_root.path(), identity_dir.path())
+        .load(&hex::encode(cert.user_public_key))
+        .unwrap();
     assert_eq!(fleet.certificates, vec![cert]);
 }
 
@@ -224,12 +241,7 @@ fn personal_payload(
         issuer: None,
     };
     sign_device_cert(&mut cert, root).unwrap();
-    let fleet = FleetProjection {
-        schema_version: 1,
-        identity_id: hex::encode(user),
-        certificates: vec![cert.clone()],
-        revocations: Vec::new(),
-    };
+    let fleet = fleet_document(&hex::encode(user), vec![cert.clone()], Vec::new());
     ResponsePayload {
         nonce,
         recipient_device_public_key: cert.device_public_key,
@@ -237,7 +249,7 @@ fn personal_payload(
         cert,
         home_peer_toml: None,
         public_identity_json: Some(public_identity_record(user, "My Tilo identity").unwrap()),
-        fleet_json: Some(serde_json::to_vec_pretty(&fleet).unwrap()),
+        fleet_json: Some(fleet),
         home_peers_json: Some(b"[]".to_vec()),
     }
 }
@@ -247,7 +259,15 @@ fn token_from(
     user: [u8; 32],
     issuer: &ed25519_dalek::SigningKey,
 ) -> tilo_user_identity::EnrollmentToken {
-    mint_enrollment_token(user, DeviceCapabilities::host(), 10, 1_000, [3; 16], issuer).unwrap()
+    tilo_user_identity::mint_enrollment_token(
+        user,
+        DeviceCapabilities::host(),
+        10,
+        1_000,
+        [3; 16],
+        issuer,
+    )
+    .unwrap()
 }
 
 /// A token the device holding the identity key `root` minted.
@@ -302,11 +322,18 @@ fn enrollment_responses_are_signed_encrypted_and_certificate_bound() {
         };
         sign_device_cert(&mut cert, &root).unwrap();
         let identity = tempfile::tempdir().unwrap();
+        let store = fleet_store(identity.path(), identity.path());
 
-        let error = project_personal_device(identity.path(), &cert).unwrap_err();
+        let error = store
+            .transferred(&hex::encode(cert.user_public_key), &cert)
+            .unwrap_err();
 
-        assert!(error.to_string().contains("certificate validity"));
-        assert!(!fleet_path(identity.path(), cert.user_public_key).exists());
+        assert!(error.to_string().contains("expired"));
+        assert!(
+            !store
+                .fleet_file(&hex::encode(cert.user_public_key))
+                .exists()
+        );
     }
     // Phase `revoked_device_cannot_use_approval_capability`.
     {
@@ -323,21 +350,16 @@ fn enrollment_responses_are_signed_encrypted_and_certificate_bound() {
         };
         sign_revocation_entry(&mut revocation, &root).unwrap();
         let identity = tempfile::tempdir().unwrap();
-        tilo_files::native::atomic::write_creating_parent(
-            &fleet_path(identity.path(), user),
-            &serde_json::to_vec(&FleetProjection {
-                schema_version: 1,
-                identity_id: hex::encode(user),
-                certificates: Vec::new(),
-                revocations: vec![revocation],
-            })
-            .unwrap(),
-        )
-        .unwrap();
+        let store = fleet_store(identity.path(), identity.path());
+        let mut fleet = DeviceFleet::new(hex::encode(user));
+        fleet.revocations.push(revocation);
+        store.adopt_transferred(&fleet).unwrap();
 
         assert!(
-            fleet_revokes_device(identity.path(), identity.path(), user, device_public_key)
+            store
+                .load(&hex::encode(user))
                 .unwrap()
+                .is_revoked(&device_public_key)
         );
     }
     // Phase `signed_response_rejects_bundle_tampering`.
@@ -619,20 +641,14 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             issuer: None,
         };
         sign_device_cert(&mut cert, &root).unwrap();
-        let fleet = FleetProjection {
-            schema_version: 1,
-            identity_id: hex::encode(user),
-            certificates: vec![cert.clone()],
-            revocations: Vec::new(),
-        };
         let payload = ResponsePayload {
             nonce: [1; 16],
             recipient_device_public_key: cert.device_public_key,
             relay_service_node_id: [8; 32],
-            cert,
+            cert: cert.clone(),
             home_peer_toml: None,
             public_identity_json: Some(public_identity_record(user, "My Tilo identity").unwrap()),
-            fleet_json: Some(serde_json::to_vec_pretty(&fleet).unwrap()),
+            fleet_json: Some(fleet_document(&hex::encode(user), vec![cert], Vec::new())),
             home_peers_json: Some(b"[]".to_vec()),
         };
         let identity_root = tempfile::tempdir().unwrap();
@@ -670,9 +686,12 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
                 uid
             );
             assert_eq!(
-                std::fs::metadata(fleet_path(identity_dir.path(), user))
-                    .unwrap()
-                    .uid(),
+                std::fs::metadata(
+                    fleet_store(identity_root.path(), identity_dir.path())
+                        .fleet_file(&hex::encode(user))
+                )
+                .unwrap()
+                .uid(),
                 uid
             );
         }
@@ -882,17 +901,9 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
         &issuer_cert,
     )
     .unwrap();
-    tilo_files::native::atomic::write_creating_parent(
-        &fleet_path(approver_identities.path(), root.verifying_key().to_bytes()),
-        &serde_json::to_vec_pretty(&FleetProjection {
-            schema_version: 1,
-            identity_id: hex::encode(root.verifying_key().to_bytes()),
-            certificates: vec![issuer_cert],
-            revocations: Vec::new(),
-        })
-        .unwrap(),
-    )
-    .unwrap();
+    fleet_store(approver_root.path(), approver_identities.path())
+        .remember_certificate(&hex::encode(root.verifying_key().to_bytes()), issuer_cert)
+        .unwrap();
     let home_device = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
     let mut home_cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
@@ -1074,17 +1085,9 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
         &member_cert,
     )
     .unwrap();
-    tilo_files::native::atomic::write_creating_parent(
-        &fleet_path(member_identities.path(), user),
-        &serde_json::to_vec_pretty(&FleetProjection {
-            schema_version: 1,
-            identity_id: hex::encode(user),
-            certificates: vec![member_cert],
-            revocations: Vec::new(),
-        })
-        .unwrap(),
-    )
-    .unwrap();
+    fleet_store(member_root.path(), member_identities.path())
+        .remember_certificate(&hex::encode(user), member_cert)
+        .unwrap();
     assert!(
         load_approval_root(member_root.path(), Some(member_identities.path())).is_err(),
         "the member holds none of the key"
@@ -1199,9 +1202,9 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
     assert_eq!(cert.user_public_key, user);
     assert_eq!(cert.device_label, "New laptop");
     verify_device_cert(&cert).unwrap();
-    let fleet: FleetProjection =
-        serde_json::from_slice(&std::fs::read(fleet_path(member_identities.path(), user)).unwrap())
-            .unwrap();
+    let fleet = fleet_store(member_root.path(), member_identities.path())
+        .load(&hex::encode(user))
+        .unwrap();
     assert!(
         fleet
             .certificates
@@ -1287,42 +1290,59 @@ fn a_joining_device_records_only_certified_live_personal_devices() {
         signature: [0; 64],
     };
     sign_revocation_entry(&mut revocation, &root).unwrap();
-    let fleet = |revocations: Vec<RevocationEntry>| {
-        serde_json::to_vec(&FleetProjection {
-            schema_version: 1,
-            identity_id: hex::encode(user),
-            certificates: vec![
-                approver.clone(),
-                sibling.clone(),
-                revoked.clone(),
-                host.clone(),
-                administrator.clone(),
-                foreign_root.clone(),
-                forged.clone(),
-                expired.clone(),
-            ],
-            revocations,
-        })
-        .unwrap()
+    let fleet = |certificates: Vec<DeviceCert>, revocations: Vec<RevocationEntry>| {
+        fleet_document(&hex::encode(user), certificates, revocations)
     };
+    let listed = || {
+        vec![
+            approver.clone(),
+            sibling.clone(),
+            revoked.clone(),
+            host.clone(),
+            administrator.clone(),
+            foreign_root.clone(),
+            expired.clone(),
+        ]
+    };
+    let identity_root = tempfile::tempdir().unwrap();
+    let identities = tempfile::tempdir().unwrap();
+    let store = fleet_store(identity_root.path(), identities.path());
+    let accepting =
+        |document: &[u8], identity: &str| store.accept_transferred(identity, document, [1; 32]);
     let now = now_ns().unwrap();
-    assert_eq!(
-        certified_personal_devices(&fleet(vec![revocation.clone()]), user, [10; 32], now).unwrap(),
-        vec![[10; 32], [1; 32], [2; 32]]
+    let mut devices = vec![[10; 32]];
+    devices.extend(
+        accepting(
+            &fleet(listed(), vec![revocation.clone()]),
+            &hex::encode(user),
+        )
+        .unwrap()
+        .personal_devices(&user, now),
+    );
+    assert_eq!(devices, vec![[10; 32], [1; 32], [2; 32]]);
+    // A fleet that does not list the device it was handed to is not that
+    // device's.
+    assert!(
+        store
+            .accept_transferred(&hex::encode(user), &fleet(listed(), Vec::new()), [10; 32])
+            .is_err()
     );
 
+    // A fleet with a record that does not verify is no fleet this device
+    // joins on.
+    let mut forged_list = listed();
+    forged_list.push(forged);
+    assert!(accepting(&fleet(forged_list, Vec::new()), &hex::encode(user)).is_err());
     let mut tampered = revocation;
     tampered.revoked_device_public_key = [2; 32];
-    assert!(certified_personal_devices(&fleet(vec![tampered]), user, [10; 32], now).is_err());
-    let other_identity = serde_json::to_vec(&FleetProjection {
-        schema_version: 1,
-        identity_id: hex::encode(stranger.verifying_key().to_bytes()),
-        certificates: vec![approver],
-        revocations: Vec::new(),
-    })
-    .unwrap();
-    assert!(certified_personal_devices(&other_identity, user, [10; 32], now).is_err());
-    assert!(certified_personal_devices(b"[]", user, [10; 32], now).is_err());
+    assert!(accepting(&fleet(listed(), vec![tampered]), &hex::encode(user)).is_err());
+    let other_identity = fleet_document(
+        &hex::encode(stranger.verifying_key().to_bytes()),
+        vec![approver],
+        Vec::new(),
+    );
+    assert!(accepting(&other_identity, &hex::encode(user)).is_err());
+    assert!(accepting(b"[]", &hex::encode(user)).is_err());
 }
 
 #[test]
@@ -1526,8 +1546,8 @@ fn pairing_exchange_is_private_single_use_and_resumable() {
     }
 }
 
-const KAT_RESPONSE_SIGNATURE: &str = "a645d9aa10752fbf8b19d1ccca48b9cf5405d6ec88eb69fea45df36466edda10\
-    e8b1bf1f0d85e9f224b21f75a7251771b1482ce6ceed2ce018d43895124e6f0c";
+const KAT_RESPONSE_SIGNATURE: &str = "a10e30bfc5486e83c35b82713afc162cee21d0bdfee8d97d8280fafddbe6cb1a\
+    fcef16c2117e145687f7327c3daf37ed1825b36f0e65046a3aed7e78a9398407";
 const KAT_ACK: &str = "0404040404040404040404040404040417cb79fb2b4120f2b1ec65e4198d6e08\
     b28e813feb01e4a400839b85e18080ce0aa39056fd697d25fd6d7afbe84dbb81\
     f52d9e543b4aa167cf6472c602c8079a40440274b6b4d4b42e7fd529bbbdf4f0\

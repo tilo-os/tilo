@@ -882,6 +882,7 @@ impl GovernedAccessWriter {
             crate::store::GovernedAccessRecord {
                 member_devices,
                 member_user_roots,
+                governed: true,
             },
         )
         .await;

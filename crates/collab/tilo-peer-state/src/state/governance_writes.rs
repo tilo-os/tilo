@@ -56,7 +56,7 @@ impl StatePeer {
             );
             rows
         };
-        self.record_membership(&mut doc, before, key, now)?;
+        self.record_membership(&mut doc, key, now)?;
         let membership_recorded = doc.get_heads();
         self.record_governance(&mut doc, rows, key, now)?;
         // The operation naming the rows the change moved moves no membership.
@@ -86,16 +86,14 @@ impl StatePeer {
     /// Record this device's membership change as an operation on the log every
     /// device replays, and project the log back into the document's rows.
     ///
-    /// The owner's device starts the log: a workspace that has none yet — new,
-    /// or one whose membership was last-writer-wins — begins at an operation
-    /// naming the membership it holds now. After that every change is an
-    /// operation carrying the steps this device made, and a change its grants
-    /// do not allow is refused here rather than written for other devices to
-    /// discard.
+    /// The owner's device starts the log: a workspace with no document yet
+    /// begins at an operation naming the membership it holds now. After that
+    /// every change is an operation carrying the steps this device made, and a
+    /// change its grants do not allow is refused here rather than written for
+    /// other devices to discard.
     pub(super) fn record_membership(
         &self,
         doc: &mut CachedDocument,
-        before: &[automerge::ChangeHash],
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<(), String> {
@@ -109,10 +107,9 @@ impl StatePeer {
             .map_err(|error| error.to_string())?;
         let owner = cert.user_public_key == self.core.owner;
         if !live {
-            if owner && old.is_none_or(crate::members::legacy::needs_genesis) {
-                let op =
-                    crate::members::legacy::genesis_op(cert, key, before, &target, now_ns(now))?;
-                crate::members::legacy::put_op(doc, &op)?;
+            if owner && old.is_none() {
+                let op = members::genesis_op(cert, key, &target, now_ns(now))?;
+                members::put_op(doc, &op)?;
             }
             return Ok(());
         }
@@ -137,7 +134,7 @@ impl StatePeer {
             now_ns(now),
             MembershipOpCommand::Project { changes: steps },
         )?;
-        crate::members::legacy::put_op(doc, &op)?;
+        members::put_op(doc, &op)?;
         if members::replay(doc, &workspace) != target {
             return Err(members::refusal(&held, &target, &op));
         }
@@ -173,7 +170,7 @@ impl StatePeer {
             now_ns(now),
             MembershipOpCommand::Governance { rows },
         )?;
-        crate::members::legacy::put_op(doc, &op)?;
+        members::put_op(doc, &op)?;
         Ok(())
     }
 

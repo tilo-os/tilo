@@ -9,6 +9,7 @@
 //! frame. See [`crate::command`].
 
 use ui::num::i64_of_usize;
+use ui::tilo_resource::word;
 
 use crate::command::{CommandSink, FileCommand, new_sink};
 use crate::i18n::{arg, t, t_args};
@@ -1632,8 +1633,8 @@ impl FilesState {
         Some((selected.len(), name))
     }
 
-    /// `key` naming the selection (`files-trash-selected`): "Move
-    /// “report.pdf” to Trash", or "Move 3 items to Trash".
+    /// `key` naming the selection (`files-copy-selected`): "Copy
+    /// “report.pdf”", or "Copy 3 items".
     pub(crate) fn selection_label(key: &str, (count, name): &(usize, String)) -> String {
         crate::i18n::t_args(
             key,
@@ -1659,7 +1660,7 @@ impl FilesState {
         if self.is_trash_view() {
             return Vec::new();
         }
-        let Some(named) = self.selection_named() else {
+        let Some((count, name)) = self.selection_named() else {
             return Vec::new();
         };
         let paths: Vec<String> = self
@@ -1676,7 +1677,7 @@ impl FilesState {
                     .and(file_explorer::Rename::paths().entry, path.clone())
                     .declaration(
                         "rename-selected",
-                        Self::selection_label("files-rename-selected", &named),
+                        word!("files-folder-rename-selected", name = name.clone()),
                     ),
             );
         }
@@ -1687,7 +1688,7 @@ impl FilesState {
                 .and(file_explorer::Trash::paths().entries, paths)
                 .declaration(
                     "trash-selected",
-                    Self::selection_label("files-trash-selected", &named),
+                    word!("files-folder-trash-selected", name = name, count = count),
                 )
                 .map(|mut trash| {
                     trash.destructive = true;
@@ -1722,7 +1723,7 @@ impl FilesState {
             .bind(file_explorer::Rename::paths().device, device.clone())
             .and(file_explorer::Rename::paths().folder, String::new())
             .and(file_explorer::Rename::paths().entry, path.clone())
-            .declaration("rename", t("files-menu-rename"));
+            .declaration("rename", word!("files-menu-rename"));
         let move_to = FileExplorer::MOVE_ENTRIES
             .bind(file_explorer::MoveEntries::paths().device, device.clone())
             .and(file_explorer::MoveEntries::paths().from, String::new())
@@ -1730,12 +1731,12 @@ impl FilesState {
                 file_explorer::MoveEntries::paths().entries,
                 vec![path.clone()],
             )
-            .declaration("move-to", "Move to folder…");
+            .declaration("move-to", word!("files-folder-move-to"));
         let trash = FileExplorer::TRASH
             .bind(file_explorer::Trash::paths().device, device)
             .and(file_explorer::Trash::paths().folder, String::new())
             .and(file_explorer::Trash::paths().entries, vec![path])
-            .declaration("trash", t("files-menu-move-trash"))
+            .declaration("trash", word!("files-menu-move-trash"))
             .map(|mut trash| {
                 trash.destructive = true;
                 trash
@@ -1791,38 +1792,35 @@ impl FilesState {
         let new_folder = FileExplorer::NEW_FOLDER
             .bind(file_explorer::NewFolder::paths().device, device.clone())
             .and(file_explorer::NewFolder::paths().parent, here.clone())
-            .declaration("new-folder-here", t("files-menu-new-folder"));
+            .declaration("new-folder-here", word!("files-menu-new-folder"));
         let rename = FileExplorer::RENAME
             .bind(file_explorer::Rename::paths().device, device.clone())
             .and(file_explorer::Rename::paths().folder, folder.clone())
-            .declaration("rename-here", "Rename an entry here");
+            .declaration("rename-here", word!("files-folder-rename-here"));
         let trash = FileExplorer::TRASH
             .bind(file_explorer::Trash::paths().device, device.clone())
             .and(file_explorer::Trash::paths().folder, folder.clone())
-            .declaration("trash-here", "Move entries here to Trash");
+            .declaration("trash-here", word!("files-folder-trash-here"));
         let moving = FileExplorer::MOVE_ENTRIES
             .bind(file_explorer::MoveEntries::paths().device, device.clone())
             .and(file_explorer::MoveEntries::paths().from, folder.clone())
-            .declaration("move-here", "Move entries from here to a folder");
+            .declaration("move-here", word!("files-folder-move-here"));
         let copying = FileExplorer::COPY_INTO
             .bind(file_explorer::CopyInto::paths().device, device.clone())
             .and(file_explorer::CopyInto::paths().from, folder)
-            .declaration("copy-here", "Copy entries from here to a folder");
+            .declaration("copy-here", word!("files-folder-copy-here"));
         let writing = FileExplorer::WRITE_FILE
             .bind(file_explorer::WriteFile::paths().device, device.clone())
             .and(file_explorer::WriteFile::paths().folder, here.clone())
-            .declaration("write-file-here", "Write a file here");
+            .declaration("write-file-here", word!("files-folder-write-file-here"));
         let compressing = FileExplorer::COMPRESS
             .bind(file_explorer::Compress::paths().device, device.clone())
             .and(file_explorer::Compress::paths().from, here.clone())
-            .declaration(
-                "compress-here",
-                "Compress entries here to a zip or tar.zst archive",
-            );
+            .declaration("compress-here", word!("files-folder-compress-here"));
         let extracting = FileExplorer::EXTRACT
             .bind(file_explorer::Extract::paths().device, device)
             .and(file_explorer::Extract::paths().to, Some(here))
-            .declaration("extract-here", "Extract an archive into this folder");
+            .declaration("extract-here", word!("files-folder-extract-here"));
         // Each of these names the entries it changes by name or path, which
         // an agent or a script passes and a person picks in the listing: a
         // person renames, moves or trashes what they selected, or a row's
@@ -7239,6 +7237,8 @@ impl FilesState {
                 cmds.push(cmd);
             }
         }
+        // What a sent message is about: the files the menu acts on.
+        menu.set_about(self.shared_selection());
         menu.open_at([at.x as f32, at.y as f32]);
         layout_menu_widget(&mut menu);
         self.menus.push(MenuChange::Main(menu, cmds));
@@ -7628,68 +7628,37 @@ impl FilesState {
         spec
     }
 
-    /// If either menu is open, route a left-press to it. Returns true when the
-    /// press was consumed (item fired, submenu opened, or a menu dismissed).
-    fn route_menu_click(&mut self, chrome: &mut Chrome, p: Point) -> bool {
-        // The submenu takes priority while it is up.
-        if chrome.submenu.is_open() {
-            if let Some(idx) = chrome.submenu.item_at([p.x, p.y]) {
-                let cmd = chrome.submenu_commands.get(idx).cloned().flatten();
-                chrome.submenu.close();
-                chrome.context_menu.close();
-                if let Some(cmd) = cmd {
-                    self.apply_command(cmd);
-                }
-                return true;
-            }
-            // A click outside the submenu closes both menus.
-            chrome.submenu.close();
-            chrome.context_menu.close();
-            return true;
-        }
-        if !chrome.context_menu.is_open() {
-            return false;
-        }
-        if let Some(idx) = chrome.context_menu.item_at([p.x, p.y]) {
-            let cmd = chrome.menu_commands.get(idx).cloned().flatten();
-            if let Some(FileCommand::OpenTemplatesMenu | FileCommand::OpenShortcutsMenu) = cmd {
-                // Open the flyout to the right of the clicked row; keep the
-                // main menu open behind it.
-                let anchor = Point::new(chrome.context_menu.get_rect().x1 - 6.0, p.y - 10.0);
-                if cmd == Some(FileCommand::OpenShortcutsMenu) {
-                    self.open_shortcuts_submenu(anchor);
-                } else {
-                    self.open_templates_submenu(anchor);
-                }
-                return true;
-            }
-            if cmd == Some(FileCommand::OpenWithMenu) {
-                let anchor = Point::new(chrome.context_menu.get_rect().x1 - 6.0, p.y - 10.0);
-                self.open_open_with_submenu(anchor);
-                return true;
-            }
-            chrome.context_menu.close();
-            if let Some(cmd) = cmd {
-                self.apply_command(cmd);
-            }
-            return true;
-        }
-        // Click outside the open menu dismisses it.
-        chrome.context_menu.close();
-        true
-    }
-
-    /// Route keyboard input through a standalone context menu and translate
-    /// its selected row back into the app command bus. The menu is painted as
-    /// an overlay rather than installed in the taffy tree, so normal child
-    /// event propagation cannot reach it.
-    fn route_menu_keyboard(
+    /// Route the pointer and the keys through the open menu (its flyout while
+    /// that is up) and translate its chosen row back into the app command bus.
+    /// The menu is painted as an overlay rather than installed in the taffy
+    /// tree, so normal child event propagation cannot reach it. The menu runs
+    /// its own rows, presses and send row, so a row a press, a key or the
+    /// send-to box beside it takes is the same row.
+    fn route_menu_event(
         &mut self,
         chrome: &mut Chrome,
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let submenu = chrome.submenu.is_open();
+        if submenu
+            && matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Pressed,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            )
+            && !chrome
+                .submenu
+                .contains([self.last_cursor.x, self.last_cursor.y])
+        {
+            // A press outside the flyout closes both menus.
+            chrome.submenu.close();
+            chrome.context_menu.close();
+            return true;
+        }
         let mut menu_handled = false;
         let selected = {
             let menu = if submenu {
@@ -7717,24 +7686,23 @@ impl FilesState {
         } else {
             chrome.menu_commands.get(index).cloned().flatten()
         };
-        if command == Some(FileCommand::OpenTemplatesMenu) {
-            let rect = chrome.context_menu.get_rect();
-            self.open_templates_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
-        } else if command == Some(FileCommand::OpenShortcutsMenu) {
-            let rect = chrome.context_menu.get_rect();
-            self.open_shortcuts_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
-        } else if command == Some(FileCommand::OpenWithMenu) {
-            let rect = chrome.context_menu.get_rect();
-            let row = chrome
-                .context_menu
-                .item_rect(index)
-                .map_or(rect.y0 + 28.0, |row| row.y0);
-            self.open_open_with_submenu(Point::new(rect.x1 - 6.0, row));
-        } else {
-            chrome.submenu.close();
-            chrome.context_menu.close();
-            if let Some(command) = command {
-                self.apply_command(command);
+        // A flyout opens beside the row that opened it, the menu kept open.
+        let rect = chrome.context_menu.get_rect();
+        let row = chrome
+            .context_menu
+            .item_rect(index)
+            .map_or(rect.y0 + 28.0, |row| row.y0);
+        let beside = Point::new(rect.x1 - 6.0, row);
+        match command {
+            Some(FileCommand::OpenTemplatesMenu) => self.open_templates_submenu(beside),
+            Some(FileCommand::OpenShortcutsMenu) => self.open_shortcuts_submenu(beside),
+            Some(FileCommand::OpenWithMenu) => self.open_open_with_submenu(beside),
+            command => {
+                chrome.submenu.close();
+                chrome.context_menu.close();
+                if let Some(command) = command {
+                    self.apply_command(command);
+                }
             }
         }
         true
@@ -8173,35 +8141,27 @@ impl FilesState {
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        use winit::event::{ElementState, MouseButton, WindowEvent};
-        if !(chrome.context_menu.is_open() || chrome.submenu.is_open()) {
+        use winit::event::{MouseButton, WindowEvent};
+        if !(chrome.context_menu.is_open() || chrome.submenu.is_open())
+            || !matches!(
+                event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::Ime(_)
+                    | WindowEvent::CursorMoved { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::MouseInput {
+                        button: MouseButton::Left,
+                        ..
+                    }
+            )
+            || !self.route_menu_event(chrome, event, ctx)
+        {
             return false;
         }
-        match event {
-            WindowEvent::KeyboardInput { .. } => {
-                if self.route_menu_keyboard(chrome, event, ctx) {
-                    *ctx.handled = true;
-                    self.structure_dirty = true;
-                    let _ = self.drain_commands();
-                    return true;
-                }
-                false
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if self.route_menu_click(chrome, self.last_cursor) {
-                    *ctx.handled = true;
-                    self.structure_dirty = true;
-                    let _ = self.drain_commands();
-                    return true;
-                }
-                false
-            }
-            _ => false,
-        }
+        *ctx.handled = true;
+        self.structure_dirty = true;
+        let _ = self.drain_commands();
+        true
     }
 
     /// Right-click opens the context menu. First deliver the press to the

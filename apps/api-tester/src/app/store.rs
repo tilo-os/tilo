@@ -16,7 +16,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ui::framework::{EffectAnswer, EffectCx, Effected, ViewCx};
 use ui::secrets::SecretStore;
-use ui::tilo_resource::Model;
 use ui::widget::Element;
 
 use super::ApiTesterApp;
@@ -201,7 +200,6 @@ impl Store {
         cx: &mut EffectCx<Workspace>,
     ) -> EffectAnswer {
         match effect {
-            ApiTesterEffect::ImportLegacy { snapshot } => self.import_legacy(snapshot, cx),
             ApiTesterEffect::PickEnvironment { choice } => {
                 self.sink.borrow_mut().push(Cmd::PickEnvironment(choice));
                 Ok(Effected::done())
@@ -313,36 +311,6 @@ impl Store {
             },
         ));
         Ok(Effected::done())
-    }
-
-    fn import_legacy(&self, snapshot: String, cx: &mut EffectCx<Workspace>) -> EffectAnswer {
-        use base64::Engine;
-        let before = cx.live().get();
-        if *before != Workspace::blank() {
-            return Err("Import requires a new, empty workspace".into());
-        }
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(snapshot)
-            .map_err(|_| "Invalid base64 snapshot")?;
-        let secrets = self.secrets.clone().ok_or("this window keeps no secrets")?;
-        let imported = ui::rt::app().spawn_pinned(move || async move {
-            crate::migration::snapshot(&bytes, &secrets).await
-        });
-        Ok(cx.spawn(
-            move |_| async move {
-                imported
-                    .await
-                    .map_err(|_| "Import task failed".to_string())?
-            },
-            move |(): &mut (), imported, cx| {
-                let imported = imported?;
-                if cx.live().get() != before {
-                    return Err("Workspace changed during import; use a new workspace".into());
-                }
-                cx.submit(Workspace::IMPORT_WORKSPACE.with(imported.to_json()));
-                Ok(Effected::done())
-            },
-        ))
     }
 
     /// Seal `secret` as the open request's credential, keeping only its

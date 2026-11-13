@@ -22,3 +22,5 @@
 {"instruction": "Check the calendar and move the meeting if it clashes", "context": "calendar", "app": "calendar", "expected": "task"}
 {"instruction": "Tidy up this folder and delete the empty notes", "context": "file", "app": "files", "expected": "task"}
 {"instruction": "Start a task for each item in this list", "context": "document", "app": "tasks", "expected": "task"}
+{"instruction": "Translate to German: The meeting moved to Friday.", "context": "document", "app": "notes", "expected": "one-shot"}
+{"instruction": "What does it mean that the invoice is pro forma?", "context": "document", "app": "notes", "expected": "one-shot"}

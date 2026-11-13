@@ -157,3 +157,19 @@ sheets-workbook-comment = Zellen kommentieren
 
 ## What the app is called in a window and in the launcher
 sheets-app-title = Tabellen
+## Actions bound to what the person is looking at
+
+sheets-workbook-comment-selection = Auswahl kommentieren
+sheets-workbook-insert-row-active = Zeile darüber einfügen
+sheets-workbook-delete-row-active = Zeile löschen
+sheets-workbook-insert-column-active = Spalte links einfügen
+sheets-workbook-delete-column-active = Spalte löschen
+sheets-workbook-insert-column-chart = Säulendiagramm aus der Auswahl erstellen
+sheets-workbook-insert-line-chart = Liniendiagramm aus der Auswahl erstellen
+sheets-workbook-format-currency = Als Währung formatieren
+sheets-workbook-format-percent = Als Prozent formatieren
+sheets-workbook-clear-format = Formatierung entfernen
+sheets-workbook-sum-selection = Auswahl summieren
+sheets-workbook-fill-down = Nach unten ausfüllen
+sheets-workbook-fill-right = Nach rechts ausfüllen
+sheets-workbook-autosum-active = Spalte automatisch summieren

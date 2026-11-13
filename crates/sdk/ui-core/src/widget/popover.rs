@@ -1240,7 +1240,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
             self.content_size = (f64::from(l.size.width), f64::from(l.size.height));
             let theme = self.layout_theme.clone();
             if self.open {
-                crate::text_render::with_layout_renderer(theme.text_scale, |tr| {
+                crate::text_render::with_layout_renderer(&theme, |tr| {
                     self.place(tr, &theme);
                 });
             }
@@ -1261,7 +1261,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         // the active theme and text scale.
         if self.open {
             let theme = self.layout_theme.clone();
-            crate::text_render::with_layout_renderer(theme.text_scale, |tr| self.place(tr, &theme));
+            crate::text_render::with_layout_renderer(&theme, |tr| self.place(tr, &theme));
         }
     }
 

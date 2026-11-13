@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use iroh::Watcher as _;
 use iroh::endpoint::presets;
-use iroh_relay::server::{CertConfig, RelayConfig, Server, ServerConfig, TlsConfig};
+use iroh_relay::server::{CertConfig, RelayConfig, TlsConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 const ALPN: &[u8] = b"tilo-test/iroh-trust/0";
@@ -88,22 +88,18 @@ impl LocalCa {
 
 /// A packet relay serving HTTPS only under `tls`, as a deployment's live
 /// plane does, and the relay map naming it by its HTTPS URL.
-async fn relay_under(tls: rustls::ServerConfig) -> (Server, iroh::RelayUrl, iroh::RelayMap) {
+async fn relay_under(
+    tls: rustls::ServerConfig,
+) -> (tilo_test_env::relay::Relay, iroh::RelayUrl, iroh::RelayMap) {
     let mut relay = RelayConfig::new((Ipv4Addr::LOCALHOST, 0));
     relay.tls = Some(TlsConfig::new(
         (Ipv4Addr::LOCALHOST, 0),
         CertConfig::Manual { server_config: tls },
     ));
-    let mut config = ServerConfig::default();
-    config.relay = Some(relay);
-    let server = Server::spawn(config).await.expect("the relay starts");
-    let url: iroh::RelayUrl = format!("https://{}", server.https_addr().expect("relay HTTPS"))
-        .parse()
-        .expect("a loopback relay URL");
-    let mut relay = iroh::RelayConfig::from(url.clone());
-    // No QUIC address discovery: the net report needs only the HTTPS probe.
-    relay.quic = None;
-    (server, url, std::iter::once(relay).collect())
+    let served = tilo_test_env::relay::Relay::with(relay).await;
+    let url = served.url().clone();
+    let relays = served.relays();
+    (served, url, relays)
 }
 
 fn endpoint_builder(relays: &iroh::RelayMap) -> iroh::endpoint::Builder {
@@ -184,7 +180,7 @@ async fn endpoints_trusting_a_local_ca_reach_each_other_through_its_relay() {
     accepting.await.expect("the listener's side finishes");
 
     assert!(
-        server.metrics().server.accepts.get() >= 2,
+        server.server().metrics().server.accepts.get() >= 2,
         "the relay registered both endpoints"
     );
     dialer.close().await;
@@ -198,7 +194,7 @@ async fn endpoints_trusting_a_local_ca_reach_each_other_through_its_relay() {
 async fn the_default_trust_refuses_a_ca_outside_the_store() {
     let ca = local_ca();
     let (server, _url, relays) = relay_under(ca.relay_tls()).await;
-    let https = server.https_addr().expect("relay HTTPS");
+    let https = server.server().https_addr().expect("relay HTTPS");
     assert!(
         tilo_net_handshake(https).await.is_err(),
         "a Tilo client trusted a CA outside the store"
@@ -219,7 +215,7 @@ async fn the_default_trust_refuses_a_ca_outside_the_store() {
         "the endpoint took the untrusted relay as home relay"
     );
     assert_eq!(
-        server.metrics().server.accepts.get(),
+        server.server().metrics().server.accepts.get(),
         0,
         "the relay registered a client that should have refused it"
     );
@@ -309,7 +305,7 @@ async fn default_trust_inside_a_store_holding_the_ca() {
     );
     let (server, _url, relays) =
         relay_under(relay_tls(&read("relay.pem"), &read("relay.key"))).await;
-    tilo_net_handshake(server.https_addr().expect("relay HTTPS"))
+    tilo_net_handshake(server.server().https_addr().expect("relay HTTPS"))
         .await
         .expect("a Tilo client trusts the CA in the store");
 

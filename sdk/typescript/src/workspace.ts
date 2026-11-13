@@ -299,7 +299,7 @@ export class Workspace {
    * apps record one undo step and history shows the title.
    */
   async run<T>(title: string, body: (run: RunGroup) => Promise<T>): Promise<T> {
-    const group = new RunGroup(await this.id(), title, runId(title));
+    const group = new RunGroup(await this.endpoint(), title, runId(title));
     return withinRun(group, () => body(group));
   }
 }

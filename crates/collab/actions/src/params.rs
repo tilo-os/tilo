@@ -324,6 +324,19 @@ impl ActionParam {
         self
     }
 
+    /// Call this parameter `title` where people read it (a form's field, a
+    /// consent sheet's row): its schema's `title`, in the reader's language.
+    #[must_use]
+    pub fn titled(mut self, title: impl Into<String>) -> Self {
+        let mut schema = match self.schema.as_deref() {
+            Some(serde_json::Value::Object(schema)) => schema.clone(),
+            _ => serde_json::Map::new(),
+        };
+        schema.insert("title".to_owned(), serde_json::Value::String(title.into()));
+        self.schema = Some(std::sync::Arc::new(serde_json::Value::Object(schema)));
+        self
+    }
+
     /// Retain an immutable schema already shared by the current type generation.
     /// Wire serialization and strict argument validation are unchanged.
     #[must_use]
@@ -1692,10 +1705,8 @@ const SCHEMA_ANNOTATIONS: &[&str] = &[
 /// expression or an unsupported format: callers must be able to trust every
 /// schema they enumerate.
 ///
-/// [`SCHEMA_ASSERTIONS`] and [`SCHEMA_ANNOTATIONS`] are stated a second time
-/// by `tilo-ai-bench`, which has to check the shapes that app's quality cases
-/// declare without linking this crate; a test in each crate pins this list
-/// byte for byte so neither can grow a keyword the other refuses.
+/// [`SCHEMA_ASSERTIONS`] and [`SCHEMA_ANNOTATIONS`] are pinned, word for
+/// word, by a test here: a keyword cannot be added without a check behind it.
 pub(crate) fn validate_schema_definition(schema: &serde_json::Value) -> Result<(), String> {
     let object = schema
         .as_object()

@@ -125,10 +125,33 @@ try {
 }
 ```
 
+```curl example=key-scopes
+api=$TILO_API_URL/v1
+auth="Authorization: Bearer $TILO_API_KEY"
+workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-Type: application/json" \
+  -d '{"name": "One customer"}' | jq -r .id)
+
+# A key that reaches this workspace and nothing else.
+minted=$(curl -sS --fail-with-body "$api/keys" -H "$auth" -H "Content-Type: application/json" \
+  -d "{\"workspace\": \"$workspace\", \"name\": \"Their agent\"}")
+echo "agent's MCP URL: $(jq -r .mcp_url <<<"$minted")"
+agent="Authorization: Bearer $(jq -r .token <<<"$minted")"
+
+# With that key, the agent sees this workspace's apps.
+apps=$(curl -sS --fail-with-body "$api/workspaces/$workspace/resources" -H "$agent" | jq '.rows | length')
+echo "the agent sees $apps apps"
+
+# Revoking it ends the agent's access at once.
+curl -sS --fail-with-body -X DELETE "$api/keys/$(jq -r .grant <<<"$minted")" -H "$auth" > /dev/null
+curl -sS "$api/workspaces/$workspace/resources" -H "$agent" \
+  | jq -r '"after revoking: \(.error.code) at \(.error.revoked_at_ms)"'
+```
+
 ## Where keys live
 
 - **Your grants page**, `https://mcp.tilo.sh/grants`: every key and every agent you let in, with its
   scope, when it was last used, which of your devices approved it, and a Revoke button.
 - **The command**: `tilo keys create "My backend"`, `tilo keys ls`, `tilo keys mint -w <workspace>`,
-  `tilo keys revoke <grant>`.
+  `tilo keys revoke <grant>`, and `tilo keys export --out <file>` for this computer's own key as
+  a key file a program here acts with.
 - **The SDKs**: `tilo.keys.list()`, `create()`, `mint()`, `revoke()`, and `workspace.keys.mint()`.

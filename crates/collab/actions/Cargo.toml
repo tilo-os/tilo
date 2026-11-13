@@ -43,6 +43,9 @@ blake3.workspace = true
 unicode-normalization = "0.1.25"
 # An avatar is checked by its sniffed image type.
 tilo-content-types = { version = "0.1.0", path = "../../system/content-types" }
+# The window whose code records an action keeps its large parts in that
+# window's content store.
+tilo-wake = { version = "0.1.0", path = "../../platform/tilo-wake" }
 # The large parts of a recorded action are kept, sealed, as content.
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 tracing.workspace = true

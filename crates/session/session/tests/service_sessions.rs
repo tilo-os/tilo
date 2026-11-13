@@ -145,7 +145,7 @@ fn fixture(keyring: Keyring) -> Fixture {
         .complete_enrollment(
             &profile.id,
             &token,
-            tilo_identity_host::enrollment::EnrollmentRole::PersonalDevice,
+            tilo_identity_host::enrollment::DeviceRole::Personal,
             phone.verifying_key().to_bytes(),
             "The phone",
             now,

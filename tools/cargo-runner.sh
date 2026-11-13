@@ -8,7 +8,7 @@
 # desktop session. Whoever runs a test and however, it cannot reach their
 # session bus, systemd user manager, logind, portals, media players, keyring
 # or display. A run that is already inside that environment (CI,
-# tools/test-env.sh, scripts/test-local.sh) keeps it. Started as root in the
+# tools/test-env.sh) keeps it. Started as root in the
 # CI image, they run as its test user (tools/as-test-user.sh).
 #
 # `cargo run` targets (target/<profile>/<bin>, examples) start unchanged:

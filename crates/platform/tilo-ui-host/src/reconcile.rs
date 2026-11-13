@@ -743,10 +743,17 @@ impl Reconciler {
             let mut source = NodeSource::new(node, description, self);
             ui::component::build(&description.name, &mut source)
         };
-        built.unwrap_or_else(|error| {
+        let built = built.unwrap_or_else(|error| {
             self.note_broken(node, &error);
             self.text_of(node, "", TextRole::Caption)
-        })
+        });
+        // A control that runs an app action, or edits a record's field, says which one: the
+        // window may move it between its bar, an empty state and a header row, and the person
+        // may read the window in another language, and what it does stays what it does.
+        match self.adapter.identity_of(node) {
+            Some(identity) => Box::new(ui::widget::Identified::new(built, identity)),
+            None => built,
+        }
     }
 
     /// Bring `widget`, built for the component node `old_node`, to `new_node`: its props in
@@ -759,6 +766,11 @@ impl Reconciler {
         new_node: &UiNode,
         description: &'static ui::component::Description,
     ) -> Option<Element> {
+        // What the control does is not a prop it takes in place: a control the view now binds
+        // to another action says so by being built again.
+        if self.adapter.identity_of(old_node) != self.adapter.identity_of(new_node) {
+            return Some(self.build(new_node));
+        }
         if !crate::adapter::same_data(old_node, new_node, description) {
             let taken = {
                 let mut source = NodeSource::in_place(new_node, description, self);

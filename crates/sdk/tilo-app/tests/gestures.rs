@@ -17,7 +17,11 @@ pub struct Mixer {
     pub pan: Option<f64>,
 }
 
-#[resource(kind = "test.mixer", label = "Mixer", app = "so.tilo.test-mixer")]
+#[resource(
+    kind = "test.mixer",
+    app = "so.tilo.test-mixer",
+    catalogue = "tests/locales"
+)]
 impl Mixer {}
 
 struct MixerApp;

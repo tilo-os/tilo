@@ -348,11 +348,6 @@ files-action-copy-to-folder = In Ordner kopieren…
 files-menu-new-folder = Neuer Ordner
 files-menu-new-file = Neue Datei  ›
 files-menu-move-trash = In den Papierkorb verschieben
-files-rename-selected = „{ $name }“ umbenennen
-files-trash-selected = { $count ->
-    [one] „{ $name }“
-   *[other] { $count } Objekte
-} in den Papierkorb verschieben
 files-copy-selected = { $count ->
     [one] „{ $name }“
    *[other] { $count } Objekte
@@ -655,3 +650,21 @@ files-folder-compress = Komprimieren
 files-folder-record-clipboard-transfer = Dateien einfügen
 files-folder-record-trash-restore = Datei wiederherstellen
 files-folder-revert = Änderung zurücknehmen
+
+## Actions bound to what the person is looking at
+
+files-folder-rename-selected = „{ $name }“ umbenennen
+files-folder-trash-selected = { $count ->
+    [one] „{ $name }“
+   *[other] { $count } Objekte
+} in den Papierkorb verschieben
+files-folder-move-to = In Ordner verschieben…
+files-folder-rename-here = Eintrag hier umbenennen
+files-folder-trash-here = Einträge hier in den Papierkorb verschieben
+files-folder-move-here = Einträge von hier in einen Ordner verschieben
+files-folder-copy-here = Einträge von hier in einen Ordner kopieren
+files-folder-write-file-here = Hier eine Datei schreiben
+files-folder-compress-here = Einträge hier in ein Archiv packen
+files-folder-extract-here = Archiv in diesen Ordner entpacken
+files-folder-add-current-bookmark = Diesen Ordner zu Favoriten hinzufügen
+files-folder-remove-current-bookmark = Diesen Ordner aus Favoriten entfernen

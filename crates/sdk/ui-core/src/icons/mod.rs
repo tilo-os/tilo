@@ -66,6 +66,12 @@ icons! {
     Wifi => "wifi",
     Bluetooth => "bluetooth",
     Monitor => "monitor",
+    /// A phone of the person's, as its own device. Lucide `smartphone`.
+    Smartphone => "smartphone",
+    /// A tablet of the person's. Lucide `tablet`.
+    Tablet => "tablet",
+    /// A laptop of the person's. Lucide `laptop`.
+    Laptop => "laptop",
     Battery => "battery",
     Shield => "shield",
     Maximize2 => "maximize-2",
@@ -648,6 +654,17 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             line_path(8.0, 21.0, 16.0, 21.0),
             line_path(12.0, 17.0, 12.0, 21.0),
         ],
+        Icon::Smartphone => vec![
+            rect_path(5.0, 2.0, 14.0, 20.0, 2.0),
+            path_from_d("M12 18h.01"),
+        ],
+        Icon::Tablet => vec![
+            rect_path(4.0, 2.0, 16.0, 20.0, 2.0),
+            path_from_d("M12 18h.01"),
+        ],
+        Icon::Laptop => vec![path_from_d(
+            "M20 16V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9m16 0H4m16 0 1.28 2.55a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45L4 16",
+        )],
         Icon::Battery => vec![
             path_from_d("M 22 14 L 22 10"),
             rect_path(2.0, 6.0, 16.0, 12.0, 2.0),
@@ -2892,6 +2909,9 @@ mod tests {
             (Icon::Trophy, 6),
             (Icon::Lightbulb, 3),
             (Icon::SdCard, 4),
+            (Icon::Smartphone, 2),
+            (Icon::Tablet, 2),
+            (Icon::Laptop, 1),
         ];
         for (icon, count) in cases {
             let sub = icon_subpaths(icon);

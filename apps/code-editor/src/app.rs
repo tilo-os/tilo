@@ -33,6 +33,7 @@ mod continuity;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use ui::widget::TaffyTreeExt;
+use ui::widget::toast::ToastKind;
 use ui::widget::{AppModel, ModelPath};
 
 mod chrome;
@@ -364,9 +365,6 @@ pub struct CodeApp {
     question_sheet: ui::widget::ModalSheet,
     code_help: code_help::CodeHelpReadout,
 
-    /// A transient message about the last file operation (saved, failed,
-    /// reloaded). Shown in the status bar; cleared by the next action.
-    notice: Option<Notice>,
     /// A caret position to land on once the buffer it belongs to is bound —
     /// used by a search hit and a cross-file go-to-definition, both of which
     /// open a file that has no editor geometry until the next frame.
@@ -514,13 +512,6 @@ impl LspStatus {
     }
 }
 
-/// A transient message about a file operation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Notice {
-    pub text: String,
-    pub is_error: bool,
-}
-
 impl Default for CodeApp {
     fn default() -> Self {
         Self::new()
@@ -576,17 +567,17 @@ impl CodeApp {
 
     /// An editor that opened nothing, showing why.
     fn failed_to_open(path: &std::path::Path, reason: &str) -> Self {
-        let mut app = Self::new();
-        app.notice = Some(Notice {
-            text: CATALOG.t_args(
+        let app = Self::new();
+        Self::note(
+            CATALOG.t_args(
                 "code-editor-open-failed",
                 &[
                     ("path", ui::i18n::ArgValue::Text(path.display().to_string())),
                     ("detail", ui::i18n::ArgValue::Text(reason.to_string())),
                 ],
             ),
-            is_error: true,
-        });
+            ToastKind::Error,
+        );
         app
     }
 
@@ -684,7 +675,6 @@ impl CodeApp {
             close_prompt: None,
             question_sheet: ui::widget::ModalSheet::new(),
             code_help: code_help::CodeHelpReadout::default(),
-            notice: None,
             pending_jump: None,
             pending_continuation: None,
         }
@@ -695,16 +685,10 @@ impl CodeApp {
         self.session.project.root_path()
     }
 
-    /// The most recent file-operation message, for tests and the status bar.
-    pub fn notice(&self) -> Option<&Notice> {
-        self.notice.as_ref()
-    }
-
-    fn note(&mut self, text: impl Into<String>, is_error: bool) {
-        self.notice = Some(Notice {
-            text: text.into(),
-            is_error,
-        });
+    /// Say what the last file operation came to in the window's bar, as the
+    /// kind of news it is.
+    fn note(text: impl Into<String>, kind: ToastKind) {
+        ui::window_toolbar::notify(Some(ui::window_toolbar::ToolbarNotice::new(text, kind)));
     }
 
     /// What the language server is doing.
@@ -1093,13 +1077,13 @@ impl CodeApp {
         };
         let Some(buffer) = self.session.active_buffer() else {
             self.editor.reconcile_from_doc(doc);
-            self.note("Text edit was refused: no active file", true);
+            Self::note("Text edit was refused: no active file", ToastKind::Error);
             return;
         };
         let file_id = self.buffer_key(buffer.node);
         if let Err(error) = self.dispatch_text_action(doc, file_id, &edit.base, &edit.next) {
             self.editor.reconcile_from_doc(doc);
-            self.note(format!("Text edit was refused: {error}"), true);
+            Self::note(format!("Text edit was refused: {error}"), ToastKind::Error);
         }
     }
 
@@ -1262,10 +1246,6 @@ impl CodeApp {
         } else {
             String::new()
         };
-        let notice = self.notice.clone().unwrap_or(Notice {
-            text: String::new(),
-            is_error: false,
-        });
         // With no buffer open there is no caret to report.
         let (line, col) = if self.editor.is_bound() {
             (line + 1, col + 1)
@@ -1281,7 +1261,6 @@ impl CodeApp {
             problems: self.panel.problem_count(),
             lsp: self.lsp_status.label(),
             lsp_working: self.lsp_status.is_working(),
-            notice: notice.text,
             dirty: self.session.active_buffer().is_some_and(|b| b.dirty),
             code_help: self.code_help_readout(),
         });
@@ -1645,7 +1624,10 @@ impl CodeApp {
                                 });
                         self.pending_open = created;
                     }
-                    Err(error) => self.note(format!("Could not create {name}: {error}"), true),
+                    Err(error) => Self::note(
+                        format!("Could not create {name}: {error}"),
+                        ToastKind::Error,
+                    ),
                 }
             }
             Command::OpenFolder => self.request_open_folder(),
@@ -1662,7 +1644,7 @@ impl CodeApp {
                 if let Some(node) = self.session.active_buffer().map(|b| b.node)
                     && !self.request_format(doc, node, format_workflow::AfterFormat::Nothing)
                 {
-                    self.note("No formatter is running for this file", true);
+                    Self::note("No formatter is running for this file", ToastKind::Error);
                 }
             }
             Command::SaveAs => {
@@ -1679,9 +1661,9 @@ impl CodeApp {
                     self.reload_buffer(doc, node);
                 }
             }
-            Command::NextTheme => self.note(
+            Command::NextTheme => Self::note(
                 "Choose appearance in the operating system's settings",
-                false,
+                ToastKind::Info,
             ),
             Command::GoToSearch => {
                 self.panel_visible = true;
@@ -1779,7 +1761,7 @@ impl CodeApp {
     /// to the buffer; a no-op with a clear note when nothing is open.
     pub fn go_to_line(&mut self, line_1based: usize) {
         if !self.editor.is_bound() {
-            self.note("Open a file to jump to a line", true);
+            Self::note("Open a file to jump to a line", ToastKind::Error);
             return;
         }
         let target = line_1based
@@ -1911,12 +1893,11 @@ impl CodeApp {
         }
     }
 
-    /// Stage a populated status bar for a screenshot: a live multi-word
-    /// selection and a recent notice.
+    /// Stage a screenshot of the bar's notice over a live multi-word
+    /// selection.
     pub fn shots_status(&mut self) {
         self.shots_select_words();
-        self.note("Reloaded main.rs from disk", false);
-        self.refresh_status();
+        Self::note("Reloaded main.rs from disk", ToastKind::Success);
     }
 
     /// Stage the language-server indexing readout.
@@ -2481,7 +2462,7 @@ impl Widget for CodeApp {
             self.apply_command(command, state);
         }
         if let Some((node, target)) = self.pending_save.take() {
-            self.notice = None;
+            ui::window_toolbar::notify(None);
             let after = format_workflow::AfterFormat::SaveEffect(target);
             if let Some(after) = self.format_before_saving(state, node, after) {
                 self.after_format(state, node, after);
@@ -2731,18 +2712,6 @@ impl Widget for CodeApp {
                 .with_key(ui::a11y::hash_key(&"code.active-buffer"))
                 .with_name(active.to_string()),
         ];
-        if let Some(notice) = &self.notice {
-            children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_key(ui::a11y::hash_key(&"code.notice"))
-                    .with_name(notice.text.clone())
-                    .with_live(if notice.is_error {
-                        Politeness::Assertive
-                    } else {
-                        Politeness::Polite
-                    }),
-            );
-        }
         children.extend(self.code_help_access());
         let analysis = self.lsp_status.label();
         if !analysis.is_empty() {
@@ -2895,7 +2864,7 @@ impl CodeApp {
         self.search_truncated = false;
         self.search_files_scanned = 0;
         let Some(root) = self.session.project.root_path() else {
-            self.note("Open a project folder to search it", true);
+            Self::note("Open a project folder to search it", ToastKind::Error);
             return;
         };
         self.last_search_needle.clone_from(&query.needle);

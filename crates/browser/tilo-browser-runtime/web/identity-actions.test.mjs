@@ -438,6 +438,34 @@ test('the card offers the agent setup, and choosing it shows that setup again', 
   assert.equal(shown, 1, 'the first screen\'s own setup, with a fresh code');
 });
 
+test('someone who arrived by an invitation is asked to set up their own Tilo once they used the workspace', async () => {
+  const identity = fakeIdentity();
+  const mount = fakeMount();
+  let clock = 0;
+  let shown = 0;
+  let due = true;
+  const actions = createIdentityActions({identity, session: memorySession(), passkeys: withPasskeys, now: () => clock,
+    showAgentSetup: () => { shown += 1; }, setupDue: () => due});
+  await actions.attach(mount);
+  assert.deepEqual(mount.offers, [], 'joining is not interrupted');
+  for (let action = 1; action <= ASK_AFTER_ACTIONS; action += 1) { clock += ACTION_GAP_MS; actions.authored(action); }
+  assert.deepEqual(mount.offers, [CONNECT_AGENT.id], 'the setup, in place of the passkey');
+  const [ask] = mount.said;
+  assert.equal(ask.title, 'Want a workspace of your own?');
+  assert.equal(ask.action.title, 'Set up with your agent');
+  assert.match(ask.body, /Ctrl\+K, “Connect an agent or computer”/, 'says where to find it later');
+  await actions.perform(CONNECT_AGENT.id);
+  assert.equal(shown, 1, 'the first screen’s setup, over the workspace they are in');
+  // Set up already: the passkey is what is asked, as for anyone.
+  due = false;
+  const later = fakeMount();
+  const next = createIdentityActions({identity, session: memorySession(), passkeys: withPasskeys, now: () => clock,
+    showAgentSetup: () => {}, setupDue: () => due});
+  await next.attach(later);
+  for (let action = 1; action <= ASK_AFTER_ACTIONS; action += 1) { clock += ACTION_GAP_MS; next.authored(action); }
+  assert.deepEqual(later.offers, [KEEP.id]);
+});
+
 test('without a page that can show the setup, the card offers nothing it cannot do', async () => {
   const identity = fakeIdentity();
   const mount = fakeMount();
@@ -532,6 +560,19 @@ test('an agent’s link is a pairing link to this tab with a fresh invite, open 
   });
   assert.equal(typeof pairing.poll, 'function', 'the tab looks for the agent while the link is open');
   assert.deepEqual(pairing.sheets, [], 'no sheet: the first screen shows the prompt');
+});
+
+test('a link only shown asks the host nothing until the person uses it', async () => {
+  // Every visitor's first screen shows a prompt with a link in it: the host is asked about the
+  // agent's device once the person took the prompt, not for everyone who only saw it.
+  const pairing = await pairingFixture();
+  await pairing.actions.connectAgent({watch: false});
+  assert.equal(pairing.poll, null, 'nothing is asked while the prompt only waits');
+  pairing.actions.watchAgents();
+  assert.equal(typeof pairing.poll, 'function', 'used, the tab looks for the agent');
+  pairing.host.pending = [request('d1', INVITE_A, {label: 'Claude Code on laptop'})];
+  await pairing.tick();
+  assert.deepEqual(pairing.agents, [{label: 'Claude Code on laptop'}]);
 });
 
 test('an agent set up in the person’s own workspace gets a link that opens it', async () => {

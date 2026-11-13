@@ -66,7 +66,7 @@ fn a_tasks_menu_marks_it_done_by_its_complete_command() {
             .app()
             .window_controls()
             .iter()
-            .any(|(name, _)| name == "Complete"),
+            .any(|control| control.name == "Complete"),
         "a tool reaches the command by name"
     );
     if let Some((x, y)) = session

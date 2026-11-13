@@ -14,13 +14,12 @@ use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
 use tilo_clock::try_unix_now_ns;
 use tilo_identity_host::certification_ceremony::pairing_code;
-use tilo_identity_host::device_fleet::DeviceFleetStore;
-use tilo_identity_host::enrollment::{Certifier, EnrollmentRole, NonceStore, Redemption};
+use tilo_identity_host::device_fleet::{DeviceFleet, DeviceFleetStore};
+use tilo_identity_host::enrollment::{Certifier, DeviceRole, NonceStore, Redemption};
 use tilo_relay::HomePeerRegistration;
 use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, IdentityPaths, RevocationList, decode_enrollment_token,
-    encode_enrollment_token, mint_enrollment_token, verify_device_cert, verify_device_cert_at,
-    verify_enrollment_token, verify_revocation_entry,
+    DeviceCapabilities, DeviceCert, IdentityPaths, decode_enrollment_token, verify_device_cert,
+    verify_device_cert_at, verify_enrollment_token,
 };
 
 /// Well-known UDP port every nearby-pairing listener binds and every
@@ -247,12 +246,12 @@ enum EnrollmentKind {
 }
 
 impl EnrollmentKind {
-    /// The role a token for this kind admits, with its one capability preset
-    /// and shape check.
-    const fn role(self) -> EnrollmentRole {
+    /// The role a token for this kind admits, with its one capability set and
+    /// shape check.
+    const fn role(self) -> DeviceRole {
         match self {
-            Self::HomePeer => EnrollmentRole::HomePeer,
-            Self::PersonalDevice => EnrollmentRole::PersonalDevice,
+            Self::HomePeer => DeviceRole::Host,
+            Self::PersonalDevice => DeviceRole::Personal,
         }
     }
 }
@@ -361,15 +360,6 @@ struct PairCandidate {
     label: String,
     verification_code: String,
     kind: EnrollmentKind,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FleetProjection {
-    schema_version: u32,
-    identity_id: String,
-    certificates: Vec<DeviceCert>,
-    revocations: Vec<tilo_user_identity::RevocationEntry>,
 }
 
 /// The files of a personal enrollment live in a private, durable staging
@@ -486,12 +476,6 @@ fn staged(path: &std::path::Path, name: &str) -> PathBuf {
     path.join(name)
 }
 
-fn fleet_path(identity_dir: &std::path::Path, user: [u8; 32]) -> PathBuf {
-    identity_dir
-        .join("fleets")
-        .join(format!("{}.json", hex::encode(user)))
-}
-
 /// The person's device fleet: the canonical record of their devices and
 /// revocations, kept in their identity directory.
 fn fleet_store(
@@ -503,63 +487,6 @@ fn fleet_store(
         Some(&uid) => store.for_person(uid),
         None => store,
     }
-}
-
-fn fleet_revokes_device(
-    identity_root: &std::path::Path,
-    identity_dir: &std::path::Path,
-    user: [u8; 32],
-    device: [u8; 32],
-) -> anyhow::Result<bool> {
-    Ok(fleet_store(identity_root, identity_dir)
-        .load(&hex::encode(user))
-        .context("device fleet is invalid")?
-        .is_revoked(&device))
-}
-
-/// The devices a joining device records as its personal peers: itself, and
-/// every personal device the approver's fleet certifies under this identity's
-/// root, valid now and not revoked. A device the fleet merely names, without
-/// a certificate that verifies under `user`, is never included.
-fn certified_personal_devices(
-    fleet: &[u8],
-    user: [u8; 32],
-    this_device: [u8; 32],
-    now_ns: u64,
-) -> anyhow::Result<Vec<[u8; 32]>> {
-    if fleet.len() > 1024 * 1024 {
-        bail!("staged device fleet exceeds 1 MiB");
-    }
-    let fleet: FleetProjection =
-        serde_json::from_slice(fleet).context("staged device fleet is invalid")?;
-    if fleet.schema_version != 1
-        || fleet.identity_id != hex::encode(user)
-        || fleet.certificates.len() > 256
-        || fleet.revocations.len() > 256
-    {
-        bail!("staged device fleet violates its bounded schema");
-    }
-    let mut revocations = RevocationList::new();
-    for entry in fleet.revocations {
-        if entry.user_public_key != user {
-            bail!("staged device fleet contains a revocation from another identity");
-        }
-        revocations
-            .insert(entry)
-            .context("staged device fleet contains an invalid revocation")?;
-    }
-    let mut devices = vec![this_device];
-    for cert in &fleet.certificates {
-        if cert.user_public_key == user
-            && cert.capabilities.is_personal_device()
-            && verify_device_cert_at(cert, now_ns).is_ok()
-            && !revocations.refuses(cert)
-            && !devices.contains(&cert.device_public_key)
-        {
-            devices.push(cert.device_public_key);
-        }
-    }
-    Ok(devices)
 }
 
 /// Record `devices` in this device's personal device list, the authorization
@@ -575,24 +502,6 @@ fn remember_personal_devices(
             .context("record the paired device as a personal device")?;
     }
     Ok(path)
-}
-
-/// Record this joining device and the personal devices its staged fleet
-/// certifies, once the enrollment is committing.
-fn remember_staged_personal_devices(
-    identity_root: &std::path::Path,
-    stage_dir: &std::path::Path,
-    marker: &PersonalEnrollmentMarker,
-) -> anyhow::Result<PathBuf> {
-    remember_personal_devices(
-        identity_root,
-        &certified_personal_devices(
-            &std::fs::read(staged(stage_dir, "fleet.json"))?,
-            marker.user_public_key,
-            marker.device_public_key,
-            now_ns()?,
-        )?,
-    )
 }
 
 /// Give one file or directory this enrollment created the owner and group of
@@ -663,95 +572,23 @@ fn share_directory_like_parent(directory: &std::path::Path) -> anyhow::Result<()
     Ok(())
 }
 
-fn project_personal_device(
-    identity_dir: &std::path::Path,
-    cert: &DeviceCert,
-) -> anyhow::Result<Vec<u8>> {
-    verify_device_cert_at(cert, now_ns()?).context("new personal-device certificate validity")?;
-    let path = fleet_path(identity_dir, cert.user_public_key);
-    let mut fleet = match std::fs::read(&path) {
-        Ok(bytes) if bytes.len() <= 1024 * 1024 => {
-            serde_json::from_slice::<FleetProjection>(&bytes).context("device fleet is invalid")?
-        }
-        Ok(_) => bail!("device fleet exceeds 1 MiB"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => FleetProjection {
-            schema_version: 1,
-            identity_id: hex::encode(cert.user_public_key),
-            certificates: Vec::new(),
-            revocations: Vec::new(),
-        },
-        Err(error) => return Err(error.into()),
-    };
-    if fleet.schema_version != 1
-        || fleet.identity_id != hex::encode(cert.user_public_key)
-        || fleet.certificates.len() > 256
-        || fleet.revocations.len() > 256
-        || fleet
-            .certificates
-            .iter()
-            .any(|item| verify_device_cert(item).is_err())
-        || fleet
-            .revocations
-            .iter()
-            .any(|item| verify_revocation_entry(item).is_err())
-    {
-        bail!("device fleet violates its bounded verified schema");
-    }
-    fleet
-        .certificates
-        .retain(|item| item.device_public_key != cert.device_public_key);
-    fleet.certificates.push(cert.clone());
-    fleet
-        .certificates
-        .sort_by_key(|item| item.device_public_key);
-    let bytes = serde_json::to_vec_pretty(&fleet)?;
-    Ok(bytes)
-}
-
-fn commit_personal_device(
-    identity_dir: &std::path::Path,
-    user: [u8; 32],
-    fleet: &[u8],
-) -> anyhow::Result<()> {
-    let path = fleet_path(identity_dir, user);
-    as_person(identity_dir, || {
-        tilo_files::native::atomic::write_creating_parent(&path, fleet)
-    })?;
-    Ok(())
-}
-
+/// This identity's home peers, checked, as an approval hands them to a
+/// joining device: the registry holds every identity's routes.
 fn bounded_home_peer_registry(
     identity_root: &std::path::Path,
     user: [u8; 32],
 ) -> anyhow::Result<Vec<u8>> {
     let path = tilo_relay::home_peer_registry_path(identity_root);
-    match std::fs::read(path) {
-        Ok(bytes) if bytes.len() <= 1024 * 1024 => {
-            let entries: Vec<HomePeerRegistration> = serde_json::from_slice(&bytes)?;
-            if entries.len() > 128
-                || entries.iter().any(|entry| {
-                    entry.schema_version != HomePeerRegistration::CURRENT_SCHEMA
-                        || !valid_relay_endpoint_hint(entry)
-                        || entry.device_cert.as_ref().is_none_or(|cert| {
-                            verify_device_cert(cert).is_err()
-                                || hex::encode(cert.device_public_key) != entry.device_node_id
-                                || hex::encode(cert.user_public_key) != entry.user_public_key
-                        })
-                })
-            {
-                bail!("home-peer registry violates its bounded verified schema");
-            }
-            Ok(serde_json::to_vec_pretty(
-                &entries
-                    .into_iter()
-                    .filter(|entry| entry.user_public_key == hex::encode(user))
-                    .collect::<Vec<_>>(),
-            )?)
-        }
-        Ok(_) => bail!("home-peer registry exceeds 1 MiB"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(b"[]".to_vec()),
-        Err(error) => Err(error.into()),
-    }
+    let entries = match read_bounded(&path, "home-peer registry")? {
+        Some(bytes) => checked_home_peers(&bytes, "home-peer registry")?,
+        None => Vec::new(),
+    };
+    Ok(serde_json::to_vec_pretty(
+        &entries
+            .into_iter()
+            .filter(|entry| entry.user_public_key == hex::encode(user))
+            .collect::<Vec<_>>(),
+    )?)
 }
 
 fn valid_relay_endpoint_hint(entry: &HomePeerRegistration) -> bool {
@@ -783,34 +620,6 @@ fn identity_record_path(identity_dir: &std::path::Path, user: [u8; 32]) -> PathB
     identity_dir.join(format!("identity-{prefix}.json"))
 }
 
-fn validate_personal_fleet(
-    bytes: &[u8],
-    identity_id: &str,
-    enrolled_device: [u8; 32],
-) -> anyhow::Result<()> {
-    let projected: FleetProjection = serde_json::from_slice(bytes)?;
-    if projected.schema_version != 1
-        || projected.identity_id != identity_id
-        || projected.certificates.len() > 256
-        || projected.revocations.len() > 256
-        || !projected
-            .certificates
-            .iter()
-            .any(|cert| cert.device_public_key == enrolled_device)
-        || projected
-            .certificates
-            .iter()
-            .any(|cert| verify_device_cert(cert).is_err())
-        || projected
-            .revocations
-            .iter()
-            .any(|entry| verify_revocation_entry(entry).is_err())
-    {
-        bail!("approval returned an invalid device fleet");
-    }
-    Ok(())
-}
-
 fn validate_public_identity(bytes: &[u8], user: [u8; 32]) -> anyhow::Result<()> {
     let identity: serde_json::Value = serde_json::from_slice(bytes)?;
     let threshold = identity
@@ -826,6 +635,25 @@ fn validate_public_identity(bytes: &[u8], user: [u8; 32]) -> anyhow::Result<()> 
         bail!("approval returned an identity containing private or mismatched key material");
     }
     Ok(())
+}
+
+/// The home-peer registrations `bytes` hold, checked as a verifier reads
+/// them ([`valid_home_peer_registration`]): within their bound and each of
+/// its bounded verified schema.
+fn checked_home_peers(
+    bytes: &[u8],
+    description: &str,
+) -> anyhow::Result<Vec<HomePeerRegistration>> {
+    let registrations: Vec<HomePeerRegistration> =
+        serde_json::from_slice(bytes).with_context(|| format!("{description} is invalid"))?;
+    if registrations.len() > 128
+        || registrations
+            .iter()
+            .any(|entry| !valid_home_peer_registration(entry))
+    {
+        bail!("{description} violates its bounded verified schema");
+    }
+    Ok(registrations)
 }
 
 fn valid_home_peer_registration(entry: &HomePeerRegistration) -> bool {
@@ -849,18 +677,26 @@ fn valid_home_peer_registration(entry: &HomePeerRegistration) -> bool {
         })
 }
 
-fn read_bounded_json<T>(path: &std::path::Path, description: &str) -> anyhow::Result<Option<T>>
-where
-    T: serde::de::DeserializeOwned,
-{
+/// The bytes of `path`, when it exists and is within the size a registration
+/// file may have.
+fn read_bounded(path: &std::path::Path, description: &str) -> anyhow::Result<Option<Vec<u8>>> {
     match std::fs::read(path) {
-        Ok(bytes) if bytes.len() <= 1024 * 1024 => serde_json::from_slice(&bytes)
-            .with_context(|| format!("{description} is invalid"))
-            .map(Some),
+        Ok(bytes) if bytes.len() <= 1024 * 1024 => Ok(Some(bytes)),
         Ok(_) => bail!("{description} exceeds 1 MiB"),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
+}
+
+fn read_bounded_json<T>(path: &std::path::Path, description: &str) -> anyhow::Result<Option<T>>
+where
+    T: serde::de::DeserializeOwned,
+{
+    read_bounded(path, description)?
+        .map(|bytes| {
+            serde_json::from_slice(&bytes).with_context(|| format!("{description} is invalid"))
+        })
+        .transpose()
 }
 
 fn checked_personal_projection(
@@ -883,14 +719,15 @@ fn checked_personal_projection(
     let user = payload.cert.user_public_key;
     let identity_id = hex::encode(user);
 
-    validate_personal_fleet(fleet, &identity_id, payload.cert.device_public_key)?;
+    let fleet = fleet_store(identity_root, identity_dir)
+        .accept_transferred(&identity_id, fleet, payload.cert.device_public_key)
+        .context("approval returned an invalid device fleet")?;
     validate_public_identity(identity, user)?;
 
-    let incoming: Vec<HomePeerRegistration> = serde_json::from_slice(transferred_peers)?;
-    if incoming.len() > 128
-        || incoming.iter().any(|entry| {
-            entry.user_public_key != identity_id || !valid_home_peer_registration(entry)
-        })
+    let incoming = checked_home_peers(transferred_peers, "the approval's home peers")?;
+    if incoming
+        .iter()
+        .any(|entry| entry.user_public_key != identity_id)
     {
         bail!("approval returned an invalid home-peer registry");
     }
@@ -939,15 +776,10 @@ fn checked_personal_projection(
         );
 
     let peers_path = tilo_relay::home_peer_registry_path(identity_root);
-    let mut existing: Vec<HomePeerRegistration> =
-        read_bounded_json(&peers_path, "existing home-peer registry")?.unwrap_or_default();
-    if existing.len() > 128
-        || existing
-            .iter()
-            .any(|entry| !valid_home_peer_registration(entry))
-    {
-        bail!("existing home-peer registry violates its bounded verified schema");
-    }
+    let mut existing = match read_bounded(&peers_path, "existing home-peer registry")? {
+        Some(bytes) => checked_home_peers(&bytes, "existing home-peer registry")?,
+        None => Vec::new(),
+    };
 
     // A response projects routes for one identity. Do not use it as a global
     // snapshot and erase other identities' independently verified routes.
@@ -964,7 +796,7 @@ fn checked_personal_projection(
 
     Ok(CheckedPersonalProjection {
         identity: identity.clone(),
-        fleet: fleet.clone(),
+        fleet: serde_json::to_vec_pretty(&fleet)?,
         peers: serde_json::to_vec_pretty(&existing)?,
         registry: serde_json::to_vec_pretty(&registry)?,
     })
@@ -1041,6 +873,28 @@ fn authorize_personal_commit(
     Ok(marker)
 }
 
+/// Install the device fleet an approval staged for this device: the document
+/// the approving device handed over, checked, then adopted as this device's
+/// own record of the identity's devices.
+fn install_staged_fleet(
+    identity_root: &std::path::Path,
+    marker: &PersonalEnrollmentMarker,
+    stage_dir: &std::path::Path,
+) -> anyhow::Result<DeviceFleet> {
+    let store = fleet_store(identity_root, &marker.identity_dir);
+    let fleet = store
+        .accept_transferred(
+            &hex::encode(marker.user_public_key),
+            &std::fs::read(staged(stage_dir, "fleet.json"))?,
+            marker.device_public_key,
+        )
+        .context("staged device fleet")?;
+    store
+        .adopt_transferred(&fleet)
+        .context("install the joined identity's device fleet")?;
+    Ok(fleet)
+}
+
 fn commit_staged_personal_enrollment(
     identity_root: &std::path::Path,
     paths: &IdentityPaths,
@@ -1068,17 +922,13 @@ fn commit_staged_personal_enrollment(
     // The identity directory is the person's: a root-run (headless) join
     // writes there as the person, never as root.
     let record = identity_record_path(&marker.identity_dir, marker.user_public_key);
-    let fleet = fleet_path(&marker.identity_dir, marker.user_public_key);
     let record_json = std::fs::read(staged(&stage_dir, "record.json"))?;
     as_person(&marker.identity_dir, || {
         std::fs::create_dir_all(&marker.identity_dir)?;
         tilo_files::native::atomic::write_with_mode(&record, &record_json, 0o600)
     })?;
     checkpoint(PersonalCommitCheckpoint::Fleet)?;
-    let fleet_json = std::fs::read(staged(&stage_dir, "fleet.json"))?;
-    as_person(&marker.identity_dir, || {
-        tilo_files::native::atomic::write_creating_parent(&fleet, &fleet_json)
-    })?;
+    let fleet = install_staged_fleet(identity_root, marker, &stage_dir)?;
     checkpoint(PersonalCommitCheckpoint::HomePeers)?;
     tilo_files::native::atomic::write_creating_parent_with_mode(
         &tilo_relay::home_peer_registry_path(identity_root),
@@ -1118,9 +968,12 @@ fn commit_staged_personal_enrollment(
     )?;
     // This device and the approver become each other's personal devices. The
     // approver's certificate comes from the root-signed fleet staged with this
-    // enrollment and must verify under the identity this device joins.
+    // enrollment, which the fleet just adopted, and must verify under the
+    // identity this device joins.
     checkpoint(PersonalCommitCheckpoint::PersonalPeers)?;
-    let personal_peers = remember_staged_personal_devices(identity_root, &stage_dir, marker)?;
+    let mut personal_devices = vec![marker.device_public_key];
+    personal_devices.extend(fleet.personal_devices(&marker.user_public_key, now_ns()?));
+    let personal_peers = remember_personal_devices(identity_root, &personal_devices)?;
     // Publish this last: every projection file has been durably installed.
     checkpoint(PersonalCommitCheckpoint::DefaultCert)?;
     tilo_files::native::atomic::write_with_mode(&paths.device_cert, &cert_bytes, public)?;
@@ -1258,35 +1111,10 @@ fn register_home_peer(
     if !tilo_relay::valid_home_peer_label(&cert.device_label) || relay_workspace_ids.len() > 4096 {
         bail!("home-peer registration exceeds its bounded schema");
     }
-    let mut registrations = match std::fs::read(&path) {
-        Ok(bytes) if bytes.len() <= 1024 * 1024 => {
-            serde_json::from_slice::<Vec<HomePeerRegistration>>(&bytes)
-                .context("existing home-peer registry is invalid")?
-        }
-        Ok(_) => bail!("existing home-peer registry exceeds 1 MiB"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(error.into()),
+    let mut registrations = match read_bounded(&path, "existing home-peer registry")? {
+        Some(bytes) => checked_home_peers(&bytes, "existing home-peer registry")?,
+        None => Vec::new(),
     };
-    if registrations.len() > 128
-        || registrations.iter().any(|entry| {
-            entry.device_node_id.len() != 64
-                || hex::decode(&entry.device_node_id).is_err()
-                || entry.relay_service_node_id.len() != 64
-                || hex::decode(&entry.relay_service_node_id).is_err()
-                || entry.user_public_key.len() != 64
-                || hex::decode(&entry.user_public_key).is_err()
-                || !valid_relay_endpoint_hint(entry)
-                || entry.device_cert.as_ref().is_some_and(|cert| {
-                    verify_device_cert(cert).is_err()
-                        || hex::encode(cert.device_public_key) != entry.device_node_id
-                        || hex::encode(cert.user_public_key) != entry.user_public_key
-                })
-                || !tilo_relay::valid_home_peer_label(&entry.label)
-                || entry.relay_workspace_ids.len() > 4096
-        })
-    {
-        bail!("existing home-peer registry violates its bounded schema");
-    }
     let device_node_id = hex::encode(cert.device_public_key);
     registrations.retain(|entry| entry.device_node_id != device_node_id);
     registrations.push(HomePeerRegistration {
@@ -2295,27 +2123,17 @@ fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<Appro
         let user_public_key = root.public_key();
         (Some(root), user_public_key)
     };
-    let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)?;
-    let issuer_cert = tilo_user_identity::persist::read_device_cert(
-        &paths.device_cert_for_user(&user_public_key),
-    )
-    .or_else(|_| tilo_user_identity::persist::read_device_cert(&paths.device_cert))?;
-    verify_device_cert_at(&issuer_cert, now_ns()?)
-        .context("verify approving device certificate validity")?;
-    if issuer_cert.user_public_key != user_public_key
-        || issuer_cert.device_public_key != device.verifying_key().to_bytes()
-        || (root.is_some() && !issuer_cert.capabilities.can_admit_devices)
-    {
+    let (device, issuer_cert) =
+        tilo_identity_host::enrollment::device_for(&paths, user_public_key, now_ns()?)
+            .context("verify approving device certificate validity")?;
+    if root.is_some() && !issuer_cert.capabilities.can_admit_devices {
         bail!("this device is not authorised to approve enrollment");
     }
     if let Some(directory) = options.identity_dir
-        && fleet_revokes_device(
-            options.identity_root,
-            directory,
-            user_public_key,
-            issuer_cert.device_public_key,
-        )
-        .context("verify approving device fleet")?
+        && fleet_store(options.identity_root, directory)
+            .load(&hex::encode(user_public_key))
+            .context("verify approving device fleet")?
+            .is_revoked(&issuer_cert.device_public_key)
     {
         bail!("this device is revoked and cannot approve enrollment");
     }
@@ -2354,22 +2172,18 @@ fn handle_solicitation(
         return Ok(());
     }
     if selected.is_none() {
-        let mut nonce = [0_u8; 16];
-        UnwrapErr(SysRng).fill_bytes(&mut nonce);
         let now = now_ns()?;
         // Backdated for the joining device's clock, but never to before this
         // device was certified: redemption checks the issuer at that instant.
         let issued_at_ns = validity_start_ns(now).max(identity.issuer_cert.issued_at_ns);
         let expires_at_ns = now.saturating_add(5 * 60 * 1_000_000_000);
-        let token = mint_enrollment_token(
+        let token_text = tilo_identity_host::enrollment::mint_token(
             identity.user_public_key,
-            kind.role().preset(),
+            kind.role().capabilities(),
             issued_at_ns,
             expires_at_ns,
-            nonce,
             &identity.device,
         )?;
-        let token_text = encode_enrollment_token(&token)?;
         let code = pairing_code(
             solicitation.device_public_key,
             solicitation.relay_service_node_id,
@@ -2558,7 +2372,11 @@ fn prepare_approval(
     if let Some(identity_dir) = options.identity_dir
         && options.kind == EnrollmentKind::PersonalDevice
     {
-        projection.fleet_json = Some(project_personal_device(identity_dir, &cert)?);
+        projection.fleet_json = Some(
+            fleet_store(options.identity_root, identity_dir)
+                .transferred(&hex::encode(cert.user_public_key), &cert)
+                .context("hand the joining device this identity's fleet")?,
+        );
     }
     let signed = sign_response(
         ResponsePayload {
@@ -2761,12 +2579,8 @@ fn out_of_band_payload(
     device: &ed25519_dalek::SigningKey,
 ) -> anyhow::Result<ResponsePayload> {
     let user = cert.user_public_key;
-    let fleet = FleetProjection {
-        schema_version: 1,
-        identity_id: hex::encode(user),
-        certificates: vec![cert.clone()],
-        revocations: Vec::new(),
-    };
+    let mut fleet = DeviceFleet::new(hex::encode(user));
+    fleet.certificates.push(cert.clone());
     let digest = blake3::hash(&tilo_user_identity::canonical::canonical_bytes(&cert)?);
     let mut nonce = [0; 16];
     nonce.copy_from_slice(&digest.as_bytes()[..16]);
@@ -2838,8 +2652,8 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
     };
     sign_root_cert(&mut cert, root.as_ref())?;
     if let Some(identity_dir) = identity_dir {
-        let fleet = project_personal_device(identity_dir, &cert)?;
-        commit_personal_device(identity_dir, cert.user_public_key, &fleet)?;
+        fleet_store(identity_root, identity_dir)
+            .remember_certificate(&hex::encode(cert.user_public_key), cert.clone())?;
     }
     tilo_user_identity::persist::write_device_cert(out, &cert)?;
     Ok(())

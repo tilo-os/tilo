@@ -25,7 +25,7 @@ use futures_util::{SinkExt as _, StreamExt as _};
 use iroh::SecretKey;
 use iroh_relay::client::{Client, ClientBuilder};
 use iroh_relay::protos::relay::{ClientToRelayMsg, Datagrams, RelayToClientMsg};
-use iroh_relay::server::{Access, AccessControl, ClientRequest, RelayConfig, Server, ServerConfig};
+use iroh_relay::server::{Access, AccessControl, ClientRequest, RelayConfig};
 use iroh_relay::tls::{CaTlsConfig, default_provider};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -46,12 +46,10 @@ impl AccessControl for Refusing {
     }
 }
 
-async fn relay(refused: Vec<iroh::PublicKey>) -> Server {
+async fn relay(refused: Vec<iroh::PublicKey>) -> tilo_test_env::relay::Relay {
     let mut relay = RelayConfig::new((Ipv4Addr::LOCALHOST, 0));
     relay.access = std::sync::Arc::new(Refusing(refused));
-    let mut config = ServerConfig::default();
-    config.relay = Some(relay);
-    Server::spawn(config).await.expect("a local relay")
+    tilo_test_env::relay::Relay::with(relay).await
 }
 
 /// A TCP path to `upstream` whose bytes each take [`ONE_WAY`] to arrive.
@@ -127,7 +125,10 @@ async fn datagrams(client: &mut Client) -> Datagrams {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_client_sends_without_waiting_for_the_relay_to_confirm_it() {
     let server = relay(Vec::new()).await;
-    let http = server.http_addr().expect("the relay's HTTP address");
+    let http = server
+        .server()
+        .http_addr()
+        .expect("the relay's HTTP address");
     let direct = format!("http://{http}");
     let slow = format!("http://{}", slow_path(http).await);
     let round_trip = ONE_WAY * 2;
@@ -192,7 +193,7 @@ async fn a_client_sends_without_waiting_for_the_relay_to_confirm_it() {
 async fn a_relay_that_refuses_a_client_that_went_on_ends_its_connection() {
     let refused = SecretKey::generate();
     let server = relay(vec![refused.public()]).await;
-    let url = format!("http://{}", server.http_addr().expect("address"));
+    let url = server.url().to_string();
     let mut client = client(&url, refused, true)
         .connect()
         .await

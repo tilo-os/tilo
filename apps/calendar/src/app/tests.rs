@@ -2426,7 +2426,7 @@ fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
         // The visible seven-day grid is narrow beside the sidebar. Its
         // minimum reserves two caption lines per half hour.
         let theme = &h.app.layout_theme;
-        let minimum = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+        let minimum = ui::text_render::with_layout_renderer(theme, |text| {
             let title = theme.text(ui::tokens::TextRole::Caption).strong();
             ui::widget::TimelineDensity::Narrow
                 .min_hour_height(theme, f64::from(text.measure_style("Ag", None, &title).1))

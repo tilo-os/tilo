@@ -377,20 +377,44 @@ d-fglwr2mx = High
 d-eqcr4df3 = Picture from
     .doc = A page shown in a picture, from the first to the last.
 
+d-eqcr4df3-first = First
+
 d-jladqoat = Mark page
     .doc = Note the page the rail chose, in the window's last answer.
+
+d-jladqoat-last = Last
+
+d-jladqoat-index = Index
 
 d-ecih73ei = Mark move
     .doc = Note where a page moved to, in the window's last answer.
 
+d-ecih73ei-last = Last
+
+d-ecih73ei-index = Index
+
+d-ecih73ei-at = At
+
 d-p4cfk7jp = Mark files
     .doc = Note the files dropped, in the window's last answer.
+
+d-p4cfk7jp-last = Last
+
+d-p4cfk7jp-files = Files
 
 d-k6l4ki75 = Seek to
     .doc = Move the song to a place in it, as a share of its length.
 
+d-k6l4ki75-place = Place
+
 d-gv3ymzbk = Mark moved
     .doc = Note the item moved, in the window's last answer.
+
+d-gv3ymzbk-last = Last
+
+d-gv3ymzbk-moved = Moved
+
+d-gv3ymzbk-at = At
 
 d-256inp7w = Dropped
     .doc = Note what a drop target took, in the window's last answer.

@@ -272,6 +272,56 @@ impl<'a> StatusClusterFace<'a> {
             .is_some_and(|percent| percent <= StatusCluster::CRITICAL)
     }
 
+    /// Where the cluster at `rect` stands its slots and the bell's count, as
+    /// [`Self::paint`] paints them: what a host places its targets by
+    /// before anything is painted.
+    #[must_use]
+    pub fn layout(
+        &self,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) -> StatusClusterLayout {
+        let mut layout = StatusClusterLayout {
+            cluster: rect,
+            ..StatusClusterLayout::default()
+        };
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return StatusClusterLayout::default();
+        }
+        let slot = self.slot(theme);
+        let glyph = Self::glyph(theme);
+        let cy = rect.center().y;
+        let mut x = rect.x0 + Self::pad(theme);
+        for (index, status) in self.slots.iter().take(MAX_SLOTS).enumerate() {
+            let cell = Rect::new(x, cy - slot / 2.0, x + slot, cy + slot / 2.0);
+            layout.slots[index] = cell;
+            if let StatusSlot::Bell { unread, .. } = *status
+                && unread > 0
+            {
+                let square = Rect::from_center_size(cell.center(), (glyph, glyph));
+                let label = badge_label(unread);
+                let (label_w, label_h) =
+                    text.measure_style(&label, None, &Self::percentage_style(theme));
+                let (width, height) = badge_size(label_w, label_h, theme);
+                // The count sits on the bell's top right corner, as an
+                // application icon's count does: it covers only the
+                // corner, so the bell still reads as one, and it takes
+                // none of the bar's width. It may reach into the room
+                // the bar leaves around its controls (`s1`), never past
+                // it: held inside the control, a count taller than the
+                // corner's room was pushed down and in over the bell.
+                let reach = f64::from(theme.tokens.spacing.s1);
+                let centre_y = square.y0.max(rect.y0 - reach + height / 2.0);
+                let centre_x = (square.x1 + 3.0).min(rect.x1 + reach - width / 2.0);
+                layout.badge =
+                    Rect::from_center_size(Point::new(centre_x, centre_y), (width, height));
+            }
+            x += slot;
+        }
+        layout
+    }
+
     /// Paint the cluster in `rect` (its width from [`Self::width`]) standing
     /// on `ground`, and hand back where its parts landed.
     #[must_use]
@@ -311,18 +361,12 @@ impl<'a> StatusClusterFace<'a> {
         let bright = colors.ink_on(ground, colors.text_primary, 4.5);
         let low = colors.semantic.warning;
         let danger = colors.semantic.danger;
-        let slot = self.slot(theme);
         let glyph = Self::glyph(theme);
         let cy = rect.center().y;
-        let mut layout = StatusClusterLayout {
-            cluster: rect,
-            ..StatusClusterLayout::default()
-        };
-        let mut x = rect.x0 + Self::pad(theme);
+        let placed = self.layout(ctx.text, theme, rect);
         for (index, status) in self.slots.iter().take(MAX_SLOTS).enumerate() {
-            let cell = Rect::new(x, cy - slot / 2.0, x + slot, cy + slot / 2.0);
+            let cell = placed.slots[index];
             let square = Rect::from_center_size(cell.center(), (glyph, glyph));
-            layout.slots[index] = cell;
             match *status {
                 StatusSlot::Bell { unread, quiet } => {
                     let ink = if unread == 0 && !quiet { dim } else { bright };
@@ -338,20 +382,8 @@ impl<'a> StatusClusterFace<'a> {
                         let label = badge_label(unread);
                         let style = Self::percentage_style(theme);
                         let (label_w, label_h) = ctx.text.measure_style(&label, None, &style);
-                        let (width, height) = badge_size(label_w, label_h, theme);
-                        // The count sits on the bell's top right corner, as an
-                        // application icon's count does: it covers only the
-                        // corner, so the bell still reads as one, and it takes
-                        // none of the bar's width. It may reach into the room
-                        // the bar leaves around its controls (`s1`), never past
-                        // it: held inside the control, a count taller than the
-                        // corner's room was pushed down and in over the bell.
-                        let reach = f64::from(theme.tokens.spacing.s1);
-                        let centre_y = square.y0.max(rect.y0 - reach + height / 2.0);
-                        let centre_x = (square.x1 + 3.0).min(rect.x1 + reach - width / 2.0);
-                        let badge =
-                            Rect::from_center_size(Point::new(centre_x, centre_y), (width, height));
-                        layout.badge = badge;
+                        let badge = placed.badge;
+                        let height = badge.height();
                         // A count is a capsule in the danger hue, its ink measured on it.
                         ctx.scene.fill(
                             vello::peniko::Fill::NonZero,
@@ -441,7 +473,6 @@ impl<'a> StatusClusterFace<'a> {
                     );
                 }
             }
-            x += slot;
         }
         if self.focused {
             crate::widget::paint_focus_ring(
@@ -453,7 +484,7 @@ impl<'a> StatusClusterFace<'a> {
             );
         }
         let _ = lit;
-        layout
+        placed
     }
 
     fn paint_link(

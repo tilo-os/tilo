@@ -268,33 +268,12 @@ impl Chat {
         messages: &crate::messages::Messages,
         channel: &str,
     ) -> Vec<Message> {
-        let mut rows: Vec<Message> = messages
+        let rows = messages
             .iter()
             .filter(|(_, message)| message.channel.as_str() == channel)
             .map(|(id, message)| message_row(id, message))
             .collect();
-        let filed = self.feedback_rows(channel);
-        if !filed.is_empty() {
-            for report in filed {
-                // Where it was filed: before the first message written after
-                // it, in the timeline's own order.
-                let at = rows
-                    .iter()
-                    .position(|row| row.ts > report.ts)
-                    .unwrap_or(rows.len());
-                rows.insert(at, report);
-            }
-        }
-        rows.extend(
-            messages
-                .sending()
-                .filter(|(_, message)| message.channel.as_str() == channel)
-                .map(|(id, message)| Message {
-                    sending: true,
-                    ..message_row(id, message)
-                }),
-        );
-        rows
+        with_filed_and_sending(rows, &self.feedback_rows(channel), messages, channel)
     }
 
     /// The feedback filed in `channel`, as the timeline shows it: a message
@@ -403,6 +382,17 @@ fn rows_from_parts(
                 .cloned(),
         );
     }
+    with_filed_and_sending(rows, filed, messages, channel)
+}
+
+/// `rows` with the `filed` feedback reports put where they were filed and what is being sent to
+/// `channel` after them.
+fn with_filed_and_sending(
+    mut rows: Vec<Message>,
+    filed: &[Message],
+    messages: &crate::messages::Messages,
+    channel: &str,
+) -> Vec<Message> {
     for report in filed {
         // Where it was filed: before the first message written after it, in
         // the timeline's own order.
@@ -454,6 +444,7 @@ pub(crate) fn message_row(id: &Id, message: &crate::record::Message) -> Message 
         pinned: message.pinned,
         work: message.work.as_ref().and_then(work_row),
         appearance: message.appearance.clone().map(Into::into),
+        acting: message.acting.clone(),
         share: message.share.clone(),
         attempts: message.attempts,
         sending: false,

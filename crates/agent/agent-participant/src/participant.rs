@@ -65,7 +65,7 @@ pub(crate) use crate::workspace_records::desktop_route;
 
 use crate::workspace_records::{Reading, WorkspaceRecords};
 use context::picture_head;
-use logs::{record_action, record_ended, record_plan};
+use logs::{record_ended, record_plan};
 use running::{
     FollowUp, NEW_DOCUMENT_NOTE, Running, imports, named_without_documents, produced,
     unknown_action,
@@ -1063,7 +1063,7 @@ impl AgentParticipant {
                 let Some(picture) = arguments
                     .values()
                     .filter_map(serde_json::Value::as_str)
-                    .filter_map(crate::vision::content_hash)
+                    .filter_map(crate::vision::reference)
                     .find(|hash| self.content_is_picture(hash))
                     .map(|hash| crate::vision::content_address(&hash))
                 else {
@@ -2084,8 +2084,7 @@ impl AgentParticipant {
             .map_err(actions::Refusal::into_text)
     }
 
-    /// [`Self::invoke_as`], logged to `TILO_AGENT_ACTION_LOG`
-    /// ([`record_action`]) with how it went.
+    /// [`Self::invoke_as`], with how it went traced.
     fn invoke_step(
         &mut self,
         route: &DocumentRoute,
@@ -2094,22 +2093,7 @@ impl AgentParticipant {
         confirmed: bool,
     ) -> Result<Option<ActionOutput>, actions::Refusal> {
         tracing::trace!(app = %route.app_id, action = %address.action, ?arguments, "agent: invoke");
-        let started = tilo_clock::unix_now_ms();
-        let outcome = self.invoke_as(route, address, arguments, confirmed);
-        let logged = match &outcome {
-            Ok(output) => Ok(output.clone()),
-            Err(actions::Refusal::Door(error)) => Err(format!("{}: {error}", error.code())),
-            Err(actions::Refusal::Agent(reason)) => Err(reason.clone()),
-        };
-        record_action(
-            crate::control::agent_id(&self.identity.delegation),
-            route,
-            address,
-            arguments,
-            started,
-            &logged,
-        );
-        outcome
+        self.invoke_as(route, address, arguments, confirmed)
     }
 
     /// [`Self::invoke`], with `confirmed` standing for whoever confirmed:

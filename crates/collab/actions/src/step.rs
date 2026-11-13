@@ -167,6 +167,12 @@ pub struct Step<'a> {
     pub app: Option<&'a str>,
     /// What a run runs, as the caller passed it.
     pub command: Option<&'a str>,
+    /// What a create makes: the kind of the record it makes it in, and the
+    /// collection of that record it adds to as its declaration names it
+    /// (`tasks.tracker`, `issues`). A surface says one of them by the
+    /// collection's own noun ("an issue", "eine Aufgabe") where the app's
+    /// catalogue holds one, and only says where the step works otherwise.
+    pub makes: Option<(&'a str, &'a str)>,
 }
 
 impl<'a> Step<'a> {
@@ -178,6 +184,7 @@ impl<'a> Step<'a> {
             record: nonempty(record),
             app: None,
             command: None,
+            makes: None,
         }
     }
 
@@ -192,6 +199,14 @@ impl<'a> Step<'a> {
     #[must_use]
     pub fn running(mut self, command: Option<&'a str>) -> Self {
         self.command = nonempty(command);
+        self
+    }
+
+    /// The same step, making something in the collection `field` of the record
+    /// of `kind`: what a surface names by that collection's own noun.
+    #[must_use]
+    pub fn making(mut self, kind: &'a str, field: &'a str) -> Self {
+        self.makes = Some((kind, field));
         self
     }
 
@@ -211,6 +226,12 @@ impl<'a> Step<'a> {
                     .map(|app| app.label.as_str()),
             ),
             command: None,
+            makes: interaction
+                .action
+                .creates
+                .as_deref()
+                .and_then(|field| nonempty(Some(field)))
+                .map(|field| (interaction.resource.kind.as_str(), field)),
         }
     }
 
@@ -266,6 +287,8 @@ pub const COMMAND_PARAMS: &[&str] = &["command", "command_line", "cmd"];
 
 /// A step that makes something new in the record or the app it names.
 pub const CREATING: &str = "step-creating";
+/// A step that makes one of a collection, named by that collection's noun.
+pub const CREATING_ONE: &str = "step-creating-one";
 /// A step that writes words into the record.
 pub const WRITING: &str = "step-writing";
 /// A step that changes what the record or one of its items says.
@@ -321,6 +344,7 @@ mod tests {
                     label: "Tasks".into(),
                 }),
                 step,
+                creates: None,
             },
             resource: ActionResource {
                 id: "tasks.tracker".into(),
@@ -375,6 +399,16 @@ mod tests {
         );
         let created = Step::of_interaction(&made).in_app(Some(" Tasks "));
         assert_eq!(created.message(), (CREATING, Some(("record", "Issues"))));
+        // A create whose declaration names the collection it adds to says what
+        // it makes: the record's kind and that collection.
+        let mut declaring = made.clone();
+        declaring.action.creates = Some(" issues ".into());
+        assert_eq!(
+            Step::of_interaction(&declaring).makes,
+            Some(("tasks.tracker", "issues")),
+            "what it makes, named by the record's kind and its collection"
+        );
+        assert_eq!(created.makes, None, "a create that names none makes none");
         assert_eq!(
             Step::new(StepKind::Create, None)
                 .in_app(Some("Tasks"))
@@ -392,6 +426,7 @@ mod tests {
                 record: Some("Terminal"),
                 app: None,
                 command: Some("cargo build"),
+                makes: None,
             }
         );
         assert_eq!(

@@ -8,33 +8,12 @@ use super::*;
 use agent_provider_config::presets::{Authentication, Preset};
 use agent_provider_config::{KeyHeader, OpenAiApi};
 use serde_json::json;
-
-/// What the server saw of one request.
-struct Seen {
-    path: String,
-    headers: Vec<(String, String)>,
-    body: serde_json::Value,
-}
+use test_http::{Reply, Responder};
 
 /// A server answering one request with what its path asks for.
-fn server() -> (String, std::thread::JoinHandle<Seen>) {
-    use std::io::Write as _;
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let origin = format!("http://{}", listener.local_addr().unwrap());
-    let task = std::thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        let (head, body) = super::tests::read_request(&mut socket);
-        let path = head
-            .split_whitespace()
-            .nth(1)
-            .unwrap_or_default()
-            .to_owned();
-        let headers: Vec<(String, String)> = head
-            .lines()
-            .skip(1)
-            .filter_map(|line| line.split_once(':'))
-            .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_owned()))
-            .collect();
+fn server() -> Responder {
+    Responder::serve(|peer| {
+        let path = peer.request().target.clone();
         let answer = if path.ends_with("/v1/messages") {
             json!({"id": "msg_1", "type": "message", "role": "assistant", "model": "checked-model",
                 "content": [{"type": "text", "text": "answer"}],
@@ -53,14 +32,12 @@ fn server() -> (String, std::thread::JoinHandle<Seen>) {
                 "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
         }
         .to_string();
-        write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}", answer.len()).unwrap();
-        Seen {
-            path,
-            headers,
-            body: serde_json::from_slice(&body).unwrap(),
-        }
-    });
-    (origin, task)
+        peer.reply(
+            &Reply::status(200)
+                .header("Content-Type", "application/json")
+                .body(answer),
+        );
+    })
 }
 
 fn request() -> neutral::ModelRequest {
@@ -91,6 +68,10 @@ enum Dialect {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario over every preset, read top to bottom"
+)]
 async fn every_preset_sends_its_protocols_request_with_its_key_header() {
     const KEY: &str = "catalogue-test-key";
     let mut dialects = std::collections::BTreeSet::new();
@@ -99,10 +80,10 @@ async fn every_preset_sends_its_protocols_request_with_its_key_header() {
         // the subscription tests with a minted token.
         !preset.signs_in_only()
     }) {
-        let (origin, peer) = server();
+        let served = server();
         let mut profile = preset.profile();
         let path = endpoint_path(preset.endpoint());
-        profile.endpoint = format!("{origin}{path}");
+        profile.endpoint = format!("{}{path}", served.url());
         let secret = match preset.authentication() {
             Authentication::None => None,
             _ => Some(KEY),
@@ -117,7 +98,14 @@ async fn every_preset_sends_its_protocols_request_with_its_key_header() {
             crate::openai::Target::Standard,
         )
         .await;
-        let seen = peer.join().unwrap();
+        let seen = served.next_request();
+        let seen_path = seen.target.clone();
+        let seen_headers: Vec<(String, String)> = seen
+            .headers
+            .iter()
+            .map(|(name, value)| (name.to_ascii_lowercase(), value.clone()))
+            .collect();
+        let seen_body: serde_json::Value = serde_json::from_str(&seen.body_text()).unwrap();
         let response =
             response.unwrap_or_else(|failure| panic!("{}: {}", preset.slug(), failure.why));
         let answer = neutral_response(response).unwrap();
@@ -142,11 +130,10 @@ async fn every_preset_sends_its_protocols_request_with_its_key_header() {
             Dialect::Responses => format!("{path}/responses"),
             Dialect::Messages => format!("{path}/v1/messages"),
         };
-        assert_eq!(seen.path, expected_path, "{}", preset.slug());
+        assert_eq!(seen_path, expected_path, "{}", preset.slug());
 
         // The key travels in exactly the header the preset names.
-        let credentials: Vec<_> = seen
-            .headers
+        let credentials: Vec<_> = seen_headers
             .iter()
             .filter(|(name, _)| matches!(name.as_str(), "authorization" | "x-api-key" | "api-key"))
             .collect();
@@ -166,7 +153,7 @@ async fn every_preset_sends_its_protocols_request_with_its_key_header() {
             }
         }
 
-        let body = &seen.body;
+        let body = &seen_body;
         assert_eq!(body["model"], "checked-model", "{}", preset.slug());
         match dialect {
             Dialect::Chat => {
@@ -185,7 +172,7 @@ async fn every_preset_sends_its_protocols_request_with_its_key_header() {
             }
             Dialect::Messages => {
                 assert!(
-                    seen.headers
+                    seen_headers
                         .iter()
                         .any(|(name, _)| name == "anthropic-version"),
                     "{}",

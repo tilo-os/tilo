@@ -474,7 +474,20 @@ pub enum RichTextAction {
     /// spliced and re-marked in place, the rest inserted or removed. A whole
     /// value written over a field (a tilolang assignment, an agent's rewrite)
     /// merges with a concurrent edit this way, never as a replacement.
-    SyncClips { blocks: Vec<ClipBlock> },
+    ///
+    /// With `replace`, `blocks` stand for those blocks alone, by id, where
+    /// they are: one edit of an editor, the paragraphs it changed and nothing
+    /// else, so a keystroke in a long note is its paragraph, never the note.
+    /// Where the body does not name each of them so (blocks the edit's writer
+    /// made, which the body names otherwise), they are as many blocks from the
+    /// place `at` they were at.
+    SyncClips {
+        blocks: Vec<ClipBlock>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replace: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        at: usize,
+    },
     // Decoded again on every replica, the images the bytes embed named by
     // address and kept nowhere: what documents recorded before
     // `ReplaceImported`, and a body written inside another action.
@@ -1026,8 +1039,15 @@ impl<'a> ActionValidator<'a> {
             }
             RichTextAction::EnsureRegionBlock { .. } => true,
             RichTextAction::ReplaceBody { markdown } => Self::safe_text(markdown),
-            RichTextAction::ReplaceClips { blocks } | RichTextAction::SyncClips { blocks } => {
+            RichTextAction::ReplaceClips { blocks } => {
                 blocks.len() <= 10_000 && blocks.iter().all(Self::valid_clip)
+            }
+            RichTextAction::SyncClips {
+                blocks, replace, ..
+            } => {
+                blocks.len() <= 10_000
+                    && replace.as_ref().is_none_or(|ids| ids.len() <= 10_000)
+                    && blocks.iter().all(Self::valid_clip)
             }
             RichTextAction::ReplaceFormatted { bytes, .. } => bytes.len() <= MAX_IMPORT_BYTES,
             RichTextAction::ReplaceImported {
@@ -2360,9 +2380,55 @@ fn apply_replace_clips(dm: &mut DocMut, blocks: &[ClipBlock]) {
     keep_a_paragraph(dm);
 }
 
-fn apply_sync_clips(dm: &mut DocMut, blocks: &[ClipBlock]) {
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "`skip_serializing_if` calls it with the field by reference"
+)]
+fn is_zero(at: &usize) -> bool {
+    *at == 0
+}
+
+fn apply_sync_clips(dm: &mut DocMut, blocks: &[ClipBlock], replace: Option<&[String]>, at: usize) {
     let views: Vec<tilo_doc::snapshot::BlockView> = blocks.iter().map(ClipBlock::to_view).collect();
-    tilo_doc::reconcile_body(dm, &views);
+    let Some(replace) = replace else {
+        tilo_doc::reconcile_body(dm, &views);
+        keep_a_paragraph(dm);
+        return;
+    };
+    // An edit's blocks go where the blocks they stand for are, and only that stretch of the body
+    // and the block on each side of it is read: those pair with themselves, so the edit is
+    // written where it was made, however long the body.
+    let order = tilo_doc::model::region_blocks_in_order(dm.doc, dm.c, Region::Body);
+    let named: Vec<usize> = replace
+        .iter()
+        .filter_map(|id| order.iter().position(|block| block == id))
+        .collect();
+    let (start, gone) = if !named.is_empty() && named.len() == replace.len() {
+        (named.iter().copied().min().unwrap_or(at), named)
+    } else {
+        let start = at.min(order.len());
+        let end = start.saturating_add(replace.len()).min(order.len());
+        (start, (start..end).collect())
+    };
+    let end = gone
+        .iter()
+        .max()
+        .map_or(start, |last| last.saturating_add(1));
+    let from = start.saturating_sub(1);
+    let ids = order
+        .get(from..end.saturating_add(1).min(order.len()))
+        .unwrap_or_default();
+    let live = tilo_doc::model::materialize_blocks(dm.doc, dm.c, ids);
+    let kept = |index: &usize| !gone.contains(&index.saturating_add(from));
+    let at = |index: usize| live.get(index);
+    let split = start.saturating_sub(from);
+    let wanted: Vec<_> = (0..split)
+        .filter(kept)
+        .filter_map(at)
+        .chain(&views)
+        .chain((split..live.len()).filter(kept).filter_map(at))
+        .collect();
+    tilo_doc::reconcile_body_from(dm, &live, &wanted);
     keep_a_paragraph(dm);
 }
 
@@ -2606,7 +2672,11 @@ fn apply_block_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
         }
         RichTextAction::ReplaceBody { markdown } => apply_replace_body(dm, markdown),
         RichTextAction::ReplaceClips { blocks } => apply_replace_clips(dm, blocks),
-        RichTextAction::SyncClips { blocks } => apply_sync_clips(dm, blocks),
+        RichTextAction::SyncClips {
+            blocks,
+            replace,
+            at,
+        } => apply_sync_clips(dm, blocks, replace.as_deref(), *at),
         RichTextAction::ReplaceFormatted { format, bytes } => {
             apply_replace_formatted(dm, *format, bytes);
         }

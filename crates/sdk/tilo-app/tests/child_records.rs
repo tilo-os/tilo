@@ -14,7 +14,7 @@ pub struct Workspace {
     pub entries: Container,
 }
 
-#[resource(kind = "test.child-workspace", label = "Workspace")]
+#[resource(kind = "test.child-workspace", catalogue = "tests/locales")]
 impl Workspace {
     /// Rename nothing.
     #[action]
@@ -27,7 +27,7 @@ pub struct Topic {
     pub name: String,
 }
 
-#[resource(kind = "test.child-topic", label = "Topics")]
+#[resource(kind = "test.child-topic", catalogue = "tests/locales")]
 impl Topic {
     /// Rename the topic.
     #[action]

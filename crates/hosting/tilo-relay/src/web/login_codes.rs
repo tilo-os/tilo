@@ -1,10 +1,18 @@
 //! Login codes ([`tilo_relay_protocol::login_code`]): the short code a
 //! person's tab shows and their agent types into `tilo login`.
 //!
-//! Codes live in memory only, a bounded number at once. Each is drawn from
-//! the operating system's random source, resolves once (the first resolve
-//! spends it) within [`CODE_LIFETIME_MS`], and keeps what the computer
-//! reports for [`FOLLOW_LIFETIME_MS`] after that. Only the tab holding the
+//! Making a code keeps nothing: the host draws it from the operating
+//! system's random source and answers it with a follow secret it derives
+//! from the code, its expiry and its link under a key only this host holds,
+//! so a stranger who opens the site and does nothing leaves nothing here.
+//! The tab's first follow carries the offer back; the host checks the
+//! secret is the one it derived for it, and keeps the code from then on.
+//! Kept codes, and the key, are kept on the host's disk with its state
+//! ([`LoginCodes::kept`]): a code a tab shows, or an agent was handed, still
+//! resolves after the host restarts, as every deploy restarts it. A kept
+//! code resolves once (the first resolve spends it) within
+//! [`CODE_LIFETIME_MS`], and keeps what the computer reports for
+//! [`FOLLOW_LIFETIME_MS`] after that. Only the tab holding the
 //! code's `follow` secret reads it, and only the computer holding its
 //! `report` secret writes it.
 //!
@@ -20,19 +28,23 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
 
 use tilo_relay_protocol::login_code::{
     CODE_LETTERS, CODE_LIFETIME_MS, ClaimedFor, Created, FOLLOW_LIFETIME_MS, MAX_AGENT_CHARS,
-    MAX_LINK_CHARS, Polled, Report, Resolved, Step, code_from, normalize_code,
+    MAX_LINK_CHARS, Offer, Polled, Report, Resolved, Step, code_from, normalize_code,
 };
 
-/// Codes held at once, spent or not; a create past it is refused.
-pub(super) const MAX_CODES: usize = 1024;
+/// What the follow secret of an offered code is derived under, beside the
+/// host's key.
+const OFFER_CONTEXT: &str = "tilo-relay login code offer v1";
 /// Resolves that may miss per client address in a minute.
 pub(super) const MISSES_PER_ADDRESS: u32 = 10;
 /// Resolves that may miss in all in a minute.
 pub(super) const MISSES_IN_ALL: u32 = 300;
-/// Codes one client address may make in a minute.
+/// Codes one client address may have the host keep in a minute.
 pub(super) const CREATES_PER_ADDRESS: u32 = 30;
 /// The window the budgets count in.
 pub(super) const WINDOW_MS: u64 = 60 * 1000;
@@ -50,8 +62,6 @@ pub(super) enum Refusal {
     Unknown,
     /// Too many misses or creates this minute (`429`).
     TooMany,
-    /// The host holds as many codes as it keeps (`503`).
-    Full,
     /// The code is not in the state this asks for (`409`).
     Conflict(&'static str),
 }
@@ -62,12 +72,12 @@ impl Refusal {
             Self::Malformed(message) | Self::Conflict(message) => message,
             Self::Unknown => "no such login code, or it expired; ask the page for a new one",
             Self::TooMany => "too many tries; wait a minute",
-            Self::Full => "the host is making too many login codes; try again soon",
         }
     }
 }
 
 /// A claim a device of a person made for a sign-in code.
+#[derive(Serialize, Deserialize)]
 struct Claim {
     user: [u8; 32],
     invite: [u8; 16],
@@ -79,6 +89,7 @@ struct Claim {
 }
 
 /// What a computer did with a code it resolved.
+#[derive(Serialize, Deserialize)]
 struct Resolution {
     report: [u8; 32],
     at_ms: u64,
@@ -88,6 +99,7 @@ struct Resolution {
     claim: Option<Claim>,
 }
 
+#[derive(Serialize, Deserialize)]
 struct Entry {
     code: String,
     link: Option<String>,
@@ -208,6 +220,22 @@ impl State {
         });
     }
 
+    /// The live codes of `codes`, with the indexes they are found by.
+    fn of(codes: Vec<([u8; 32], Entry)>, now_ms: u64) -> Self {
+        let mut state = Self::default();
+        for (follow, entry) in codes {
+            if entry.resolution.is_none() {
+                state.unspent.insert(entry.code.clone(), follow);
+            }
+            if let Some(resolved) = &entry.resolution {
+                state.reports.insert(resolved.report, follow);
+            }
+            state.entries.insert(follow, entry);
+        }
+        state.prune(now_ms);
+        state
+    }
+
     fn by_report(&mut self, report: &str) -> Result<&mut Entry, Refusal> {
         let report = secret(report).ok_or(Refusal::Malformed("a report secret is 32 bytes hex"))?;
         let follow = self.reports.get(&report).ok_or(Refusal::Unknown)?;
@@ -215,12 +243,64 @@ impl State {
     }
 }
 
+/// What the host keeps of its codes on disk: the key offers are derived
+/// under, and each live code by its follow secret. The indexes and the budgets are rebuilt or start over.
+#[derive(Serialize, Deserialize)]
+struct Kept {
+    version: u32,
+    key: [u8; 32],
+    codes: Vec<([u8; 32], Entry)>,
+}
+
+/// [`Kept`] as the host writes it, from the codes it holds.
+#[derive(Serialize)]
+struct Keeping<'a> {
+    version: u32,
+    key: &'a [u8; 32],
+    codes: Vec<(&'a [u8; 32], &'a Entry)>,
+}
+
+/// The codes kept at `path`; `None` when there are none, or the file is not
+/// one this host reads (another version, or damaged).
+fn read_kept(path: &Path) -> Option<Kept> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            tracing::warn!(%error, "kept login codes not read; starting without them");
+            return None;
+        }
+    };
+    match serde_json::from_slice::<Kept>(&bytes) {
+        Ok(kept) if kept.version == KEPT_VERSION => Some(kept),
+        Ok(kept) => {
+            tracing::warn!(
+                version = kept.version,
+                "kept login codes of another version; starting without them"
+            );
+            None
+        }
+        Err(error) => {
+            tracing::warn!(%error, "kept login codes damaged; starting without them");
+            None
+        }
+    }
+}
+
+/// The version of [`Kept`] this host writes; a file of another is not read.
+const KEPT_VERSION: u32 = 2;
+
 /// The host's login codes.
 pub(super) struct LoginCodes {
     state: std::sync::Mutex<State>,
+    /// What offered codes' follow secrets are derived under: drawn once and
+    /// kept with the codes, so an offer outlives a restart as a kept code does.
+    key: [u8; 32],
     /// This host's own origin as pages reach it, which a code's link must
     /// name; `None` when the host knows no origin to check against.
     host_origin: Option<String>,
+    /// Where the codes are kept across restarts; `None` keeps them in memory.
+    path: Option<PathBuf>,
 }
 
 fn secret(hex_text: &str) -> Option<[u8; 32]> {
@@ -230,11 +310,84 @@ fn secret(hex_text: &str) -> Option<[u8; 32]> {
 }
 
 impl LoginCodes {
+    #[cfg(test)]
     pub(super) fn new(host_origin: Option<String>) -> Self {
         Self {
             state: std::sync::Mutex::default(),
+            key: rand::random(),
             host_origin,
+            path: None,
         }
+    }
+
+    /// The codes kept at `path` (those still live at `now_ms`), kept there
+    /// again on every change.
+    pub(super) fn kept(host_origin: Option<String>, path: PathBuf, now_ms: u64) -> Self {
+        let (key, state) = read_kept(&path).map_or_else(
+            || (rand::random(), State::default()),
+            |kept| (kept.key, State::of(kept.codes, now_ms)),
+        );
+        let codes = Self {
+            state: std::sync::Mutex::new(state),
+            key,
+            host_origin,
+            path: Some(path),
+        };
+        // The key is on disk before any offer made under it.
+        codes.save(&codes.lock());
+        codes
+    }
+
+    /// Keep `state`'s codes on disk, readable by this host's user only: they
+    /// hold the secrets that follow and report them.
+    fn save(&self, state: &State) {
+        let Some(path) = &self.path else { return };
+        let kept = Keeping {
+            version: KEPT_VERSION,
+            key: &self.key,
+            codes: state.entries.iter().collect(),
+        };
+        let written = serde_json::to_vec(&kept)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| {
+                if let Some(dir) = path.parent() {
+                    std::fs::create_dir_all(dir)?;
+                }
+                tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
+            });
+        if let Err(error) = written {
+            tracing::warn!(%error, "login codes not kept; a restart forgets them");
+        }
+    }
+
+    /// Run `f` on the codes still live at `now_ms`, under the lock, and keep
+    /// what it changed.
+    fn changed<R>(&self, now_ms: u64, f: impl FnOnce(&mut State) -> R) -> R {
+        let mut state = self.lock();
+        state.prune(now_ms);
+        let answer = f(&mut state);
+        self.save(&state);
+        drop(state);
+        answer
+    }
+
+    /// The follow secret of the code `code`, offered until `expires_at_ms`
+    /// naming `link`: only this host can derive it, so a tab bringing it
+    /// back with the offer shows the host made exactly that offer.
+    fn offer_secret(&self, code: &str, expires_at_ms: u64, link: Option<&str>) -> blake3::Hash {
+        let mut hasher = blake3::Hasher::new_keyed(&self.key);
+        hasher.update(OFFER_CONTEXT.as_bytes());
+        hasher.update(&u64::try_from(code.len()).unwrap_or(u64::MAX).to_le_bytes());
+        hasher.update(code.as_bytes());
+        hasher.update(&expires_at_ms.to_le_bytes());
+        match link {
+            Some(link) => {
+                hasher.update(&[1]);
+                hasher.update(link.as_bytes());
+            }
+            None => _ = hasher.update(&[0]),
+        }
+        hasher.finalize()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -251,55 +404,76 @@ impl LoginCodes {
         answer
     }
 
-    /// Make a code naming `link` (setting up) or nothing (signing in).
-    pub(super) fn create(
+    /// Offer a code naming `link` (setting up) or nothing (signing in). The
+    /// host keeps nothing of it until its tab first follows it
+    /// ([`Self::follow`] with the offer).
+    pub(super) fn create(&self, link: Option<&str>, now_ms: u64) -> Result<Created, Refusal> {
+        if let Some(link) = link {
+            pairing_link(link, self.host_origin.as_deref()).map_err(Refusal::Malformed)?;
+        }
+        let code = code_from(rand::random::<[u8; CODE_LETTERS]>());
+        let expires_at_ms = now_ms.saturating_add(CODE_LIFETIME_MS);
+        let follow = self.offer_secret(&code, expires_at_ms, link);
+        Ok(Created {
+            code,
+            follow: follow.to_hex().to_string(),
+            expires_at_ms,
+        })
+    }
+
+    /// Keep the code `offer` describes under `follow`, when the secret is
+    /// the one this host derived for it and it is still live: what the tab's
+    /// first follow does.
+    fn keep(
         &self,
-        link: Option<String>,
+        state: &mut State,
+        follow: [u8; 32],
+        offer: &Offer,
         client: Option<IpAddr>,
         now_ms: u64,
-    ) -> Result<Created, Refusal> {
-        let pair = link
+    ) -> Result<(), Refusal> {
+        let code = normalize_code(&offer.code).ok_or(Refusal::Malformed("not a login code"))?;
+        let derived = self.offer_secret(&code, offer.expires_at_ms, offer.link.as_deref());
+        // Compared in constant time, as `blake3::Hash` compares.
+        if derived != blake3::Hash::from_bytes(follow) {
+            return Err(Refusal::Unknown);
+        }
+        if offer.expires_at_ms <= now_ms {
+            // Ran out while nobody used it: the tab hears it expired.
+            return Ok(());
+        }
+        let pair = offer
+            .link
             .as_deref()
             .map(|link| pairing_link(link, self.host_origin.as_deref()))
             .transpose()
             .map_err(Refusal::Malformed)?;
-        let mut state = self.lock();
-        state.prune(now_ms);
         if !state
             .creates
             .within(client, now_ms, CREATES_PER_ADDRESS, u32::MAX)
         {
             return Err(Refusal::TooMany);
         }
-        if state.entries.len() >= MAX_CODES {
-            return Err(Refusal::Full);
+        if state.unspent.contains_key(&code) {
+            // Another tab keeps the same letters, drawn by chance: this
+            // offer is not kept, and its tab takes the next one.
+            return Err(Refusal::Conflict(
+                "this code is taken; ask the page for a new one",
+            ));
         }
         state.creates.spend(client, now_ms);
-        let code = loop {
-            let code = code_from(rand::random::<[u8; CODE_LETTERS]>());
-            if !state.unspent.contains_key(&code) {
-                break code;
-            }
-        };
-        let follow: [u8; 32] = rand::random();
-        let expires_at_ms = now_ms.saturating_add(CODE_LIFETIME_MS);
         state.unspent.insert(code.clone(), follow);
         state.entries.insert(
             follow,
             Entry {
-                code: code.clone(),
-                link,
+                code,
+                link: offer.link.clone(),
                 pair,
-                expires_at_ms,
+                expires_at_ms: offer.expires_at_ms,
                 resolution: None,
             },
         );
-        drop(state);
-        Ok(Created {
-            code,
-            follow: hex::encode(follow),
-            expires_at_ms,
-        })
+        Ok(())
     }
 
     /// Resolve `typed`, spending the code.
@@ -339,6 +513,7 @@ impl LoginCodes {
         if let Some(follow) = follow {
             state.reports.insert(report, follow);
         }
+        self.save(&state);
         drop(state);
         Ok(resolved)
     }
@@ -366,7 +541,7 @@ impl LoginCodes {
                 "a failure's sentence is at most 300 characters",
             ));
         }
-        self.pruned(now_ms, |state| {
+        self.changed(now_ms, |state| {
             let resolved = state
                 .by_report(&report.report)?
                 .resolution
@@ -411,6 +586,7 @@ impl LoginCodes {
             expires_at_ms,
             approved: false,
         });
+        self.save(&state);
         drop(state);
         Ok(expires_at_ms)
     }
@@ -443,7 +619,7 @@ impl LoginCodes {
     /// Take the claim for `user` that minted `invite`, so it approves
     /// nothing again; `true` when there was one to take.
     pub(super) fn take_claim(&self, user: &[u8; 32], invite: &[u8; 16], now_ms: u64) -> bool {
-        self.pruned(now_ms, |state| {
+        self.changed(now_ms, |state| {
             let claim = state.entries.values_mut().find_map(|entry| {
                 entry
                     .resolution
@@ -469,13 +645,29 @@ impl LoginCodes {
             (claim.user == *user && claim.invite == *invite).then_some(resolved)
         }) {
             record(resolved, Step::Approved);
+            self.save(&state);
         }
     }
 
-    /// Where the code `follow` names is.
-    pub(super) fn follow(&self, follow: &str, now_ms: u64) -> Result<Polled, Refusal> {
+    /// Where the code `follow` names is; with its `offer`, kept first if the
+    /// host does not keep it yet.
+    pub(super) fn follow(
+        &self,
+        follow: &str,
+        offer: Option<&Offer>,
+        client: Option<IpAddr>,
+        now_ms: u64,
+    ) -> Result<Polled, Refusal> {
         let follow = secret(follow).ok_or(Refusal::Malformed("a follow secret is 32 bytes hex"))?;
-        Ok(self.pruned(now_ms, |state| Self::polled(state, &follow)))
+        self.pruned(now_ms, |state| {
+            if let Some(offer) = offer
+                && !state.entries.contains_key(&follow)
+            {
+                self.keep(state, follow, offer, client, now_ms)?;
+                self.save(state);
+            }
+            Ok(Self::polled(state, &follow))
+        })
     }
 
     fn polled(state: &State, follow: &[u8; 32]) -> Polled {
@@ -628,6 +820,24 @@ mod tests {
         )
     }
 
+    /// A code offered and kept, as its tab's first follow keeps it.
+    fn kept(codes: &LoginCodes, link: Option<String>, now_ms: u64) -> Created {
+        let created = codes.create(link.as_deref(), now_ms).unwrap();
+        let offer = offer_of(&created, link);
+        codes
+            .follow(&created.follow, Some(&offer), None, now_ms)
+            .unwrap();
+        created
+    }
+
+    fn offer_of(created: &Created, link: Option<String>) -> Offer {
+        Offer {
+            code: created.code.clone(),
+            expires_at_ms: created.expires_at_ms,
+            link,
+        }
+    }
+
     fn report(report: &str, step: Step) -> Report {
         Report {
             report: report.into(),
@@ -641,7 +851,7 @@ mod tests {
     fn a_setup_code_names_the_request_its_computer_makes_until_it_is_gone() {
         let codes = LoginCodes::new(Some("https://eu1.tilo.sh".into()));
         let (user, invite) = ([0xab; 32], [0x7f; 16]);
-        let created = codes.create(Some(link()), None, NOW).unwrap();
+        let created = kept(&codes, Some(link()), NOW);
         // Written but not typed yet: no computer made anything.
         assert!(!codes.sets_up(&user, &invite, NOW));
         codes.resolve(&created.code, None, NOW + 1).unwrap();
@@ -657,7 +867,7 @@ mod tests {
         // The host forgets the code, and the request it named with it.
         assert!(!codes.sets_up(&user, &invite, NOW + 1 + FOLLOW_LIFETIME_MS));
         // A sign-in code names no link, so no request of its own.
-        let sign_in = codes.create(None, None, NOW).unwrap();
+        let sign_in = kept(&codes, None, NOW);
         codes.resolve(&sign_in.code, None, NOW + 1).unwrap();
         assert!(!codes.sets_up(&user, &invite, NOW + 2));
     }
@@ -665,9 +875,9 @@ mod tests {
     #[test]
     fn a_code_resolves_once_and_its_tab_follows_each_step_once() {
         let codes = LoginCodes::new(Some("https://eu1.tilo.sh".into()));
-        let created = codes.create(Some(link()), None, NOW).unwrap();
+        let created = kept(&codes, Some(link()), NOW);
         assert_eq!(created.expires_at_ms, NOW + CODE_LIFETIME_MS);
-        let polled = codes.follow(&created.follow, NOW).unwrap();
+        let polled = codes.follow(&created.follow, None, None, NOW).unwrap();
         assert!(!polled.resolved && !polled.expired);
 
         let typed = created.code.to_ascii_lowercase().replace('-', " ");
@@ -695,7 +905,7 @@ mod tests {
             codes.report(&report(&resolved.report, Step::Approved), NOW),
             Err(Refusal::Malformed(_))
         ));
-        let polled = codes.follow(&created.follow, NOW + 6).unwrap();
+        let polled = codes.follow(&created.follow, None, None, NOW + 6).unwrap();
         assert!(polled.resolved);
         assert_eq!(polled.agent.as_deref(), Some("Claude Code"));
         assert_eq!(
@@ -704,7 +914,12 @@ mod tests {
         );
 
         let later = NOW + 1 + FOLLOW_LIFETIME_MS;
-        assert!(codes.follow(&created.follow, later).unwrap().expired);
+        assert!(
+            codes
+                .follow(&created.follow, None, None, later)
+                .unwrap()
+                .expired
+        );
         assert_eq!(
             codes.report(&report(&resolved.report, Step::Entered), later),
             Err(Refusal::Unknown)
@@ -712,21 +927,88 @@ mod tests {
     }
 
     #[test]
+    fn codes_outlive_a_restart_of_the_host_and_expire_as_they_would_have() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("login-codes.json");
+        let host = || Some("https://eu1.tilo.sh".to_owned());
+        let codes = LoginCodes::kept(host(), path.clone(), NOW);
+        let shown = kept(&codes, Some(link()), NOW);
+        let typed = kept(&codes, None, NOW);
+        // Offered before the restart, and followed only after it.
+        let offered = codes.create(None, NOW).unwrap();
+        let resolved = codes.resolve(&typed.code, None, NOW + 1).unwrap();
+        codes
+            .report(&report(&resolved.report, Step::LoggedIn), NOW + 2)
+            .unwrap();
+        let soon = kept(&codes, None, NOW - CODE_LIFETIME_MS + 10);
+        drop(codes);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "the secrets are the host's alone"
+        );
+
+        // The host restarts: the code its tab still shows resolves, and the
+        // tab follows the one an agent resolved before it.
+        let codes = LoginCodes::kept(host(), path.clone(), NOW + 20);
+        let polled = codes.follow(&typed.follow, None, None, NOW + 20).unwrap();
+        assert!(polled.resolved && !polled.expired);
+        assert_eq!(polled.steps, vec![Step::Resolved, Step::LoggedIn]);
+        assert_eq!(
+            codes.resolve(&typed.code, None, NOW + 20),
+            Err(Refusal::Unknown),
+            "a code resolves once, restart or not"
+        );
+        let resolved = codes.resolve(&shown.code, None, NOW + 21).unwrap();
+        assert_eq!(resolved.link, Some(link()));
+        assert!(codes.sets_up(&[0xab; 32], &[0x7f; 16], NOW + 22));
+        assert!(
+            codes
+                .follow(&soon.follow, None, None, NOW + 22)
+                .unwrap()
+                .expired
+        );
+        let offer = offer_of(&offered, None);
+        let polled = codes
+            .follow(&offered.follow, Some(&offer), None, NOW + 23)
+            .unwrap();
+        assert!(!polled.resolved && !polled.expired, "an offer outlives a restart");
+        codes.resolve(&offered.code, None, NOW + 24).unwrap();
+
+        // A file the host cannot read is no reason not to start.
+        std::fs::write(&path, b"{").unwrap();
+        let codes = LoginCodes::kept(host(), path, NOW + 30);
+        assert!(
+            codes
+                .follow(&shown.follow, None, None, NOW + 30)
+                .unwrap()
+                .expired
+        );
+        kept(&codes, None, NOW + 31);
+    }
+
+    #[test]
     fn a_code_nobody_resolves_expires() {
         let codes = LoginCodes::new(None);
-        let created = codes.create(None, None, NOW).unwrap();
+        let created = kept(&codes, None, NOW);
         let expired = NOW + CODE_LIFETIME_MS;
         assert_eq!(
             codes.resolve(&created.code, None, expired),
             Err(Refusal::Unknown)
         );
-        assert!(codes.follow(&created.follow, expired).unwrap().expired);
+        assert!(
+            codes
+                .follow(&created.follow, None, None, expired)
+                .unwrap()
+                .expired
+        );
     }
 
     #[test]
     fn guessing_codes_runs_out_of_tries() {
         let codes = LoginCodes::new(None);
-        let created = codes.create(None, None, NOW).unwrap();
+        let created = kept(&codes, None, NOW);
         let guesser = Some(IpAddr::from([203, 0, 113, 9]));
         for _ in 0..MISSES_PER_ADDRESS {
             assert_eq!(
@@ -759,27 +1041,100 @@ mod tests {
         );
     }
 
+    /// Thousands of visitors who are shown a code and do nothing leave nothing on the host, and
+    /// none of them stops the next visitor from getting one: offering keeps no state and has no
+    /// ceiling. Keeping one, which a tab does once its person uses the code, is budgeted per
+    /// client address, never in all.
     #[test]
-    fn the_host_holds_a_bounded_number_of_codes() {
-        let codes = LoginCodes::new(None);
-        for index in 0..MAX_CODES {
+    fn offered_codes_keep_nothing_until_their_tab_follows_them() {
+        let codes = LoginCodes::new(Some("https://eu1.tilo.sh".into()));
+        let offers: Vec<Created> = (0..10_000)
+            .map(|_| codes.create(Some(&link()), NOW).unwrap())
+            .collect();
+        assert!(
+            codes.lock().entries.is_empty(),
+            "nothing is kept for a visitor who does nothing"
+        );
+        assert_eq!(
+            codes.resolve(&offers[0].code, None, NOW),
+            Err(Refusal::Unknown),
+            "an offer nobody kept resolves nothing"
+        );
+        // Thousands who use theirs, from as many addresses, are all kept.
+        for (index, created) in offers.iter().enumerate().take(5_000) {
             let client = IpAddr::from(u32::try_from(index).unwrap().to_be_bytes());
-            codes.create(None, Some(client), NOW).unwrap();
+            let polled = codes
+                .follow(
+                    &created.follow,
+                    Some(&offer_of(created, Some(link()))),
+                    Some(client),
+                    NOW,
+                )
+                .unwrap();
+            assert!(!polled.expired);
         }
-        assert_eq!(codes.create(None, None, NOW), Err(Refusal::Full));
-        assert!(codes.create(None, None, NOW + CODE_LIFETIME_MS).is_ok());
+        assert_eq!(codes.lock().entries.len(), 5_000);
+        assert!(codes.resolve(&offers[4_999].code, None, NOW + 1).is_ok());
+        // Following again keeps nothing twice.
+        codes
+            .follow(
+                &offers[0].follow,
+                Some(&offer_of(&offers[0], Some(link()))),
+                None,
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(codes.lock().entries.len(), 5_000);
+        // An offer altered on its way back is not one the host made.
+        let mut altered = offer_of(&offers[6_000], Some(link()));
+        altered.link = Some(link().replace("ab", "ac"));
+        assert_eq!(
+            codes.follow(&offers[6_000].follow, Some(&altered), None, NOW),
+            Err(Refusal::Unknown)
+        );
+        // One that ran out is heard as expired, and kept no more.
+        let late = &offers[7_000];
+        assert!(
+            codes
+                .follow(
+                    &late.follow,
+                    Some(&offer_of(late, Some(link()))),
+                    None,
+                    late.expires_at_ms
+                )
+                .unwrap()
+                .expired
+        );
+        // One address keeps only so many a minute.
         let client = Some(IpAddr::from([1, 1, 1, 1]));
         let codes = LoginCodes::new(None);
         for _ in 0..CREATES_PER_ADDRESS {
-            codes.create(None, client, NOW).unwrap();
+            let created = codes.create(None, NOW).unwrap();
+            codes
+                .follow(
+                    &created.follow,
+                    Some(&offer_of(&created, None)),
+                    client,
+                    NOW,
+                )
+                .unwrap();
         }
-        assert_eq!(codes.create(None, client, NOW), Err(Refusal::TooMany));
+        let created = codes.create(None, NOW).unwrap();
+        assert_eq!(
+            codes.follow(
+                &created.follow,
+                Some(&offer_of(&created, None)),
+                client,
+                NOW
+            ),
+            Err(Refusal::TooMany)
+        );
     }
 
     #[test]
     fn a_sign_in_claim_mints_one_invite_approved_once() {
         let codes = LoginCodes::new(None);
-        let created = codes.create(None, None, NOW).unwrap();
+        let created = kept(&codes, None, NOW);
         let resolved = codes.resolve(&created.code, None, NOW).unwrap();
         assert!(resolved.sign_in && resolved.link.is_none());
         let user = [5; 32];
@@ -790,7 +1145,11 @@ mod tests {
             codes.claimable(&resolved.report, NOW),
             Err(Refusal::Conflict("this code is claimed already"))
         );
-        let claimed = codes.follow(&created.follow, NOW).unwrap().claimed.unwrap();
+        let claimed = codes
+            .follow(&created.follow, None, None, NOW)
+            .unwrap()
+            .claimed
+            .unwrap();
         assert_eq!(claimed.user, hex::encode(user));
         assert_eq!(claimed.by, "Claude Code on box");
         let mut invite = [0; 16];
@@ -801,7 +1160,10 @@ mod tests {
         assert!(!codes.take_claim(&user, &invite, NOW), "once");
         codes.approved(&user, &invite);
         assert_eq!(
-            codes.follow(&created.follow, NOW).unwrap().steps,
+            codes
+                .follow(&created.follow, None, None, NOW)
+                .unwrap()
+                .steps,
             [Step::Resolved, Step::Approved]
         );
     }
@@ -809,7 +1171,7 @@ mod tests {
     #[test]
     fn a_setup_code_is_not_claimed() {
         let codes = LoginCodes::new(None);
-        let created = codes.create(Some(link()), None, NOW).unwrap();
+        let created = kept(&codes, Some(link()), NOW);
         let resolved = codes.resolve(&created.code, None, NOW).unwrap();
         assert!(matches!(
             codes.claimable(&resolved.report, NOW),

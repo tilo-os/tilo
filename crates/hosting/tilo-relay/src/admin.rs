@@ -364,7 +364,7 @@ fn cmd_home_peer_remove(
     fleet_revocations.retain(|entry| entry.revoked_device_public_key != target);
     fleet_revocations.push(intent.revocation.clone());
     tilo_relay::store::save_revocations(identity_root, &fleet_revocations)?;
-    persist_fleet_revocation(&intent.revocation, identity_dir)?;
+    persist_fleet_revocation(identity_root, identity_dir, &intent.revocation)?;
     if tilo_relay::home_peer_registry_path(identity_root).exists() {
         update_home_peer_registry(identity_root, device, None)?;
     }
@@ -445,7 +445,7 @@ fn retry_pending_removals(
         relay_revocations.retain(|entry| entry.revoked_device_public_key != target);
         relay_revocations.push(intent.revocation.clone());
         tilo_relay::store::save_revocations(identity_root, &relay_revocations)?;
-        persist_fleet_revocation(&intent.revocation, identity_dir)?;
+        persist_fleet_revocation(identity_root, identity_dir, &intent.revocation)?;
         if tilo_relay::home_peer_registry_path(identity_root).exists() {
             update_home_peer_registry(identity_root, &intent.device, None)?;
         }
@@ -499,8 +499,9 @@ fn persist_canonical_revocation(
 }
 
 fn persist_fleet_revocation(
-    revocation: &tilo_user_identity::RevocationEntry,
+    identity_root: &std::path::Path,
     identity_dir: Option<&std::path::Path>,
+    revocation: &tilo_user_identity::RevocationEntry,
 ) -> anyhow::Result<()> {
     let directory = match identity_dir {
         Some(directory) => directory.to_path_buf(),
@@ -508,39 +509,15 @@ fn persist_fleet_revocation(
             .ok_or_else(|| anyhow::anyhow!("user configuration directory is unavailable"))?
             .join("tilo/identities"),
     };
-    let path = directory
-        .join("fleets")
-        .join(format!("{}.json", hex::encode(revocation.user_public_key)));
-    if !path.exists() {
+    let store = tilo_identity_host::device_fleet::DeviceFleetStore::at(
+        &directory,
+        tilo_user_identity::IdentityPaths::under(identity_root),
+    );
+    let identity_id = hex::encode(revocation.user_public_key);
+    if !store.fleet_file(&identity_id).exists() {
         return Ok(());
     }
-    let bytes = std::fs::read(&path)?;
-    if bytes.len() > 4 * 1024 * 1024 {
-        anyhow::bail!("device fleet is too large");
-    }
-    let mut fleet: serde_json::Value = serde_json::from_slice(&bytes)?;
-    let revocations = fleet
-        .get_mut("revocations")
-        .and_then(serde_json::Value::as_array_mut)
-        .ok_or_else(|| anyhow::anyhow!("device fleet has no revocation list"))?;
-    revocations.retain(|entry| {
-        entry
-            .get("revoked_device_public_key")
-            .and_then(serde_json::Value::as_array)
-            .is_none_or(|bytes| {
-                bytes
-                    .iter()
-                    .filter_map(serde_json::Value::as_u64)
-                    .collect::<Vec<_>>()
-                    != revocation
-                        .revoked_device_public_key
-                        .iter()
-                        .map(|byte| u64::from(*byte))
-                        .collect::<Vec<_>>()
-            })
-    });
-    revocations.push(serde_json::to_value(revocation)?);
-    tilo_files::native::atomic::write_with_mode(&path, &serde_json::to_vec_pretty(&fleet)?, 0o600)?;
+    store.record_revocation(&identity_id, revocation)?;
     Ok(())
 }
 
@@ -681,17 +658,12 @@ mod tests {
         tilo_user_identity::verify_revocation_entry(&revocation).unwrap();
         assert_eq!(revocation.user_public_key, user);
         assert_eq!(revocation.revoked_device_public_key, [72; 32]);
-        persist_fleet_revocation(&revocation, Some(&identities)).unwrap();
-        let fleet: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(
-                identities
-                    .join("fleets")
-                    .join(format!("{}.json", hex::encode(user))),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(fleet["revocations"].as_array().unwrap().len(), 1);
+        persist_fleet_revocation(&identity_root, Some(&identities), &revocation).unwrap();
+        let fleet =
+            tilo_identity_host::device_fleet::DeviceFleetStore::at(&identities, paths.clone())
+                .load(&hex::encode(user))
+                .unwrap();
+        assert_eq!(fleet.revocations, vec![revocation]);
         tilo_user_identity::persist::write_public_key(&paths.user_pubkey, &[73; 32]).unwrap();
         let error = sign_host_revocation(&identity_root, Some(&identities), [72; 32]).unwrap_err();
         assert!(error.to_string().contains("another person"));

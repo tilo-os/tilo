@@ -12,14 +12,38 @@ use crate::i18n::widget_format;
 use tilo_actions::step::Step;
 
 /// `step` as a person reads it, in this window's language: "Writing in Trip
-/// plan", "Erstellt in Aufgaben".
+/// plan", "Creating an issue in Issues", "Legt eine Aufgabe in Aufgaben an".
 #[must_use]
 pub fn line(step: &Step<'_>) -> String {
+    if let Some(made) = making(step) {
+        return made;
+    }
     let (key, argument) = step.message();
     match argument {
         Some((name, value)) => widget_format(key, &[(name, value.into())]),
         None => widget_format(key, &[]),
     }
+}
+
+/// What a create makes, said by the noun the app's catalogue gives the
+/// collection it adds to, and where it makes it: "Creating an issue in
+/// Issues", "Legt eine Aufgabe in Aufgaben an". `None` where the step makes
+/// nothing, or no catalogue of this window holds the collection's noun: the
+/// step then says only where it works, as every other step of its kind does.
+///
+/// The noun is the one [`tilo_resource::words::item_words`] names a
+/// collection's items by — the article is part of it, since a language whose
+/// article agrees with the noun ("eine Aufgabe", "an issue") cannot have it
+/// added outside.
+fn making(step: &Step<'_>) -> Option<String> {
+    let (kind, field) = step.makes?;
+    let key = tilo_resource::label::noun_key(&format!("{kind}.{field}"));
+    let noun = crate::i18n::noun(&key)?;
+    let record = step.record?;
+    Some(widget_format(
+        tilo_actions::step::CREATING_ONE,
+        &[("noun", noun.into()), ("record", record.into())],
+    ))
 }
 
 /// The catalogue message `key` said with `name` as its one argument, in this
@@ -41,18 +65,28 @@ mod tests {
     use crate::i18n::I18nManager;
     use tilo_actions::StepKind;
 
+    /// What an app's catalogue says one of the issues its tracker makes is, with
+    /// the article part of the noun: a language whose article agrees with the
+    /// noun cannot have it added outside.
+    fn issue_noun(locale: &str) -> &'static str {
+        match locale {
+            "de-DE" => {
+                "tasks-tracker-issues-noun = { $count ->\n    [one] eine Aufgabe\n   *[other] \
+                 Aufgaben\n}\n"
+            }
+            _ => {
+                "tasks-tracker-issues-noun = { $count ->\n    [one] an issue\n   *[other] issues\n}\n"
+            }
+        }
+    }
+
     /// A window that ships English and German, speaking `locale`: the
-    /// toolkit's own words follow the window's language, as in a real one.
+    /// toolkit's own words follow the window's language, as in a real one, and
+    /// the app's own name what its tracker makes.
     fn speak(locale: &str) {
-        I18nManager::install(
-            "en-US",
-            locale,
-            &[
-                ("en-US", "step-probe = probe"),
-                ("de-DE", "step-probe = probe"),
-            ],
-        )
-        .unwrap();
+        let english = format!("step-probe = probe\n{}", issue_noun("en-US"));
+        let german = format!("step-probe = probe\n{}", issue_noun("de-DE"));
+        I18nManager::install("en-US", locale, &[("en-US", &english), ("de-DE", &german)]).unwrap();
     }
 
     /// The toolkit's own catalogue holds every kind's line, and German says
@@ -82,7 +116,8 @@ mod tests {
         speak("de-DE");
         assert_eq!(
             line(&Step::new(StepKind::Create, Some("Issues"))),
-            "Erstellt in Issues"
+            "Legt in Issues an",
+            "German says the work happening now, never words that read as the past"
         );
         assert_eq!(
             line(&Step::new(StepKind::Write, Some("Trip plan"))),
@@ -96,6 +131,34 @@ mod tests {
             line(&Step::new(StepKind::Run, None).running(Some("cargo build"))),
             "Führt cargo build aus",
             "the command sits where German puts it, never where English does"
+        );
+    }
+
+    /// A create that names the collection it adds to says what is being made,
+    /// by the app's own noun for one of them, with its own article and word
+    /// order: the line a person reads is a sentence of their language, never
+    /// English words with their language's name in them.
+    #[test]
+    fn a_create_says_what_it_makes_in_the_window_language() {
+        let made = |record: &'static str| {
+            Step::new(StepKind::Create, Some(record))
+                .in_app(Some("Tasks"))
+                .making("tasks.tracker", "issues")
+        };
+        speak("en-US");
+        assert_eq!(line(&made("Issues")), "Creating an issue in Issues");
+        speak("de-DE");
+        assert_eq!(line(&made("Aufgaben")), "Legt eine Aufgabe in Aufgaben an");
+    }
+
+    /// A collection no catalogue of the window names says only where the step
+    /// works, rather than a sentence with a hole in it.
+    #[test]
+    fn a_create_no_catalogue_names_says_where_it_works() {
+        speak("en-US");
+        assert_eq!(
+            line(&Step::new(StepKind::Create, Some("Notes")).making("notes.notebook", "pages")),
+            "Creating in Notes"
         );
     }
 }

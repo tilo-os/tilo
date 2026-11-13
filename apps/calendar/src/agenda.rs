@@ -82,7 +82,7 @@ impl AgendaView {
     }
 
     pub(crate) fn layout(&mut self, area: Rect, source: &AgendaSource<'_>, theme: &Theme) {
-        let height = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+        let height = ui::text_render::with_layout_renderer(theme, |text| {
             content_height(source, text, theme)
         });
         self.scroll.set_viewport_rect(area);

@@ -23,7 +23,6 @@ pub const ENVIRONMENT_MENU_CHOICES: &[&str] =
 impl std::fmt::Debug for ApiTesterEffect {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = match self {
-            Self::ImportLegacy { .. } => "ImportLegacy",
             Self::Send => "Send",
             Self::CancelSend => "CancelSend",
             Self::CopyResponse { .. } => "CopyResponse",
@@ -43,12 +42,6 @@ impl std::fmt::Debug for ApiTesterEffect {
 #[derive(Clone, PartialEq, Effect)]
 #[effect(operation = "api_tester.effects")]
 pub enum ApiTesterEffect {
-    /// Import an old Automerge snapshot into an empty workspace
-    #[effect(job)]
-    ImportLegacy {
-        #[param("Base64-encoded legacy Automerge snapshot; handled only on this device")]
-        snapshot: String,
-    },
     /// Send request
     #[effect(job, returns, untrusted, cancellable)]
     Send,

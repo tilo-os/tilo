@@ -6,8 +6,8 @@
 // once.
 //
 // Then one of them is made someone the workspace lets invite, while their page
-// is open (the deployment's roles file is written under them, as an operator
-// does), and invites a third person from the page's own sheet. That person
+// is open (the operator declares them through the workspace's own socket), and
+// invites a third person from the page's own sheet. That person
 // opens the link the sheet handed over — `https://<site>/i/<handle>#<key>` — in
 // a browser of their own, is told who invited them, to what and as what, and
 // joins with no one in the workspace answering for them: an invitation is its
@@ -19,9 +19,9 @@
 // the snapshot.
 //
 // usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR
-// ROLES_FILE
-// ROLES_FILE is the file the deployment mounts as the Lounge's roles file,
-// which this run writes the inviter into.
+// OWNER_SOCKET
+// OWNER_SOCKET is the operator socket of the running Lounge, through which
+// this run declares the inviter an owner (os/containers/tilo-lounge/declare-owner).
 // With EARLIER as the seventh argument the run is the other way round: one
 // person, who was not here when the workspace last started, joins and reads the
 // chat message EARLIER — written before it by pages that are gone — and writes
@@ -30,6 +30,8 @@
 // Prints a JSON report and saves what each page showed; exits non-zero when
 // the two people did not meet, when the invitation took more than an
 // invitation, or when a person joining later finds no chat history.
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {request} from 'node:https';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
@@ -37,11 +39,20 @@ import {clock} from './timing.mjs';
 import * as waits from './waits.mjs';
 import {stepLimit, deskMetrics, DESK} from './waits.mjs';
 
-const [site, relay, origin, out, rolesFile, earlier] = process.argv.slice(2);
-if (!site || !relay || !origin || !out || !rolesFile) {
-  console.error('usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR ROLES_FILE [EARLIER]');
+const [site, relay, origin, out, ownerSocket, earlier] = process.argv.slice(2);
+if (!site || !relay || !origin || !out || !ownerSocket) {
+  console.error('usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR OWNER_SOCKET [EARLIER]');
   process.exit(2);
 }
+
+/** Declare `user` (hex) an owner of the running Lounge: the operator asks the
+ * workspace itself, over its operator socket, and the workspace's door then
+ * lets them in and its governance makes them an administrator. */
+const declareOwner = user => execFileSync(
+  'python3',
+  ['-I', fileURLToPath(new URL('../declare-owner', import.meta.url)), ownerSocket, user],
+  {stdio: ['ignore', 'inherit', 'inherit']},
+);
 mkdirSync(out, {recursive: true});
 // One case of what two people do, each with two people of its own who join
 // and see each other first: `call` (a call, its card and hanging up), `desk`
@@ -1546,15 +1557,14 @@ try {
   }
 
   if (runs('invite')) {
-    // A person the workspace lets invite, from the page itself: the workspace
-    // declares them one while their page stands open (the roles file the
-    // deployment mounts, which the Lounge takes in again as it changes), and
-    // the bar offers inviting without a reload, as a promotion reaches the
-    // native desk.
+    // A person the workspace lets invite, from the page itself: the operator
+    // declares them one while their page stands open (through the workspace's
+    // operator socket), and the bar offers inviting without a reload, as a
+    // promotion reaches the native desk.
     const offeredBefore = (await snapshot(a.tab)).names.filter(name => name === 'Invite');
     report.inviteBefore = offeredBefore.length;
     if (offeredBefore.length) await failed('the bar offered inviting before the workspace allowed it', a.tab);
-    writeFileSync(rolesFile, JSON.stringify({owners: [keptA.userPublicKey], moderators: []}), {mode: 0o644});
+    declareOwner(keptA.userPublicKey);
     const allowedAt = Date.now();
     await waitFor(a.tab, 'Invite', "the bar's invite button");
     report.inviteAfterMs = Date.now() - allowedAt;

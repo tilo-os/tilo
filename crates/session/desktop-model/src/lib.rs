@@ -27,6 +27,7 @@ pub mod layout;
 pub mod merge;
 pub mod ownership;
 pub mod partition;
+pub mod personal;
 pub mod projection;
 pub mod receipt;
 pub mod serde_ids;

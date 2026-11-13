@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 use ui::tilo_resource::Effect as _;
+use ui::widget::toast::ToastKind;
 
 use super::{AutoCommit, CodeApp, Command, PanelTab, Staging, TreeId};
 use crate::actions;
@@ -103,7 +104,7 @@ impl CodeApp {
             reveal @ CodeEditorEffect::Reveal { .. } => return self.answer_reveal(reveal, cx),
             CodeEditorEffect::OpenFile { path: Some(path) } => {
                 self.ensure_no_file_effect()?;
-                self.notice = None;
+                ui::window_toolbar::notify(None);
                 if self.open_disk_file(&path).transpose()?.is_none() {
                     self.file_reply = Some(cx.reply());
                     return Ok(Effected::Pending);
@@ -111,7 +112,7 @@ impl CodeApp {
             }
             CodeEditorEffect::OpenFolder { path: Some(path) } => {
                 self.ensure_no_file_effect()?;
-                self.notice = None;
+                ui::window_toolbar::notify(None);
                 if self.open_project_dir(&path).transpose()?.is_none() {
                     self.file_reply = Some(cx.reply());
                     return Ok(Effected::Pending);
@@ -221,7 +222,7 @@ impl CodeApp {
 
     /// Flip one of the person's preferences and say what it is now.
     fn toggle_setting(
-        &mut self,
+        &self,
         field: fn(&mut crate::settings::CodeSettings) -> &mut bool,
         (on, off): (&'static str, &'static str),
     ) -> Result<(), String> {
@@ -236,7 +237,7 @@ impl CodeApp {
             })
             .map_err(|error| error.to_string())?;
         let now = *field(&mut settings.get());
-        self.note(if now { on } else { off }, false);
+        Self::note(if now { on } else { off }, ToastKind::Info);
         Ok(())
     }
 
@@ -261,7 +262,7 @@ impl CodeApp {
                         self.request_save_as(node);
                     }
                 }
-                self.notice = None;
+                ui::window_toolbar::notify(None);
                 self.file_reply = Some(cx.reply());
                 Ok(Effected::Pending)
             }
@@ -438,7 +439,7 @@ impl CodeApp {
                 self.open_node(node);
             }
         }
-        self.notice = None;
+        ui::window_toolbar::notify(None);
     }
 
     /// Stage `scenario`: what it shows is set once the file it is about is

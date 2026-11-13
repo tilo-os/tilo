@@ -35,7 +35,7 @@ impl ui::storage::SettingsSchema for OskSourceSettings {
     const APP: Option<&'static str> = Some(KEYBOARD_APP_ID);
 }
 
-#[ui::tilo_resource::resource(kind = "settings.osk-sources", label = "On-screen keyboard layouts")]
+#[ui::tilo_resource::resource(kind = "settings.osk-sources")]
 impl OskSourceSettings {
     /// Switch between these letter layouts, in this order, typing with one
     /// of them.

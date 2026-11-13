@@ -10,12 +10,9 @@ finishing on a script that no longer fits.
 The composer first asks the agent's `respond` transform whether a request is answered at once or
 is work for a task; the replay answers that it is work, titled as the script says.
 
-Two dialects, as a person's provider speaks them:
-
-- OpenAI-compatible chat completions (`/v1/chat/completions`, streamed, and `/v1/models`): what a
-  provider on this device such as LM Studio speaks. The nested session's agent reaches it as
-  that preset, at its default address.
-- Anthropic Messages: the fake endpoint of scripts/perf/agent_task.py.
+The dialect is OpenAI-compatible chat completions (`/v1/chat/completions`, streamed, and
+`/v1/models`): what a provider on this device such as LM Studio speaks. The nested session's agent
+reaches it as that preset, at its default address.
 """
 
 from __future__ import annotations
@@ -28,29 +25,21 @@ import threading
 from pathlib import Path
 from typing import Any
 
-REPO = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(REPO / "scripts" / "perf"))
-from agent_task import FakeModel, PolicyError, tool  # noqa: E402
-
 # What the first message of a task's own loop holds, and no transform's request does.
 TASK_MARK = "Operations published right now"
 MODEL = "release-replay"
 
 
-def text_of(content: Any) -> str:
-    """Every text a message's content holds, tool results included."""
-    if isinstance(content, str):
-        return content
-    out = []
-    for block in content or []:
-        if not isinstance(block, dict):
-            continue
-        if isinstance(block.get("text"), str):
-            out.append(block["text"])
-        inner = block.get("content")
-        if inner is not None:
-            out.append(text_of(inner))
-    return "\n".join(out)
+class PolicyError(RuntimeError):
+    """The scripted model found nothing to do with what Tilo answered."""
+
+
+_tool_ids = iter(range(1, 1 << 62))
+
+
+def tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "tool_use", "id": f"toolu_{next(_tool_ids):08d}", "name": name,
+            "input": arguments}
 
 
 class Replay:
@@ -202,11 +191,9 @@ class OpenAiReplay:
         self.server.server_close()
 
 
-def serve(script_path: Path, dialect: str = "openai", port: int = 0):
+def serve(script_path: Path, port: int = 0):
     """The endpoint and its replay of the script at `script_path`."""
     replay = Replay(json.loads(script_path.read_text()))
-    if dialect == "anthropic":
-        return FakeModel(replay.respond), replay
     return OpenAiReplay(replay, port), replay
 
 

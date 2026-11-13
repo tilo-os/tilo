@@ -156,6 +156,7 @@ mod tests {
                     label: "Rename".into(),
                     app: None,
                     step: None,
+                    creates: None,
                 },
                 resource: tilo_actions::ActionResource {
                     id: "file:draft".into(),

@@ -23,11 +23,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 case "$profile" in
-  release) cargo_profile=wasm-release artifact=wasm-release ;;
-  assert) cargo_profile=wasm-assert artifact=wasm-assert ;;
-  dev) cargo_profile=dev artifact=debug ;;
+  release) cargo_profile=wasm-release ;;
+  assert) cargo_profile=wasm-assert ;;
+  dev) cargo_profile=dev ;;
+  # The development loop's: the light profile the runtime's page module is
+  # built in too, so a development bundle's worker is shaped like it.
+  quick) cargo_profile=wasm-dev ;;
   *) echo "unsupported profile: $profile" >&2; exit 2 ;;
 esac
+# Cargo writes a profile's output under the profile's own name, but dev's
+# under `debug`.
+artifact=$cargo_profile
+[[ $artifact != dev ]] || artifact=debug
 assets() { cp crates/browser/tilo-browser-compute/web/compute-{worker,domains,protocol}.mjs "$out/"; }
 if [[ $parts == assets ]]; then mkdir -p "$out"; assets; exit 0; fi
 bindgen=${WASM_BINDGEN:-wasm-bindgen}
@@ -47,5 +54,5 @@ fi
 node --input-type=module - "$out/pkg/compute/tilo_browser_compute_bg.wasm" "$profile" <<'JS'
 import {readFileSync} from 'node:fs';
 import {inspectArtifact} from './crates/browser/tilo-browser-compute/scripts/artifact.mjs';
-console.log('compute artifact:', inspectArtifact(readFileSync(process.argv[2]), {release:process.argv[3] !== 'dev'}));
+console.log('compute artifact:', inspectArtifact(readFileSync(process.argv[2]), {release:['release','assert'].includes(process.argv[3])}));
 JS

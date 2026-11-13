@@ -33,7 +33,7 @@ pub struct Shelf {
 
 /// The reader's name is edited at its path; the shelf's verbs keep the count
 /// in range.
-#[resource(kind = "example.shelf", label = "Shelf")]
+#[resource(kind = "example.shelf")]
 impl Shelf {
     /// Put a book on the shelf.
     #[action]

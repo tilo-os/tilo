@@ -73,14 +73,19 @@ open before anything is installed.
   same process: it runs **as the tenant** (uid 1000), with Xwayland for X11
   programs, and its compositor is the app's display. It is handed the same
   material Browser's session is (a fresh device of the workspace, confined to
-  the `so.tilo.linux` record and the workspace's own document) and reads every
+  the `so.tilo.linux` record; it reads the workspace's own document and writes
+  none of it) and reads every
   later line of its input as one app to start. Nothing of it is in the warm
   template: it starts on demand, after the clone woke.
 - **Its windows are the workspace's.** Each window the app maps is a tab on
   the session's desk in the workspace, shared with the workspace's members the
-  moment it opens, as a person shares a window: the members see it on their
-  desks, in the desktop app and on the web page, and those the workspace lets
-  edit drive it with their keyboard and pointer. Its frames travel the
+  moment it opens: the members see it on their desks, in the desktop app and
+  on the web page, and those the workspace lets edit drive it with their
+  keyboard and pointer. The session does not write the share itself: it asks
+  the relay (`tilo_actions::remote::environment_device`), which writes the
+  share's grants as the workspace's governor, as it writes a web page's share,
+  once it has checked the window's id was minted under that device's own
+  salt — a confined device shares its own windows and nobody else's. Its frames travel the
   workspace's live plane, the same MoQ path a call's pictures take, through
   the relay; keys, pointer, scroll, text and clipboard go back to the window
   the same way.
@@ -97,7 +102,7 @@ command.
 - **The tenant's apps are not Browser's.** The Linux apps session and its
   apps run as the tenant; Browser's session runs as `tilo-browser`, whose home
   (the profile) the tenant's programs cannot read. The apps session's device
-  reaches the `so.tilo.linux` record and the workspace's document, not
+  reaches the `so.tilo.linux` record and reads the workspace's document, not
   Browser's record or page.
 - **One VM per workspace.** No workspace or account shares a VM, a disk, a
   profile, a device or a process with another. A page that gets out of
@@ -120,13 +125,29 @@ command.
   Browser record the open made (`tilo_room_host::environment`), decided where
   the relay certifies the device. In the state plane it is replayed and
   handed only that record's channel and may write no other; on the live
-  plane it publishes its own participant namespace (its page track) and is
-  offered no one else's track; a remote action it sends is refused unless it
-  answers the page action the relay handed it. It still receives the
-  workspace's own document (the desk layout, which a session needs to join)
-  and the relay's governance and sealed checkpoint frames, none of which it
-  can open beyond its record. This is the relay's register beside the agent
-  register, not a delegation and not a certificate capability.
+  plane it publishes its own participant namespace (its presence, its
+  windows and its pages) and is offered no one else's track; a remote action
+  it sends is refused unless it answers the page action the relay handed it
+  or asks the relay about itself (below). It still receives the workspace's
+  own document (the desk layout, which a session needs to join) and the
+  relay's governance and sealed checkpoint frames, none of which it can open
+  beyond its record, and what it writes of that document — its desk, a grant
+  — is neither kept nor forwarded. This is the relay's register beside the
+  agent register, not a delegation and not a certificate capability.
+- **It is lent its own streams' keys, and holds no one else's.** Whatever
+  the device publishes on the live plane is sealed, and the workspace's media
+  keys open every call, presence and window of the workspace, so the device
+  is never given them. It asks the relay instead, which certified it and
+  takes part in the workspace's channels: the relay derives, at the media
+  channel's current epoch, the per-sender keys of that one device's
+  presence, window and page streams (`channel_crypto::SenderMediaKeys`),
+  exactly the keys a member derives to open them, seals them to the device's
+  key so nothing that carries the answer into the VM reads them, and answers
+  only the device it placed in that workspace. The session seals its tracks
+  with them (`tilo_live::frame::PlaneKeys::Sender`) and opens nothing with
+  them: no other device's stream, and no stream of its own beyond those.
+  When the workspace's membership moves the epoch, the plane is cut and joins
+  again on the keys the relay lends then.
 - **The residual risk is the key itself:** the workspace's own agent has sudo
   in the VM and can copy the browser device's key. What it gets reaches only
   the Browser record and its page track (no power the agent does not already

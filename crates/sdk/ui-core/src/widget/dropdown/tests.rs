@@ -10,7 +10,11 @@ fn opts() -> Vec<String> {
         .collect()
 }
 
+/// The open list's panel, placed from the theme and then painted: the layout
+/// that hangs it from the field, and the paint after it that only paints.
 fn paint_list(dd: &mut Dropdown, renderer: &mut TextRenderer, theme: &Theme) -> f64 {
+    dd.adopt_theme(theme);
+    dd.place_list();
     dd.draw_overlay(
         &mut Scene::new(),
         Affine::IDENTITY,
@@ -1443,4 +1447,124 @@ fn dropdown_sizes_to_its_options_and_keeps_its_value_while_open() {
     a_resolved_name_is_spoken_as_given();
     an_idle_dropdown_needs_no_layout();
     the_face_matches_the_retained_control();
+}
+
+/// Two rects a frame placed, within the half pixel a shaped row rounds by.
+fn stands_where(what: &str, placed: Rect, drawn: Rect) {
+    let close = |a: f64, b: f64| (a - b).abs() <= 0.5;
+    assert!(
+        close(placed.x0, drawn.x0)
+            && close(placed.y0, drawn.y0)
+            && close(placed.x1, drawn.x1)
+            && close(placed.y1, drawn.y1),
+        "{what} stands where it was placed: {placed:?} then {drawn:?}"
+    );
+}
+
+/// The open list's geometry is placed, not painted: the press that opens it
+/// leaves the filter field's press target, the panel and every row in it
+/// standing where the next frame paints them, and neither a layout pass nor a
+/// paint moves them after that. Before, the paint that built the list placed
+/// all of it, so a press, a reader or a test on a frame that had not yet
+/// painted found the filter field at the window's origin and no rows at all.
+#[test]
+fn an_open_list_places_its_filter_field_and_rows_before_it_draws() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::dark();
+    let values = zones();
+    let window = Rect::new(0.0, 0.0, 640.0, 420.0);
+    // What the frame's own text renderer draws with: the theme's type.
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    text.apply_typography(&theme.tokens.typography);
+    let mut dd = Dropdown::new(values.clone(), "zone");
+    crate::widget::layout::lay_out_detached(&mut dd, window, &theme, &mut text)
+        .expect("the closed control lays out");
+
+    // A press on the field opens the list: it hangs from the field at once,
+    // and this test draws nothing.
+    dd.do_open();
+    assert!(
+        !Widget::layout_needs_measure(&dd),
+        "an open list moves nothing else in the window, so it asks for no layout"
+    );
+
+    let field = dd.rect;
+    let query = dd.query_rect;
+    assert!(
+        !query.is_zero_area(),
+        "the filter field is placed: {query:?}"
+    );
+    assert!(
+        field.x0 <= query.x0
+            && query.x1 <= field.x1
+            && field.y0 <= query.y0
+            && query.y1 <= field.y1,
+        "the filter field stands in the control: {query:?} in {field:?}"
+    );
+    let panel = dd.list_rect();
+    assert!(panel.height() > 0.0, "the list is placed: {panel:?}");
+    assert!(
+        !panel.overlaps(field),
+        "the list hangs clear of the field: {panel:?} vs {field:?}"
+    );
+    let rows: Vec<Rect> = (0..values.len())
+        .map(|row| {
+            let rect = dd
+                .list
+                .row_rect(row)
+                .unwrap_or_else(|| panic!("row {row} is placed"));
+            assert!(
+                panel.x0 <= rect.x0
+                    && rect.x1 <= panel.x1
+                    && panel.y0 <= rect.y0
+                    && rect.y1 <= panel.y1,
+                "row {row} stands in the list: {rect:?} in {panel:?}"
+            );
+            assert_eq!(
+                dd.list.row_at(rect.center()),
+                Some(row),
+                "row {row} is hit where it stands"
+            );
+            rect
+        })
+        .collect();
+
+    // A frame that lays the window out again, and one that draws, both leave
+    // what is placed where it stands.
+    crate::widget::layout::lay_out_detached(&mut dd, window, &theme, &mut text)
+        .expect("the open list lays out");
+    stands_where("the filter field", query, dd.query_rect);
+    stands_where("the panel", panel, dd.list_rect());
+    let mut scene = Scene::new();
+    let presence = PresenceCtx::empty();
+    dd.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+    dd.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+    stands_where("the filter field", query, dd.query_rect);
+    stands_where("the panel", panel, dd.list_rect());
+    for (row, placed) in rows.iter().enumerate() {
+        let drawn = dd.list.row_rect(row).expect("row placed after the draw");
+        stands_where(&format!("row {row}"), *placed, drawn);
+    }
+
+    // And the field takes a press: the list stays open for the query.
+    let (mut doc, root) = doc_with_tz("UTC");
+    let at = Point::new(query.x0 + 2.0, query.center().y);
+    let _ = feed_key(
+        &mut dd,
+        &crate::synthetic_input::cursor_moved(at.x, at.y),
+        &mut doc,
+        &root,
+    );
+    let _ = feed_key(
+        &mut dd,
+        &crate::synthetic_input::mouse_press(),
+        &mut doc,
+        &root,
+    );
+    assert!(
+        dd.is_open(),
+        "a press in the search field edits the query instead of closing the list"
+    );
 }

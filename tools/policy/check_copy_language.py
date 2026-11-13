@@ -35,6 +35,11 @@ that (HIG section 4):
   has two homes"). The same rule holds for string literals in production Rust
   sources, where copy that bypasses the catalogue would slip past it.
 
+A declaration's label is a key of its crate's catalogue (`#[effect]`,
+`#[action]` and `#[resource]` derive one by rule, or name one with
+`label = "key"`), so it is read in every language the catalogue ships; words
+written in the attribute (`label = "Open file"`) are refused.
+
 A message or literal that has to say it anyway (the save status's own
 one-time "Saved" after a failure) is listed in `copy_save_exceptions.toml`
 with the reason it is not routine; an entry that no longer matches fails.
@@ -148,6 +153,22 @@ action's words are the `name` of a `ToolbarAction` (or of an entry the crate's
 check reads those fields by their type, so a `name` another type carries, a
 `ToolbarAction`'s `id` and a location's `value` (the address a person typed)
 stay out of it.
+
+A window resolves what it paints through its catalogue, so the words an enum, a
+kind or a mode carries are written as that catalogue's message ids in the
+function the lookup calls: `CATALOG.t(section.message())`, `t(shape.message())`,
+`t(format_words(width, height, fps))`. Such a function is a table of messages,
+and a word it answers with that is not one of the crate's messages reaches the
+window as it is written, in every language:
+
+- `key-table`: a word a catalogue lookup resolves, in the function it calls, is
+  not one of the crate's message ids ("Curves" where
+  `video-editor-section-curves` belongs). What the table is *asked* with is not
+  copy — `"Dark" => "themes-option-dark"` maps a stored value to its message —
+  so only the words a table answers with are judged. The rule holds for a
+  surface that has finished migrating its copy, one with no
+  `copy_language_baseline` shard: a crate still listing what it has not migrated
+  is held to it from the day its shard goes.
 
 A widget hands a reader many names at once, so it projects them as a tuple and
 names each node from one element of it (`let (target, name, role, state) =
@@ -2093,6 +2114,94 @@ def named_tuple_words(root: Path,
     return {name: sorted(set(words)) for name, words in table.items()}
 
 
+def key_table_literals(root: Path, baseline_dir: Path) -> list[tuple[str, int, str]]:
+    """(file, line, text) of each word a crate answers a catalogue lookup with
+    that is not one of its own messages.
+
+    A window resolves what a person reads through its catalogue, so a word that
+    picks a message — an enum's, a kind's, a mode's, a format's — is written as
+    one of that catalogue's message ids, in the function the lookup calls
+    (`CATALOG.t(section.message())`). A function called there is a table of
+    messages; a word in it that is not a message id is copy in the source
+    language, and reaches the window as it is written, in every language.
+    """
+    found = []
+    for crate in surfaces(root):
+        # A crate that still lists copy in a baseline has not migrated it yet:
+        # the table rule is part of what finishing means, so it holds from the
+        # day the shard goes.
+        if (baseline_dir / f"{unit_of(root, root / crate / f'locales/{SOURCE_LOCALE}.ftl')}.txt").is_file():
+            continue
+        keys = catalogue_keys(root, crate)
+        if not keys:
+            continue
+        paths = [path for path in sorted((root / crate).rglob("*.rs"))
+                 if "target" not in path.relative_to(root).parts
+                 and "src" in path.relative_to(root).parts]
+        names = key_answerers(root, paths)
+        if not names:
+            continue
+        for path in paths:
+            relative = path.relative_to(root)
+            text = path.read_text(errors="replace")
+            if "fn " not in text:
+                continue
+            code, literals = rust_source.lex(text)
+            marked = list(code)
+            for literal in literals:
+                for index in range(literal.start, literal.end):
+                    if marked[index] != "\n":
+                        marked[index] = "x"
+            kept = rust_source.blank_test_items("".join(marked))
+            for function in FUNCTION.finditer(code):
+                if function.group(1) not in names:
+                    continue
+                brace = code.find("{", function.end())
+                if brace < 0 or kept[function.start()] == " ":
+                    continue
+                close = rust_source.matching(code, brace)
+                for literal in literals:
+                    if (literal.byte or not brace < literal.start < close
+                            or kept[literal.start] != "x"
+                            or literal.value in keys
+                            or not english_words(literal.value)):
+                        continue
+                    # The English a table is *asked about* is the stored value
+                    # it names a message for ("Dark" => "themes-option-dark"),
+                    # which is the document's spelling, not a word a window
+                    # paints. Only what the table answers with is copy.
+                    if not (arm_result(code, brace, literal.start)
+                            and closes_value(code, literal.end, close)):
+                        continue
+                    found.append((relative.as_posix(),
+                                  rust_source.line_number(text, literal.start),
+                                  literal.value))
+    return sorted(set(found))
+
+
+# The lookups that resolve a message: an app's own catalogue (`CATALOG.t(`) and
+# a crate's lookup functions, whose first argument is the message id.
+KEY_LOOKUP_CALL = re.compile(r"(?<![\w$])(?:t|t_args|tr|tr_args)\s*\(")
+# A function that answers with the id: `section.message()`, `format_words(…)`,
+# `kind()`.
+KEY_ANSWER = re.compile(r"\s*(?:[A-Za-z_][\w:]*\s*\.\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+
+def key_answerers(root: Path, paths: list[Path]) -> set[str]:
+    """The functions of one crate whose value a catalogue lookup resolves."""
+    names: set[str] = set()
+    for path in paths:
+        code = rust_source.lex(path.read_text(errors="replace"))[0]
+        for lookup in KEY_LOOKUP_CALL.finditer(code):
+            begin, end = argument(code, lookup.end(), 0)
+            match = KEY_ANSWER.match(code[begin:end])
+            if match:
+                names.add(match.group(1))
+    names.discard("t")
+    names.discard("t_args")
+    return names
+
+
 def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
     """(file, line, text) of each English literal handed to a copy builder by a
     crate that ships translations, in production code; of each literal or
@@ -2329,8 +2438,11 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
 
 
 def catalogues(root: Path) -> list[Path]:
+    """Every shipped catalogue: a crate's tests name their declarations from
+    one of their own (`tests/locales`), words they set up and assert, which
+    no person reads."""
     return sorted(path for path in root.rglob("locales/*.ftl")
-                  if "target" not in path.relative_to(root).parts
+                  if not {"target", "tests"} & set(path.relative_to(root).parts)
                   and not any(part.startswith(".") for part in path.relative_to(root).parts))
 
 
@@ -2416,14 +2528,67 @@ def check(root: Path, glossary_path: Path, baseline_dir: Path,
         errors.append(f"{file}:{line}: \"{text}\" is painted as-is; a window that ships a "
                       "translation resolves its copy through the crate's catalogue "
                       "[uncatalogued]")
+    used_keys: set[SaveException] = set()
+    for file, line, text in key_table_literals(root, baseline_dir):
+        exception = SaveException(None, None, file, text)
+        if exception in literals:
+            used_keys.add(exception)
+            continue
+        errors.append(f"{file}:{line}: \"{text}\" names a catalogue message's function but "
+                      "is not one of the crate's messages; the words a window paints "
+                      "come from its catalogue [key-table]")
+    used_literals |= used_keys
     name_literals = named(root, source_literals_path) if source_literals_path else "source copy"
     for exception in sorted(literals - used_literals, key=repr):
         errors.append(f"{name_literals}: {exception.file}: \"{exception.text}\" no longer "
                       "matches anything; delete it")
+    for file, line, text in written_labels(root):
+        errors.append(f"{file}:{line}: label = \"{text}\" is words; a declaration's label is a "
+                      "key of its crate's catalogue, derived by rule or named "
+                      "(`label = \"key\"`) [written-label]")
     name = named(root, save_exceptions_path) if save_exceptions_path else "save exceptions"
     for exception in sorted(exceptions - used, key=repr):
         errors.append(f"{name}: {exception} no longer matches anything; delete it")
     return errors
+
+
+# A declaration attribute: `#[effect(...)]`, `#[action(...)]` or
+# `#[resource(...)]`, under any path (`#[tilo_resource::resource(...)]`).
+DECLARATION = re.compile(r"#\[\s*(?:\w+\s*::\s*)*(?:effect|action|resource)\s*\(")
+DECLARED_LABEL = re.compile(r"(?<![\w$])label\s*=(?!=)")
+LABEL_KEY = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+def written_labels(root: Path) -> list[tuple[str, int, str]]:
+    """Words written as a declaration's label (`label = "Open file"`) in any
+    Rust source of apps, crates and examples, tests included: a label names a key of
+    the crate's catalogue."""
+    found = []
+    for top in ("apps", "crates", "examples"):
+        base = root / top
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*.rs")):
+            relative = path.relative_to(root)
+            if "target" in relative.parts or any(part.startswith(".") for part in relative.parts):
+                continue
+            text = path.read_text(errors="replace")
+            if "label" not in text:
+                continue
+            code, literals = rust_source.lex(text)
+            by_start = {literal.start: literal for literal in literals}
+            for attribute in DECLARATION.finditer(code):
+                close = rust_source.matching(code, attribute.end() - 1)
+                for label in DECLARED_LABEL.finditer(code, attribute.end(), close):
+                    start = label.end()
+                    while text[start].isspace():
+                        start += 1
+                    literal = by_start.get(start)
+                    if literal is not None and not LABEL_KEY.fullmatch(literal.value):
+                        found.append((relative.as_posix(),
+                                      rust_source.line_number(text, literal.start),
+                                      literal.value))
+    return found
 
 
 def main(argv: list[str]) -> int:

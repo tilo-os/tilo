@@ -66,6 +66,7 @@ fn capture(out: &Path, theme: Theme, viewport: (u32, u32)) -> CaptureResult<()> 
             label: "Edit".into(),
             app: None,
             step: None,
+            creates: None,
         },
         resource: tilo_actions::ActionResource {
             id: "first".into(),

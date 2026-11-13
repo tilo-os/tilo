@@ -340,9 +340,9 @@ async function main(): Promise<number> {
     "the account lists the one workspace its key reaches, and no other",
   );
   const creating = await refused(agent.workspaces.create("Applicant: Mallory"));
-  check(creating.startsWith("forbidden"), `the account refuses it: no new workspace (${creating})`);
+  check(creating.startsWith("not_permitted"), `the account refuses it: no new workspace (${creating})`);
   const minting = await refused(agent.keys.mint(jane.id, "escalated"));
-  check(minting.startsWith("forbidden"), `it mints no keys (${minting})`);
+  check(minting.startsWith("not_permitted"), `it mints no keys (${minting})`);
 
   say("4b. The backend invites its ops person, another person, as Jane's reviewer");
   const invitation = await workspace.members.invite({ role: "editor", email: REVIEWER_EMAIL });

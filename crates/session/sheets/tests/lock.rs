@@ -220,7 +220,8 @@ fn the_clock_sets_each_character_one_figure_advance_from_the_last() {
         reason = "a display scale is small and exact enough in f32"
     )]
     let text_scale = scale as f32;
-    let figure = f64::from(ui::text_render::with_layout_renderer(text_scale, |text| {
+    let theme = ui::Theme::light().with_text_scale(text_scale);
+    let figure = f64::from(ui::text_render::with_layout_renderer(&theme, |text| {
         text.measure_style("0", None, &clock_style()).0
     }));
     for pair in xs.windows(2) {

@@ -1601,7 +1601,7 @@ impl NavList {
     pub fn place_at(&mut self, rect: Rect) {
         let theme = self.paint.borrow().theme.clone();
         // The rows lay out in a tree of the list's own, as the host's would.
-        let _ = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        let _ = crate::text_render::with_layout_renderer(&theme, |text| {
             crate::widget::layout::lay_out_detached(self, rect, &theme, text)
         });
     }
@@ -2010,16 +2010,13 @@ impl RailExtent for NavList {
             return None;
         }
         let items = all_items(&self.sections);
-        Some(crate::text_render::with_layout_renderer(
-            theme.text_scale,
-            |text| {
-                crate::chrome::rail_width_fitting(
-                    theme,
-                    text,
-                    items.iter().map(|item| item.label.as_str()),
-                )
-            },
-        ))
+        Some(crate::text_render::with_layout_renderer(theme, |text| {
+            crate::chrome::rail_width_fitting(
+                theme,
+                text,
+                items.iter().map(|item| item.label.as_str()),
+            )
+        }))
     }
 }
 
@@ -2059,7 +2056,7 @@ fn all_items(sections: &[NavSection]) -> Vec<&NavItem> {
 impl AdaptiveNav for NavList {
     fn rail_fit(&self, theme: &crate::Theme) -> f64 {
         let items = all_items(&self.sections);
-        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        crate::text_render::with_layout_renderer(theme, |text| {
             crate::chrome::sidebar_rail_width_fitting(
                 theme,
                 text,
@@ -2070,7 +2067,7 @@ impl AdaptiveNav for NavList {
 
     fn list_fit(&self, theme: &crate::Theme) -> f64 {
         let items = all_items(&self.sections);
-        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        crate::text_render::with_layout_renderer(theme, |text| {
             crate::chrome::nav_list_width_fitting(
                 theme,
                 text,

@@ -98,6 +98,33 @@ const after = await workspace.read("snippets/Visa checklist");
 console.log("favorite:", after.fields.favorite, "tags:", after.fields.tags);
 ```
 
+```curl example=read-and-edit
+api=$TILO_API_URL/v1
+auth="Authorization: Bearer $TILO_API_KEY"
+workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-Type: application/json" \
+  -d '{"name": "Snippets and actions"}' | jq -r .id)
+resources=$api/workspaces/$workspace/resources
+
+# An action: make a snippet.
+curl -sS --fail-with-body "$resources/snippets/actions/new-snippet" -H "$auth" \
+  -H "Content-Type: application/json" -d '{"title": "Visa checklist"}' > /dev/null
+
+# A read: the snippet as a resource, with the fields the app publishes. Each path segment is
+# percent-encoded on its own.
+snippet=$(curl -sS --fail-with-body "$resources/snippets/Visa%20checklist" -H "$auth")
+jq -r '"kind: \(.kind) title: \(.fields.title) favorite: \(.fields.favorite)"' <<<"$snippet"
+
+# Field edits, through the field-edit action every resource has: setting a field, and naming
+# the operation.
+for edit in '{"path": [{"field": "favorite"}], "op": "set", "value": true}' \
+            '{"path": [{"field": "tags"}], "op": "insert", "value": "visa"}'; do
+  curl -sS --fail-with-body "$resources/snippets/Visa%20checklist/actions/field-edit" -H "$auth" \
+    -H "Content-Type: application/json" -d "{\"edit\": $edit}" > /dev/null
+done
+curl -sS --fail-with-body "$resources/snippets/Visa%20checklist" -H "$auth" \
+  | jq -r '"favorite: \(.fields.favorite) tags: \(.fields.tags)"'
+```
+
 ## The catalogue
 
 An app publishes its surface once: its resource kinds, every field with its type and whether it can be

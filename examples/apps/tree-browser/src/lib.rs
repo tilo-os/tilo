@@ -72,7 +72,7 @@ impl Notebook {
 
 /// A section's title and notes are edited at their paths
 /// ([`Notebook::section_paths`]); sharing it is a verb.
-#[resource(kind = "example.notebook", label = "Notebook", initialize = Notebook::with_sections)]
+#[resource(kind = "example.notebook", initialize = Notebook::with_sections)]
 impl Notebook {
     /// Share a section.
     #[action]

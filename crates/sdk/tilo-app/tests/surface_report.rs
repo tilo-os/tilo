@@ -12,8 +12,8 @@ pub struct Counter {
 
 #[resource(
     kind = "test.counter",
-    label = "Counter",
-    app = "so.tilo.test-surface-good"
+    app = "so.tilo.test-surface-good",
+    catalogue = "tests/locales"
 )]
 impl Counter {
     /// Count one more.
@@ -31,8 +31,8 @@ pub struct Prefs {
 
 #[resource(
     kind = "test.counter-prefs",
-    label = "Counter preferences",
-    app = "so.tilo.test-surface-good"
+    app = "so.tilo.test-surface-good",
+    catalogue = "tests/locales"
 )]
 impl Prefs {}
 
@@ -116,7 +116,7 @@ pub struct Counted {
 }
 
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.surface-report.effects")]
+#[effect(operation = "test.surface-report.effects", catalogue = "tests/locales")]
 pub enum ReadEffect {
     /// Count what the record holds.
     #[effect(kind = "read", returns = Counted, idempotent)]

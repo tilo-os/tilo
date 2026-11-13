@@ -25,16 +25,16 @@ fn the_menus_delete_row_reads_as_it_will_act() {
     ui::widget::note_shift(false);
 }
 
-/// The row that sends what the menu took hands the typing to the box in its
-/// place: Chat keeps the menu while that box stands, so it paints and hears
-/// the keyboard.
+/// The row that sends what the menu took opens the box beside the menu with
+/// the typing: Chat keeps the open menu, so the box paints and hears the
+/// keyboard with no code of Chat's own.
 #[test]
-fn sending_a_typed_sentence_leaves_the_box_with_chat() {
+fn sending_a_typed_sentence_opens_the_box_beside_the_menu() {
     ui::shared_selection::set_send_host_available(true);
     let (mut app, mut doc) = app_with_doc();
     let id = send_own(&mut app, &mut doc, "check the plan");
     ui::widget::context_menu::note_input(&mouse(ElementState::Pressed, MouseButton::Right));
-    app.open_message_menu(id.clone(), Point::new(120.0, 120.0));
+    app.open_message_menu(id, Point::new(120.0, 120.0));
     type_str(&mut app, &mut doc, "please");
     assert_eq!(
         app.menu.as_ref().map(|menu| menu.widget.query()),
@@ -42,22 +42,9 @@ fn sending_a_typed_sentence_leaves_the_box_with_chat() {
         "the menu takes the typing"
     );
     feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
-    let menu = app
-        .menu
-        .as_ref()
-        .expect("Chat keeps the menu while its box stands");
-    assert!(!menu.widget.is_open(), "the rows went with the menu");
-    assert!(menu.widget.send_to_alone_open(), "the box took their place");
+    let menu = app.menu.as_ref().expect("Chat keeps the menu");
+    assert!(menu.widget.is_open(), "the menu stays beside its box");
+    assert!(menu.widget.send_to().is_open(), "the box opened");
     assert_eq!(menu.widget.send_to().text(), "please");
-    // The box is about the message, as the item Chat's record publishes it under.
-    let about = &menu.widget.send_to().subjects()[0];
-    assert_eq!(
-        about.anchor.place,
-        Some(ui::tilo_actions::SelectionPlace::item(id.as_str()))
-    );
-    assert_eq!(
-        about.resource.as_ref().map(|resource| resource.id.clone()),
-        Some(crate::effects::item_row_id("messages", id.as_str()))
-    );
     ui::shared_selection::set_send_host_available(false);
 }

@@ -9,6 +9,7 @@
 //! translates, and publishes the word with the catalogue it is in, so it is
 //! read in the person's language whenever it is published.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -27,6 +28,9 @@ pub(crate) struct Catalogue {
     dir: String,
     messages: HashMap<String, String>,
     locales: Vec<String>,
+    /// Every declaration whose key it does not hold, so one build names
+    /// every line to add.
+    missing: RefCell<Option<syn::Error>>,
 }
 
 impl Catalogue {
@@ -53,6 +57,7 @@ impl Catalogue {
             dir: dir.to_owned(),
             messages: messages(&text),
             locales,
+            missing: RefCell::new(None),
         }
     }
 
@@ -64,14 +69,69 @@ impl Catalogue {
     /// The word `key`, whose source text is `text`: a `Word` whose catalogue
     /// is this one.
     pub(crate) fn word(&self, krate: &Tokens, key: &str, text: &str) -> Tokens {
+        self.word_with(krate, key, text, &[])
+    }
+
+    /// The word `key`, whose source text is `text`, its placeables filled
+    /// with `arguments`: a `Word` whose catalogue is this one, read with them
+    /// wherever it is published.
+    pub(crate) fn word_with(
+        &self,
+        krate: &Tokens,
+        key: &str,
+        text: &str,
+        arguments: &[(syn::Ident, syn::Expr)],
+    ) -> Tokens {
         let catalogue = self.reference(krate);
+        let names = arguments.iter().map(|(name, _)| name.to_string());
+        let values = arguments.iter().map(|(_, value)| value);
         quote! {
             #krate::label::Word {
                 key: #key,
                 source: #text,
                 catalogue: ::core::option::Option::Some(#catalogue),
+                arguments: ::std::vec![ #((#names, #krate::label::Argument::from(#values))),* ],
             }
         }
+    }
+
+    /// The word `key` as `word!` names it, its placeables `arguments`: read
+    /// from this catalogue. A key it does not hold, a placeable no argument
+    /// fills or an argument no placeable shows does not build.
+    pub(crate) fn named(
+        &self,
+        krate: &Tokens,
+        span: Span,
+        key: &str,
+        arguments: &[(syn::Ident, syn::Expr)],
+    ) -> syn::Result<Tokens> {
+        let Some(text) = self.text(key) else {
+            return Err(syn::Error::new(
+                span,
+                format!("`{key}` is no message of {}/{SOURCE}.ftl", self.dir),
+            ));
+        };
+        let placeables = placeables(text);
+        for placeable in &placeables {
+            if !arguments.iter().any(|(name, _)| name == placeable) {
+                return Err(syn::Error::new(
+                    span,
+                    format!("`{key}` takes `{placeable}`: `word!(\"{key}\", {placeable} = …)`"),
+                ));
+            }
+        }
+        for (name, _) in arguments {
+            if !placeables
+                .iter()
+                .any(|placeable| placeable == &name.to_string())
+            {
+                return Err(syn::Error::new(
+                    name.span(),
+                    format!("`{key}` says no `{name}`: its message has no `{{ ${name} }}`"),
+                ));
+            }
+        }
+        Ok(self.word_with(krate, key, text, arguments))
     }
 
     /// A `&'static Catalogue` of this one, as the crate is built.
@@ -90,8 +150,9 @@ impl Catalogue {
     }
 
     /// The word a declaration names: `named` (`label = "key"`) or the key
-    /// derived for it, read from this catalogue. Without either in it, the
-    /// declaration's written text, `written`, which no catalogue translates.
+    /// derived for it, read from this catalogue. A declaration whose key the
+    /// catalogue does not hold does not build: [`Self::missing`] names the
+    /// line to add, its text the declaration's own words, `written`.
     pub(crate) fn declared(
         &self,
         krate: &Tokens,
@@ -100,35 +161,40 @@ impl Catalogue {
         derived: &str,
         written: &str,
     ) -> syn::Result<(Tokens, String)> {
-        let plain = |text: &str| {
-            if text.contains('{') {
-                Err(syn::Error::new(
-                    span,
-                    "a label is plain words: it takes no `{ $argument }`",
-                ))
-            } else {
-                Ok(())
+        let key = named.unwrap_or(derived);
+        let Some(text) = self.text(key) else {
+            let file = format!("{}/{SOURCE}.ftl", self.dir);
+            let error = syn::Error::new(
+                span,
+                match named {
+                    Some(words) if !is_key(words) => format!(
+                        "a label is a key of {file}, not words: add `{derived} = {words}` there \
+                         and leave `label` out"
+                    ),
+                    Some(_) => format!("`{key}` is no message of {file}"),
+                    None => format!("`{key}` is no message of {file}: add `{key} = {written}`"),
+                },
+            );
+            match &mut *self.missing.borrow_mut() {
+                Some(all) => all.combine(error),
+                none => *none = Some(error),
             }
+            return Ok((self.word(krate, key, written), written.to_owned()));
         };
-        if let Some(key) = named.filter(|named| is_key(named)) {
-            let Some(text) = self.text(key) else {
-                return Err(syn::Error::new(
-                    span,
-                    format!("`{key}` is no message of {}/{SOURCE}.ftl", self.dir),
-                ));
-            };
-            plain(text)?;
-            return Ok((self.word(krate, key, text), text.to_owned()));
+        if text.contains('{') {
+            return Err(syn::Error::new(
+                span,
+                "a label is plain words: it takes no `{ $argument }`",
+            ));
         }
-        if let Some(text) = self.text(derived) {
-            plain(text)?;
-            return Ok((self.word(krate, derived, text), text.to_owned()));
-        }
-        let written = named.unwrap_or(written);
-        Ok((
-            quote!(#krate::label::Word::plain(#written)),
-            written.to_owned(),
-        ))
+        Ok((self.word(krate, key, text), text.to_owned()))
+    }
+}
+
+impl Catalogue {
+    /// Every declaration [`Self::declared`] found no key for, as one error.
+    pub(crate) fn missing(&self) -> syn::Result<()> {
+        self.missing.take().map_or(Ok(()), Err)
     }
 }
 
@@ -139,6 +205,30 @@ fn is_key(text: &str) -> bool {
         && text
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// The placeables (`{ $name }`) `text` uses, once each, in the order they
+/// appear: the arguments a word of it takes.
+fn placeables(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '$' || !chars.peek().is_some_and(|c| c.is_alphabetic()) {
+            continue;
+        }
+        let mut name = String::new();
+        while let Some(&c) = chars.peek() {
+            if !c.is_alphanumeric() && c != '_' {
+                break;
+            }
+            name.push(c);
+            chars.next();
+        }
+        if !name.is_empty() && !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
 }
 
 /// The key a declaration's word is derived under: `scope` (an operation or a

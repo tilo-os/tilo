@@ -73,7 +73,7 @@ async fn home_host() -> HomeHost {
         ),
         "the owner's first device binds and enters the owner's room"
     );
-    assert!(members(host.state.path(), OWNERS).contains(&hex::encode(laptop_key)));
+    assert!(members(host.state.path(), OWNERS).contains(&laptop_key));
     host
 }
 
@@ -94,13 +94,16 @@ async fn subscribe(client: &RelayClient, workspace_id: u64) -> Option<Envelope> 
     tilo_test_env::within("relay answered subscription", client.recv()).await
 }
 
-fn members(state: &Path, workspace_id: u64) -> Vec<String> {
-    let path = state.join(format!("workspaces/{workspace_id}/membership.json"));
-    match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => panic!("membership unreadable: {error}"),
+/// The devices the workspace's access record admits, as its host keeps them.
+fn members(state: &Path, workspace_id: u64) -> Vec<[u8; 32]> {
+    let directory = state.join(format!("workspaces/{workspace_id}"));
+    if !directory.exists() {
+        return Vec::new();
     }
+    tilo_relay::store::WorkspaceStore::open(state, workspace_id, true)
+        .unwrap()
+        .load_membership()
+        .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -138,7 +141,7 @@ async fn cross_user_device_is_not_auto_enrolled_into_same_owner_room() {
         })
     ));
     assert!(
-        !members(host.state.path(), OWNERS).contains(&hex::encode(bob_key)),
+        !members(host.state.path(), OWNERS).contains(&bob_key),
         "a cross-user device was persisted into the owner's room"
     );
 
@@ -174,6 +177,22 @@ async fn owner_device_still_auto_enrols_on_home_host() {
             ..
         })
     ));
-    assert!(members(host.state.path(), OWNERS).contains(&hex::encode(phone_key)));
+    // The room keeps no list of who came: the owner's root admits the owner's
+    // devices, so another one is admitted on its first arrival as this one was.
+    let tablet = host.owner.enrol("tablet", DeviceCapabilities::primary());
+    let tablet_key = tablet.device_pubkey();
+    let tablet = connect(&host.relay, tablet).await;
+    assert!(matches!(
+        subscribe(&tablet, OWNERS).await,
+        Some(Envelope::Ready {
+            workspace_id: OWNERS,
+            ..
+        })
+    ));
+    let kept = members(host.state.path(), OWNERS);
+    assert!(
+        kept.contains(&phone_key) && kept.contains(&tablet_key),
+        "a home host keeps its own devices in the workspace's one record"
+    );
     Relay::shutdown(host.relay).await;
 }

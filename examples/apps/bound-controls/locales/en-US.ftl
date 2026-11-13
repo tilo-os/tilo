@@ -7,3 +7,7 @@ controls-minutes-suffix = min
 controls-volume-label = Volume
 controls-region-label = Region
 controls-reset = Restore defaults
+
+## What the record and its actions are called
+example-preferences = Preferences
+example-preferences-reset = Restore defaults

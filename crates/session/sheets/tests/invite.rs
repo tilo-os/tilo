@@ -18,10 +18,9 @@ use ui::a11y::Action as A11yAction;
 use ui::framework::testing::HeadlessApp;
 
 const VIEWPORT: (u32, u32) = (1280, 900);
-/// The link a made invitation hands over, and the invitation's own bytes
-/// behind it: what the code carries.
-const LINK: &str = "tilo://join?invite=8f2c";
-const CODE: &[u8] = b"the invitation's signed bytes";
+/// The link a made invitation hands over: the site's short link, which the
+/// code carries too.
+const LINK: &str = "https://tilo.sh/i/abcdefghijklmnop#AAABBBCCCDDDEEEFFFGGGHHHIIIJJJKKKLLLMMMNNNO";
 
 /// The sheet as the session hands it out with a link made.
 fn with_link() -> Invite {
@@ -51,13 +50,13 @@ fn with_link() -> Invite {
         }],
         anyone: "Anyone with the link".to_owned(),
         create: "Create link".to_owned(),
+        create_another: "Create another link".to_owned(),
         created: Some(Created {
             invite: "8f2c".to_owned(),
             link: LINK.to_owned(),
-            code: CODE.to_vec(),
             link_label: "The link".to_owned(),
             brings: "Ada Lovelace-Byron joins as an editor.".to_owned(),
-            lasts: "The link works for the next 60 minutes.".to_owned(),
+            lasts: "The link stops working in 1 hr.".to_owned(),
             copy: "Copy link".to_owned(),
             revoke: "Take back".to_owned(),
             alt: "The invitation link as a code to scan".to_owned(),
@@ -67,7 +66,7 @@ fn with_link() -> Invite {
             key: "3b9d".to_owned(),
             title: "Editor".to_owned(),
             whose: "For anyone with the link".to_owned(),
-            lasts: "59 min left".to_owned(),
+            lasts: "Ends in 59 min".to_owned(),
             revoke: "Take back".to_owned(),
         }],
         pending_empty: "No link is waiting to be used.".to_owned(),
@@ -175,7 +174,7 @@ fn the_link_made_shows_its_code_and_its_copy_button_hands_it_over() {
     for text in [
         LINK,
         "Ada Lovelace-Byron joins as an editor.",
-        "The link works for the next 60 minutes.",
+        "The link stops working in 1 hr.",
         "The link is on the clipboard.",
     ] {
         assert!(says(&mut app, text), "{text:?} is shown");
@@ -250,5 +249,78 @@ fn taking_back_the_link_just_made_asks_for_that_invitation() {
             invite: "8f2c".to_owned(),
         }],
         "taking back the link shown takes back the invitation it names"
+    );
+}
+
+/// Where the widget with test id `id` stands, in logical window coordinates.
+fn rect_of(app: &mut HeadlessApp<InviteApp>, id: &str) -> [f64; 4] {
+    fn find(node: &ui::headless::InspectionNode, id: &str) -> Option<[f64; 4]> {
+        if node.test_id.as_deref() == Some(id) && node.rect[2] > 0.0 && node.rect[3] > 0.0 {
+            return Some(node.rect);
+        }
+        node.children.iter().find_map(|child| find(child, id))
+    }
+    find(&app.harness().inspection().root, id).unwrap_or_else(|| panic!("{id} is drawn"))
+}
+
+/// On a phone, a sheet with a link made reads in the order the person goes: the link with the
+/// button that copies it and what that press did, the code to scan small, and only then the part
+/// another link would bring someone in at and the button that makes it. Nothing of it is wider
+/// than the screen.
+#[test]
+fn on_a_phone_the_link_made_comes_first_and_making_another_after_it() {
+    const PHONE: (u32, u32) = (390, 844);
+    let (mut app, _seat) = seated(with_link());
+    app.harness().resize(PHONE).unwrap();
+    app.settle();
+    let order = [
+        "invite-link",
+        "invite-copy-link",
+        "invite-note",
+        "invite-code",
+        "invite-role",
+        "invite-create",
+    ];
+    let rects: Vec<[f64; 4]> = order.iter().map(|id| rect_of(&mut app, id)).collect();
+    for (pair, ids) in rects.windows(2).zip(order.windows(2)) {
+        assert!(
+            pair[0][1] + pair[0][3] <= pair[1][1] + 0.5,
+            "{} stands above {}: {:?} then {:?}",
+            ids[0],
+            ids[1],
+            pair[0],
+            pair[1]
+        );
+    }
+    let width = f64::from(PHONE.0);
+    for (id, rect) in order.iter().zip(&rects) {
+        assert!(
+            rect[0] >= 0.0 && rect[0] + rect[2] <= width,
+            "{id} fits the phone's width: {rect:?}"
+        );
+    }
+    let code = rect_of(&mut app, "invite-code");
+    let field = rect_of(&mut app, "invite-link");
+    assert!(
+        code[2] <= 160.0,
+        "the code is a small second way, not the sheet's subject: {code:?}"
+    );
+    assert!(
+        code[2] < field[2],
+        "the link, not the code, is the widest thing handed over"
+    );
+}
+
+/// With a link made, making another is the secondary press, and says so.
+#[test]
+fn with_a_link_made_the_button_makes_another() {
+    let (mut app, _seat) = seated(with_link());
+    assert!(enabled(&mut app, "Create another link"));
+    assert!(
+        app.harness()
+            .a11y_nodes()
+            .into_iter()
+            .all(|(_, node)| node.label() != Some("Create link")),
+        "the first link's button is not offered beside one already made"
     );
 }

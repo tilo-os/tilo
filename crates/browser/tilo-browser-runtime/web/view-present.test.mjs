@@ -124,9 +124,9 @@ test('a field is an input whose typing goes to the widget as its value', () => {
 test("a document's blocks are paragraphs, headings and list items with their marks and caret", () => {
   const layer = new Node('div');
   const presenter = createViewPresenter(layer);
-  const block = (id, kind, text, extra = {}) => ({id, kind, level: 0, done: false, ordinal: null, tag: null, soft_break: false, text, marks: [], selection: null, editable: true, ...extra});
+  const block = (id, kind, text, extra = {}) => ({id, kind, level: 0, done: false, ordinal: null, tag: null, soft_break: false, text, marks: [], selection: null, editable: true, gap: 6, size: 15, line_height: 1.4, weight: 400, ...extra});
   show(presenter, widget('BlockEditor[0]', [0, 0, 400, 200], {own: {kind: 'blocks', blocks: [
-    block('h', 'heading', 'Trip', {level: 1}),
+    block('h', 'heading', 'Trip', {level: 1, gap: 0, size: 28, line_height: 1.2, weight: 700}),
     block('p', 'paragraph', 'Pack light, é', {marks: [{start: 0, end: 4, mark: 'bold'}], selection: [15, 15]}),
     block('b', 'bullet', 'Passport'),
   ], edges: {text: 22, list: 28, indent: 28, quote: 16}}}));
@@ -142,6 +142,9 @@ test("a document's blocks are paragraphs, headings and list items with their mar
   // two-byte é.
   assert.equal(items[1].children.at(-1).className, 'tilo-caret');
   assert.equal(items[2].className, 'tilo-block tilo-bullet');
+  // Each block is set as the editor sets it, not in sizes of the page's own.
+  assert.match(items[0].style.cssText, /margin-top:0px;font-size:28px;line-height:1.2;font-weight:700;/);
+  assert.match(items[1].style.cssText, /margin-top:6px;font-size:15px;line-height:1.4;font-weight:400;/);
 });
 
 test('a scroller is native: the page scrolls it to the widget\'s offset, and the person\'s scroll goes back once', () => {

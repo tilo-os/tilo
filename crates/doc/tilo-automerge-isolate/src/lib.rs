@@ -42,7 +42,10 @@
 //! program that admits untrusted Automerge bytes calls [`dispatch_early`]
 //! first thing in `main`, before it starts threads or a runtime. A test crate
 //! adds [`test_worker!`] instead. Without either, admission fails with
-//! [`Rejected::Unavailable`] naming the missing line.
+//! [`Rejected::Unavailable`] naming the missing line. A library loaded into
+//! an executable that is not Tilo's (a Python extension, a Node addon) ships
+//! the `tilo-automerge-worker` program beside itself and names it with
+//! [`serve_workers_from`].
 //!
 //! # In the browser
 //!
@@ -298,6 +301,21 @@ pub fn dispatch_early() -> Option<u8> {
         return Some(u8::try_from(worker::serve(config)).unwrap_or(1));
     }
     None
+}
+
+/// The worker program [`serve_workers_from`] named, if any.
+static WORKER_PROGRAM: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Start workers as `program` (the `tilo-automerge-worker` program, or any
+/// that calls [`dispatch_early`] first) rather than as this executable: for a
+/// library loaded into an executable that is not Tilo's, which cannot be
+/// started again in worker mode. The first program named holds for the
+/// process; naming another later changes nothing and answers `false`.
+pub fn serve_workers_from(program: std::path::PathBuf) -> bool {
+    match WORKER_PROGRAM.set(program) {
+        Ok(()) => true,
+        Err(program) => WORKER_PROGRAM.get() == Some(&program),
+    }
 }
 
 /// Serve workers from a test binary, whose `main` belongs to libtest: defines

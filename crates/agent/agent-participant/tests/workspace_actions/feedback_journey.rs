@@ -88,7 +88,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     let host = enrol(
         &identity,
         "temporary-node",
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     );
     let device = enrol(&identity, "temporary-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
@@ -266,7 +266,7 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
     let host = enrol(
         &identity,
         "review-node",
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     );
     let device = enrol(&identity, "review-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
@@ -350,7 +350,7 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
     let host = enrol(
         &owner,
         "feedback-node",
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     );
     let owner_device = enrol(&owner, "owner-browser", DeviceCapabilities::member());
     let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());

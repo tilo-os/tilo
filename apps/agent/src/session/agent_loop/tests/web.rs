@@ -26,7 +26,6 @@ fn server() -> FixtureServer {
         Route::new("/bing", "text/html", BING),
         Route::new("/ada", "text/html", PAGE),
     ])
-    .expect("a server on this machine")
 }
 
 /// Let the agent's web tools ask `server` instead of the web.

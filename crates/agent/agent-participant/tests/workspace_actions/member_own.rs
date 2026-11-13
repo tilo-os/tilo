@@ -58,7 +58,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
     let host = enrol(
         &owner,
         "bridge-node",
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     );
     let owner_device = enrol(&owner, "owner-browser", DeviceCapabilities::member());
     let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
@@ -223,7 +223,7 @@ async fn the_hosts_workspace_actions_read_what_the_governor_commits() {
     let host = enrol(
         &owner,
         "bridge-node",
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     );
     let owner_device = enrol(&owner, "owner-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();

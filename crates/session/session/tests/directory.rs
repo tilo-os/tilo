@@ -1128,7 +1128,7 @@ impl LoungeHost {
             &owner_key,
             &host_key,
             "The lounge's host",
-            tilo_user_identity::cloud_enrollment::host_capabilities(),
+            tilo_user_identity::DeviceCapabilities::host(),
         );
         let page_key = ed25519_dalek::SigningKey::from_bytes(&lounge_key());
         let page_device = certified(

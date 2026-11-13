@@ -5,8 +5,8 @@
 //! action.
 
 use tilolang_runtime::meta::{
-    EffectClass, FieldKind, FieldMeta, Meta, ParamMeta, TriggerWhenMeta, Ty, TypeMeta,
-    element_record, field_kind, parse_ty,
+    EffectClass, FieldKind, FieldMeta, Meta, TriggerWhenMeta, Ty, TypeMeta, element_record,
+    field_kind, parse_ty,
 };
 
 use crate::schema::{ColumnKind, ColumnSchema, FieldSchema, MergeKind, TypeSchema, lookup_in};
@@ -66,9 +66,6 @@ pub fn unreadable_types(meta: &Meta) -> Vec<String> {
 
 /// Derived facts of a package's metadata.
 pub trait MetaExt {
-    /// The declared type named `name` (a qualified name's last segment), or whose id is `name`.
-    fn type_named(&self, name: &str) -> Option<&TypeMeta>;
-
     /// The record schemas of every declared type, ready to register.
     fn schemas(&self) -> Vec<TypeSchema>;
 
@@ -85,9 +82,6 @@ pub trait MetaExt {
 
     /// The kind a package-level action (one with no record parameter) is published under.
     fn package_kind(&self) -> String;
-
-    /// The type an action is on: that of its first parameter, when it is a declared record.
-    fn subject_of(&self, params: &[ParamMeta]) -> Option<&TypeMeta>;
 }
 
 /// Whether a field's declared type names a resource: a record, or one inside an option.
@@ -302,20 +296,6 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
 }
 
 impl MetaExt for Meta {
-    fn type_named(&self, name: &str) -> Option<&TypeMeta> {
-        if let Some(found) = self.types.iter().find(|ty| ty.id == name) {
-            return Some(found);
-        }
-        // A qualified name (`so.tilo.todo.Item`) names a type of another app.
-        let (app, last) = name
-            .rsplit_once('.')
-            .map_or((None, name), |(app, last)| (Some(app), last));
-        if app.is_some_and(|app| app != self.app) {
-            return None;
-        }
-        self.types.iter().find(|ty| ty.name == last)
-    }
-
     fn schemas(&self) -> Vec<TypeSchema> {
         self.types
             .iter()
@@ -360,10 +340,6 @@ impl MetaExt for Meta {
 
     fn package_kind(&self) -> String {
         format!("tl.{}", self.app)
-    }
-
-    fn subject_of(&self, params: &[ParamMeta]) -> Option<&TypeMeta> {
-        params.first().and_then(|param| self.type_named(&param.ty))
     }
 }
 

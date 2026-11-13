@@ -364,9 +364,15 @@ fn app_row(
     let rule = prefs.per_app.get(&app.id).copied().unwrap_or_default();
     let muted = rule.muted_until.is_some_and(|until| until > unix_now_i64());
     let (duration, mute_label) = if muted {
-        ("Not muted", "Unmute notifications")
+        (
+            "Not muted",
+            tilo_resource::word!("settings-notifications-unmute-app-now"),
+        )
     } else {
-        ("For 1 hour", "Mute notifications for an hour")
+        (
+            "For 1 hour",
+            tilo_resource::word!("settings-notifications-mute-app-hour"),
+        )
     };
     let params = crate::prefs::notification_prefs::MuteApp::paths();
     let mute = NotificationPrefs::MUTE_APP

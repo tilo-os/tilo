@@ -77,14 +77,17 @@ pub(super) async fn handle_remote_action(
     }
     // A browser environment's device answers the page actions the relay hands
     // it and originates none: what it holds is a window, not a member's
-    // standing to call the workspace's doors.
+    // standing to call the workspace's doors. What it asks of this host about
+    // itself — its own streams' media keys, its own windows' shares — is the
+    // one exception, and this host answers it only for that device.
     if session.environment(&peer.device_public_key).is_some()
         && matches!(
             tilo_actions::remote::RemoteActionFrame::decode(&frame),
             Ok(tilo_actions::remote::RemoteActionFrame {
-                message: tilo_actions::remote::RemoteActionMessage::Invoke(_),
+                message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
                 ..
-            })
+            }) if to != *session.own_device_public_key
+                || tilo_actions::remote::environment_device::action_of(&request.target).is_none()
         )
     {
         return refuse(

@@ -52,7 +52,6 @@ pub mod hydration;
 #[cfg(feature = "filesystem")]
 pub mod identity;
 #[cfg(feature = "filesystem")]
-pub mod legacy_history;
 #[cfg(feature = "filesystem")]
 pub mod namespace;
 #[cfg(feature = "filesystem")]

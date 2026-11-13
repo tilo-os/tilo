@@ -338,6 +338,7 @@ impl ViewCx {
     ) -> Binding {
         Binding {
             field: Some((target.id_string(), field.into())),
+            kind: Some(target.ty.clone()),
             name: name.into(),
         }
     }
@@ -348,6 +349,7 @@ impl ViewCx {
     pub fn bind_state(name: impl Into<String>) -> Binding {
         Binding {
             field: None,
+            kind: None,
             name: name.into(),
         }
     }

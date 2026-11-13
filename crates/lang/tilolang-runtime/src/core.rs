@@ -187,6 +187,10 @@ pub struct Core {
     /// type is drawn with, where a tilolang view's export would be called
     /// ([`crate::rust_views`]).
     pub rust_views: crate::rust_views::Shared,
+    /// Whether a view showed something only the window knows while it built one of its nodes,
+    /// when the view's own state was already borrowed for the build: taken onto the view when
+    /// the node is built ([`Self::with_view`], [`Self::read_person`]).
+    pub(crate) person_shown: std::cell::Cell<bool>,
 }
 
 /// What `now` reads while the host has set no clock.
@@ -304,6 +308,7 @@ impl Core {
             running: std::cell::Cell::new(false),
             foreign: RefCell::new(crate::foreign::Foreign::default()),
             rust_views: crate::rust_views::Shared::default(),
+            person_shown: std::cell::Cell::new(false),
             wanted_packages: RefCell::new(crate::foreign::WantedPackages::default()),
             failed_views: RefCell::new(crate::foreign::FailedViews::default()),
             seen_writes: RefCell::new(Vec::new()),
@@ -381,7 +386,7 @@ impl Core {
     /// The time of day `hour`:`minute` as the person reads a clock: the host's style, or a
     /// 24-hour clock where it names none (`ShownHost::clock`).
     pub(crate) fn clock_text(&self, hour: u32, minute: u32) -> String {
-        self.read_format();
+        self.read_person();
         self.shown.borrow().as_ref().map_or_else(
             || format!("{hour:02}:{minute:02}"),
             |host| host.clock(hour, minute),

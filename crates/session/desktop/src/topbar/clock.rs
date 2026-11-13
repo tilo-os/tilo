@@ -71,23 +71,20 @@ impl TopBarChrome {
         TextWeight::Bold
     }
 
-    /// The centre band. The clock is plain text on the bar, with no pill
-    /// (a pill around five characters read as a second bar inside the bar);
-    /// a live activity over it keeps a quiet selector pill. Returns the
-    /// centre line the time or the activity draws on.
-    pub(super) fn draw_center_band(
+    /// Where the centre band stands, and the lane kept for it. The clock is plain text on the
+    /// bar, with no pill (a pill around five characters read as a second bar inside the bar); a
+    /// live activity over it keeps a quiet selector pill, which morphs between their widths.
+    pub(super) fn place_center_band(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         center_y: f64,
-    ) -> f64 {
+    ) {
         let lane_w = self.center_band_width(theme, text_renderer);
         let target_w = self.center_pill_width(theme, text_renderer, lane_w);
         let now = ui::time::now();
         if (self.center_lane.width() - lane_w).abs() > 0.5 {
-            // A new lane (the bar's first paint, a resized display): the selector takes its width
+            // A new lane (the bar's first layout, a resized display): the selector takes its width
             // as it is.
             self.center_width.snap(target_w);
         } else if (self.center_width.target() - target_w).abs() > 0.25 {
@@ -116,9 +113,21 @@ impl TopBarChrome {
             band_cx + lane_w / 2.0,
             band.y1,
         );
+    }
+
+    /// Paint the centre band's quiet selector pill where [`Self::place_center_band`] stood it,
+    /// as it comes and goes with the activity. Returns the centre line the time or the activity
+    /// draws on.
+    pub(super) fn paint_center_band(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+    ) -> f64 {
+        let band = self.center_rect;
         // The quiet selector pill comes and goes with the activity: an activity's pill, or a
         // glance's sentence, always stands on one.
-        let fade = self.center_activity_opacity(now);
+        let fade = self.center_activity_opacity(ui::time::now());
         let pill = if self.center_pill().is_empty() {
             fade
         } else {
@@ -170,7 +179,7 @@ impl TopBarChrome {
     }
 
     /// The lane the active centre widget draws into: the same inset in from either end of the band.
-    /// One function so [`Self::draw_center_band`] and [`Self::activity_content_width`] cannot
+    /// One function so [`Self::paint_center_band`] and [`Self::activity_content_width`] cannot
     /// disagree about how much workspace the activity headline has.
     pub(super) fn center_content_lane(band: Rect) -> (f64, f64) {
         // Symmetric, so the content's centre is the band's centre.
@@ -311,12 +320,10 @@ impl TopBarChrome {
         }
     }
 
-    /// Sizes the center band, then draws the time, or a live activity over it. Split out of
-    /// [`Widget::draw`] to stay under clippy's line budget.
-    pub(super) fn draw_center_widget(
+    /// Where the centre stands: the band for the time or a live activity over it, the lane kept
+    /// for the banner while this view follows someone, or nothing while the clock gives way.
+    pub(super) fn place_center_widget(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         center_y: f64,
@@ -343,7 +350,23 @@ impl TopBarChrome {
             self.center_lane = Rect::new(center, center_y, center, center_y);
             return;
         }
-        let content_cx = self.draw_center_band(scene, transform, theme, text_renderer, center_y);
+        self.place_center_band(theme, text_renderer, center_y);
+    }
+
+    /// Paint the time, or a live activity over it, where [`Self::place_center_widget`] and the
+    /// bar's right side left the band; nothing where it has none.
+    pub(super) fn paint_center_widget(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+    ) {
+        if self.center_rect.is_zero_area() {
+            return;
+        }
+        let content_cx = self.paint_center_band(scene, transform, theme);
         // The time and a live activity cross-fade in place.
         let now = ui::time::now();
         let mut layers = Vec::with_capacity(2);
@@ -499,7 +522,7 @@ impl TopBarChrome {
     }
 
     /// Width of the centre lane the activity headline may occupy — the band minus its insets,
-    /// exactly as [`Self::draw_center_band`] lays it out.
+    /// exactly as [`Self::place_center_band`] lays it out.
     pub(super) fn activity_content_width(&self, theme: &Theme) -> f32 {
         let (x0, x1) = Self::center_content_lane(self.center_rect);
         ui::num::f32_of_f64((x1 - x0).max(f64::from(theme.tokens.spacing.s12)))

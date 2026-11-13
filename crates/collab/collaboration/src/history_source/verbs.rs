@@ -589,8 +589,11 @@ fn by(version: &Version) -> String {
 /// What a change's entry records, as data: what was done (`what`, with
 /// field paths, values and verb arguments), to which `item`, by which
 /// `actor` (`id`, `kind`, the person it acted `for`, and for an agent with a
-/// name the `name` and `colour` it shows by), in which `run`, and what kind
-/// of action and change it was.
+/// name the `name` and `colour` it shows by), in which `run`, through which
+/// `invocation` of the action door, as part of which undo `step` (its
+/// gesture), and what kind of action and change it was. The invocation and
+/// the step are what a caller that ran an action finds its own changes by,
+/// to take exactly those back (`undo` with `step`).
 fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<String, Value>) {
     if let Some(what) = &context.what {
         out.insert("what".into(), json!(what));
@@ -622,6 +625,12 @@ fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<Str
     }
     if let Some(kind) = context.kind {
         out.insert("kind".into(), json!(kind));
+    }
+    if let Some(invocation) = context.source_invocation {
+        out.insert("invocation".into(), invocation.0.to_string().into());
+    }
+    if let Some(gesture) = context.gesture {
+        out.insert("step".into(), gesture.0.to_string().into());
     }
     if !context.change.is_content() {
         out.insert("change_kind".into(), json!(context.change));
@@ -808,6 +817,51 @@ pub fn history(doc: &AutoCommit, last: usize, words: &dyn HistoryWords) -> Value
             "version": version_name(&checkpoint.heads),
         })).collect::<Vec<_>>(),
     })
+}
+
+/// The changes of `doc` made after the version `after` (every change, for
+/// none), oldest first, each as `history` lists it, whole: what a feed of a
+/// workspace's changes reports of one record, as the record's own history
+/// would.
+pub fn entries_after(
+    doc: &AutoCommit,
+    after: &[ChangeHash],
+    words: &dyn HistoryWords,
+) -> Vec<Value> {
+    let since: HashSet<ChangeHash> = doc
+        .committed_document()
+        .get_changes_meta(after)
+        .iter()
+        .map(|meta| meta.hash)
+        .collect();
+    if since.is_empty() {
+        return Vec::new();
+    }
+    let undone = steps::undone(doc);
+    let checkpoints = steps::checkpoints(doc);
+    tilo_resource::history::committed_versions(doc)
+        .iter()
+        .filter(|version| since.contains(&version.hash))
+        .filter(|version| !steps::is_schema_genesis(version) && !is_record_making(version))
+        .map(|version| entry(version, &undone, &checkpoints, words))
+        .collect()
+}
+
+/// Whether `version` is the framework making the record (its genesis, or the
+/// structure every member derives the same way): nobody's change, which a
+/// feed of what people and agents changed leaves out.
+fn is_record_making(version: &Version) -> bool {
+    version
+        .message
+        .as_deref()
+        .and_then(tilo_actions::framework::FrameworkChange::from_change_message)
+        .is_some_and(|change| {
+            matches!(
+                change,
+                tilo_actions::framework::FrameworkChange::Genesis
+                    | tilo_actions::framework::FrameworkChange::Structure
+            )
+        })
 }
 
 /// Answer a history view.
@@ -1086,12 +1140,23 @@ fn restoration(
         .as_ref()
         .and_then(|context| context.action.as_ref())
         .ok_or("verified redo action absent")?;
-    local(
-        registry
-            .decode(recorded)
-            .map_err(|error| error.to_string())?,
-    )
-    .map(Some)
+    local(recorded_action(registry, recorded)?).map(Some)
+}
+
+/// The action a recorded entry names, as it ran: its large parts, kept as
+/// content in the record's store, read back before it decodes, and asked of
+/// the record's route when this device lacks them.
+fn recorded_action(
+    registry: &tilo_actions::ActionRegistry,
+    recorded: &tilo_actions::EncodedAction,
+) -> Result<Box<dyn tilo_actions::Action>, String> {
+    let resolved = registry
+        .resolve(recorded)
+        .map_err(|error| error.to_string())?
+        .map_err(|missing| missing.to_string())?;
+    registry
+        .decode(&resolved)
+        .map_err(|error| error.to_string())
 }
 
 /// History applies only actions it may run here.
@@ -1108,6 +1173,27 @@ mod tests {
     use super::*;
     use crate::history_source::TestWords;
     use automerge::{ROOT, ReadDoc};
+
+    #[test]
+    fn a_feed_leaves_out_the_framework_making_the_record() {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "made", true).unwrap();
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::framework::FrameworkChange::Genesis.change_message()),
+        );
+        doc.put(ROOT, "saved", 1_i64).unwrap();
+        doc.commit().unwrap();
+
+        let entries = entries_after(&doc, &[], &TestWords);
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert!(
+            !entries[0]["sentence"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("tilo.framework")
+        );
+    }
 
     #[test]
     fn history_and_diff_leave_the_callers_open_edit_uncommitted() {

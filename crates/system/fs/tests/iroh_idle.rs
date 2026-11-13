@@ -49,7 +49,6 @@ fn endpoint_runtime() -> tokio::runtime::Runtime {
 #[test]
 fn an_endpoint_whose_relays_were_removed_sleeps() {
     use iroh::Watcher as _;
-    use iroh_relay::server::{RelayConfig, Server, ServerConfig};
 
     let relay_runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
@@ -57,24 +56,13 @@ fn an_endpoint_whose_relays_were_removed_sleeps() {
         .enable_all()
         .build()
         .expect("a runtime for the relay");
-    let server = relay_runtime.block_on(async {
-        let mut config = ServerConfig::default();
-        config.relay = Some(RelayConfig::new((std::net::Ipv4Addr::LOCALHOST, 0)));
-        Server::spawn(config)
-            .await
-            .expect("a loopback relay starts")
-    });
-    let url: iroh::RelayUrl = format!("http://{}", server.http_addr().expect("relay HTTP"))
-        .parse()
-        .expect("a loopback relay URL");
-    let mut relay = iroh::RelayConfig::from(url.clone());
-    // No QUIC address discovery: the net report needs only the HTTP probe.
-    relay.quic = None;
+    let relay = relay_runtime.block_on(tilo_test_env::relay::relay());
+    let url = relay.url().clone();
 
     let runtime = endpoint_runtime();
     let endpoint = runtime.block_on(async {
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .relay_mode(iroh::RelayMode::Custom(std::iter::once(relay).collect()))
+            .relay_mode(iroh::RelayMode::Custom(relay.relays()))
             .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
             .expect("a loopback bind address")
             .bind()
@@ -87,6 +75,7 @@ fn an_endpoint_whose_relays_were_removed_sleeps() {
         .await;
         endpoint
     });
+    let server = relay.server();
     // The relay counts the connection once it has registered the client,
     // which may be just after the client saw itself connected.
     tilo_test_env::wait_until("the relay to count the endpoint's connection", || {
@@ -137,7 +126,7 @@ fn an_endpoint_whose_relays_were_removed_sleeps() {
         "the endpoint still names the relay it gave up"
     );
     runtime.block_on(endpoint.close());
-    drop(server);
+    drop(relay);
 }
 
 /// After a net report finds what the one before did, the next waits four
@@ -146,8 +135,6 @@ fn an_endpoint_whose_relays_were_removed_sleeps() {
 #[cfg(target_os = "linux")]
 #[test]
 fn an_unchanged_net_report_rests_the_next() {
-    use iroh_relay::server::{RelayConfig, Server, ServerConfig};
-
     /// Three of the 20-26 s periods; a resting report waits 80-104 s.
     const RESTING: Duration = Duration::from_secs(75);
 
@@ -157,18 +144,7 @@ fn an_unchanged_net_report_rests_the_next() {
         .enable_all()
         .build()
         .expect("a runtime for the relay");
-    let server = relay_runtime.block_on(async {
-        let mut config = ServerConfig::default();
-        config.relay = Some(RelayConfig::new((std::net::Ipv4Addr::LOCALHOST, 0)));
-        Server::spawn(config)
-            .await
-            .expect("a loopback relay starts")
-    });
-    let url: iroh::RelayUrl = format!("http://{}", server.http_addr().expect("relay HTTP"))
-        .parse()
-        .expect("a loopback relay URL");
-    let mut relay = iroh::RelayConfig::from(url);
-    relay.quic = None;
+    let relay = relay_runtime.block_on(tilo_test_env::relay::relay());
 
     // Its own thread name: the wakeup counts of the other tests here are
     // taken by name, and the test harness may run this beside them.
@@ -180,7 +156,7 @@ fn an_unchanged_net_report_rests_the_next() {
         .expect("a runtime for the endpoint");
     let endpoint = runtime.block_on(async {
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .relay_mode(iroh::RelayMode::Custom(std::iter::once(relay).collect()))
+            .relay_mode(iroh::RelayMode::Custom(relay.relays()))
             .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
             .expect("a loopback bind address")
             .bind()
@@ -209,7 +185,7 @@ fn an_unchanged_net_report_rests_the_next() {
         "an unchanged net report must rest the next for 80-104 s"
     );
     runtime.block_on(endpoint.close());
-    drop(server);
+    drop(relay);
 }
 
 /// A network change (an interface coming up, an address added and removed,

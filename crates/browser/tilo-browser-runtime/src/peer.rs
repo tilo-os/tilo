@@ -926,13 +926,23 @@ pub async fn create_login_code(post: Function, link: Option<String>) -> Result<S
 }
 
 /// Where the code this tab follows with the secret `follow` is: the host's `Polled`, as JSON.
+/// `offer` is the code as it was made, `{code, expires_at_ms, link?}` JSON: the host keeps a code
+/// only once its tab follows it with that, which the tab does once its person uses the code.
 ///
 /// # Errors
 ///
-/// Rejects with a `LoginCodeError` ([`code_error`]).
+/// Rejects with a `LoginCodeError` ([`code_error`]), or a malformed offer.
 #[wasm_bindgen(js_name = followLoginCode)]
-pub async fn follow_login_code(post: Function, follow: String) -> Result<String, JsValue> {
-    let polled = tilo_relay_client::login_code::follow(&PageHttp(post), &follow)
+pub async fn follow_login_code(
+    post: Function,
+    follow: String,
+    offer: Option<String>,
+) -> Result<String, JsValue> {
+    let offer = offer
+        .map(|offer| serde_json::from_str::<tilo_relay_protocol::login_code::Offer>(&offer))
+        .transpose()
+        .map_err(js_error)?;
+    let polled = tilo_relay_client::login_code::follow(&PageHttp(post), &follow, offer)
         .await
         .map_err(|refusal| code_error(&refusal))?;
     serde_json::to_string(&polled).map_err(|error| js_error(error).into())

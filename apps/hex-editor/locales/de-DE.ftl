@@ -64,3 +64,9 @@ hex-editor-big-endian = Big Endian
 
 ## What the app is called in a window and in the launcher
 hex-editor-app-title = Hex-Editor
+## Actions bound to what the person is looking at
+
+hex-editor-document-insert-byte = An der Schreibmarke einfügen
+hex-editor-document-overwrite-byte = An der Schreibmarke überschreiben
+hex-editor-document-delete-selection = Auswahl löschen
+hex-editor-document-delete-byte = Byte löschen

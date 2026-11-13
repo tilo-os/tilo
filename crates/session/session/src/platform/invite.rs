@@ -123,7 +123,7 @@ impl Workspace for DeskWorkspace {
                 }
                 people.push(sheet::Person {
                     name: if member.name.is_empty() {
-                        member.person.chars().take(8).collect()
+                        sheet::unnamed_person()
                     } else {
                         member.name
                     },

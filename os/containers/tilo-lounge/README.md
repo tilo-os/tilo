@@ -59,9 +59,9 @@ Optional, with these defaults:
 | `TILO_ROOMS_SEED_APPS` | `so.tilo.chat` | comma-separated apps authored at the first start |
 | `TILO_ROOMS_AUTHOR_APPS` | every first-party app | comma-separated apps members write through; `none` makes the workspace read-only |
 | `TILO_ROOMS_BOTS` | none | `;`-separated bot specs (`<program or directory entry> key=value …`) |
-| `TILO_ROOMS_INACTIVE_AFTER_DAYS` | `30` | days without a session before a member stops being one |
 | `TILO_ROOMS_PERSON_STORAGE_GB` | `10` | gigabytes per person, shared by the workspaces of their own the host gives anyone who asks |
 | `TILO_ROOMS_STATE` | `/run/tilo-rooms` | the volume the workspace lives on |
+| `TILO_ROOMS_OPERATOR_SOCKET` | `$TILO_ROOMS_STATE/$TILO_ROOMS_PERSISTENT/operator.sock` | where the operator declares owners of the running workspace (`os/containers/tilo-lounge/declare-owner`): its door lets them in and its governance makes them an administrator once they join |
 | `TILO_ROOMS_SITE_ORIGINS` | none | comma-separated origins besides the relay's that may join |
 | `TILO_ROOMS_RELAY_PLAIN` | `0.0.0.0:9780` | the listener the ingress forwards the workspace to |
 | `TILO_ROOMS_LIVE` | `0.0.0.0:9782` | the address the packet relay binds, as the ingress forwards to it |
@@ -137,8 +137,9 @@ visa run beside it, fresh visitors' entry into the Lounge, the wait list of a
 door that takes people by invitation, a stranger's onboarding on a tilo.sh of
 its own (`test-onboarding.sh`: the wait list, the two mails, the invitation the
 person who runs the host sends from the workspace's wait list, and the
-workspace of their own with their agent set up in it; it stops at the passkey,
-which the host refuses to certify the tab for), and the chat read back after
+workspace of their own with their agent set up in it, the passkey that brings
+them back on a browser that forgot the site, a second workspace, and a visitor
+still refused), and the chat read back after
 the relay restarts. Each flow runs alone too:
 
 ```

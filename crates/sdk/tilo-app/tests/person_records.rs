@@ -11,7 +11,11 @@ pub struct Queue {
     pub items: Vec<String>,
 }
 
-#[resource(kind = "test.queue", label = "Queue", app = "so.tilo.test-queue")]
+#[resource(
+    kind = "test.queue",
+    app = "so.tilo.test-queue",
+    catalogue = "tests/locales"
+)]
 impl Queue {
     /// Queue a video.
     #[action]
@@ -28,9 +32,9 @@ pub struct Watched {
 
 #[resource(
     kind = "test.watched",
-    label = "Watch history",
     app = "so.tilo.test-queue",
-    read_content = Watched::read_document
+    read_content = Watched::read_document,
+    catalogue = "tests/locales"
 )]
 impl Watched {
     /// Remember that a video was watched.
@@ -249,7 +253,11 @@ pub struct Saved {
     pub videos: Collection<String>,
 }
 
-#[resource(kind = "test.saved", label = "Saved", app = "so.tilo.test-queue")]
+#[resource(
+    kind = "test.saved",
+    app = "so.tilo.test-queue",
+    catalogue = "tests/locales"
+)]
 impl Saved {
     /// Save a video for later.
     #[action]

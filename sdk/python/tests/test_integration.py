@@ -1,7 +1,7 @@
 """Against a real API server: `TILO_TEST_API_URL` and `TILO_TEST_KEY` name one.
 
-The door is the local harness; the key reaches every workspace of its person.
-Nothing here fakes the wire: it is the same calls a person's agent makes.
+Nothing here fakes the wire: the key reaches every workspace of its person,
+and every call is the one an agent makes.
 """
 
 from __future__ import annotations
@@ -11,19 +11,19 @@ import uuid
 
 import pytest
 
-from tilo import AskPending, AsyncTilo, KeyRevoked, Refused
+from tilo import AsyncTilo, KeyRevoked, Refused
 
-DOOR = os.environ.get("TILO_TEST_API_URL")
+URL = os.environ.get("TILO_TEST_API_URL")
 KEY = os.environ.get("TILO_TEST_KEY")
 
 pytestmark = pytest.mark.skipif(
-    not (DOOR and KEY), reason="TILO_TEST_API_URL and TILO_TEST_KEY name an API server"
+    not (URL and KEY), reason="TILO_TEST_API_URL and TILO_TEST_KEY name an API server"
 )
 
 
 @pytest.fixture
 async def tilo():
-    client = AsyncTilo(key=KEY, door=DOOR)
+    client = AsyncTilo(key=KEY, url=URL)
     yield client
     await client.aclose()
 
@@ -40,16 +40,16 @@ async def test_a_workspace_is_created_read_and_listed(tilo):
     apps = await workspace.ls()
     assert apps.path == "apps"
 
-    account = await tilo.workspaces.list()
-    assert created.id in [workspace.id for workspace in account]
-
 
 async def test_a_file_is_uploaded_and_its_reference_comes_back(tilo):
-    workspace = tilo.workspace((await tilo.workspaces.create(f"sdk-upload-{uuid.uuid4().hex[:8]}")).id)
+    workspace = tilo.workspace(
+        (await tilo.workspaces.create(f"sdk-upload-{uuid.uuid4().hex[:8]}")).id
+    )
 
     content = await workspace.files.upload(b"a passport, in bytes")
 
     assert content.startswith("tilo.content:")
+    assert await workspace.files.download(content) == b"a passport, in bytes"
 
 
 async def test_a_key_is_minted_for_one_workspace_and_revoked(tilo):
@@ -67,13 +67,12 @@ async def test_a_key_is_minted_for_one_workspace_and_revoked(tilo):
     assert minted.grant not in [key.grant for key in keys]
 
 
-async def test_a_watch_answers_with_a_cursor(tilo):
-    workspace = tilo.workspace((await tilo.workspaces.create(f"sdk-watch-{uuid.uuid4().hex[:8]}")).id)
+async def test_the_account_says_what_its_workspaces_keep(tilo):
+    created = await tilo.workspaces.create(f"sdk-usage-{uuid.uuid4().hex[:8]}")
 
-    answer = await workspace._call("tilo_watch", {"wait_ms": 0})
+    usage = await tilo.usage()
 
-    assert isinstance(answer.get("cursor"), str)
-    assert isinstance(answer.get("events"), list)
+    assert any(row.workspace == created.id for row in usage.workspaces)
 
 
 async def test_a_deleted_workspace_is_gone_and_its_minted_key_with_it(tilo):
@@ -86,7 +85,7 @@ async def test_a_deleted_workspace_is_gone_and_its_minted_key_with_it(tilo):
     assert minted.grant in answer["revoked_keys"]
     listing = await tilo.workspaces.list()
     assert created.id not in [workspace.id for workspace in listing]
-    agent = AsyncTilo(key=minted.token, door=DOOR)
+    agent = AsyncTilo(key=minted.token, url=URL)
     try:
         with pytest.raises(KeyRevoked):
             await agent.workspace(created.id).ls()
@@ -95,10 +94,3 @@ async def test_a_deleted_workspace_is_gone_and_its_minted_key_with_it(tilo):
     with pytest.raises(Refused) as again:
         await tilo.workspaces.delete(created.id)
     assert again.value.code == "not_found"
-
-
-async def test_asking_for_a_key_names_a_link(tilo):
-    with pytest.raises(AskPending) as raised:
-        await tilo.keys.create(f"sdk-ask-{uuid.uuid4().hex[:8]}")
-
-    assert raised.value.invocation_id

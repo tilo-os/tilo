@@ -281,8 +281,10 @@ impl ShownActor {
                     label: surface.app_id.clone(),
                 }),
                 // What the app declared this action does, so the line beside
-                // the actor's face says it in the reader's language.
+                // the actor's face says it in the reader's language, and what
+                // a create makes, so it says that too.
                 step: action.contract.step,
+                creates: action.contract.creates.clone(),
             },
             anchor: anchor_of(action, &resource, argument),
             resource,

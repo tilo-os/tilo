@@ -2130,7 +2130,7 @@ impl Widget for ContactsApp {
             if let Some(index) = choice {
                 self.run_menu_choice(doc, index);
             }
-            if !self.menu.is_showing() {
+            if !self.menu.is_open() {
                 self.open_menu = None;
                 self.dirty = true;
             }

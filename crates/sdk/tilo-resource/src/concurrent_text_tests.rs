@@ -20,7 +20,7 @@ pub struct Item {
     pub title: String,
 }
 
-#[resource(kind = "test.pad", label = "Pad")]
+#[resource(kind = "test.pad", catalogue = "tests/locales")]
 impl Pad {
     /// Add an item.
     #[action]

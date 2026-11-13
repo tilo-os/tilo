@@ -151,7 +151,8 @@ impl ChatApp {
         } else if message.author.starts_with("bot:") {
             self.bot_name(message)
         } else {
-            self.user_name(&message.author)
+            self.acting_name(&message.author, message.acting.as_ref())
+                .unwrap_or_else(|| self.user_name(&message.author))
         }
     }
 

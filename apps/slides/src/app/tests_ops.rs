@@ -234,6 +234,32 @@ fn the_selection_publishes_its_bound_edits() {
             "`{id}` in {ids:?}"
         );
     }
+    // Each names the element it changes, so the palette and an agent say
+    // which one rather than "Delete selection".
+    let labels = |bench: &mut Bench| -> Vec<String> {
+        bench
+            .app
+            .agent_surface()
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["resource"] == "slides.deck")
+            .filter(|row| {
+                row["action"]
+                    .as_str()
+                    .is_some_and(|id| id.ends_with("-selection") || id.contains("selection-"))
+            })
+            .filter_map(|row| row["label"].as_str().map(str::to_owned))
+            .collect()
+    };
+    assert_eq!(
+        labels(&mut bench),
+        [
+            "Bring to front: Rectangle",
+            "Delete Rectangle",
+            "Send to back: Rectangle",
+        ]
+    );
     bench
         .app
         .call("bring-selection-front", serde_json::json!({}))

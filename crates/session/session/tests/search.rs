@@ -570,7 +570,7 @@ fn a_welcome_card_does_what_its_published_action_does() {
     let card = session
         .controls()
         .into_iter()
-        .find_map(|(name, rect)| (name == "Start a call").then_some(rect))
+        .find_map(|control| (control.name == "Start a call").then_some(control.rect))
         .expect("the desk shows the card its verb is named on");
     assert!(
         card.2 > 0.0 && card.3 > 0.0,

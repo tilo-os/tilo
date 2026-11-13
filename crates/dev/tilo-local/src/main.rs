@@ -10,6 +10,7 @@
 
 mod check;
 mod json;
+mod mcp;
 mod session;
 mod web;
 

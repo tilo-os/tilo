@@ -21,7 +21,7 @@ pub struct Log {
     pub title: String,
 }
 
-#[resource(kind = "test.chain-log", label = "Log")]
+#[resource(kind = "test.chain-log", catalogue = "tests/locales")]
 impl Log {
     /// Rename the log.
     #[action]
@@ -41,7 +41,7 @@ pub struct LogPart {
     pub lines: Collection<Line>,
 }
 
-#[resource(kind = "test.chain-log-part", label = "Lines")]
+#[resource(kind = "test.chain-log-part", catalogue = "tests/locales")]
 impl LogPart {
     /// Write a line.
     #[action]

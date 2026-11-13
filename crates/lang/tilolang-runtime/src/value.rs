@@ -178,6 +178,17 @@ impl ActionRef {
         self.from = from.cloned();
         self
     }
+
+    /// What the reference does, as a control that runs it acts: a `then` runs its first action,
+    /// and its second only completes it (clearing the state the first set). So a button that
+    /// answers a message and clears its entry acts on the message, whatever else it runs.
+    #[must_use]
+    pub fn acting(&self) -> &Self {
+        match (self.action.as_str(), self.args.first()) {
+            (crate::host_ui::THEN_ACTION, Some(Value::Action(first))) => first.acting(),
+            _ => self,
+        }
+    }
 }
 
 impl From<(&str, Vec<Value>)> for ActionRef {
@@ -819,6 +830,21 @@ pub fn same_value(lhs: &Value, rhs: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_then_does_what_its_first_action_does() {
+        // A control that answers a message and then clears the box it was typed in acts on the
+        // message: what it does is the first action, the second only completing it.
+        let answer = ActionRef::new("answer", vec![Value::none()]);
+        let clear = ActionRef::new("$set", vec![Value::text("box"), Value::text("")]);
+        let press = ActionRef::new(
+            crate::host_ui::THEN_ACTION,
+            vec![Value::Action(answer.clone()), Value::Action(clear)],
+        );
+        assert_eq!(press.acting().action, answer.action);
+        // An action that runs nothing of its own is itself.
+        assert_eq!(answer.acting().action, "answer");
+    }
 
     #[test]
     fn values_round_trip_through_json() {

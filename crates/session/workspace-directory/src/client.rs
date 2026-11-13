@@ -51,10 +51,14 @@ pub fn client() -> Result<Client, String> {
 }
 
 /// An origin a site or host is reached at: HTTPS, or plain HTTP on this
-/// machine's loopback only (a host under development).
+/// machine's loopback only (a host under development). A `*.localhost` name
+/// is loopback too, as browsers and resolvers take it: the local tilo.sh
+/// serves its site as `tilo.localhost`.
 pub fn web_origin(text: &str) -> Result<url::Url, String> {
     let url = url::Url::parse(text).map_err(|_| "that is not a web address")?;
-    let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    let loopback = url.host_str().is_some_and(|host| {
+        matches!(host, "localhost" | "127.0.0.1" | "[::1]") || host.ends_with(".localhost")
+    });
     match url.scheme() {
         "https" => {}
         "http" if loopback => {}
@@ -846,6 +850,28 @@ mod tests {
     use test_http::{Reply, Responder};
 
     const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+
+    /// Plain HTTP is a site on this machine only: its loopback, by address or
+    /// by a `localhost` name; anywhere else a site is HTTPS.
+    #[test]
+    fn plain_http_is_a_site_on_this_machine_only() {
+        for local in [
+            "http://localhost:8080/",
+            "http://127.0.0.1:8080/",
+            "http://[::1]:8080/",
+            "http://tilo.localhost:25120/",
+        ] {
+            assert!(web_origin(local).is_ok(), "{local}");
+        }
+        for elsewhere in [
+            "http://tilo.sh/",
+            "http://localhost.evil.example/",
+            "ftp://localhost/",
+        ] {
+            assert!(web_origin(elsewhere).is_err(), "{elsewhere}");
+        }
+        assert!(web_origin("https://tilo.sh/").is_ok());
+    }
 
     /// An invitation for `person` to [`WORKSPACE`], minted as a host mints
     /// one: a real signed invitation, kilobyte and all.

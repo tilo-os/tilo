@@ -259,7 +259,7 @@ use ui::{AppKind, AppWidget, IconDescriptor};
 fn widget_identity_defaults_and_initial_path() {
     file_explorer_widget_implements_app_widget_and_defaults_correctly();
     file_explorer_widget_constructs_with_sensible_default_path();
-    initial_path_prefers_workspace_then_legacy_then_user_home_then_cwd_then_root();
+    initial_path_prefers_workspace_then_user_home_then_cwd_then_root();
     footer_shows_item_count_and_formatted_path();
     refresh_rereads_same_directory();
     view_mode_toggle_switches_between_list_and_grid();
@@ -389,23 +389,19 @@ fn view_mode_toggle_switches_between_list_and_grid() {
     assert_eq!(w.state().view_mode(), ViewMode::Grid);
 }
 
-fn initial_path_prefers_workspace_then_legacy_then_user_home_then_cwd_then_root() {
+fn initial_path_prefers_workspace_then_user_home_then_cwd_then_root() {
     // Assert the exact startup path for the current environment, including
-    // configured mounts and the sandbox's granted user home. An explicit
-    // workspace override suppresses the legacy /workspace fallback.
+    // configured mounts and the sandbox's granted user home.
     use file_explorer::model::{initial_path, user_home, workspace_record_authority_roots};
     let p = initial_path();
     // A configured mount, not `~/Shared`: received shares are a sidebar
     // place, and an empty one is no window to open on.
     let workspace = workspace_record_authority_roots().into_iter().next();
-    let legacy = PathBuf::from("/workspace");
     let home = user_home();
     let cwd = std::env::current_dir().ok();
 
     if let Some(workspace) = workspace {
         assert_eq!(p, workspace, "workspace wins when present");
-    } else if std::env::var_os("TILO_WORKSPACE_ROOTS").is_none() && legacy.exists() {
-        assert_eq!(p, legacy, "legacy workspace wins without an override");
     } else if let Some(h) = home {
         assert_eq!(p, h, "home is the next fallback when workspace absent");
     } else if let Some(c) = cwd {

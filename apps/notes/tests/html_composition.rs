@@ -68,6 +68,19 @@ fn a_note_renders_as_its_own_elements() {
         .find(|mark| mark.mark == "bold")
         .expect("the bold run");
     assert_eq!(&blocks[1].text[bold.start..bold.end], "eggs");
+    // Each block is set as the editor sets it: a heading larger than the body, the first block
+    // at the top and the rest at the gaps the editor stacks them at.
+    assert!(
+        blocks[0].size > blocks[1].size,
+        "{:?}",
+        (blocks[0].size, blocks[1].size)
+    );
+    assert!(
+        blocks[0].gap.abs() < f32::EPSILON,
+        "the first block stands at the top"
+    );
+    assert!(blocks[1].gap > 0.0 && blocks[2].gap > 0.0);
+    assert!(blocks[1].line_height > 1.0 && blocks[1].weight == 400);
 
     let rows = find(root, "ListRow");
     assert_eq!(rows.len(), 1);

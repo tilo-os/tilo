@@ -55,6 +55,8 @@ pub use authors::{
     participant_display_label, participant_name, set_installed_apps, set_workspace_agents,
     short_id, software_name, stable_hue,
 };
+/// What changed in a workspace's records, as a host's replica took it in.
+pub use collaboration::history_source::feed;
 /// Undo, redo, restore and checkpoints written into the document, below
 /// the toolkit.
 pub use collaboration::history_source::steps;

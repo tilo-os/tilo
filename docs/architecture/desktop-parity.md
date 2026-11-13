@@ -10,8 +10,8 @@ the person sees today is the new desktop:
   `tilo_desktop::desktop_host::DeskLayer` over
   `tilo_desktop_surface::DesktopSurface` (`crates/session/desktop-surface`);
 - the bar, menus and overlays of `crates/session/desktop`;
-- the surface apps of the session: `tilo-topbar`, `tilo-quick-settings`,
-  `tilo-lock-screen`, the notification banners and the sheets.
+- the surface apps of the session: `tilo-quick-settings`, `tilo-lock-screen`,
+  the notification banners and the sheets.
 
 This page compares the two behaviour by behaviour, from the code. Rows name
 the old file and function, what the new code has, and where the two stand.
@@ -112,7 +112,7 @@ What differs is the host around it.
 
 | Behaviour | Old | New | Status |
 |---|---|---|---|
-| One bar 32 high: Tilo mark (opt-in), workspace pill and menu, strip name, the time or a live activity, the continuity chip, arrivals, waves, faces and invite, sharing, media use, app tray, own avatar, status cluster | `topbar_chrome.rs` + `overlay_host/topbar_host.rs` (mounted in-process); widgets in `crates/session/desktop/src/topbar*` | the same widgets, `crates/session/desktop/src/topbar.rs` and submodules, mounted as the `tilo-topbar` surface app | same |
+| One bar 32 high: Tilo mark (opt-in), workspace pill and menu, strip name, the time or a live activity, the continuity chip, arrivals, waves, faces and invite, sharing, media use, app tray, own avatar, status cluster | `topbar_chrome.rs` + `overlay_host/topbar_host.rs` (mounted in-process); widgets in `crates/session/desktop/src/topbar*` | the same widgets, `crates/session/desktop/src/topbar.rs` and submodules, mounted in-process | same |
 | Workspace menu: switch, join, leave, rename in place, overview, new strip | `chrome_state` menus | `desktop/src/workspace_menu.rs` `WorkspaceMenuModel` | same |
 | Strip ribbon and rail, on-screen windows lit, focus sliding | `overlay_host/strip_rail.rs` | `desktop/src/strip_indicators.rs`, `strip_switcher.rs`, `strip_navigator.rs` | same |
 | Clock with Clocks' live activity over it, floating clock overlay with its controls | `topbar_chrome.rs` `ClockPoll`, `CLOCK_ACTIVITY_REFRESH` 250 ms | the bar's pill, reading every activity (`desktop/src/topbar/clock.rs`, `chrome::Activities`), and the floating layer's cards with the controls (`crates/session/activities`) | better (one layer for every activity; nothing floats over content) |

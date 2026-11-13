@@ -112,6 +112,9 @@ pub struct McpServer<H> {
     /// with where its latest phase falls in the watch's sequence
     /// ([`crate::mcp::watch`]).
     pub(super) runs: std::sync::Mutex<Vec<agent::watch::Run>>,
+    /// What this session's invocations changed, oldest first: where taking
+    /// one's run back finds its changes ([`McpServer::undo_run`]).
+    pub(super) undoable: std::sync::Mutex<std::collections::VecDeque<agent::Undoable>>,
 }
 
 pub use agent::{PersonStep, literals_in};
@@ -666,10 +669,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(Self::from_caller(host, workspace, actor, caller))
     }
 
-    pub(crate) fn audience_matches(&self, workspace: &str, actor: &str) -> bool {
-        self.workspace == workspace && self.actor == actor
-    }
-
     fn from_caller(host: H, workspace: String, actor: String, caller: Caller) -> Self {
         Self {
             host: std::sync::Arc::new(host),
@@ -699,6 +698,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             changed: std::sync::Mutex::default(),
             changing: std::sync::Mutex::default(),
             runs: std::sync::Mutex::default(),
+            undoable: std::sync::Mutex::default(),
         }
     }
 
@@ -3489,6 +3489,12 @@ fn tilo_tools() -> Vec<Value> {
 #[cfg(test)]
 #[path = "mcp_open_tests.rs"]
 mod open_tests;
+#[cfg(test)]
+#[path = "mcp_serve_tests.rs"]
+mod serve_tests;
+#[cfg(test)]
+#[path = "mcp_settle_tests.rs"]
+mod settle_tests;
 #[cfg(test)]
 #[path = "mcp_tests.rs"]
 mod tests;

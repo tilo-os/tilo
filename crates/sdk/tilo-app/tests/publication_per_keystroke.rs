@@ -253,26 +253,44 @@ fn an_overdue_save_status_frame_still_publishes_and_preserves_typed_content() {
             host_frame(app);
             assert!(app.focus_order_edge(false));
             host_frame(app);
+            // The frame that publishes the new save state is the first to run
+            // after the store wrote the record. When a frame before it took
+            // long (a loaded runner, a cold font cache), that write lands
+            // while the keys are still being driven, and the release frame
+            // itself takes the store's wake: watching only the frames after
+            // it would wait for a publication that already happened. So both
+            // keystroke frames are watched, and the wait runs only while none
+            // of them has published.
+            let published = Cell::new(false);
+            let frame = |app: &mut tilo_app::App| {
+                let ((), phases) = observe(|| host_frame(app));
+                published.set(
+                    published.get()
+                        || phases
+                            .iter()
+                            .any(|phase| phase.phase == "framework.publication"),
+                );
+            };
             let key = tilo_app::winit::keyboard::Key::Character("a".into());
             app.surface_input(&Region, key_input(&key, ElementState::Pressed), false);
-            host_frame(app);
+            frame(app);
             app.surface_input(&Region, key_input(&key, ElementState::Released), false);
-            host_frame(app);
+            frame(app);
             assert_eq!(draft_value(app).as_deref(), Some("a"));
             // The window shows the draft as "Saving…" until the record's
             // store has written it, after its writer's debounce, on the
             // store's own thread; nothing resamples it on a timer. When the
-            // write lands the store wakes the window, and the host frame
-            // after that must publish the new save state without losing
+            // write lands the store wakes the window, and the frame that
+            // takes the wake must publish the new save state without losing
             // what was typed. Run host frames, as a live host does while it
             // waits, until one publishes.
             tilo_test_env::wait_until(
                 "the frame after the draft's write landed to publish",
                 || {
-                    let ((), phases) = observe(|| host_frame(app));
-                    phases
-                        .iter()
-                        .any(|phase| phase.phase == "framework.publication")
+                    if !published.get() {
+                        frame(app);
+                    }
+                    published.get()
                 },
             );
             assert_eq!(draft_value(app).as_deref(), Some("a"));

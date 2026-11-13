@@ -68,7 +68,7 @@ pub(crate) fn beyond_workspace(tool: &str, arguments: &Value, structured: bool) 
             structured,
             path,
             failed(
-                "forbidden",
+                "not_permitted",
                 "this key reaches one workspace and no account",
                 "account paths need a key reaching all your workspaces",
             ),
@@ -719,7 +719,7 @@ impl Server {
     async fn mint(&self, grant: &Grant, connection: &Connection, args: &Value) -> Outcome {
         if grant.scope != Scope::Account {
             return failed(
-                "forbidden",
+                "not_permitted",
                 "only a key reaching all your workspaces mints keys",
                 "mint with the key you created",
             );
@@ -854,7 +854,7 @@ fn mint_key(
     );
     tilo_user_identity::sign_device_cert(&mut cert, key.key()).map_err(|error| {
         failed(
-            "forbidden",
+            "not_permitted",
             format!("this key cannot mint: {error}"),
             "ask the person for a new key",
         )
@@ -868,5 +868,5 @@ fn mint_key(
         browser_pages,
         now_ns,
     )
-    .map_err(|error| failed("forbidden", error.0, "ask the person for a new key"))
+    .map_err(|error| failed("not_permitted", error.0, "ask the person for a new key"))
 }

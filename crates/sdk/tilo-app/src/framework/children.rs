@@ -1401,7 +1401,7 @@ mod tests {
         pub entries: Container,
     }
 
-    #[resource(kind = "test.workspace", label = "Workspace")]
+    #[resource(kind = "test.workspace", catalogue = "tests/locales")]
     impl Workspace {
         /// Rename nothing.
         #[action]
@@ -1420,7 +1420,7 @@ mod tests {
         pub note: String,
     }
 
-    #[resource(kind = "test.topic", label = "Topics")]
+    #[resource(kind = "test.topic", catalogue = "tests/locales")]
     impl Topic {
         /// Note.
         #[action]

@@ -11,8 +11,8 @@ An upload answers a reference that starts `tilo.content:` — for bytes you uplo
 tilo.content:30d6761d0551dba00b292649ccd90c63a27057c20f0f3ff24da14e5977442ab5
 ```
 
-The same bytes uploaded twice are one file, because the name is the hash. A name you pass along with the
-bytes is your own label, kept beside the reference rather than sent. One upload takes at most 64 MiB.
+The same bytes uploaded twice are one file, because the name is the hash. An action that puts the file
+somewhere takes the name it goes by as an argument of its own. One upload takes at most 64 MiB.
 
 ## Actions take the reference
 
@@ -73,6 +73,30 @@ const bytes = await workspace.files.download(String(letter));
 console.log("the letter is", bytes.length, "bytes, a Word file:", bytes[0] === 0x50 && bytes[1] === 0x4b);
 ```
 
+```curl example=upload-and-export
+api=$TILO_API_URL/v1
+auth="Authorization: Bearer $TILO_API_KEY"
+workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-Type: application/json" \
+  -d '{"name": "Files and letters"}' | jq -r .id)
+base=$api/workspaces/$workspace
+
+# Bytes go up once, and the reference is what the apps take.
+reference=$(printf 'passport scan, in bytes' | curl -sS --fail-with-body "$base/uploads" -H "$auth" \
+  -H "Content-Type: application/octet-stream" --data-binary @- | jq -r .content)
+echo "uploaded: $reference"
+
+# An action that makes a file answers a reference to it.
+curl -sS --fail-with-body "$base/resources/word-processor/actions/append-paragraph" -H "$auth" \
+  -H "Content-Type: application/json" -d '{"text": "Dear Visa Officer,"}' > /dev/null
+letter=$(curl -sS --fail-with-body "$base/resources/word-processor/actions/export-content" -H "$auth" \
+  -H "Content-Type: application/json" -d '{"format": "docx"}' \
+  | jq -r '[.. | strings | select(startswith("tilo.content:"))][0]')
+
+# And the bytes come back out.
+curl -sS --fail-with-body "$base/content/$letter" -H "$auth" -o letter.docx
+echo "the letter is $(wc -c < letter.docx) bytes, a Word file: $([[ $(head -c 2 letter.docx) == PK ]] && echo yes)"
+```
+
 ## From a shell
 
 ```sh
@@ -88,5 +112,6 @@ tilo files get tilo.content:… -w jane-doe -o cover-letter.docx    # or straigh
 A member who may change the workspace's records puts files and takes them out; a viewer only reads. An
 agent is held to the same line: its key reaches the one workspace, and its role there decides.
 
-Under the covers an upload is one `PUT` to the workspace's host, which answers the reference; a download
-comes back in pieces. Both SDKs and the command do that for you.
+Under the covers an upload is one `POST /v1/workspaces/<workspace>/uploads`, which answers the reference;
+a download is `GET /v1/workspaces/<workspace>/content/<reference>`. Both SDKs and the command do that for
+you.

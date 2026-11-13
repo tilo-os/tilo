@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent round trip: what an agent waits for on the control socket and MCP.
+"""Agent round trip: what an agent waits for on the control socket.
 
 An agent drives Tilo through typed actions: it lists them, reads the state
 and invokes one by address. This times those calls on the path an agent
@@ -26,21 +26,18 @@ persistent connection:
   agent.invoke.local.throughput  microseconds per completed no-op while
                                  `--clients` connections invoke at once,
                                  one sample per second of `--duration`
-  agent.invoke.mcp.noop          the no-op as an MCP tools/call through
-                                 scripts/tilo-mcp-server.py
   agent.invoke.local.app.accept  with --app PROVIDER:ID only
   agent.invoke.local.app         the same, complete (wait_ms)
 
 The no-op is `so.tilo.session/desktop:chrome␟reopen-closed` (`tilo_session::
 desktop_surface::ChromeEffect::ReopenClosed`): a session service action that
 needs no consent, and with nothing closed reopens nothing and changes nothing.
-It is nullary, so the MCP tool call carries no arguments either.
 
 Either point it at a running desktop (`--socket`; on a real session that
 is `$XDG_RUNTIME_DIR/tilo-session/admin-control.sock`, which serves these
 ops to the device admin) or let it start a headless compositor through
-`scripts/headless-examples/spawn-headless.sh` (`--spawn SHELL`). A spawned
-compositor is a release build only with `--features dev-overrides`, which
+`real_apps.ScriptedSession` (`--spawn SHELL`). A spawned compositor is a
+release build only with `--features dev-overrides`, which
 serves the test-control socket; that socket runs the same dispatch and
 capability gate as the admin socket, without the admin socket's per-connection
 peer check. It starts on a desk: a first pass mints the throwaway identity a
@@ -59,9 +56,7 @@ import contextlib
 import json
 import os
 import shutil
-import signal
 import socket
-import subprocess
 import sys
 import tempfile
 import threading
@@ -71,15 +66,14 @@ from typing import Any, Callable, Iterator
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "tools" / "perf"))
+sys.path.insert(0, str(REPO / "scripts" / "headless-examples"))
 import record  # noqa: E402
+import real_apps  # noqa: E402
 
-SPAWN = REPO / "scripts" / "headless-examples" / "spawn-headless.sh"
-MCP_SERVER = REPO / "scripts" / "tilo-mcp-server.py"
 NOOP = ("so.tilo.session", "desktop:chrome\u001freopen-closed")
 TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
 # Generous: the answer leaves as soon as the invocation settles.
 WAIT_MS = 5000
-MCP_PROTOCOL = "2025-06-18"
 
 
 class BenchError(RuntimeError):
@@ -251,230 +245,47 @@ def throughput(socket_path: str, address: tuple[str, str], clients: int,
     return samples, meta
 
 
-class McpClient:
-    """The MCP stdio server, started over `socket_path`, spoken to as a model would."""
-
-    def __init__(self, socket_path: str):
-        self.process = subprocess.Popen(
-            [sys.executable, str(MCP_SERVER), "--socket", socket_path],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            text=True, bufsize=1)
-        self.next_id = 0
-
-    def close(self) -> None:
-        if self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
-        for stream in (self.process.stdin, self.process.stdout):
-            if stream is not None:
-                stream.close()
-
-    def send(self, method: str, params: dict[str, Any] | None = None) -> None:
-        payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
-        if params is not None:
-            payload["params"] = params
-        self._write(payload)
-
-    def _write(self, payload: dict[str, Any]) -> None:
-        assert self.process.stdin is not None
-        self.process.stdin.write(json.dumps(payload) + "\n")
-        self.process.stdin.flush()
-
-    def call(self, method: str, params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-        """One request; (nanoseconds until its reply line, reply)."""
-        assert self.process.stdout is not None
-        self.next_id += 1
-        want = self.next_id
-        start = time.perf_counter_ns()
-        self._write({"jsonrpc": "2.0", "id": want, "method": method, "params": params})
-        while True:
-            line = self.process.stdout.readline()
-            if not line:
-                raise BenchError("the MCP server exited")
-            elapsed = time.perf_counter_ns() - start
-            try:
-                reply = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if reply.get("id") == want:
-                return elapsed, reply
-
-
-def mcp_noop(socket_path: str, address: tuple[str, str], warmup: int,
-             samples: int) -> list[float]:
-    client = McpClient(socket_path)
-    try:
-        _, reply = client.call("initialize", {
-            "protocolVersion": MCP_PROTOCOL, "capabilities": {},
-            "clientInfo": {"name": "agent-rtt", "version": "1"}})
-        if "result" not in reply:
-            raise BenchError(f"MCP initialize failed: {reply}")
-        client.send("notifications/initialized")
-        params = {"name": "tilo_invoke_action",
-                  "arguments": {"provider": address[0], "id": address[1]}}
-        timings = []
-        for index in range(warmup + samples):
-            elapsed, reply = client.call("tools/call", params)
-            result = reply.get("result") or {}
-            if "error" in reply or result.get("isError"):
-                raise BenchError(f"MCP tools/call failed: {json.dumps(reply)[:400]}")
-            if index >= warmup:
-                timings.append(elapsed / 1e6)
-        return timings
-    finally:
-        client.close()
-
-
-@contextlib.contextmanager
-def spawned(shell: Path, log: Path, timeout: int,
-            extra_env: dict[str, str] | None = None) -> Iterator[str]:
-    """A headless compositor through spawn-headless.sh, removed on exit.
-
-    The script is the one way this repository starts a headless desktop: it
-    isolates the profile and removes it, the socket and the compositor when
-    it is told to stop. It runs in its own process group, which is killed
-    as a whole if it does not stop by itself. `extra_env` reaches the
-    compositor (spawn-headless.sh passes its environment on), for example
-    `TILO_HEADLESS_PROFILE` and what a seeded profile restores from.
-    """
-    if not shell.is_file() or not os.access(shell, os.X_OK):
-        raise BenchError(f"no compositor at {shell}")
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
-    if not runtime or not os.path.isabs(runtime):
-        raise BenchError("XDG_RUNTIME_DIR must name a private directory for the socket")
-    directory = Path(tempfile.mkdtemp(prefix="agent-rtt-", dir=runtime))
-    socket_path = str(directory / "control.sock")
-    env = {**os.environ, **(extra_env or {}), "TILO_HEADLESS_BINARY": str(shell.resolve()),
-           "TILO_HEADLESS_TIMEOUT": str(timeout)}
-    log.write_bytes(b"")
-    # Appending, as drain() does with the compositor's stdout.
-    with log.open("ab") as stderr:
-        process = subprocess.Popen(["bash", str(SPAWN), socket_path], env=env,
-                                   stdout=subprocess.PIPE, stderr=stderr,
-                                   start_new_session=True)
-    try:
-        assert process.stdout is not None
-        # The compositor shares this stdout: whatever it prints before the
-        # socket is ready (its log, with RUST_LOG) goes to the log.
-        line = process.stdout.readline().decode(errors="replace").strip()
-        while line and not line.startswith("READY "):
-            with log.open("ab") as sink:
-                sink.write(line.encode() + b"\n")
-            line = process.stdout.readline().decode(errors="replace").strip()
-        if line != f"READY {socket_path}":
-            raise BenchError(f"the compositor did not start ({line or 'no READY line'}); see {log}")
-        # The compositor inherits this pipe as its stdout: keep draining it
-        # into the log so a chatty compositor never blocks on a full pipe.
-        threading.Thread(target=drain, args=(process.stdout, log), daemon=True).start()
-        yield socket_path
-    finally:
-        stop_group(process)
-        with contextlib.suppress(OSError):
-            os.rmdir(directory)
-
-
-def session_runtime(state: Path) -> Path:
-    """The private runtime directory a session on `state` uses.
-
-    The launcher picks it (a login's XDG_RUNTIME_DIR, the user's /run/user
-    seat, or a short directory of its own) and prints it, so the rule lives in
-    one place rather than beside every tool that has to reach into a session.
-    """
-    printed = subprocess.run(
-        [str(REPO / "dist" / "dev" / "nested-session.sh"),
-         "--print-runtime", "--state", str(state)],
-        capture_output=True, text=True, check=True,
-    )
-    runtime = printed.stdout.strip()
-    if not runtime:
-        raise BenchError("the session launcher named no runtime directory")
-    return Path(runtime)
-
-
 @contextlib.contextmanager
 def desk_session(shell: Path, log: Path, timeout: int) -> Iterator[tuple[str, Path]]:
     """A headless session with a desk of its own: (control socket, runtime directory).
 
     A session that holds no identity opens setup instead of a desk, so a first
     pass mints the throwaway identity a development login opens its desk with
-    and exits; the pass that is measured starts on it. The runtime directory is
-    the one the launcher names for the state `spawn-headless.sh` gives the
-    session, so its sockets and its agent door sit there. The profile, that
-    runtime directory and the compositor are removed on exit.
+    and exits; the pass that is measured starts on it. Both run the binary this
+    run built (`real_apps.ScriptedSession`), on one scratch profile, and the
+    profile, the runtime directory and the session are removed on exit.
     """
     cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
     cache.mkdir(parents=True, exist_ok=True)
     profile = Path(tempfile.mkdtemp(prefix="desk-session.", dir=cache))
+    identity_log = log.with_name(log.stem + ".identity.log")
+    env = {"RUST_LOG": os.environ.get("RUST_LOG", "info")}
     try:
-        for sub in ("config", "data", "state", "cache", "home", "identity"):
-            (profile / sub).mkdir(parents=True, exist_ok=True, mode=0o700)
-        runtime = session_runtime(profile / "state")
-        env = {"TILO_HEADLESS_PROFILE": str(profile),
-               "RUST_LOG": os.environ.get("RUST_LOG", "info")}
-        identity_log = log.with_name(log.stem + ".identity.log")
-        with spawned(shell, identity_log, timeout, env) as socket_path:
-            conn = Connection(socket_path, timeout=60)
-            try:
-                minted = answer_of(conn.round_trip(request({"op": "provision_test_identity"}))[1],
-                                   "provision the test identity")
-            finally:
-                conn.close()
-            if not isinstance(minted, dict) or minted.get("throwaway") is not True:
-                raise BenchError(f"no throwaway identity for the measured session: "
-                                 f"{json.dumps(minted)[:400]} (see {identity_log})")
-        with spawned(shell, log, timeout, env) as socket_path:
-            yield socket_path, runtime
+        # A first pass opens setup instead of a desk when the profile holds no
+        # identity: it mints the throwaway one, which the measured pass then
+        # finds, so the no-op is the desk's own action and not setup's.
+        try:
+            with real_apps.ScriptedSession(shell, profile=profile, timeout=timeout,
+                                           env=env, log=identity_log) as session:
+                connection = Connection(str(session.control_socket), timeout=60)
+                try:
+                    minted = answer_of(
+                        connection.round_trip(request({"op": "provision_test_identity"}))[1],
+                        "provision the test identity")
+                finally:
+                    connection.close()
+        except real_apps.Failed as error:
+            raise BenchError(f"{error} (see {identity_log})") from error
+        if not isinstance(minted, dict) or minted.get("throwaway") is not True:
+            raise BenchError(f"no throwaway identity for the measured session: "
+                             f"{json.dumps(minted)[:400]} (see {identity_log})")
+        with real_apps.ScriptedSession(shell, profile=profile, timeout=timeout,
+                                       env=env, log=log) as session:
+            yield str(session.control_socket), session.runtime_dir
+    except real_apps.Failed as error:
+        raise BenchError(f"{error} (see {log})") from error
     finally:
         shutil.rmtree(profile, ignore_errors=True)
-
-
-def drain(stream: Any, log: Path) -> None:
-    with log.open("ab") as sink:
-        for chunk in iter(lambda: stream.read1(65536), b""):
-            sink.write(chunk)
-
-
-def stop_group(process: subprocess.Popen) -> None:
-    """Stop spawn-headless.sh (it stops the compositor), then its whole group."""
-    if process.poll() is None:
-        process.send_signal(signal.SIGTERM)
-        try:
-            process.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            pass
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(process.pid, signal.SIGKILL)
-    with contextlib.suppress(subprocess.TimeoutExpired):
-        process.wait(timeout=10)
-    deadline = time.monotonic() + 10
-    while group_alive(process.pid):
-        if time.monotonic() > deadline:
-            raise BenchError(f"processes of the spawned compositor (group {process.pid}) outlived it")
-        time.sleep(0.1)
-
-
-def group_alive(pgid: int, proc: Path = Path("/proc")) -> bool:
-    """Whether a process of group `pgid` still runs (a zombie does not)."""
-    if not proc.is_dir():
-        try:
-            os.killpg(pgid, 0)
-        except ProcessLookupError:
-            return False
-        return True
-    for stat in proc.glob("[0-9]*/stat"):
-        try:
-            text = stat.read_text()
-        except OSError:
-            continue
-        # pid (comm) state ppid pgrp ...; comm may hold spaces and parentheses.
-        fields = text[text.rfind(")") + 2:].split()
-        if len(fields) > 2 and fields[0] != "Z" and int(fields[2]) == pgid:
-            return True
-    return False
 
 
 def parse_address(text: str) -> tuple[str, str]:
@@ -539,10 +350,6 @@ def run(args: argparse.Namespace, socket_path: str) -> list[tuple[str, str, list
     if args.clients:
         samples, meta = throughput(socket_path, noop, args.clients, args.duration)
         results.append(("agent.invoke.local.throughput", "us", samples, {**common, **meta}))
-    if args.mcp:
-        results.append(("agent.invoke.mcp.noop", "ms", mcp_noop(
-            socket_path, noop, args.warmup, args.samples),
-            {**common, "transport": f"MCP stdio ({MCP_SERVER.name}) over {args.transport}"}))
     return results
 
 
@@ -584,8 +391,6 @@ def main(argv: list[str] | None = None) -> int:
                         help="concurrent clients for the throughput run; 0 skips it")
     parser.add_argument("--duration", type=float, default=10.0,
                         help="seconds of the throughput run")
-    parser.add_argument("--mcp", action=argparse.BooleanOptionalAction, default=True,
-                        help="also time the no-op through the MCP server")
     parser.add_argument("--transport", default=None,
                         help="how the socket is reached, recorded in each record's meta")
     parser.add_argument("--env-json", type=Path,

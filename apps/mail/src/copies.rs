@@ -128,7 +128,7 @@ pub struct NewCopy {
     pub uid_validity: u32,
 }
 
-#[ui::tilo_resource::resource(kind = "mail.copies", label = "Mail on your devices", params = kept)]
+#[ui::tilo_resource::resource(kind = "mail.copies", params = kept)]
 impl MailCopies {
     /// Keep fetched mail
     ///

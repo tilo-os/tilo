@@ -456,7 +456,7 @@ impl Core {
                     &self.action_label(&rec.action),
                 ));
             }
-            let phrase = |id: &str| self.words.borrow().word(id, &[], id);
+            let phrase = |id: &str| self.word_args(id, &[], id);
             for (i, line) in lines.iter().enumerate() {
                 card.children
                     .push(text_node(format!("{key}/says{i}/w"), &line.words));

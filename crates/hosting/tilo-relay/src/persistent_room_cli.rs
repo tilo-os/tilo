@@ -28,7 +28,6 @@ use tilo_relay::workspaces::{WaitListed, Workspaces};
 use tilo_relay_protocol::directory::Listing;
 use tilo_relay_protocol::operator::{self, OperatorCommand, OperatorEvent, hex32};
 use tilo_relay_protocol::workspaces::WorkspaceRole;
-use tilo_relay_session::workspaces::SetMemberRoleRequest;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::web_cli::{WorkspaceArgs, enrol, operator_lines, start_relay_lending, web_config};
@@ -41,10 +40,8 @@ use bots::{offer_sign_in, start_bots};
 
 /// The secret store this host keeps workspace roots in.
 pub(crate) const SECRET_APP: &str = "so.tilo.relay";
-const MINUTE_MS: u64 = 60 * 1000;
-/// Guests pruned in one governance change: the workspace is held while it
-/// commits, and each removal costs time in proportion to its members.
-const PRUNE_BATCH: usize = 100;
+/// How often unconfirmed addresses left at the door are let go.
+const WAIT_LIST_SWEEP_SECS: u64 = 60;
 /// `--author-app none`: the workspace authors nothing and is read-only.
 const NO_AUTHORED_APPS: &str = "none";
 
@@ -145,13 +142,6 @@ pub struct PersistentArgs {
         value_parser = parse_role
     )]
     pub default_role: Option<WorkspaceRole>,
-    /// A person (user public key, hex) made an Owner of the workspace once they
-    /// joined; repeatable. A key removed from the list loses the role.
-    #[arg(long = "owner", value_name = "HEX")]
-    pub owners: Vec<String>,
-    /// A person made a Moderator once they joined; repeatable.
-    #[arg(long = "moderator", value_name = "HEX")]
-    pub moderators: Vec<String>,
     /// Take people by invitation: an unlisted workspace's door lets nobody new
     /// in, and members may invite someone with an invitation of their own,
     /// which they let in. Settled at every start. A listed workspace lets anyone
@@ -193,11 +183,12 @@ pub struct PersistentArgs {
         requires = "wait_list_max"
     )]
     pub wait_list_mail: Option<String>,
-    /// A file of more owners and moderators, `{"owners": [hex],
-    /// "moderators": [hex]}`, read again whenever it changes, so a role is
-    /// granted or taken back while the workspace runs.
-    #[arg(long = "roles-file", value_name = "PATH")]
-    pub roles_file: Option<PathBuf>,
+    /// A UNIX socket the operator asks the running workspace through, one
+    /// [`OperatorCommand::DeclareOwner`] line per connection: a deployment's
+    /// workspace runs in a container, which has no stdin to write to. The
+    /// answer is one [`OperatorEvent`] line on the same connection.
+    #[arg(long = "operator-socket", value_name = "PATH")]
+    pub operator_socket: Option<PathBuf>,
     /// An app authored into the workspace at its first start; repeatable.
     #[arg(long = "seed-app", value_name = "APP_ID")]
     pub seed_apps: Vec<String>,
@@ -210,13 +201,6 @@ pub struct PersistentArgs {
     /// members every app; `none` authors none, and the workspace is read-only.
     #[arg(long = "author-app", value_name = "APP_ID")]
     pub author_apps: Vec<String>,
-    /// A member with no session for this many days stops being one; they
-    /// join again through the door as the same person. Membership persists:
-    /// a person stays a member until they leave, the host removes them, or
-    /// they have been away this long. Being offline for an hour removes
-    /// nobody; who is here now is the workspace's presence, not its membership.
-    #[arg(long = "inactive-after-days", default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=3650))]
-    pub inactive_after_days: u64,
     /// What to install at the workspace's first start, approved by the workspace's
     /// root, with its inputs (`<source> key=value …`); repeatable. The source
     /// is a bot directory entry, or a program file on this host, which the
@@ -408,78 +392,6 @@ pub(crate) fn newly_removed(
         .collect()
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum RoleChange {
-    Administrator([u8; 32]),
-    Moderator([u8; 32]),
-    Editor([u8; 32]),
-}
-
-/// What makes the member list match the declared lists: promote declared
-/// people who joined and do not hold their role, demote people declared
-/// before and no longer listed. People not yet in the workspace wait until they
-/// join; the governance change of their join triggers this again. The owner
-/// root is the workspace's own person, not one the lists declare: its role is
-/// the workspace's, so no list takes it.
-pub(crate) fn role_changes(
-    members: &[tilo_peer_state::GovernedMember],
-    owners: &BTreeSet<[u8; 32]>,
-    moderators: &BTreeSet<[u8; 32]>,
-    previously_declared: &BTreeSet<[u8; 32]>,
-    owner: [u8; 32],
-) -> Vec<RoleChange> {
-    let mut changes = Vec::new();
-    for member in members.iter().filter(|member| !member.removed) {
-        let key = member.user_public_key;
-        if key == owner {
-            continue;
-        }
-        if owners.contains(&key) {
-            if !member.administrator {
-                changes.push(RoleChange::Administrator(key));
-            }
-        } else if moderators.contains(&key) {
-            if !is_moderator(member) {
-                changes.push(RoleChange::Moderator(key));
-            }
-        } else if previously_declared.contains(&key)
-            && (member.administrator || is_moderator(member))
-        {
-            changes.push(RoleChange::Editor(key));
-        }
-    }
-    changes
-}
-
-fn is_moderator(member: &tilo_peer_state::GovernedMember) -> bool {
-    member.role == tilo_peer_state::join::MemberRole::Moderator
-}
-
-/// Guests (not declared, not an administrator) whose last session is older
-/// than `days`. A member with no record yet is
-/// recorded as seen now by the caller and never pruned on the same pass.
-pub(crate) fn idle_guests(
-    members: &[tilo_peer_state::GovernedMember],
-    last_seen: &BTreeMap<[u8; 32], u64>,
-    keep: &BTreeSet<[u8; 32]>,
-    now_ms: u64,
-    minutes: u64,
-) -> Vec<[u8; 32]> {
-    let horizon = now_ms.saturating_sub(minutes.saturating_mul(MINUTE_MS));
-    members
-        .iter()
-        .filter(|member| {
-            !member.removed && !member.administrator && !keep.contains(&member.user_public_key)
-        })
-        .filter(|member| {
-            last_seen
-                .get(&member.user_public_key)
-                .is_some_and(|seen| *seen < horizon)
-        })
-        .map(|member| member.user_public_key)
-        .collect()
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BotSpec {
     /// The directory entry it is installed from, or the program file.
@@ -527,15 +439,6 @@ fn parse_role(role: &str) -> Result<WorkspaceRole, String> {
             "{other:?} is not a role people who join on their own may hold: say viewer, commenter or editor"
         )),
     }
-}
-
-fn parse_keys(flag: &str, keys: &[String]) -> anyhow::Result<BTreeSet<[u8; 32]>> {
-    keys.iter()
-        .map(|key| {
-            hex32(key)
-                .with_context(|| format!("--{flag} {key:?} is not 64 lowercase hex characters"))
-        })
-        .collect()
 }
 
 /// The identity this workspace hosts as: the operator's root file, the host
@@ -655,17 +558,16 @@ async fn governed_room(
 }
 
 /// Whom the workspace has taken in as removed, so each removal is reported
-/// once. Shared by the operator loop, which takes removals in, and the
-/// pruning, which accounts for the guests it prunes itself. Whom the door
-/// keeps out is the workspace's own ([`Workspaces::removed_within_the_day`]).
+/// once. Whom the door keeps out is the workspace's own
+/// ([`Workspaces::removed_within_the_day`]).
 #[derive(Clone)]
 struct Removals {
     state: Arc<std::sync::Mutex<RemovalState>>,
 }
 
 struct RemovalState {
-    /// Every person accounted for as removed, by moderation or pruned after
-    /// an absence, so each removal is reported once.
+    /// Every person accounted for as removed, so each removal is reported
+    /// once.
     seen: BTreeSet<[u8; 32]>,
 }
 
@@ -687,19 +589,6 @@ impl Removals {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Guests about to be pruned: their removal is not moderation's.
-    fn pruning(&self, people: &BTreeSet<[u8; 32]>) {
-        self.lock().seen.extend(people.iter().copied());
-    }
-
-    /// Guests whose pruning failed: still members.
-    fn not_pruned(&self, people: &BTreeSet<[u8; 32]>) {
-        let mut state = self.lock();
-        for person in people {
-            state.seen.remove(person);
-        }
     }
 
     /// The people moderation removed since the last call, noted as removed
@@ -906,60 +795,105 @@ async fn answer_wait_list_command(
     }
 }
 
-async fn apply_role_changes(
-    context: &PersistentRoom,
-    changes: Vec<RoleChange>,
-) -> anyhow::Result<()> {
-    for change in changes {
-        let now = tilo_clock::unix_now_ns();
-        let (key, result) = match change {
-            RoleChange::Administrator(key) => (
+/// Who the operator declared owners: the door holds them for the day they
+/// arrive, and their place in the workspace's governance follows as soon as
+/// they are members. Shared by the operator's command and the workspace's own
+/// changes, so a declaration made before someone joins still lands.
+#[derive(Clone, Default)]
+struct DeclaredOwners {
+    people: Arc<std::sync::Mutex<BTreeSet<[u8; 32]>>>,
+}
+
+impl DeclaredOwners {
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeSet<[u8; 32]>> {
+        self.people
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn insert(&self, user: [u8; 32]) -> BTreeSet<[u8; 32]> {
+        let mut people = self.lock();
+        people.insert(user);
+        people.clone()
+    }
+
+    fn people(&self) -> BTreeSet<[u8; 32]> {
+        self.lock().clone()
+    }
+}
+
+/// Declare the person `key` (their user root, hex) an owner of the workspace:
+/// its door lets them in from here on, and its governance makes them an
+/// administrator once they are a member. Answers what the operator hears.
+async fn declare_owner(
+    workspaces: &Workspaces,
+    workspace: &str,
+    host: &DeviceCert,
+    declared: &DeclaredOwners,
+    key: &str,
+) -> String {
+    let Some(user) = hex32(key) else {
+        return OperatorEvent::OwnerRefused {
+            user_public_key: key.to_owned(),
+            reason: "a user root key is 64 lowercase hex characters".into(),
+        }
+        .to_line();
+    };
+    let people = declared.insert(user);
+    if let Err(error) = workspaces.admit_declared(workspace, host, people).await {
+        return OperatorEvent::OwnerRefused {
+            user_public_key: key.to_owned(),
+            reason: format!("the door could not be told: {error}"),
+        }
+        .to_line();
+    }
+    match promote_declared_owners(workspaces, workspace, host, declared).await {
+        Ok(()) => OperatorEvent::OwnerDeclared {
+            user_public_key: key.to_owned(),
+        }
+        .to_line(),
+        Err(error) => OperatorEvent::OwnerRefused {
+            user_public_key: key.to_owned(),
+            reason: error,
+        }
+        .to_line(),
+    }
+}
+
+/// Make every declared person who is a member an administrator, as the desk
+/// makes one: an ordinary governance change by the workspace's own device. A
+/// person who has not joined waits; the workspace's change of their join calls
+/// this again. The workspace's own person holds its seat by being it, so no
+/// declaration touches it.
+async fn promote_declared_owners(
+    workspaces: &Workspaces,
+    workspace: &str,
+    host: &DeviceCert,
+    declared: &DeclaredOwners,
+) -> Result<(), String> {
+    let people = declared.people();
+    if people.is_empty() {
+        return Ok(());
+    }
+    let members = workspaces
+        .summary(workspace)
+        .await
+        .map_err(|error| format!("the member list: {error}"))?
+        .members;
+    for member in members.iter().filter(|member| !member.removed) {
+        let key = member.user_public_key;
+        if member.administrator || key == host.user_public_key || !people.contains(&key) {
+            continue;
+        }
+        workspaces
+            .set_member_administrator(
+                workspace,
+                host,
+                request_id(b"owner", &key, tilo_clock::unix_now_ns()),
                 key,
-                context
-                    .workspaces
-                    .set_member_administrator(
-                        &context.workspace,
-                        &context.host_cert,
-                        request_id(b"owner", &key, now),
-                        key,
-                    )
-                    .await
-                    .map(drop),
-            ),
-            RoleChange::Moderator(key) => (
-                key,
-                context
-                    .workspaces
-                    .set_member_role(
-                        &context.workspace,
-                        &context.host_cert,
-                        SetMemberRoleRequest {
-                            request_id: request_id(b"moderator", &key, now),
-                            user_public_key: key,
-                            role: tilo_peer_state::join::MemberRole::Moderator,
-                        },
-                    )
-                    .await
-                    .map(drop),
-            ),
-            RoleChange::Editor(key) => (
-                key,
-                context
-                    .workspaces
-                    .set_member_role(
-                        &context.workspace,
-                        &context.host_cert,
-                        SetMemberRoleRequest {
-                            request_id: request_id(b"editor", &key, now),
-                            user_public_key: key,
-                            role: tilo_peer_state::join::MemberRole::Editor,
-                        },
-                    )
-                    .await
-                    .map(drop),
-            ),
-        };
-        result.map_err(|error| anyhow::anyhow!("role of {}: {error}", hex::encode(key)))?;
+            )
+            .await
+            .map_err(|error| format!("the owner {}: {error}", hex::encode(key)))?;
     }
     Ok(())
 }
@@ -1322,8 +1256,6 @@ pub(crate) async fn run(
         .context("--persistent names the workspace")?;
     let root = read_root_file(persistent.root_file.as_deref().context("--root-file")?)?;
     let id_file = persistent.room_id_file.clone().context("--room-id-file")?;
-    let owners = parse_keys("owner", &persistent.owners)?;
-    let moderators = parse_keys("moderator", &persistent.moderators)?;
     let bots = persistent
         .bot_specs
         .iter()
@@ -1379,7 +1311,7 @@ pub(crate) async fn run(
         &root,
         &host,
         &format!("{name} workspace host"),
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     )?;
     let config = tilo_relay::RelayConfig {
         state_root: tilo_relay_protocol::metrics::room_relay_root(&state),
@@ -1671,13 +1603,32 @@ pub(crate) async fn run(
             );
         }
         let governance = Governance {
-            owners,
-            moderators,
-            roles_file: persistent.roles_file.clone(),
-            inactive_after_mins: persistent.inactive_after_days.saturating_mul(24 * 60),
-            state: state.clone(),
             invitation_only: persistent.invitation_only,
             wait_list_max: persistent.wait_list_max,
+        };
+        // The operator's door to the running workspace, for a deployment whose
+        // workspace has no stdin: a socket the state volume carries.
+        let owner_socket = match &persistent.operator_socket {
+            Some(path) => {
+                // A socket left by a workspace that stopped answers nobody.
+                let _ = std::fs::remove_file(path);
+                Some(
+                    tokio::net::UnixListener::bind(path)
+                        .with_context(|| format!("bind {}", path.display()))?,
+                )
+                .map(|socket| {
+                    // A deployment's workspace runs as a user of its own, and
+                    // its operator is the person who holds the volume: the
+                    // socket is reachable exactly by whoever can reach the
+                    // workspace's state, which those permissions already say.
+                    use std::os::unix::fs::PermissionsExt as _;
+                    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666))
+                        .with_context(|| format!("let the operator reach {}", path.display()))?;
+                    Ok::<_, anyhow::Error>(socket)
+                })
+                .transpose()?
+            }
+            None => None,
         };
         Ok::<Serving, anyhow::Error>(Serving {
             moderator,
@@ -1688,6 +1639,7 @@ pub(crate) async fn run(
             context,
             management,
             wait_list: door,
+            owner_socket,
         })
     }
     .await;
@@ -1700,6 +1652,7 @@ pub(crate) async fn run(
         context,
         management: _management,
         wait_list,
+        owner_socket,
     } = match serving {
         Ok(serving) => serving,
         Err(error) => {
@@ -1714,7 +1667,7 @@ pub(crate) async fn run(
         .as_ref()
         .and_then(|door| door.invitations(&context.workspaces));
     let result = tokio::select! {
-        result = serve_operator(&context, &governance, &mut operator, invitations.as_mut()) => result,
+        result = serve_operator(&context, &governance, &mut operator, invitations.as_mut(), owner_socket.as_ref()) => result,
         result = shutdown => result,
     };
     for runner in moderator
@@ -1740,7 +1693,7 @@ struct Serving {
     attachments: Option<tokio::task::JoinHandle<()>>,
     /// The task serving the bots members ask for.
     requested: tokio::task::JoinHandle<()>,
-    /// The operator's declarations the workspace is kept in line with.
+    /// What the operator declared of the workspace's door.
     governance: Governance,
     /// The workspace the operator's loop serves.
     context: PersistentRoom,
@@ -1749,101 +1702,18 @@ struct Serving {
     /// The wait list the door keeps, when the workspace takes people by
     /// invitation and keeps one.
     wait_list: Option<std::sync::Arc<door::WaitListDoor>>,
+    /// The socket the operator declares owners through, when it named one.
+    owner_socket: Option<tokio::net::UnixListener>,
 }
 
-/// The operator's declarations the workspace is kept in line with.
+/// What the operator declares of the workspace's door: settled at start, and
+/// changed only through the workspace's own governance from then on.
 struct Governance {
-    owners: BTreeSet<[u8; 32]>,
-    moderators: BTreeSet<[u8; 32]>,
-    /// More owners and moderators, read again whenever the file changes.
-    roles_file: Option<PathBuf>,
-    inactive_after_mins: u64,
-    state: PathBuf,
     /// The door lists the workspace and takes only people invited or
     /// pre-admitted (`--invitation-only`).
     invitation_only: bool,
     /// Requests left at the door it keeps (`--wait-list-max`).
     wait_list_max: usize,
-}
-
-#[derive(Default, serde::Serialize, serde::Deserialize)]
-struct DeclaredRoles {
-    owners: Vec<String>,
-    moderators: Vec<String>,
-}
-
-impl Governance {
-    fn declared_file(&self) -> PathBuf {
-        self.state.join("declared-roles.json")
-    }
-
-    fn last_seen_file(&self) -> PathBuf {
-        self.state.join("last-seen.json")
-    }
-
-    fn previously_declared(&self) -> anyhow::Result<BTreeSet<[u8; 32]>> {
-        let declared: DeclaredRoles = read_json(&self.declared_file())?;
-        Ok(declared
-            .owners
-            .iter()
-            .chain(&declared.moderators)
-            .filter_map(|key| hex32(key))
-            .collect())
-    }
-
-    /// The owners and moderators declared now: the command line's and the
-    /// roles file's. A file that cannot be read declares nothing more.
-    fn current(&self) -> (BTreeSet<[u8; 32]>, BTreeSet<[u8; 32]>) {
-        let mut owners = self.owners.clone();
-        let mut moderators = self.moderators.clone();
-        if let Some(path) = &self.roles_file {
-            match read_json::<DeclaredRoles>(path) {
-                Ok(file) => {
-                    owners.extend(file.owners.iter().filter_map(|key| hex32(key)));
-                    moderators.extend(file.moderators.iter().filter_map(|key| hex32(key)));
-                }
-                Err(error) => eprintln!("persistent workspace: roles file unreadable: {error}"),
-            }
-        }
-        (owners, moderators)
-    }
-
-    /// When the roles file last changed, to take it in again.
-    fn roles_changed_at(&self) -> Option<std::time::SystemTime> {
-        std::fs::metadata(self.roles_file.as_ref()?)
-            .ok()?
-            .modified()
-            .ok()
-    }
-
-    fn remember_declared(
-        &self,
-        (owners, moderators): &(BTreeSet<[u8; 32]>, BTreeSet<[u8; 32]>),
-    ) -> anyhow::Result<()> {
-        write_json(
-            &self.declared_file(),
-            &DeclaredRoles {
-                owners: owners.iter().map(hex::encode).collect(),
-                moderators: moderators.iter().map(hex::encode).collect(),
-            },
-        )
-    }
-
-    fn read_last_seen(&self) -> anyhow::Result<BTreeMap<[u8; 32], u64>> {
-        let stored: BTreeMap<String, u64> = read_json(&self.last_seen_file())?;
-        Ok(stored
-            .into_iter()
-            .filter_map(|(key, seen)| Some((hex32(&key)?, seen)))
-            .collect())
-    }
-
-    fn write_last_seen(&self, last_seen: &BTreeMap<[u8; 32], u64>) -> anyhow::Result<()> {
-        let stored: BTreeMap<String, u64> = last_seen
-            .iter()
-            .map(|(key, seen)| (hex::encode(key), *seen))
-            .collect();
-        write_json(&self.last_seen_file(), &stored)
-    }
 }
 
 async fn summary(
@@ -1856,120 +1726,31 @@ async fn summary(
         .map_err(|error| anyhow::anyhow!("{error}"))
 }
 
-async fn reconcile_roles(
-    context: &PersistentRoom,
-    governance: &Governance,
-    previously_declared: &mut BTreeSet<[u8; 32]>,
-) -> anyhow::Result<()> {
-    let members = summary(context).await?.members;
-    let current = governance.current();
-    // Whom the operator declares, the door lets in, also when it takes people
-    // by invitation: the first owner of a workspace nobody is in yet has no
-    // one to invite them.
-    context
+/// Addresses left at the door and not confirmed in time are let go, also
+/// while nobody touches the wait list.
+async fn expire_wait_list(context: &PersistentRoom, governance: &Governance) {
+    if governance.wait_list_max == 0 {
+        return;
+    }
+    if let Err(error) = context
         .workspaces
-        .admit_declared(
-            &context.workspace,
-            &context.host_cert,
-            current.0.union(&current.1).copied().collect(),
-        )
+        .expire_wait_list(&context.workspace)
         .await
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-    let changes = role_changes(
-        &members,
-        &current.0,
-        &current.1,
-        previously_declared,
-        context.host_cert.user_public_key,
-    );
-    apply_role_changes(context, changes).await?;
-    governance.remember_declared(&current)?;
-    *previously_declared = current.0.union(&current.1).copied().collect();
-    Ok(())
-}
-
-/// Removes guests idle past the horizon, in batches. A batch the workspace
-/// refuses stays seated until the next call.
-async fn prune_idle(
-    context: &PersistentRoom,
-    governance: &Governance,
-    removals: &Removals,
-    last_seen: &mut BTreeMap<[u8; 32], u64>,
-) -> anyhow::Result<()> {
-    let members = summary(context).await?.members;
-    let now = tilo_clock::unix_now_ms();
-    for member in members.iter().filter(|member| !member.removed) {
-        last_seen.entry(member.user_public_key).or_insert(now);
-    }
-    let (owners, moderators) = governance.current();
-    let keep: BTreeSet<[u8; 32]> = owners.union(&moderators).copied().collect();
-    let idle = idle_guests(
-        &members,
-        last_seen,
-        &keep,
-        now,
-        governance.inactive_after_mins,
-    );
-    for batch in idle.chunks(PRUNE_BATCH) {
-        let batch: BTreeSet<[u8; 32]> = batch.iter().copied().collect();
-        // Into `removed` first: a pruned guest is not a removal the service
-        // should cool their address down for.
-        removals.pruning(&batch);
-        let first = batch.first().copied().unwrap_or_default();
-        if let Err(error) = context
-            .workspaces
-            .prune_members(
-                &context.workspace,
-                &context.host_cert,
-                request_id(b"prune", &first, tilo_clock::unix_now_ns()),
-                &batch,
-            )
-            .await
-        {
-            // They keep their seats until the next tick tries again, and
-            // the workspace goes on serving: ending here dropped every session
-            // and turned each new one away while the workspace service restarted
-            // it.
-            removals.not_pruned(&batch);
-            tracing::warn!("pruning {} idle guests failed: {error}", batch.len());
-            break;
-        }
-        for key in &batch {
-            last_seen.remove(key);
-        }
-    }
-    // Addresses left at the door and not confirmed in time go too, also
-    // while nobody touches the wait list.
-    if governance.wait_list_max > 0
-        && let Err(error) = context
-            .workspaces
-            .expire_wait_list(&context.workspace)
-            .await
     {
         tracing::warn!("the wait list kept unconfirmed addresses: {error}");
     }
-    governance.write_last_seen(last_seen)
 }
 
-/// How often the operator's roles file is looked at for a change.
-const ROLES_FILE_EVERY_SECS: u64 = 2;
-
-/// What the workspace last said about who is online, and when it last wrote
-/// down when each member was last seen.
+/// What the workspace last said about who is online.
 struct OnlineWatch {
     last_online: Option<OperatorEvent>,
-    last_seen_written: tokio::time::Instant,
 }
 
 impl OnlineWatch {
-    /// Say who is online when it changed, note everyone online as seen now,
-    /// and write the last-seen times down at most once a minute.
-    async fn observe(
-        &mut self,
-        context: &PersistentRoom,
-        governance: &Governance,
-        last_seen: &mut BTreeMap<[u8; 32], u64>,
-    ) -> anyhow::Result<()> {
+    /// Say who is online when it changed. Who is here now is the workspace's
+    /// presence; membership is the workspace's governance, and no one stops
+    /// being a member by being away.
+    async fn observe(&mut self, context: &PersistentRoom) -> anyhow::Result<()> {
         let sessions = context.web.online_users();
         let people = sessions.len();
         // Who of the members is here, for the site's directory.
@@ -1989,35 +1770,69 @@ impl OnlineWatch {
             println!("{}", online.to_line());
             self.last_online = Some(online);
         }
-        let now = tilo_clock::unix_now_ms();
-        for user in sessions.keys() {
-            last_seen.insert(*user, now);
-        }
-        if self.last_seen_written.elapsed() >= Duration::from_secs(60) {
-            for member in summary(context)
-                .await?
-                .members
-                .iter()
-                .filter(|member| !member.removed)
-            {
-                last_seen.entry(member.user_public_key).or_insert(now);
-            }
-            governance.write_last_seen(last_seen)?;
-            self.last_seen_written = tokio::time::Instant::now();
-        }
         Ok(())
     }
 }
 
-/// How often idle members are looked for: a quarter of the horizon, so
-/// nobody stays much past it, and not more often than a minute.
-fn prune_interval(governance: &Governance) -> tokio::time::Interval {
-    tokio::time::interval(Duration::from_secs(
-        governance
-            .inactive_after_mins
-            .saturating_mul(15)
-            .clamp(60, 3600),
-    ))
+/// The operator's next connection to the workspace's owner socket, waiting
+/// when the deployment named none.
+async fn accept_operator(
+    socket: Option<&tokio::net::UnixListener>,
+) -> Option<tokio::net::UnixStream> {
+    match socket {
+        Some(socket) => socket.accept().await.ok().map(|(stream, _)| stream),
+        None => std::future::pending().await,
+    }
+}
+
+/// Answer one operator line on the socket: the same command its stdin takes,
+/// for a deployment whose workspace runs in a container and so has no stdin to
+/// write to.
+async fn answer_operator_socket(
+    context: &PersistentRoom,
+    declared: &DeclaredOwners,
+    stream: tokio::net::UnixStream,
+) {
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+    let (reading, mut writing) = stream.into_split();
+    let mut line = String::new();
+    let mut reading = tokio::io::BufReader::new(reading);
+    let answer = match reading.read_line(&mut line).await {
+        Ok(0) => return,
+        Ok(_) => match OperatorCommand::from_line(&line) {
+            Ok(OperatorCommand::DeclareOwner { user_public_key }) => {
+                declare_owner(
+                    &context.workspaces,
+                    &context.workspace,
+                    &context.host_cert,
+                    declared,
+                    &user_public_key,
+                )
+                .await
+            }
+            Ok(other) => OperatorEvent::OwnerRefused {
+                user_public_key: String::new(),
+                reason: format!(
+                    "the owner socket takes declare_owner, not {}",
+                    other.to_line().trim()
+                ),
+            }
+            .to_line(),
+            Err(error) => OperatorEvent::OwnerRefused {
+                user_public_key: String::new(),
+                reason: error.to_string(),
+            }
+            .to_line(),
+        },
+        Err(error) => {
+            tracing::warn!("the operator socket: {error}");
+            return;
+        }
+    };
+    if let Err(error) = writing.write_all(answer.as_bytes()).await {
+        tracing::warn!("the operator socket's answer: {error}");
+    }
+    let _ = writing.shutdown().await;
 }
 
 async fn serve_operator(
@@ -2025,22 +1840,14 @@ async fn serve_operator(
     governance: &Governance,
     operator: &mut tokio::sync::mpsc::Receiver<Result<OperatorCommand, String>>,
     mail: Option<&mut door::InvitationMail>,
+    owner_socket: Option<&tokio::net::UnixListener>,
 ) -> anyhow::Result<()> {
     let mut changes = context.workspaces.governance_changes();
     let removals = Removals::load(&summary(context).await?.members);
-    let mut previously_declared = governance.previously_declared()?;
-    reconcile_roles(context, governance, &mut previously_declared).await?;
-    let mut last_seen = governance.read_last_seen()?;
-    let mut presence = OnlineWatch {
-        last_online: None,
-        last_seen_written: tokio::time::Instant::now(),
-    };
+    let declared = DeclaredOwners::default();
+    let mut presence = OnlineWatch { last_online: None };
     let mut online_tick = tokio::time::interval(Duration::from_secs(operator::ONLINE_EVERY_SECS));
-    let mut prune_tick = prune_interval(governance);
-    // The operator's roles file, looked at every few seconds: a role it
-    // grants or takes back reaches the workspace without a restart.
-    let mut roles_tick = tokio::time::interval(Duration::from_secs(ROLES_FILE_EVERY_SECS));
-    let mut roles_seen = governance.roles_changed_at();
+    let mut sweep_tick = tokio::time::interval(Duration::from_secs(WAIT_LIST_SWEEP_SECS));
     let mut mail = mail;
     // A deployment that runs the room without an operator leaves its input at
     // its end: the room then keeps serving, and only a command ends it.
@@ -2053,17 +1860,10 @@ async fn serve_operator(
                     None => std::future::pending().await,
                 }
             } => {}
-            _ = roles_tick.tick(), if governance.roles_file.is_some() => {
-                let changed_at = governance.roles_changed_at();
-                if changed_at != roles_seen {
-                    roles_seen = changed_at;
-                    reconcile_roles(context, governance, &mut previously_declared).await?;
-                }
-            }
             _ = online_tick.tick() => {
-                presence.observe(context, governance, &mut last_seen).await?;
+                presence.observe(context).await?;
             }
-            _ = prune_tick.tick() => prune_idle(context, governance, &removals, &mut last_seen).await?,
+            _ = sweep_tick.tick() => expire_wait_list(context, governance).await,
             changed = changes.recv() => {
                 match changed {
                     Ok(workspace) if workspace != context.workspace => continue,
@@ -2076,7 +1876,22 @@ async fn serve_operator(
                     // removal is a plain removal. The service treats both alike.
                     println!("{}", OperatorEvent::MemberRemoved { user_public_key: hex::encode(user), banned: false }.to_line());
                 }
-                reconcile_roles(context, governance, &mut previously_declared).await?;
+                // A declared owner who joined with this change governs now.
+                if let Err(error) = promote_declared_owners(
+                    &context.workspaces,
+                    &context.workspace,
+                    &context.host_cert,
+                    &declared,
+                )
+                .await
+                {
+                    tracing::warn!("{error}");
+                }
+            }
+            accepted = accept_operator(owner_socket) => {
+                if let Some(stream) = accepted {
+                    answer_operator_socket(context, &declared, stream).await;
+                }
             }
             line = operator.recv(), if operator_open => match line {
                 None => {
@@ -2094,6 +1909,19 @@ async fn serve_operator(
                 // An invitation the door mailed itself is acknowledged here:
                 // nothing else in the workspace hears of it.
                 Some(Ok(OperatorCommand::InviteMailQueued { .. })) => {}
+                Some(Ok(OperatorCommand::DeclareOwner { user_public_key })) => {
+                    println!(
+                        "{}",
+                        declare_owner(
+                            &context.workspaces,
+                            &context.workspace,
+                            &context.host_cert,
+                            &declared,
+                            &user_public_key,
+                        )
+                        .await
+                    );
+                }
                 Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent workspace admits guests through its door"),
                 Some(Ok(OperatorCommand::Shutdown {})) => return Ok(()),
                 Some(Err(error)) => bail!("unreadable workspace operator line: {error}"),
@@ -2112,7 +1940,6 @@ mod tests {
     use super::*;
     use tilo_relay_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
     use tilo_user_identity::DeviceCapabilities;
-    const DAY_MS: u64 = 24 * 3600 * 1000;
     const NS_PER_SEC: u64 = 1_000_000_000;
 
     #[test]
@@ -2253,11 +2080,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_fresh_workspace_seeds_its_apps_and_keeps_them() {
         let dir = tempfile::tempdir().unwrap();
-        let (relay, workspaces, host_cert) = host_with(
-            dir.path(),
-            tilo_user_identity::cloud_enrollment::host_capabilities(),
-        )
-        .await;
+        let (relay, workspaces, host_cert) =
+            host_with(dir.path(), tilo_user_identity::DeviceCapabilities::host()).await;
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
         let apps = ["so.tilo.notes", "so.tilo.chat"];
         let first = seeded(dir.path(), &host_cert, &workspaces, &workspace, &apps).await;
@@ -2477,6 +2301,93 @@ mod tests {
         )
     }
 
+    /// An owner the operator declares gets in through a door that takes
+    /// people by invitation, and governs the workspace once they are a member;
+    /// one declared before they joined governs as soon as they do.
+    #[tokio::test]
+    async fn a_declared_owner_is_let_in_and_governs_once_they_joined() {
+        let dir = tempfile::tempdir().unwrap();
+        let (relay, workspaces, host_cert, workspace) = plaza(dir.path()).await;
+        ensure_guest_policy(&workspaces, &workspace, &host_cert)
+            .await
+            .unwrap();
+        settle_member_invites(&workspaces, &workspace, &host_cert, false)
+            .await
+            .unwrap();
+        workspaces
+            .publish(
+                &workspace,
+                &host_cert,
+                Listing {
+                    description: "A plaza".into(),
+                    default_role: WorkspaceRole::Editor,
+                },
+            )
+            .await
+            .unwrap();
+        workspaces
+            .list_invitation_only(&workspace, &host_cert, true)
+            .await
+            .unwrap();
+
+        // Nobody is in the workspace yet, so this is how its first person
+        // gets in: the door takes people by invitation, and the operator
+        // declares them.
+        let owner = guest(31);
+        let declared = DeclaredOwners::default();
+        let answered = declare_owner(
+            &workspaces,
+            &workspace,
+            &host_cert,
+            &declared,
+            &hex::encode(owner.1.user_public_key),
+        )
+        .await;
+        assert!(answered.contains("owner_declared"), "{answered}");
+        assert!(
+            !workspaces
+                .summary(&workspace)
+                .await
+                .unwrap()
+                .members
+                .iter()
+                .any(|member| member.user_public_key == owner.1.user_public_key),
+            "a declaration does not add a member nobody has met"
+        );
+        // In they walk, through the invitation-only door, as the declared
+        // person the operator named.
+        let (issued, token) = workspaces
+            .admit_listed(
+                &workspace,
+                &tilo_relay_protocol::directory::DoorJoin {
+                    user_public_key: hex::encode(owner.1.user_public_key),
+                    display_name: "Ada".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            walk_in(&workspaces, &owner, issued.signed_invitation, &token).await,
+            "the door lets a declared person in"
+        );
+        promote_declared_owners(&workspaces, &workspace, &host_cert, &declared)
+            .await
+            .unwrap();
+        let members = workspaces.summary(&workspace).await.unwrap().members;
+        assert!(
+            members
+                .iter()
+                .any(|member| member.user_public_key == owner.1.user_public_key
+                    && member.administrator
+                    && !member.removed),
+            "the declared owner governs the workspace"
+        );
+        // What the operator cannot declare is nothing at all.
+        let refused = declare_owner(&workspaces, &workspace, &host_cert, &declared, "Ada").await;
+        assert!(refused.contains("owner_refused"), "{refused}");
+        relay.shutdown().await;
+    }
+
     /// Someone the listed workspace's door lets in is a member; once the
     /// workspace takes people by invitation, a member invites someone with an
     /// invitation of their own, which admits them by itself, while the
@@ -2616,7 +2527,7 @@ mod tests {
             .set_member_role(
                 &workspace,
                 &host_cert,
-                SetMemberRoleRequest {
+                tilo_relay_session::workspaces::SetMemberRoleRequest {
                     request_id: [2; 32],
                     user_public_key: people[1].1.user_public_key,
                     role: tilo_peer_state::join::MemberRole::Moderator,
@@ -2655,149 +2566,6 @@ mod tests {
             "{log:#?}"
         );
         relay.shutdown().await;
-    }
-
-    #[test]
-    fn declared_owners_are_promoted_once_they_joined_and_dropped_keys_are_demoted() {
-        let owners = BTreeSet::from([[1; 32], [9; 32]]);
-        // [9] has not joined yet: nothing to do for them until they do.
-        let changes = role_changes(
-            &[member(1, false), member(2, true)],
-            &owners,
-            &BTreeSet::new(),
-            &BTreeSet::from([[2; 32]]),
-            [0x77; 32],
-        );
-        assert_eq!(
-            changes,
-            vec![
-                RoleChange::Administrator([1; 32]),
-                RoleChange::Editor([2; 32])
-            ]
-        );
-        assert!(
-            role_changes(
-                &[member(1, true)],
-                &owners,
-                &BTreeSet::new(),
-                &BTreeSet::new(),
-                [0x77; 32]
-            )
-            .is_empty()
-        );
-    }
-
-    /// The workspace's owner holds its seat by being its owner, not by a list:
-    /// no declared list takes it away.
-    #[test]
-    fn the_owner_root_keeps_its_seat_whatever_the_declared_lists_say() {
-        let mut dropped = member(1, false);
-        dropped.administrator = true;
-        assert!(
-            role_changes(
-                std::slice::from_ref(&dropped),
-                &BTreeSet::new(),
-                &BTreeSet::new(),
-                &BTreeSet::from([[1; 32]]),
-                [1; 32]
-            )
-            .is_empty(),
-            "dropping the owner from a list does not demote it"
-        );
-    }
-
-    #[test]
-    fn a_declared_moderator_is_promoted_and_demoted_when_dropped() {
-        let moderators = BTreeSet::from([[1; 32]]);
-        assert_eq!(
-            role_changes(
-                &[member(1, false)],
-                &BTreeSet::new(),
-                &moderators,
-                &BTreeSet::new(),
-                [0x77; 32]
-            ),
-            vec![RoleChange::Moderator([1; 32])]
-        );
-        let moderator = tilo_peer_state::GovernedMember {
-            role: tilo_peer_state::join::MemberRole::Moderator,
-            ..member(1, false)
-        };
-        assert!(
-            role_changes(
-                std::slice::from_ref(&moderator),
-                &BTreeSet::new(),
-                &moderators,
-                &BTreeSet::new(),
-                [0x77; 32]
-            )
-            .is_empty()
-        );
-        assert_eq!(
-            role_changes(
-                &[moderator],
-                &BTreeSet::new(),
-                &BTreeSet::new(),
-                &moderators,
-                [0x77; 32]
-            ),
-            vec![RoleChange::Editor([1; 32])]
-        );
-    }
-
-    #[test]
-    fn pruned_guests_are_not_reported_as_removed() {
-        let now = 40 * DAY_MS;
-        let last_seen = BTreeMap::from([
-            ([1; 32], now - 61 * MINUTE_MS),
-            ([2; 32], now - 59 * MINUTE_MS),
-        ]);
-        let keep = BTreeSet::from([[3; 32]]);
-        let members = [member(1, false), member(2, false), member(3, false)];
-        let idle = idle_guests(&members, &last_seen, &keep, now, 60);
-        assert_eq!(idle, vec![[1; 32]]);
-        // The operator loop adds pruned keys to `removed` before the
-        // governance change arrives, so newly_removed never reports them.
-        let mut seen: BTreeSet<[u8; 32]> = idle.iter().copied().collect();
-        let mut gone = member(1, false);
-        gone.removed = true;
-        assert!(newly_removed(&mut seen, &[gone]).is_empty());
-    }
-
-    #[test]
-    fn a_member_away_for_an_hour_or_a_week_stays_one_and_thirty_days_away_does_not() {
-        use clap::Parser as _;
-        #[derive(clap::Parser)]
-        struct Args {
-            #[command(flatten)]
-            persistent: PersistentArgs,
-        }
-        let days = Args::parse_from(["relay"]).persistent.inactive_after_days;
-        assert_eq!(days, 30, "the host's default");
-        let horizon = days * 24 * 60;
-        let now = 400 * DAY_MS;
-        let last_seen = BTreeMap::from([
-            ([1; 32], now - 61 * MINUTE_MS),
-            ([2; 32], now - 7 * DAY_MS),
-            ([3; 32], now - 29 * DAY_MS),
-            ([4; 32], now - 31 * DAY_MS),
-        ]);
-        let members = [
-            member(1, false),
-            member(2, false),
-            member(3, false),
-            member(4, false),
-        ];
-        assert_eq!(
-            idle_guests(&members, &last_seen, &BTreeSet::new(), now, horizon),
-            vec![[4; 32]],
-            "only thirty days away ends a membership"
-        );
-        let shorter = Args::parse_from(["relay", "--inactive-after-days", "7"])
-            .persistent
-            .inactive_after_days;
-        assert_eq!(shorter, 7, "the host configures it");
-        assert!(Args::try_parse_from(["relay", "--inactive-after-days", "0"]).is_err());
     }
 
     #[test]
@@ -2843,22 +2611,6 @@ mod tests {
         assert!(
             Args::try_parse_from(["relay", "--person-storage-gb", "40"]).is_err(),
             "workspaces of people's own are kept by a persistent host"
-        );
-    }
-
-    #[test]
-    fn a_guest_never_seen_counts_from_now_not_from_the_epoch() {
-        let members = [member(1, false)];
-        let idle = idle_guests(
-            &members,
-            &BTreeMap::new(),
-            &BTreeSet::new(),
-            40 * DAY_MS,
-            60,
-        );
-        assert!(
-            idle.is_empty(),
-            "a member with no record yet gets a record, not a removal"
         );
     }
 

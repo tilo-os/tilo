@@ -1331,20 +1331,70 @@ fn keep_hint(directory: &Path, hint: &[u8]) -> Result<(), StoreError> {
 }
 
 fn read_writer(path: &Path) -> Result<Option<Vec<u8>>, SeamError> {
+    read_writer_on(path, this_machine())
+}
+
+/// [`read_writer`] on the machine `machine` names (`/etc/machine-id`): a writer identity made on
+/// another machine is not this one's. A disk copied to another machine (a branch of a device)
+/// carries its source's sidecars, and two machines writing a shared record as one actor make
+/// changes no peer can take in ("duplicate seq"): the copy mints its own instead.
+fn read_writer_on(path: &Path, machine: Option<&str>) -> Result<Option<Vec<u8>>, SeamError> {
     match fs::read_to_string(path) {
         Ok(text) => {
-            let parsed = unhex(text.trim());
+            let (actor, made_on) = split_sidecar(&text);
+            let parsed = unhex(actor);
             if parsed.is_none() {
                 tracing::warn!(
                     path = %path.display(),
                     "writer identity sidecar is unreadable; the next owner mints a new one"
                 );
+                return Ok(None);
+            }
+            if let (Some(made_on), Some(machine)) = (made_on, machine)
+                && made_on != machine
+            {
+                tracing::info!(
+                    path = %path.display(),
+                    "the writer identity here was made on another machine, this one copied \
+                     from it: a new one is minted"
+                );
+                return Ok(None);
             }
             Ok(parsed)
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(io_err(format!("reading {}", path.display()), error).into()),
     }
+}
+
+/// A sidecar's actor (hex) and the machine it was made on, when it names one: `<actor>` as
+/// earlier writers left it, or `<actor> <machine-id>`.
+fn split_sidecar(text: &str) -> (&str, Option<&str>) {
+    let mut words = text.split_whitespace();
+    let actor = words.next().unwrap_or_default();
+    (actor, words.next())
+}
+
+/// What a writer identity sidecar holds for `writer`, made on `machine`.
+fn sidecar_text(writer: &[u8], machine: Option<&str>) -> String {
+    match machine {
+        Some(machine) => format!("{} {machine}", hex::encode(writer)),
+        None => hex::encode(writer),
+    }
+}
+
+/// This machine's id (`/etc/machine-id`), which a copy of a disk booted on another machine
+/// renews; `None` where there is none.
+fn this_machine() -> Option<&'static str> {
+    static MACHINE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    MACHINE
+        .get_or_init(|| {
+            fs::read_to_string("/etc/machine-id")
+                .ok()
+                .map(|id| id.trim().to_owned())
+                .filter(|id| !id.is_empty() && !id.contains(char::is_whitespace))
+        })
+        .as_deref()
 }
 
 fn open_owner(directory: &Path) -> Result<Owner, StoreError> {
@@ -1703,8 +1753,11 @@ fn commit(shared: &Shared, taken: &Taken) -> Result<(), StoreError> {
         owner.check()?;
         if let Some(writer) = &taken.writer {
             let sidecar = owner.directory.join(ACTOR_FILE);
-            tilo_files::native::atomic::write(&sidecar, hex::encode(writer).as_bytes())
-                .map_err(|e| io_err(format!("writing {}", sidecar.display()), e))?;
+            tilo_files::native::atomic::write(
+                &sidecar,
+                sidecar_text(writer, this_machine()).as_bytes(),
+            )
+            .map_err(|e| io_err(format!("writing {}", sidecar.display()), e))?;
         }
         let document = owner.directory.join(DOCUMENT_FILE);
         return match &*taken.op {
@@ -2292,7 +2345,10 @@ mod tests {
                 DocStore::workspace_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
                     .unwrap();
             assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"doc");
-            assert_eq!(fs::read(directory.join(ACTOR_FILE)).unwrap(), b"ab01");
+            assert_eq!(
+                fs::read_to_string(directory.join(ACTOR_FILE)).unwrap(),
+                sidecar_text(&[0xab, 0x01], this_machine())
+            );
             assert!(directory.join(CANONICAL_GATE).is_file());
             assert_eq!(
                 fs::read(tmp.path().join("instance-views/44/41/3.postcard")).unwrap(),
@@ -2351,6 +2407,32 @@ mod tests {
                         None
                     )
                     .is_err()
+            );
+        }
+        // Phase `a_writer_identity_made_on_another_machine_is_not_this_ones`.
+        {
+            let tmp = TempDir::new().unwrap();
+            let sidecar = tmp.path().join(ACTOR_FILE);
+            fs::write(&sidecar, sidecar_text(&[0xab, 0x01], Some("source"))).unwrap();
+            assert_eq!(
+                read_writer_on(&sidecar, Some("source")).unwrap(),
+                Some(vec![0xab, 0x01]),
+                "the machine that made it keeps writing as it"
+            );
+            assert_eq!(
+                read_writer_on(&sidecar, Some("copy")).unwrap(),
+                None,
+                "a machine its disk was copied to mints its own"
+            );
+            assert_eq!(
+                read_writer_on(&sidecar, None).unwrap(),
+                Some(vec![0xab, 0x01])
+            );
+            fs::write(&sidecar, "ab01").unwrap();
+            assert_eq!(
+                read_writer_on(&sidecar, Some("copy")).unwrap(),
+                Some(vec![0xab, 0x01]),
+                "an earlier sidecar names no machine, and stays"
             );
         }
         // Phase `hex_round_trips_and_rejects_malformed_sidecars`.

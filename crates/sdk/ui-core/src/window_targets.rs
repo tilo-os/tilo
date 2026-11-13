@@ -47,6 +47,12 @@ pub struct WindowTarget {
     pub role: String,
     /// Its name, already in the person's language: what a caller finds it by.
     pub name: String,
+    /// What it does, as the identity of the app action it runs (or of the
+    /// field it edits): the record kind and the operation, in ids, which no
+    /// composition and no language changes. `None` for a control that runs no
+    /// app action — a window's own chrome, a view's own event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
     /// Where it is drawn in the window's content, in logical pixels.
     pub rect: [f64; 4],
     /// What the app answers on it, in the order the app offers them.
@@ -60,4 +66,17 @@ impl WindowTarget {
     pub fn pressable(&self) -> bool {
         !self.actions.is_empty()
     }
+}
+
+/// One control of a window's content, as the window itself lists it: its
+/// name in the person's language, what it does, and where it stands in the
+/// window's own coordinates.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowControl {
+    /// Its name, as its accessibility tree says it, in the person's language.
+    pub name: String,
+    /// What it does ([`WindowTarget::identity`]), when it runs an app action.
+    pub identity: Option<String>,
+    /// Where it is drawn: its left and top edge, its width and its height.
+    pub rect: (f64, f64, f64, f64),
 }

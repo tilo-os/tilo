@@ -765,14 +765,21 @@ impl crate::Shared {
             .checked_add(PATIENCE)
             .unwrap_or_else(Instant::now);
         let founded = name.clone();
-        let copied = Polled::new(Arc::clone(&self.wake_handle), async move {
-            if let Some(engine) = &engine {
-                engine
-                    .found(slot, workspace, &founded, endpoint.as_ref())
-                    .await;
-            }
-            copy(engine.as_deref(), Places::here(), from, workspace, until).await
-        });
+        let copied = Polled::new(
+            Arc::clone(&self.wake_handle),
+            async move {
+                if let Some(engine) = &engine {
+                    engine
+                        .found(slot, workspace, &founded, endpoint.as_ref())
+                        .await;
+                }
+                copy(engine.as_deref(), Places::here(), from, workspace, until).await
+            },
+            || Branched {
+                missing: vec!["the branch's copy stopped before it answered".to_owned()],
+                ..Branched::default()
+            },
+        );
         self.telling().show(
             &Notice::new(
                 String::new(),

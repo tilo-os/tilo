@@ -47,7 +47,7 @@ use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::HOST_RESOURCE;
 use tilolang_tilo::publish::package_resource_id;
 use tilolang_tilo::publish::{
-    Caller, Committer, Moved, Planner, Publications, host_resource, publish_package, reached,
+    Caller, Committer, Moved, Planner, Publications, host_resource, publish_package,
 };
 use tilolang_tilo::used::UsedApp;
 use tilolang_tilo::{HostEffect, OpenEffect};
@@ -653,15 +653,11 @@ impl Answers {
             let Some(reads) = &answered.reads else {
                 return false;
             };
-            let reached_now = match since
+            let reached_now = since
                 .entry(answered.at)
                 .or_insert_with(|| publications.changed_since(answered.at))
-            {
-                None | Some(Moved::Everything) => true,
-                Some(Moved::These(changed)) => changed
-                    .iter()
-                    .any(|changed| reads.iter().any(|read| reached(changed, read))),
-            };
+                .as_ref()
+                .is_none_or(|moved| reads.iter().any(|read| moved.reaches(read)));
             moved |= reached_now;
             !reached_now
         });
@@ -914,10 +910,10 @@ impl Hosted {
         self.instance.add_origin(origin);
     }
 
-    /// The person's formats changed: what the instance wrote of a time or a day is written again
-    /// in the new style, and its window shows it.
-    pub fn formats_changed(&mut self) {
-        self.instance.formats_changed();
+    /// The person's environment changed — their formats, or the name the window calls someone:
+    /// every view that shows what only the window knows runs again, and its window shows it.
+    pub fn person_changed(&mut self) {
+        self.instance.person_changed();
     }
 
     /// The person chose `language` (`de-DE`) in Settings: the window reads its words in it where
@@ -1307,8 +1303,9 @@ impl Hosted {
     ) -> (Vec<tilo_resource::search_index::IndexEntry>, Vec<String>) {
         let mut upsert = Vec::new();
         let mut remove = Vec::new();
+        let packages = host.packages();
         for path in texts {
-            for package in host.packages() {
+            for package in &packages {
                 let entry = tilolang_tilo::search::index_entry_at(host, &package.meta, path);
                 if let Some(entry) = entry {
                     self.search_entries
@@ -1318,7 +1315,7 @@ impl Hosted {
             }
         }
         // The resources that are gone, and whatever was published under them.
-        for package in host.packages() {
+        for package in &packages {
             for path in gone {
                 let id = tilolang_tilo::publish::resource_id(&package.meta.app, path);
                 self.drop_entry(&id, &mut remove);
@@ -1326,7 +1323,7 @@ impl Hosted {
         }
         // A resource that holds no text any more is no entry, though it is still there: only its
         // own entry goes, as what it published under it is the entries of its own resources.
-        for package in host.packages() {
+        for package in &packages {
             let upserted: std::collections::BTreeSet<&str> =
                 upsert.iter().map(|entry| entry.resource.as_str()).collect();
             for path in texts {
@@ -1424,7 +1421,7 @@ impl Hosted {
             // Apps installed or removed since the last frame: what the views show of who made a
             // change is published again.
             if collaboration::history_source::authors::set_installed_apps(apps.clone()) {
-                self.instance.names_changed();
+                self.instance.person_changed();
             }
             return true;
         }

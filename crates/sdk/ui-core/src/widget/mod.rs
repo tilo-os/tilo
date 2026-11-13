@@ -1995,9 +1995,11 @@ pub mod decorator;
 mod defaults;
 pub mod document_effects;
 pub mod document_offers;
+pub mod identity;
 pub use crate::pen::PenSample;
 pub use decorator::Decorator;
 pub use document_offers::{DocumentOffer, PaintedOffers};
+pub use identity::Identified;
 
 pub(crate) mod layout;
 pub mod remount;

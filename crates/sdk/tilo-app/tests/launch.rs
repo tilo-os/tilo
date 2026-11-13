@@ -64,7 +64,7 @@ pub struct Note {
     pub text: String,
 }
 
-#[resource(kind = "test.sketch", label = "Sketch")]
+#[resource(kind = "test.sketch", catalogue = "tests/locales")]
 impl Sketch {
     /// Trace over an image.
     #[action]
@@ -467,7 +467,7 @@ fn the_view_reads_the_media_a_launch_names_and_the_playback_it_continues() {
 }
 
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(operation = "test.gallery.effects")]
+#[effect(operation = "test.gallery.effects", catalogue = "tests/locales")]
 pub enum GalleryEffect {
     /// Show a picture.
     #[effect(kind = "read")]

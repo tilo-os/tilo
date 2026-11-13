@@ -34,6 +34,7 @@ use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
 use ui::widget::TileHost;
 use ui::window_share::ResourceView;
 
+use crate::app_page::Unbuilt;
 use crate::shell::{HostRequest, HostRequests};
 
 /// Applications the page can open, in launcher order: every application
@@ -909,8 +910,17 @@ impl Tiles {
             .load(tab.id)
             .map_err(|error| error.to_string())?
             .map_or(RestoreInput::None, RestoreInput::Local);
-        let component =
-            self.instantiate(definition, store, (target, named_new), tab.id, restore)?;
+        let component = self
+            .instantiate(definition, store, (target, named_new), tab.id, restore)
+            .map_err(|unbuilt| match unbuilt {
+                // The record the window shows is still on its way from the workspace: it is
+                // loading, not broken, and the window is built again once it is here.
+                Unbuilt::Arriving => {
+                    self.shared.waiting.borrow_mut().insert(tab.id);
+                    Unready::Arriving
+                }
+                Unbuilt::Failed(detail) => Unready::Notice(detail),
+            })?;
         let record = component.record().clone();
         let previous = self
             .shared
@@ -933,7 +943,7 @@ impl Tiles {
         (target, named_new): (LaunchTarget, Option<RecordId>),
         instance: TabId,
         restore: RestoreInput,
-    ) -> Result<AppComponent, String> {
+    ) -> Result<AppComponent, Unbuilt> {
         let inputs = HostContextInputs {
             records: store,
             views: Rc::clone(&self.inputs.views),
@@ -947,7 +957,7 @@ impl Tiles {
             Some(id) => HostContext::prepare_new_record(definition, inputs, id),
             None => HostContext::prepare(definition, inputs, &target),
         }
-        .map_err(|error| error.to_string())?;
+        .map_err(Unbuilt::of)?;
         context.provide_models(self.inputs.models.clone());
         context.provide_content(self.inputs.content.clone());
         // What another window handed this one to open, from the desktop's
@@ -976,7 +986,7 @@ impl Tiles {
         );
         let mut component = definition
             .instantiate(context, target, restore)
-            .map_err(|error| error.to_string())?;
+            .map_err(Unbuilt::of)?;
         crate::capture_declarations::note(definition.app_id(), component.capture_protected());
         let woken = Arc::clone(&self.shared.woken);
         let wakers = Arc::clone(&self.shared.wakers);
@@ -1036,13 +1046,18 @@ impl Tiles {
             )
         });
         let target = LaunchTarget::Record { checkout, reveal };
-        let component = self.instantiate(
-            definition,
-            store,
-            (target, None),
-            embed_instance(view),
-            RestoreInput::None,
-        )?;
+        let component = self
+            .instantiate(
+                definition,
+                store,
+                (target, None),
+                embed_instance(view),
+                RestoreInput::None,
+            )
+            .map_err(|unbuilt| match unbuilt {
+                Unbuilt::Arriving => "It shows once it reaches you".to_owned(),
+                Unbuilt::Failed(detail) => detail,
+            })?;
         Ok(TileHost::from_component(component))
     }
 }
@@ -1774,7 +1789,15 @@ pub(crate) fn mount(
     take_up_feedback(&shared, &mut inputs, &store, &notify);
     let history_key = StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "history");
     let document = open_desk(store.as_ref(), &key, &history_key, &inputs.author);
-    let tree = if let Some(stored) = tilo_desktop_model::shared_record::read(&document, None) {
+    // In a workspace the profile keeps the workspace's desk, which holds nobody's own windows
+    // (`tilo_desktop_model::personal`); a desk no workspace shares is this person's alone, all of
+    // it.
+    let stored = if inputs.peer.is_some() {
+        tilo_desktop_model::shared_record::read(&document, None)
+    } else {
+        tilo_desktop_model::shared_record::read_as_kept(&document, None)
+    };
+    let tree = if let Some(stored) = stored {
         let (bound, unbound) = adopted_records(&stored);
         *shared.records.borrow_mut() = bound;
         *shared.unbound.borrow_mut() = unbound;

@@ -47,10 +47,7 @@ use thiserror::Error;
 use zeroize::Zeroizing;
 
 use crate::CanonicalError;
-use crate::cert::{
-    DeviceCapabilities, DeviceCert, device_cert_signing_digest, verify_device_cert,
-    verify_device_cert_at,
-};
+use crate::cert::{DeviceCapabilities, DeviceCert, verify_device_cert, verify_device_cert_at};
 
 const MAX_DEVICE_CERT_BYTES: usize = 64 * 1024;
 
@@ -1142,7 +1139,7 @@ pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistEr
 pub fn provision_joined_device(
     paths: &IdentityPaths,
     user_public_key: [u8; 32],
-    sign: impl FnOnce(&[u8]) -> Result<[u8; 64], String>,
+    sign: impl Fn(&[u8]) -> Result<[u8; 64], String>,
     label: &str,
     now_ns: u64,
 ) -> Result<DeviceCert, PersistError> {
@@ -1173,13 +1170,8 @@ pub fn provision_joined_device(
         signature: [0; 64],
         issuer: None,
     };
-    let digest = device_cert_signing_digest(&cert).map_err(|error| {
-        PersistError::Io(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("device certificate digest failed: {error}"),
-        ))
-    })?;
-    cert.signature = sign(&digest).map_err(|error| {
+    let signer = crate::sign::CallbackSigner::new(user_public_key, &sign);
+    crate::cert::sign_device_cert(&mut cert, &signer).map_err(|error| {
         PersistError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("device certificate was not signed: {error}"),
@@ -1538,7 +1530,7 @@ mod tests {
             cert
         };
         let own = device.verifying_key().to_bytes();
-        let node = crate::cloud_enrollment::host_capabilities;
+        let node = crate::DeviceCapabilities::host;
         let refused = |result: Result<(), PersistError>| result.unwrap_err().to_string();
 
         assert!(

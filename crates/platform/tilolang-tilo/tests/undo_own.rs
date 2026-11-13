@@ -699,7 +699,11 @@ fn write_body(r: &mut Replica, note: &ResourceRef, body: &str) {
         .iter()
         .map(tilo_document::ClipBlock::from_view)
         .collect();
-    let action = tilo_document::RichTextAction::SyncClips { blocks };
+    let action = tilo_document::RichTextAction::SyncClips {
+        blocks,
+        replace: None,
+        at: 0,
+    };
     let rich = serde_json::to_value(&action).unwrap();
     edit(r, NOTES_APP, (note, "Note", "body"), EditOp::Rich { rich });
 }

@@ -212,9 +212,9 @@ const copy = async (tab, id) => {
   const before = await clipboardText(tab);
   await click(tab, id);
   return until(tab, `navigator.clipboard.readText().then(text =>
-    text.includes('tilo login') && text !== ${JSON.stringify(before)} ? text : '', () => '')`, stepLimit(1));
+    text.match(/(?:tilo|sh -s) login /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`, stepLimit(1));
 };
-const codeOf = prompt => prompt?.match(/tilo login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})/)?.[1] ?? null;
+const codeOf = prompt => prompt?.match(/(?:tilo|sh -s) login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})/)?.[1] ?? null;
 const steps = tab => tab.evaluate(`document.getElementById('first-run-steps')?.innerText ?? ''`).catch(() => '');
 
 // The agent's computer, as agent-setup.mjs makes it: its own home, a

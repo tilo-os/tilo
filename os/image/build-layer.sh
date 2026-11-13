@@ -14,10 +14,12 @@
 # Image and layer actions run as root in a micro-VM step, in the OS assembler image
 # (os/image/assembler.Containerfile: podman, skopeo, cosign and the tools build-image.sh
 # verifies its inputs with, baked in rather than installed by every build). Each builds
-# through os/dev/build-image.sh, which resolves and verifies the base, the RPM snapshot,
-# the kernel and the other pins exactly as a whole build does, with the layers below
-# given as images (TILO_LAYER_ARGS) instead of built again: a layer action reruns when
-# its piece or what it reads changes, or a layer below it does, and never otherwise.
+# through os/dev/build-image.sh, which resolves and verifies the kernel and the other pins
+# as a whole build does, with the base, the RPM snapshot and the layers below given as
+# images (TILO_LAYER_ARGS) instead of fetched or built again: a layer action reruns when
+# its piece or what it reads changes, or a layer below it does, and never otherwise. An
+# action asks a registry only for what its piece reads that no need gives it (the kernel,
+# the environment runtime, the generation): t never serves a job that connects out.
 #
 # What the actions it builds on left is under /target/os/ARCH (TILO_OS_ROOT/ARCH, for a build of
 # them all in one step), as their checks' outputs:
@@ -126,35 +128,71 @@ guest_devices() {
   use_cosign
 }
 
-# The frozen RPM snapshot, as os-image.sh resolves it: the published one for this package
-# set, else this run's image-rpms-ARCH, unsigned, dated by its newest package signature
-# (RPMS_CREATED, image-rpms-ARCH's epoch) rather than by when it was resolved, so a snapshot
-# resolved again to the same packages builds the same layers. Loaded only for an action that
-# installs from it (rpms_read=1); one that doesn't, such as the binaries' and the derived
-# state's, is given only its name and that clock rather than gigabytes of packages to unpack
-# into its storage.
+# The frozen RPM snapshot, as the run resolved it: rpm-snapshot-ARCH's (tools/ci/publish/
+# rpm-snapshot-ref.sh), where os/dev/resolve-rpm-snapshot.sh verified the published one's
+# signature, its provenance for this tree's package set and base, and its architecture, installed
+# from image-rpms-ARCH's copy of it, which must be that digest; where the set is not published,
+# this run's image-rpms-ARCH, unsigned, dated by its newest package signature rather than by when
+# it was resolved, so a snapshot resolved again to the same packages builds the same layers. An
+# action asks no registry for it: one that connects out is never served, and t keys an action by
+# what those checks left, which a snapshot that didn't change leaves the same. RPMS_CREATED is the
+# snapshot's clock. Loaded only for an action that installs from it (rpms_read=1); one that
+# doesn't, such as the binaries' and the derived state's, is given only its name and that clock
+# rather than gigabytes of packages to unpack into its storage.
 rpms_read=1
 rpms_snapshot() {
-  local built=/target/publish/rpms/$arch status=0 id
-  RPMS_CREATED=
-  bash os/dev/resolve-rpm-snapshot.sh --exists --arch "$arch" || status=$?
-  case $status in
-    0) RPMS_REF=$(bash os/dev/resolve-rpm-snapshot.sh --arch "$arch") ;;
-    1)
-      [[ -f $built/image.oci.tar ]] || die "no published RPM snapshot for this package set and no image-rpms-$arch in this run"
-      [[ $(archive_digest "$built/image.oci.tar") == "$(cat "$built/digest")" ]] || die "$built/image.oci.tar is not the build"
-      RPMS_CREATED=$(cat "$built/epoch")
-      [[ $RPMS_CREATED =~ ^[1-9][0-9]*$ ]] || die "image-rpms-$arch left no clock in $built/epoch"
-      RPMS_REF=localhost/tilo-rpms:$(bash os/dev/resolve-rpm-snapshot.sh --tag --arch "$arch")-$arch
-      if [[ $rpms_read == 1 ]]; then
-        id=$(podman pull -q "oci-archive:$built/image.oci.tar")
-        podman tag "$id" "$RPMS_REF"
-      fi
-      export TILO_RPMS_TRUST=unsigned
-      printf 'no published RPM snapshot for this package set: installing from image-rpms-%s, unsigned\n' "$arch" ;;
-    *) die 'could not ask the registry for the published RPM snapshot' ;;
-  esac
+  local snapshot=/target/publish/rpm-snapshot/$arch built=/target/publish/rpms/$arch digest id
+  digest=$(cat "$built/digest")
+  [[ $(archive_digest "$built/image.oci.tar") == "$digest" ]] || die "$built/image.oci.tar is not the build $digest"
+  if [[ -f $snapshot/rpms-ref ]]; then
+    RPMS_REF=$(cat "$snapshot/rpms-ref")
+    [[ $RPMS_REF =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] || die "unexpected snapshot $RPMS_REF"
+    [[ ${RPMS_REF##*@} == "$digest" ]] || die "image-rpms-$arch left $digest, not the published snapshot $RPMS_REF"
+    RPMS_CREATED=$(created "$built/image.oci.tar")
+    if [[ $rpms_read == 1 ]]; then
+      # Under its published name, so FROM ${RPMS_REF} finds it by digest here and pulls nothing.
+      id=$(podman pull -q "oci-archive:$built/image.oci.tar")
+      podman tag "$id" registry.tilo.so/tilo/rpms:given
+      [[ $(podman image inspect --format '{{.Digest}}' "$RPMS_REF") == "$digest" ]] \
+        || die "the copy of $RPMS_REF did not load under its digest"
+    fi
+  else
+    [[ -f $snapshot/unpublished ]] || die "$snapshot names no snapshot: neither rpms-ref nor unpublished"
+    RPMS_CREATED=$(cat "$built/epoch")
+    [[ $RPMS_CREATED =~ ^[1-9][0-9]*$ ]] || die "image-rpms-$arch left no clock in $built/epoch"
+    RPMS_REF=localhost/tilo-rpms:$(cat "$snapshot/unpublished")-$arch
+    if [[ $rpms_read == 1 ]]; then
+      id=$(podman pull -q "oci-archive:$built/image.oci.tar")
+      podman tag "$id" "$RPMS_REF"
+    fi
+    export TILO_RPMS_TRUST=unsigned
+    printf 'no published RPM snapshot for this package set: installing from image-rpms-%s, unsigned\n' "$arch"
+  fi
   export RPMS_REF
+}
+
+# The creation time, in seconds, of the image in OCI layout directory or archive $1: the clock
+# os/dev/image-epoch.sh reads from the registry, read from the copy the action was given.
+created() {
+  local when
+  when=$(python3 -I - "$1" <<'PY'
+import json, os, sys, tarfile
+path = sys.argv[1]
+if os.path.isdir(path):
+    def read(name):
+        with open(os.path.join(path, name), "rb") as f:
+            return f.read()
+else:
+    archive = tarfile.open(path, "r:")
+    def read(name):
+        return archive.extractfile(name).read()
+def blob(digest):
+    return json.loads(read("blobs/sha256/" + digest.split(":", 1)[1]))
+[manifest] = json.loads(read("index.json"))["manifests"]
+print(blob(blob(manifest["digest"])["config"]["digest"])["created"])
+PY
+) || die "could not read the creation time of $1"
+  date -u -d "$when" +%s
 }
 
 # Whether layer NAME's piece, given the stages it is given as images, installs from the RPM
@@ -181,15 +219,14 @@ build_env() {
   rpms_snapshot
   kernel_env
   # One clock for every layer: the newest of the base's and the snapshot's creation, never
-  # the commit's, so builds of different commits make the same bytes of the same inputs.
-  if [[ -n $RPMS_CREATED ]]; then
-    SOURCE_DATE_EPOCH=$(bash os/dev/image-epoch.sh "$BASE_REF")
-    if (( RPMS_CREATED > SOURCE_DATE_EPOCH )); then SOURCE_DATE_EPOCH=$RPMS_CREATED; fi
-  else
-    SOURCE_DATE_EPOCH=$(bash os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF")
-  fi
-  TILO_GENERATION=$(TILO_ALLOW_EMPTY_SERIES=1 bash os/dev/next-generation.sh)
-  export SOURCE_DATE_EPOCH TILO_GENERATION
+  # the commit's, so builds of different commits make the same bytes of the same inputs. The
+  # base's is read from os-base-ARCH's copy of it, as the snapshot's is from image-rpms-ARCH's.
+  SOURCE_DATE_EPOCH=$(created "$os/base/oci")
+  if (( RPMS_CREATED > SOURCE_DATE_EPOCH )); then SOURCE_DATE_EPOCH=$RPMS_CREATED; fi
+  export SOURCE_DATE_EPOCH
+  # build-image.sh resolves the generation for the pieces that seal one (from the published
+  # series, which may be empty yet); the others ask for none.
+  export TILO_ALLOW_EMPTY_SERIES=1
   export TILO_IMAGE_ONLY=1 TILO_WITH_BROWSER=${TILO_WITH_BROWSER:-1} TILO_OUTPUT=$scratch/os-output TMPDIR=/var/tmp
   export TILO_REQUIRE_PCR_PREDICTION=0
   if [[ $flavour == release ]]; then

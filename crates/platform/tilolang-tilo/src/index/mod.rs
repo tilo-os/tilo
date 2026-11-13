@@ -63,30 +63,70 @@ use self::lists::{Dir, Entry, ListEdits, ListSource, Pages};
 use crate::chunk::{ChunkNo, Stamps};
 
 /// The version of what the index holds and how: an index of another is built anew.
-pub const FORMAT: u32 = 16;
+pub const FORMAT: u32 = 17;
 
 /// How much of the file a process keeps in memory, at most: pages read again come from the
 /// system's cache of the file, which is not the process's memory.
 const CACHE_BYTES: usize = 4 << 20;
 
+/// Text an index table is keyed by, compared as its bytes: UTF-8 orders as the text does, and a
+/// lookup does not check that every key it passes on its way is text, as `&str` keys do.
+#[derive(Debug)]
+pub struct Text;
+
+impl redb::Value for Text {
+    type SelfType<'a> = &'a str;
+    type AsBytes<'a> = &'a str;
+
+    fn fixed_width() -> Option<usize> {
+        None
+    }
+
+    fn from_bytes<'a>(data: &'a [u8]) -> &'a str
+    where
+        Self: 'a,
+    {
+        // A key that is not text is no key this index wrote, and reads as none.
+        // ignored-failure: only text is ever written as a key of these tables
+        std::str::from_utf8(data).unwrap_or_default()
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a &'b str) -> &'a str
+    where
+        Self: 'b,
+    {
+        value
+    }
+
+    fn type_name() -> redb::TypeName {
+        redb::TypeName::new("tilo::index::Text")
+    }
+}
+
+impl redb::Key for Text {
+    fn compare(data1: &[u8], data2: &[u8]) -> std::cmp::Ordering {
+        data1.cmp(data2)
+    }
+}
+
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 /// Each record of the package: its type.
-const DOCS: TableDefinition<&str, &[u8]> = TableDefinition::new("docs");
+const DOCS: TableDefinition<Text, &[u8]> = TableDefinition::new("docs");
 /// `(resource, field)`: the field's value; `$type` and `$key` hold the resource's type and,
 /// for an item, its order key.
-const FIELDS: TableDefinition<(&str, &str), &[u8]> = TableDefinition::new("fields");
-const DIRS: TableDefinition<&str, &[u8]> = TableDefinition::new("dirs");
-const PAGES: TableDefinition<(&str, u32), &[u8]> = TableDefinition::new("pages");
+const FIELDS: TableDefinition<(Text, Text), &[u8]> = TableDefinition::new("fields");
+const DIRS: TableDefinition<Text, &[u8]> = TableDefinition::new("dirs");
+const PAGES: TableDefinition<(Text, u32), &[u8]> = TableDefinition::new("pages");
 /// The word postings of format 2, which search no longer reads: emptying the index drops them.
 const FORMAT_2_POSTINGS: TableDefinition<(&str, &str), u8> = TableDefinition::new("postings");
 /// `(list, value)`: how many entries of a column's list hold the value, for a column whose
 /// values are few (a toggle, an enum): where a value's run starts and ends, and the counts
 /// of a filter's chips, without reading the list's pages.
-const COUNTS: TableDefinition<(&str, &str), u64> = TableDefinition::new("counts");
+const COUNTS: TableDefinition<(Text, Text), u64> = TableDefinition::new("counts");
 /// Each resource's newest version, as a [`reflect::Stamp`]: what a mark of the resource, or of the document
 /// holding it, reads without the resource's log. Keyed by the resource alone, so a document's
 /// resources are read as a page of them, never the document whole.
-const NEWEST: TableDefinition<&str, &[u8]> = TableDefinition::new("newest");
+const NEWEST: TableDefinition<Text, &[u8]> = TableDefinition::new("newest");
 
 /// The pseudo-field holding a resource's type.
 pub const TYPE: &str = "$type";
@@ -699,16 +739,16 @@ impl Drop for Index {
     }
 }
 
-type FieldsTable = ReadOnlyTable<(&'static str, &'static str), &'static [u8]>;
+type FieldsTable = ReadOnlyTable<(Text, Text), &'static [u8]>;
 
 /// The index as one commit left it, read on any thread.
 pub struct Snapshot {
-    docs: ReadOnlyTable<&'static str, &'static [u8]>,
+    docs: ReadOnlyTable<Text, &'static [u8]>,
     fields: FieldsTable,
-    dirs: ReadOnlyTable<&'static str, &'static [u8]>,
-    pages: ReadOnlyTable<(&'static str, u32), &'static [u8]>,
-    counts: ReadOnlyTable<(&'static str, &'static str), u64>,
-    newest: ReadOnlyTable<&'static str, &'static [u8]>,
+    dirs: ReadOnlyTable<Text, &'static [u8]>,
+    pages: ReadOnlyTable<(Text, u32), &'static [u8]>,
+    counts: ReadOnlyTable<(Text, Text), u64>,
+    newest: ReadOnlyTable<Text, &'static [u8]>,
     stats: Arc<IndexStats>,
 }
 
@@ -1041,12 +1081,12 @@ impl ListSource for Snapshot {
 /// The tables of one write, read through by the lists being changed in it.
 pub struct Tables<'t> {
     meta: Table<'t, &'static str, &'static [u8]>,
-    docs: Table<'t, &'static str, &'static [u8]>,
-    fields: Table<'t, (&'static str, &'static str), &'static [u8]>,
-    dirs: Table<'t, &'static str, &'static [u8]>,
-    pages: Table<'t, (&'static str, u32), &'static [u8]>,
-    counts: Table<'t, (&'static str, &'static str), u64>,
-    newest: Table<'t, &'static str, &'static [u8]>,
+    docs: Table<'t, Text, &'static [u8]>,
+    fields: Table<'t, (Text, Text), &'static [u8]>,
+    dirs: Table<'t, Text, &'static [u8]>,
+    pages: Table<'t, (Text, u32), &'static [u8]>,
+    counts: Table<'t, (Text, Text), u64>,
+    newest: Table<'t, Text, &'static [u8]>,
 }
 
 impl ListSource for Tables<'_> {

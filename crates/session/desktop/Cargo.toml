@@ -25,6 +25,11 @@ peer-view = ["tilo-desktop-surface/peer-view"]
 # (`profile_card::PROFILE_CARD`); a quiet panel stands under the avatar until
 # then. The browser desktop uses this to keep it out of its start module.
 lazy-profile-card = []
+# The top bar's HTML rendering is not linked: the program that shows a page
+# as HTML hands it over with its presenter (`topbar::TOPBAR_HTML`); until
+# then the bar shows as a picture of its paint. The browser desktop uses this
+# to keep it out of its start module.
+lazy-topbar-html = []
 
 [dependencies]
 # Sorts without a copy of std's sort per call site, which kept the web

@@ -364,7 +364,19 @@ impl Pane {
     /// Tab order, left to right and top to bottom as the panes are painted.
     const ORDER: [Pane; 4] = [Pane::Bin, Pane::Transport, Pane::Timeline, Pane::Inspector];
 
-    fn label(self) -> &'static str {
+    /// The catalogue message a reader hears for this pane.
+    fn message(self) -> &'static str {
+        match self {
+            Pane::Bin => "video-editor-pane-bin",
+            Pane::Transport => "video-editor-pane-transport",
+            Pane::Timeline => "video-editor-pane-timeline",
+            Pane::Inspector => "video-editor-pane-inspector",
+        }
+    }
+
+    /// What routes to this pane, before hashing: never the spoken name, which
+    /// is in the window's language.
+    fn tag(self) -> &'static str {
         match self {
             Pane::Bin => "Media bin",
             Pane::Transport => "Transport",
@@ -376,7 +388,7 @@ impl Pane {
     /// The key an accessibility node uses for this pane's group. Stable across
     /// repaints because it is derived from the pane, not from its position.
     fn key(self) -> u64 {
-        ui::a11y::hash_key(&self.label())
+        ui::a11y::hash_key(&self.tag())
     }
 
     fn step(self, back: bool) -> Pane {
@@ -440,7 +452,25 @@ enum Section {
 }
 
 impl Section {
-    fn label(self) -> &'static str {
+    /// The catalogue message the header paints and a reader hears.
+    fn message(self) -> &'static str {
+        match self {
+            Section::Curves => "video-editor-section-curves",
+            Section::Transform => "video-editor-section-transform",
+            Section::Speed => "video-editor-section-speed",
+            Section::Mix => "video-editor-section-mix",
+            Section::Key => "video-editor-section-key",
+            Section::Mask => "video-editor-section-mask",
+            Section::Title => "video-editor-section-title",
+            Section::Effects => "video-editor-section-effects",
+            Section::Markers => "video-editor-section-markers",
+            Section::Project => "video-editor-section-project",
+        }
+    }
+
+    /// What routes to this section, before hashing. Separate from
+    /// [`Section::message`] so a route survives the window's language.
+    fn tag(self) -> &'static str {
         match self {
             Section::Curves => "Curves",
             Section::Transform => "Transform",
@@ -510,44 +540,40 @@ enum NumField {
 }
 
 impl NumField {
-    #[expect(
-        clippy::match_same_arms,
-        reason = "one label per field, in declaration order; a shared word is not a shared field"
-    )]
-    fn label(self) -> &'static str {
+    fn message(self) -> &'static str {
         match self {
-            NumField::Opacity => "Opacity",
-            NumField::Volume => "Volume",
-            NumField::Brightness => "Brightness",
-            NumField::Contrast => "Contrast",
-            NumField::Saturation => "Saturation",
-            NumField::FadeIn => "Fade in",
-            NumField::FadeOut => "Fade out",
-            NumField::TransitionLen => "Transition length",
-            NumField::ScaleX => "Scale X",
-            NumField::ScaleY => "Scale Y",
-            NumField::PosX => "Position X",
-            NumField::PosY => "Position Y",
-            NumField::Rotation => "Rotation",
-            NumField::CropLeft => "Left",
-            NumField::CropRight => "Right",
-            NumField::CropTop => "Top",
-            NumField::CropBottom => "Bottom",
-            NumField::KeyTolerance => "Tolerance",
-            NumField::KeySoftness => "Softness",
-            NumField::KeySpill => "Spill removal",
-            NumField::MaskX => "Centre X",
-            NumField::MaskY => "Centre Y",
-            NumField::MaskW => "Width",
-            NumField::MaskH => "Height",
-            NumField::MaskRotation => "Rotation",
-            NumField::MaskFeather => "Feather",
-            NumField::Speed => "Rate",
-            NumField::TitleSize => "Size",
-            NumField::TitleBackdrop => "Backdrop",
-            NumField::CurveMix => "Amount",
-            NumField::TrackGain => "Gain",
-            NumField::TrackPan => "Pan",
+            NumField::Opacity => "video-editor-field-opacity",
+            NumField::Volume => "video-editor-field-volume",
+            NumField::Brightness => "video-editor-field-brightness",
+            NumField::Contrast => "video-editor-field-contrast",
+            NumField::Saturation => "video-editor-field-saturation",
+            NumField::FadeIn => "video-editor-field-fade-in",
+            NumField::FadeOut => "video-editor-field-fade-out",
+            NumField::TransitionLen => "video-editor-field-transition-length",
+            NumField::ScaleX => "video-editor-field-scale-x",
+            NumField::ScaleY => "video-editor-field-scale-y",
+            NumField::PosX => "video-editor-field-position-x",
+            NumField::PosY => "video-editor-field-position-y",
+            NumField::Rotation => "video-editor-field-rotation",
+            NumField::CropLeft => "video-editor-field-crop-left",
+            NumField::CropRight => "video-editor-field-crop-right",
+            NumField::CropTop => "video-editor-field-crop-top",
+            NumField::CropBottom => "video-editor-field-crop-bottom",
+            NumField::KeyTolerance => "video-editor-field-key-tolerance",
+            NumField::KeySoftness => "video-editor-field-key-softness",
+            NumField::KeySpill => "video-editor-field-key-spill",
+            NumField::MaskX => "video-editor-field-mask-x",
+            NumField::MaskY => "video-editor-field-mask-y",
+            NumField::MaskW => "video-editor-field-mask-width",
+            NumField::MaskH => "video-editor-field-mask-height",
+            NumField::MaskRotation => "video-editor-field-mask-rotation",
+            NumField::MaskFeather => "video-editor-field-mask-feather",
+            NumField::Speed => "video-editor-field-speed",
+            NumField::TitleSize => "video-editor-field-title-size",
+            NumField::TitleBackdrop => "video-editor-field-title-backdrop",
+            NumField::CurveMix => "video-editor-field-curve-amount",
+            NumField::TrackGain => "video-editor-field-track-gain",
+            NumField::TrackPan => "video-editor-field-track-pan",
         }
     }
 
@@ -769,7 +795,7 @@ impl NumField {
             NumField::TrackPan => {
                 let n = (v.abs() * 100.0).round();
                 if n < 0.5 {
-                    "Centre".into()
+                    crate::resource::CATALOG.t("video-editor-pan-centre")
                 } else if v < 0.0 {
                     format!("L{n:.0}")
                 } else {
@@ -1340,8 +1366,10 @@ impl VideoEditorApp {
     pub fn new() -> Self {
         Self {
             dirty: true,
-            project: Project::new("Untitled"),
-            stored: std::rc::Rc::new(Project::new("Untitled")),
+            project: Project::new(&crate::resource::CATALOG.t("video-editor-untitled")),
+            stored: std::rc::Rc::new(Project::new(
+                &crate::resource::CATALOG.t("video-editor-untitled"),
+            )),
             live: None,
             presented: None,
             later: hosting::Later::default(),
@@ -2086,13 +2114,15 @@ impl VideoEditorApp {
     /// when it has none.
     fn bin_kind_words(m: &MediaItem) -> String {
         match m.kind {
-            MediaKind::Audio => "Audio".to_string(),
             // A title is drawn at whatever the project frame is, so it has
             // no size of its own. That is not the same as "we could not
             // read the size", which is what an unreadable file gets.
-            MediaKind::Text => "Title".to_string(),
-            _ if m.height == 0 => "Size unknown".to_string(),
-            _ => format!("{}p", m.height),
+            MediaKind::Audio | MediaKind::Text => crate::resource::CATALOG.t(m.kind.message()),
+            _ if m.height == 0 => crate::resource::CATALOG.t("video-editor-bin-size-unknown"),
+            _ => crate::resource::CATALOG.t_args(
+                "video-editor-bin-size",
+                &[("height", ui::i18n::ArgValue::Number(f64::from(m.height)))],
+            ),
         }
     }
 
@@ -2101,7 +2131,7 @@ impl VideoEditorApp {
         if m.duration > 0.0 {
             clock(m.duration)
         } else {
-            "Length unknown".to_string()
+            crate::resource::CATALOG.t("video-editor-bin-length-unknown")
         }
     }
 
@@ -3709,22 +3739,38 @@ impl VideoEditorApp {
         let interp = clip.key_interp_at(param, self.playhead).unwrap_or_default();
         let mut menu = ContextMenu::new();
         if on_key {
-            menu.push(MenuItem::action("Remove key here", || {}));
+            menu.push(MenuItem::action(
+                crate::resource::CATALOG.t("video-editor-key-remove"),
+                || {},
+            ));
             menu.push(MenuItem::separator());
             for i in Interp::ALL {
                 // The shape in force is ticked, so the menu reports the key's
                 // state as well as offering to change it.
                 let mark = if i == interp { "✓ " } else { "    " };
-                menu.push(MenuItem::action(format!("{mark}{}", i.label()), || {}));
+                let shape = crate::resource::CATALOG.t(i.message());
+                menu.push(MenuItem::action(format!("{mark}{shape}"), || {}));
             }
         } else {
-            menu.push(MenuItem::action("Add key here", || {}));
+            menu.push(MenuItem::action(
+                crate::resource::CATALOG.t("video-editor-key-add"),
+                || {},
+            ));
         }
         menu.push(MenuItem::separator());
-        menu.push(MenuItem::action("Previous key", || {}));
-        menu.push(MenuItem::action("Next key", || {}));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-key-previous"),
+            || {},
+        ));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-key-next"),
+            || {},
+        ));
         menu.push(MenuItem::separator());
-        menu.push(MenuItem::action("Remove all keys", || {}));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-key-remove-all"),
+            || {},
+        ));
         menu.open_at([at.x as f32, at.y as f32]);
         self.bin_menu = menu;
         self.key_menu_param = Some(param);
@@ -4352,7 +4398,10 @@ impl VideoEditorApp {
     fn open_effect_menu(&mut self, at: Point) {
         let mut menu = ContextMenu::new();
         for k in EffectKind::ALL {
-            menu.push(MenuItem::action(k.label(), || {}));
+            menu.push(MenuItem::action(
+                crate::resource::CATALOG.t(k.message()),
+                || {},
+            ));
         }
         menu.open_at([at.x as f32, at.y as f32]);
         self.bin_menu = menu;
@@ -4558,10 +4607,19 @@ impl VideoEditorApp {
     /// Open the bin context menu for `mid` at logical point `at`.
     fn open_bin_menu(&mut self, mid: MediaId, at: Point) {
         let mut menu = ContextMenu::new();
-        menu.push(MenuItem::action("Add to timeline", || {}));
-        menu.push(MenuItem::action("Rename", || {}));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-add-to-timeline"),
+            || {},
+        ));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-rename"),
+            || {},
+        ));
         menu.push(MenuItem::separator());
-        menu.push(MenuItem::action("Delete", || {}));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-delete"),
+            || {},
+        ));
         menu.open_at([at.x as f32, at.y as f32]);
         self.bin_menu = menu;
         self.menu_target = Some(MenuTarget::Media(mid));
@@ -4578,22 +4636,43 @@ impl VideoEditorApp {
         let solo = t.is_some_and(|t| t.solo);
         let mut menu = ContextMenu::new();
         menu.push(MenuItem::action(
-            if muted { "Unmute track" } else { "Mute track" },
+            crate::resource::CATALOG.t(if muted {
+                "video-editor-menu-unmute"
+            } else {
+                "video-editor-menu-mute"
+            }),
             || {},
         ));
         menu.push(MenuItem::action(
-            if solo { "Unsolo track" } else { "Solo track" },
+            crate::resource::CATALOG.t(if solo {
+                "video-editor-menu-unsolo"
+            } else {
+                "video-editor-menu-solo"
+            }),
             || {},
         ));
         menu.push(MenuItem::action(
-            if locked { "Unlock track" } else { "Lock track" },
+            crate::resource::CATALOG.t(if locked {
+                "video-editor-menu-unlock"
+            } else {
+                "video-editor-menu-lock"
+            }),
             || {},
         ));
         menu.push(MenuItem::separator());
-        menu.push(MenuItem::action("Add video track", || {}));
-        menu.push(MenuItem::action("Add audio track", || {}));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-add-video-track"),
+            || {},
+        ));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-add-audio-track"),
+            || {},
+        ));
         menu.push(MenuItem::separator());
-        menu.push(MenuItem::action("Delete track", || {}));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-delete-track"),
+            || {},
+        ));
         menu.open_at([at.x as f32, at.y as f32]);
         self.bin_menu = menu;
         self.menu_target = Some(MenuTarget::Track(tid));
@@ -4612,14 +4691,32 @@ impl VideoEditorApp {
             self.selection.select_only(cid);
         }
         let mut menu = ContextMenu::new();
-        menu.push(MenuItem::action("Cut", || {}));
-        menu.push(MenuItem::action("Copy", || {}));
-        menu.push(MenuItem::action("Duplicate", || {}));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-cut"),
+            || {},
+        ));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-copy"),
+            || {},
+        ));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-duplicate"),
+            || {},
+        ));
         menu.push(MenuItem::separator());
-        menu.push(MenuItem::action("Split at playhead", || {}));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-split"),
+            || {},
+        ));
         menu.push(MenuItem::separator());
-        menu.push(MenuItem::action("Delete", || {}));
-        menu.push(MenuItem::action("Ripple delete", || {}));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-delete"),
+            || {},
+        ));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-ripple-delete"),
+            || {},
+        ));
         // Link / unlink, last and behind its own rule: a person who wants the
         // sound three frames late has to be able to find out how, and the
         // clip's own right-click menu is where they will look. Appended only
@@ -5643,7 +5740,12 @@ impl VideoEditorApp {
             .collect();
         let fps_labels: Vec<String> = FrameRate::ALL
             .iter()
-            .map(|v| format!("{} fps", v.label()))
+            .map(|v| {
+                crate::resource::CATALOG.t_args(
+                    "video-editor-fps-shown",
+                    &[("rate", ui::i18n::ArgValue::Text(v.label().to_owned()))],
+                )
+            })
             .collect();
         let fps = FrameRate::ALL
             .iter()
@@ -5824,12 +5926,28 @@ fn format_words(width: u32, height: u32, fps: f64) -> String {
     // A blank project takes its shape from its first clip: until then there
     // is no size or rate to state, and "0×0, 0 fps" would state one.
     if width == 0 || height == 0 {
-        return "Set by the first clip".to_owned();
+        return crate::resource::CATALOG.t("video-editor-format-set-by-clip");
     }
+    let size = || {
+        crate::resource::CATALOG.t_args(
+            "video-editor-format-size",
+            &[
+                ("width", ui::i18n::ArgValue::Number(f64::from(width))),
+                ("height", ui::i18n::ArgValue::Number(f64::from(height))),
+            ],
+        )
+    };
     if fps <= 0.0 {
-        return format!("{width}\u{d7}{height}");
+        return size();
     }
-    format!("{width}\u{d7}{height}, {} fps", rate_words(fps))
+    crate::resource::CATALOG.t_args(
+        "video-editor-format-shown",
+        &[
+            ("width", ui::i18n::ArgValue::Number(f64::from(width))),
+            ("height", ui::i18n::ArgValue::Number(f64::from(height))),
+            ("fps", ui::i18n::ArgValue::Text(rate_words(fps))),
+        ],
+    )
 }
 
 /// A speed preset as its segment says it: "2×", "0.5×".
@@ -7149,7 +7267,7 @@ impl Widget for VideoEditorApp {
                     // the first, which is the tidier and less true story.
                     self.project_label(),
                     crate::timecode::timecode(self.playhead, self.project.fps),
-                    self.focus.pane.label()
+                    crate::resource::CATALOG.t(self.focus.pane.message())
                 ))
                 .with_state(
                     AccessState::new()
@@ -7261,7 +7379,8 @@ impl Widget for VideoEditorApp {
     /// The editor is one widget, so the host asks it once and it answers for
     /// whatever the pointer is actually over.
     fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
-        self.tooltip_at(self.last_mouse).map(Into::into)
+        self.tooltip_at(self.last_mouse)
+            .map(std::borrow::Cow::Owned)
     }
 
     fn get_rect(&self) -> Rect {
@@ -7435,7 +7554,12 @@ pub(crate) fn shortcuts() -> Vec<(&'static str, Vec<ShortcutRow>)> {
                     &["{shift:Delete}"],
                     t("video-editor-shortcut-ripple-delete"),
                 ),
-                row(&["Arrows"], t("video-editor-shortcut-nudge")),
+                // Four caps, each the label the keyboard prints on that key:
+                // no word for "arrows" reaches a window in any language.
+                row(
+                    &["left", "up", "down", "right"],
+                    t("video-editor-shortcut-nudge"),
+                ),
             ],
         ),
         (
@@ -8265,12 +8389,17 @@ impl VideoEditorApp {
             field.apply_layout_external(l.entry);
             field.draw_child(scene, tf, tr, &panel, presence);
         }
+        // The field says only what is wrong with what was typed; the key that
+        // takes it is the key people already press in a text field.
         let (hint, hc) = if self.navigation.goto_notice {
-            ("Not a timecode, try 1:30", c.semantic.danger)
+            (
+                crate::resource::CATALOG.t("video-editor-not-a-timecode"),
+                c.semantic.danger,
+            )
         } else {
-            ("Enter to jump, Esc to cancel", panel.text_dim)
+            (String::new(), panel.text_dim)
         };
-        text(scene, tr, tf, hint, &ty.xs, hc, x, l.hint_top);
+        text(scene, tr, tf, &hint, &ty.xs, hc, x, l.hint_top);
     }
 
     #[allow(
@@ -8368,25 +8497,28 @@ impl VideoEditorApp {
             .iter()
             .map(|(v, r)| (v.label().to_string(), *r, *v == self.export.resolution))
             .collect();
-        seg_group(scene, tr, "Resolution", l.captions[0], &res);
+        let caption = crate::resource::CATALOG.t("video-editor-export-resolution");
+        seg_group(scene, tr, &caption, l.captions[0], &res);
         let con: Vec<_> = l
             .container
             .iter()
             .map(|(v, r)| (v.label().to_string(), *r, *v == self.export.container))
             .collect();
-        seg_group(scene, tr, "Format", l.captions[1], &con);
+        let caption = crate::resource::CATALOG.t("video-editor-export-format");
+        seg_group(scene, tr, &caption, l.captions[1], &con);
         let fps: Vec<_> = l
             .fps
             .iter()
             .map(|(v, r)| {
-                (
-                    format!("{} fps", v.label()),
-                    *r,
-                    *v == self.export.frame_rate,
-                )
+                let shown = crate::resource::CATALOG.t_args(
+                    "video-editor-fps-shown",
+                    &[("rate", ui::i18n::ArgValue::Text(v.label().to_owned()))],
+                );
+                (shown, *r, *v == self.export.frame_rate)
             })
             .collect();
-        seg_group(scene, tr, "Frame rate", l.captions[2], &fps);
+        let caption = crate::resource::CATALOG.t("video-editor-frame-rate");
+        seg_group(scene, tr, &caption, l.captions[2], &fps);
 
         // Estimate + status.
         // One source of truth for the size line: the export module knows which
@@ -8399,15 +8531,28 @@ impl VideoEditorApp {
         let (w, h) = crate::export::output_dims(&self.export, &self.project);
         // And how long it will run — the marked range when there is one,
         // which is the whole reason for marking one.
-        let info = format!(
-            "{w}×{h} for {}{}, {est}",
-            timecode(self.project.export_duration(), self.project.fps),
-            if self.project.has_marks() {
-                " (marked range)"
-            } else {
-                ""
-            }
-        );
+        let length = timecode(self.project.export_duration(), self.project.fps);
+        let info = if self.project.has_marks() {
+            crate::resource::CATALOG.t_args(
+                "video-editor-export-marked-range",
+                &[
+                    ("width", ui::i18n::ArgValue::Number(f64::from(w))),
+                    ("height", ui::i18n::ArgValue::Number(f64::from(h))),
+                    ("length", ui::i18n::ArgValue::Text(length)),
+                    ("size", ui::i18n::ArgValue::Text(est)),
+                ],
+            )
+        } else {
+            crate::resource::CATALOG.t_args(
+                "video-editor-export-summary",
+                &[
+                    ("width", ui::i18n::ArgValue::Number(f64::from(w))),
+                    ("height", ui::i18n::ArgValue::Number(f64::from(h))),
+                    ("length", ui::i18n::ArgValue::Text(length)),
+                    ("size", ui::i18n::ArgValue::Text(est)),
+                ],
+            )
+        };
         let info = elide_at(&info, width, &ty.sm, tr);
         text(scene, tr, tf, &info, &ty.sm, dim, x0, l.info_top);
         let status = l.status;

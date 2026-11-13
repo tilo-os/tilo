@@ -10,17 +10,34 @@
 //!
 //! The same keys derive the per-stream keys a call's media frames are
 //! sealed with ([`ChannelContentKeys::media_key`]), so a call needs no key
-//! exchange of its own and no key server.
+//! exchange of its own and no key server. A device that may publish to the
+//! channel but may hold none of its content keys is handed one sender's
+//! media keys for exactly the streams it publishes
+//! ([`ChannelContentKeys::sender_media_keys`]), sealed to that device's
+//! identity key.
+
+use std::collections::BTreeMap;
 
 use collab_types::{ArtifactId, ChannelId, ContentRetention, EncryptionMetadata, EncryptionScheme};
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use tilo_seal::SymmetricKey;
+use tilo_seal::{Label, PublicKey, SealedBox, SecretKey, SymmetricKey};
 use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::content::ContentKeyring;
 use crate::{Error, Result};
 
 const WIRE_VERSION: u8 = 1;
+
+/// Version of the box one sender's media keys are handed over in.
+const SENDER_MEDIA_BOX_VERSION: u8 = 1;
+
+/// Domain of the associated data such a box is sealed with.
+const SENDER_MEDIA_BOX_DOMAIN: &[u8] = b"tilo-sender-media-keys-v1";
+
+/// The most streams one sender's media keys may cover: a device seals the
+/// streams it publishes, and the tag space is larger than any device's.
+const MAX_SENDER_MEDIA_KEYS: usize = 256;
 
 /// Length of the tag naming one media stream: its lane and its source.
 pub const MEDIA_STREAM_TAG_LEN: usize = 2;
@@ -223,6 +240,39 @@ impl ChannelContentKeys {
         Ok(SymmetricKey::from_bytes(*hash.finalize().as_bytes()))
     }
 
+    /// The media keys `sender` seals the `streams` given with at `epoch`, and
+    /// no others: what a device that may publish to this channel but may hold
+    /// none of its content keys is handed.
+    ///
+    /// The keys are exactly the ones [`Self::media_key`] gives for those
+    /// tags, so a member that holds the content key opens what the device
+    /// seals with them, and the device derives nothing else.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MissingContentKey`] when this endpoint holds no content key
+    /// for `epoch`, and [`Error::InvalidState`] when no stream is named.
+    pub fn sender_media_keys(
+        &self,
+        epoch: u64,
+        sender: [u8; 32],
+        streams: &[[u8; MEDIA_STREAM_TAG_LEN]],
+    ) -> Result<SenderMediaKeys> {
+        let mut keys = BTreeMap::new();
+        for stream in streams {
+            keys.insert(*stream, self.media_key(epoch, sender, *stream)?);
+        }
+        if keys.is_empty() {
+            return Err(Error::InvalidState("no media streams were named".into()));
+        }
+        Ok(SenderMediaKeys {
+            channel: self.channel,
+            epoch,
+            sender,
+            keys,
+        })
+    }
+
     /// Encode for the session service's local socket to the app.
     ///
     /// # Errors
@@ -287,6 +337,269 @@ impl std::fmt::Debug for ChannelContentKeys {
             .field("keyring", &self.keyring)
             .finish()
     }
+}
+
+/// One sender's media keys at one epoch of one channel: the keys a device
+/// seals the streams it publishes with, derived by a member device that holds
+/// the channel's content keys and handed to that sender alone.
+///
+/// It is what a device that may take part in a channel without holding any of
+/// its content keys — a hosted machine confined to its own record — publishes
+/// under. It opens nothing else: not another sender's frames, not another
+/// epoch's, and no content at all.
+#[derive(Clone)]
+pub struct SenderMediaKeys {
+    channel: ChannelId,
+    epoch: u64,
+    sender: [u8; 32],
+    keys: BTreeMap<[u8; MEDIA_STREAM_TAG_LEN], SymmetricKey>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SenderMediaWire {
+    version: u8,
+    channel: ChannelId,
+    epoch: u64,
+    sender: [u8; 32],
+    keys: Vec<([u8; MEDIA_STREAM_TAG_LEN], [u8; 32])>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SenderMediaBoxWire {
+    version: u8,
+    channel: ChannelId,
+    epoch: u64,
+    sender: [u8; 32],
+    /// `tilo_seal::SealedBox` wire bytes.
+    sealed: Vec<u8>,
+}
+
+impl SenderMediaKeys {
+    pub fn channel_id(&self) -> ChannelId {
+        self.channel
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// The device these keys belong to: the only sender whose frames can be
+    /// sealed with them.
+    pub fn sender(&self) -> [u8; 32] {
+        self.sender
+    }
+
+    /// The streams these keys cover, in tag order.
+    pub fn streams(&self) -> impl Iterator<Item = [u8; MEDIA_STREAM_TAG_LEN]> + '_ {
+        self.keys.keys().copied()
+    }
+
+    /// The key this sender's frames of `stream` are sealed under at `epoch`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MissingContentKey`] for any other epoch or a stream these keys
+    /// do not cover, and [`Error::InvalidState`] for another sender: these
+    /// keys speak for one device at one epoch, and only of the streams it was
+    /// handed.
+    pub fn media_key(
+        &self,
+        epoch: u64,
+        sender: [u8; 32],
+        stream: [u8; MEDIA_STREAM_TAG_LEN],
+    ) -> Result<SymmetricKey> {
+        if epoch != self.epoch {
+            return Err(Error::MissingContentKey(epoch));
+        }
+        if sender != self.sender {
+            return Err(Error::InvalidState(
+                "the media keys belong to another device".into(),
+            ));
+        }
+        self.keys
+            .get(&stream)
+            .cloned()
+            .ok_or(Error::MissingContentKey(epoch))
+    }
+
+    /// Encode for the session service's local socket to the app.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Serialization`] if encoding fails.
+    pub fn to_bytes(&self) -> Result<Zeroizing<Vec<u8>>> {
+        let mut wire = SenderMediaWire {
+            version: WIRE_VERSION,
+            channel: self.channel,
+            epoch: self.epoch,
+            sender: self.sender,
+            keys: self
+                .keys
+                .iter()
+                .map(|(stream, key)| (*stream, *key.expose_secret()))
+                .collect(),
+        };
+        let encoded = postcard::to_allocvec(&wire)
+            .map(Zeroizing::new)
+            .map_err(|error| Error::Serialization(error.to_string()));
+        for (_, key) in &mut wire.keys {
+            key.zeroize();
+        }
+        encoded
+    }
+
+    /// Decode what [`Self::to_bytes`] produced, refusing trailing bytes, an
+    /// empty or oversized set of streams, and a stream named twice.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Serialization`] or [`Error::InvalidState`] for malformed or
+    /// inconsistent bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let (mut wire, rest) = postcard::take_from_bytes::<SenderMediaWire>(bytes)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        // The bytes are key material whether or not what follows parses, so
+        // they are wiped on every path out of here.
+        let keys = Zeroizing::new(std::mem::take(&mut wire.keys));
+        if !rest.is_empty() || wire.version != WIRE_VERSION {
+            return Err(Error::Serialization("malformed sender media keys".into()));
+        }
+        if keys.is_empty() || keys.len() > MAX_SENDER_MEDIA_KEYS {
+            return Err(Error::InvalidState(
+                "the sender media keys cover no stream, or too many".into(),
+            ));
+        }
+        let mut decoded = BTreeMap::new();
+        for (stream, key) in keys.iter() {
+            if decoded
+                .insert(*stream, SymmetricKey::from_bytes(*key))
+                .is_some()
+            {
+                return Err(Error::InvalidState("a media stream is named twice".into()));
+            }
+        }
+        Ok(Self {
+            channel: wire.channel,
+            epoch: wire.epoch,
+            sender: wire.sender,
+            keys: decoded,
+        })
+    }
+
+    /// Seal these keys to `device`, a device's Ed25519 identity key.
+    ///
+    /// The channel, the epoch and the sender are authenticated as associated
+    /// data under a label of their own, so a box sealed here opens as no other
+    /// sender's media keys, at no other epoch, in no other channel, and for no
+    /// other purpose.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Serialization`] if encoding fails, [`Error::InvalidState`] for
+    /// bytes that are not an Ed25519 public key, and [`Error::ContentCrypto`]
+    /// if the box cannot be sealed.
+    pub fn seal_to(&self, device: [u8; 32]) -> Result<Zeroizing<Vec<u8>>> {
+        let recipient = box_recipient(device)?;
+        let plaintext = self.to_bytes()?;
+        let sealed = tilo_seal::hpke::seal(
+            &recipient,
+            Label::SenderMediaKeys,
+            &box_aad(self.channel, self.epoch, &self.sender),
+            &plaintext,
+        )
+        .map_err(Error::ContentCrypto)?;
+        postcard::to_allocvec(&SenderMediaBoxWire {
+            version: SENDER_MEDIA_BOX_VERSION,
+            channel: self.channel,
+            epoch: self.epoch,
+            sender: self.sender,
+            sealed: sealed.to_bytes(),
+        })
+        .map(Zeroizing::new)
+        .map_err(|error| Error::Serialization(error.to_string()))
+    }
+
+    /// Open a box [`Self::seal_to`] produced for `device`, accepting only
+    /// keys for `sender`: this device's own.
+    ///
+    /// The channel and the epoch come from the box, which is what a device
+    /// that holds no content key cannot know by itself; the sender does not,
+    /// because a box that spoke for another device would let this one publish
+    /// as it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Serialization`] for malformed bytes, and
+    /// [`Error::ContentCrypto`] for a box sealed to another device or for
+    /// another sender, epoch or channel.
+    pub fn open_with(device: &SigningKey, sender: [u8; 32], sealed: &[u8]) -> Result<Self> {
+        let (wire, rest) = postcard::take_from_bytes::<SenderMediaBoxWire>(sealed)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        if !rest.is_empty() || wire.version != SENDER_MEDIA_BOX_VERSION {
+            return Err(Error::Serialization(
+                "malformed sealed sender media keys".into(),
+            ));
+        }
+        if wire.sender != sender {
+            return Err(Error::ContentCrypto(tilo_seal::Error::Authentication));
+        }
+        let opened = tilo_seal::hpke::open(
+            &SecretKey::from_bytes(device.to_scalar_bytes()),
+            Label::SenderMediaKeys,
+            &box_aad(wire.channel, wire.epoch, &wire.sender),
+            &SealedBox::from_bytes(&wire.sealed).map_err(Error::ContentCrypto)?,
+        )
+        .map_err(Error::ContentCrypto)?;
+        let keys = Self::from_bytes(&opened)?;
+        if keys.channel != wire.channel || keys.epoch != wire.epoch || keys.sender != wire.sender {
+            return Err(Error::InvalidState(
+                "the sealed media keys name another channel, epoch or sender".into(),
+            ));
+        }
+        Ok(keys)
+    }
+}
+
+impl std::fmt::Debug for SenderMediaKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SenderMediaKeys")
+            .field("channel", &self.channel)
+            .field("epoch", &self.epoch)
+            .field("sender", &hex::encode(self.sender))
+            .field("streams", &self.keys.len())
+            .finish()
+    }
+}
+
+/// The associated data a box of one sender's media keys is sealed with: the
+/// channel, the epoch and the sender, so a box for one is never opened as
+/// another's.
+fn box_aad(channel: ChannelId, epoch: u64, sender: &[u8; 32]) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(
+        SENDER_MEDIA_BOX_DOMAIN
+            .len()
+            .saturating_add(32)
+            .saturating_add(8)
+            .saturating_add(32),
+    );
+    aad.extend_from_slice(SENDER_MEDIA_BOX_DOMAIN);
+    aad.extend_from_slice(channel.0.as_bytes());
+    aad.extend_from_slice(&epoch.to_le_bytes());
+    aad.extend_from_slice(sender);
+    aad
+}
+
+/// The X25519 form of a device's Ed25519 identity key, which is what a box is
+/// addressed to.
+fn box_recipient(device: [u8; 32]) -> Result<PublicKey> {
+    Ok(PublicKey::from_bytes(
+        VerifyingKey::from_bytes(&device)
+            .map_err(|_| Error::InvalidState("not an ed25519 public key".into()))?
+            .to_montgomery()
+            .to_bytes(),
+    ))
 }
 
 #[cfg(test)]
@@ -435,6 +748,92 @@ mod tests {
                 .unwrap(),
             "a new epoch has a new one"
         );
+    }
+
+    /// One device's media keys are the channel's own for the streams it was
+    /// handed, and nothing else at all: another stream, another sender or
+    /// another epoch derives nothing, so what it publishes nobody else can
+    /// claim.
+    #[test]
+    fn sender_media_keys_are_the_channels_for_the_streams_handed_and_no_others() {
+        let channel = ChannelId::new();
+        let group = ChannelGroup::create(channel, MemberKey::generate("owner").unwrap()).unwrap();
+        let keys = group.content_keys().unwrap();
+        let epoch = group.epoch();
+        let sender = [7; 32];
+        let handed = keys
+            .sender_media_keys(epoch, sender, &[[0, 1], [2, 3]])
+            .unwrap();
+        assert_eq!(handed.channel_id(), channel);
+        assert_eq!(handed.epoch(), epoch);
+        assert_eq!(handed.sender(), sender);
+        assert_eq!(handed.streams().collect::<Vec<_>>(), vec![[0, 1], [2, 3]]);
+        for stream in [[0, 1], [2, 3]] {
+            assert_eq!(
+                handed.media_key(epoch, sender, stream).unwrap(),
+                keys.media_key(epoch, sender, stream).unwrap(),
+                "a member that holds the content key opens what these seal"
+            );
+        }
+        assert!(handed.media_key(epoch, sender, [1, 0]).is_err());
+        assert!(handed.media_key(epoch, [8; 32], [0, 1]).is_err());
+        assert!(matches!(
+            handed.media_key(epoch + 1, sender, [0, 1]),
+            Err(Error::MissingContentKey(missing)) if missing == epoch + 1
+        ));
+        assert!(matches!(
+            keys.sender_media_keys(epoch + 1, sender, &[[0, 1]]),
+            Err(Error::MissingContentKey(missing)) if missing == epoch + 1
+        ));
+        assert!(keys.sender_media_keys(epoch, sender, &[]).is_err());
+        assert!(!format!("{handed:?}").contains("key:"));
+    }
+
+    /// A device's keys travel sealed to its own identity key: another device's
+    /// key opens nothing, and a box that speaks for another sender, epoch or
+    /// channel is refused however it was addressed.
+    #[test]
+    fn sender_media_keys_open_only_for_their_device_sender_and_epoch() {
+        let channel = ChannelId::new();
+        let group = ChannelGroup::create(channel, MemberKey::generate("owner").unwrap()).unwrap();
+        let keys = group.content_keys().unwrap();
+        let epoch = group.epoch();
+        let device = SigningKey::from_bytes(&[9; 32]);
+        let sender = device.verifying_key().to_bytes();
+        let other = SigningKey::from_bytes(&[10; 32]);
+        let handed = keys
+            .sender_media_keys(epoch, sender, &[[0, 1], [2, 3]])
+            .unwrap();
+
+        let sealed = handed.seal_to(sender).unwrap();
+        let opened = SenderMediaKeys::open_with(&device, sender, &sealed).unwrap();
+        assert_eq!(opened.to_bytes().unwrap(), handed.to_bytes().unwrap());
+        assert_eq!(
+            opened.media_key(epoch, sender, [2, 3]).unwrap(),
+            keys.media_key(epoch, sender, [2, 3]).unwrap()
+        );
+
+        assert!(SenderMediaKeys::open_with(&other, sender, &sealed).is_err());
+        assert!(
+            SenderMediaKeys::open_with(&device, other.verifying_key().to_bytes(), &sealed).is_err(),
+            "a box for one sender never opens as another's"
+        );
+        let theirs = keys
+            .sender_media_keys(epoch, other.verifying_key().to_bytes(), &[[0, 1]])
+            .unwrap();
+        let theirs_sealed = theirs.seal_to(sender).unwrap();
+        assert!(SenderMediaKeys::open_with(&device, sender, &theirs_sealed).is_err());
+        assert!(
+            SenderMediaKeys::open_with(&device, other.verifying_key().to_bytes(), &theirs_sealed)
+                .is_ok()
+        );
+
+        let mut tampered = sealed.to_vec();
+        if let Some(last) = tampered.last_mut() {
+            *last ^= 1;
+        }
+        assert!(SenderMediaKeys::open_with(&device, sender, &tampered).is_err());
+        assert!(SenderMediaKeys::open_with(&device, sender, &sealed[..sealed.len() - 1]).is_err());
     }
 
     #[test]

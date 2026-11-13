@@ -20,7 +20,7 @@ pub struct Items {
 /// are item verbs: the palette and agents see each item as a resource of its
 /// own with them on it, and a row's context menu (right-click, the Menu key,
 /// Shift+F10) offers them.
-#[resource(kind = "generated.items", label = "Items")]
+#[resource(kind = "generated.items")]
 impl Items {
     /// Add an item.
     #[action]

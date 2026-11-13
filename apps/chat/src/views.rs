@@ -320,9 +320,22 @@ impl Channel {
     ) -> Self {
         let channel_id = Id::from_raw(id);
         let channel = chat.conversation(&channel_id);
+        // What software wrote under, as its actions pinned it: the name it went by and the
+        // person it acted for, which keep naming it after it left.
+        let acting: std::collections::HashMap<&str, &sdk::tilo_resource::Acting> = rows
+            .iter()
+            .filter_map(|row| Some((row.author.as_str(), row.acting.as_ref()?)))
+            .collect();
         let mut people: Vec<Person> = Vec::new();
         for row in rows {
-            Self::named(&mut people, chat, names, me, &row.author);
+            Self::named(
+                &mut people,
+                chat,
+                names,
+                me,
+                &row.author,
+                acting.get(row.author.as_str()).copied(),
+            );
         }
         let messages = rows
             .iter()
@@ -412,28 +425,47 @@ impl Channel {
     }
 
     /// Add the person `author` to `people` when not already there, as they are named here: the
-    /// record's roster first, then what the reading's [`Names`] say — the reader's own name,
-    /// or the workspace's name for an agent — and otherwise Chat's honest placeholder for
-    /// someone it cannot name. Never their routing id.
+    /// record's roster first, then what the reading's [`Names`] say — the reader's own name, or
+    /// the workspace's name for an agent — and otherwise Chat's honest placeholder for someone
+    /// it cannot name. Never their routing id. Software that wrote for a person (`acting`) is
+    /// named with them, as Chat's window names its authors: "Helper for Ada", after it left too.
     fn named(
         people: &mut Vec<Person>,
         chat: &crate::record::Chat,
         names: &Names,
         me: &str,
         author: &str,
+        acting: Option<&sdk::tilo_resource::Acting>,
     ) {
         if people.iter().any(|held| held.id == author) {
             return;
         }
-        let found = chat.people.iter().find(|person| person.id.0 == author);
-        let agent = found.map_or_else(|| is_agent(author), |person| person.agent);
-        let name = found
+        let roster = chat.people.iter().find(|person| person.id.0 == author);
+        let agent = roster.map_or_else(|| is_agent(author), |person| person.agent);
+        let shown = roster
             .map(|person| person.name.trim().to_owned())
             .filter(|name| !name.is_empty())
-            .or_else(|| agent_name(chat, names, author))
+            .or_else(|| agent_name(chat, names, author, acting))
             .or_else(|| (author == me).then(|| names.me.trim().to_owned()))
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| crate::identity::unnamed_label(author));
+        let name = match acting.filter(|_| agent) {
+            Some(acting) => crate::identity::acting_label(
+                &shown,
+                acting.person.as_ref().map(|person| person.0.as_str()),
+                |person| {
+                    chat.people
+                        .iter()
+                        .find(|held| held.id.0 == person)
+                        .map_or_else(
+                            || crate::identity::unnamed_label(person),
+                            |held| held.name.trim().to_owned(),
+                        )
+                },
+                |person| person == me,
+            ),
+            None => shown,
+        };
         people.push(Person {
             id: author.to_owned(),
             name,
@@ -520,34 +552,42 @@ fn retryable(rows: &[crate::model::Message], row: &crate::model::Message) -> boo
         .to_string()
 }
 
-/// Whether `author` is an agent rather than a person: a participant spelled `agent:<id>`, or an
-/// agent task spelled `agent-task:<task>`.
-fn is_agent(author: &str) -> bool {
+/// Whether `author` is an agent rather than a person: one of the workspace's own (`agent:<id>`,
+/// the actor its identity record names) or a run of a task (`agent-task:<task>`). An agent is a
+/// collaborator and reads as one, in the byline and its face, wherever its name is shown.
+pub(crate) fn is_agent(author: &str) -> bool {
     author.starts_with("agent:") || author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
-}
-
-/// The id an agent author is named by: the part after `agent:`.
-fn agent_id(author: &str) -> Option<&str> {
-    author.strip_prefix("agent:")
 }
 
 /// The name an agent author shows, as the record or the workspace names it: the name the
 /// workspace keeps for it (Chat's own `agent_names`, or the workspace agents record the reading
-/// carries), and otherwise what Chat calls an agent it has not been told the name of. An author
-/// that is not an agent has no agent's name.
-fn agent_name(chat: &crate::record::Chat, names: &Names, author: &str) -> Option<String> {
+/// carries), else the name it went by where it wrote, and otherwise what Chat calls an agent it
+/// has not been told the name of. An author that is not an agent has no agent's name.
+fn agent_name(
+    chat: &crate::record::Chat,
+    names: &Names,
+    author: &str,
+    acting: Option<&sdk::tilo_resource::Acting>,
+) -> Option<String> {
     if !is_agent(author) {
         return None;
     }
-    chat.agent_names
-        .get(author)
-        .or_else(|| agent_id(author).and_then(|id| names.agents.get(id)))
-        .map(|name| name.trim().to_owned())
-        .filter(|name| !name.is_empty())
-        .or_else(|| {
-            crate::i18n::ensure();
-            Some(crate::i18n::t("chat-agent-kind"))
-        })
+    // Every name the record, the workspace or what it wrote under keeps for it, the first that
+    // names it.
+    let called = [
+        chat.agent_names.get(author).map(|name| name.trim()),
+        author
+            .strip_prefix("agent:")
+            .and_then(|id| names.agents.get(id))
+            .map(|name| name.trim()),
+        acting
+            .and_then(|acting| acting.name.as_ref())
+            .map(|name| name.0.trim()),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|name| !name.is_empty());
+    Some(called.map_or_else(|| crate::i18n::t("chat-agent-kind"), str::to_owned))
 }
 
 /// The start of `text` a quote under a reply shows: its first line, cut short.
@@ -1269,15 +1309,9 @@ fn author_label(person: Option<&Person>, id: &str) -> String {
 /// A person as a component draws them: their name, or Chat's honest placeholder for someone it
 /// cannot name, never their id.
 fn principal(person: Option<&Person>, id: &str) -> tilo_view::Principal {
-    match person {
-        Some(person) => tilo_view::Principal {
-            id: person.id.clone(),
-            name: person.name.trim().to_owned(),
-        },
-        None => tilo_view::Principal {
-            id: id.to_owned(),
-            name: crate::identity::unnamed_label(id),
-        },
+    tilo_view::Principal {
+        id: person.map_or_else(|| id.to_owned(), |person| person.id.clone()),
+        name: author_label(person, id),
     }
 }
 
@@ -1434,6 +1468,7 @@ mod tests {
             pinned: false,
             work: None,
             appearance: None,
+            acting: None,
             share: None,
             attempts: 0,
             sending: false,
@@ -1548,6 +1583,34 @@ mod tests {
         assert!(
             !shown.iter().any(|name| name.contains("agent:")),
             "no byline shows the agent's id: {shown:?}"
+        );
+    }
+
+    #[test]
+    fn a_departed_agents_answer_is_named_with_the_person_it_wrote_for() {
+        // Ada's agent answered and left: neither the record nor the workspace names it any more,
+        // and its answer keeps what its send pinned — the name it went by and the person it
+        // acted for — so Bob reads it named with her, as Chat's own window names it.
+        const ADA: &str = "ba944082ab57230fec2b518bd058a677d056dc648ac5c766f392f5f69fc1ee8c";
+        const BOB: &str = "7f3c0f9bb4ed0e42f1a2d0e5a3c1b0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3";
+        let mut chat = crate::record::Chat::default();
+        chat.people.push(crate::record::Person {
+            id: sdk::tilo_resource::Atom(ADA.to_owned()),
+            name: "Ada".to_owned(),
+            ..crate::record::Person::default()
+        });
+        let mut said = row("c_ask", "m_reply", "agent:helper", 1_782_470_460, "Hi");
+        said.acting = Some(sdk::tilo_resource::Acting {
+            name: Some(sdk::tilo_resource::Atom("Helper".to_owned())),
+            person: Some(sdk::tilo_resource::Atom(ADA.to_owned())),
+        });
+        let rows = vec![row("c_ask", "m_ask", ADA, 1_782_470_400, "hello"), said];
+        let channel = Channel::read(&chat, &rows, "c_ask", BOB, &Names::default());
+        let agent = channel.person("agent:helper").expect("the agent is named");
+        assert_eq!(
+            agent.name,
+            sdk::acting_line("Helper", Some("Ada"), false),
+            "the page names the agent with the person it wrote for"
         );
     }
 
@@ -2611,6 +2674,7 @@ mod tests {
             attachments: Vec::new(),
             pinned: false,
             appearance: None,
+            acting: None,
             share: None,
             attempts: 0,
             sending: false,

@@ -759,6 +759,10 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::ContentPutResponse { .. }
         | RemoteActionMessage::ContentGetRequest { .. }
         | RemoteActionMessage::ContentGetResponse { .. }
+        | RemoteActionMessage::SearchRequest { .. }
+        | RemoteActionMessage::SearchResponse { .. }
+        | RemoteActionMessage::ChangesRequest { .. }
+        | RemoteActionMessage::ChangesResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => None,
     }
 }

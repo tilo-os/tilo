@@ -2158,45 +2158,42 @@ impl ListRow {
         let metrics = self.metrics.as_ref()?;
         let theme = self.theme.as_ref()?;
         let band = self.text_band();
-        Some(crate::text_render::with_layout_renderer(
-            theme.text_scale,
-            |text| {
-                self.with_face(|face| {
-                    let geo = face.geometry(band, metrics, text, theme);
-                    let content_right = band.x1 - metrics.bleed;
-                    // What stands in the facts column, from the edge inwards: any of them, the
-                    // leftmost is where the column's content begins.
-                    let mut facts_left = content_right;
-                    if let Some(right) = geo.marks_right {
-                        facts_left = facts_left.min(right - face.marks_width(metrics));
-                    }
-                    if let Some(count_right) = geo.count_right {
-                        facts_left = facts_left.min(count_right);
-                    }
-                    if let Some(avatar) = geo.avatar {
-                        facts_left = facts_left.min(avatar.x0);
-                    }
-                    if self.value.is_some() {
-                        facts_left = facts_left.min(geo.value_right);
-                    }
-                    if let Some(trailing) = geo.trailing {
-                        facts_left = facts_left.min(trailing.x0);
-                    }
-                    facts_left = facts_left.min(geo.meta_left).max(geo.text_right);
-                    crate::widget::RowLayout {
-                        depth: self.depth,
-                        content_left: crate::num::f32_of_f64(geo.leading.x0),
-                        text_x: crate::num::f32_of_f64(geo.text_x),
-                        text_right: crate::num::f32_of_f64(geo.text_right),
-                        facts_left: crate::num::f32_of_f64(facts_left),
-                        content_right: crate::num::f32_of_f64(content_right),
-                        marks_left: geo
-                            .marks_right
-                            .map(|right| crate::num::f32_of_f64(right - face.marks_width(metrics))),
-                    }
-                })
-            },
-        ))
+        Some(crate::text_render::with_layout_renderer(theme, |text| {
+            self.with_face(|face| {
+                let geo = face.geometry(band, metrics, text, theme);
+                let content_right = band.x1 - metrics.bleed;
+                // What stands in the facts column, from the edge inwards: any of them, the
+                // leftmost is where the column's content begins.
+                let mut facts_left = content_right;
+                if let Some(right) = geo.marks_right {
+                    facts_left = facts_left.min(right - face.marks_width(metrics));
+                }
+                if let Some(count_right) = geo.count_right {
+                    facts_left = facts_left.min(count_right);
+                }
+                if let Some(avatar) = geo.avatar {
+                    facts_left = facts_left.min(avatar.x0);
+                }
+                if self.value.is_some() {
+                    facts_left = facts_left.min(geo.value_right);
+                }
+                if let Some(trailing) = geo.trailing {
+                    facts_left = facts_left.min(trailing.x0);
+                }
+                facts_left = facts_left.min(geo.meta_left).max(geo.text_right);
+                crate::widget::RowLayout {
+                    depth: self.depth,
+                    content_left: crate::num::f32_of_f64(geo.leading.x0),
+                    text_x: crate::num::f32_of_f64(geo.text_x),
+                    text_right: crate::num::f32_of_f64(geo.text_right),
+                    facts_left: crate::num::f32_of_f64(facts_left),
+                    content_right: crate::num::f32_of_f64(content_right),
+                    marks_left: geo
+                        .marks_right
+                        .map(|right| crate::num::f32_of_f64(right - face.marks_width(metrics))),
+                }
+            })
+        }))
     }
 
     /// The row as the face it draws, read by the list that builds it and by its tests.
@@ -2439,7 +2436,7 @@ impl ListRow {
             return Vec::new();
         };
         let band = self.text_band();
-        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        crate::text_render::with_layout_renderer(theme, |text| {
             self.with_face(|face| face.action_rects_with(band, metrics, text, theme))
         })
     }
@@ -2451,7 +2448,7 @@ impl ListRow {
             return Vec::new();
         };
         let band = self.text_band();
-        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        crate::text_render::with_layout_renderer(theme, |text| {
             self.with_face(|face| face.action_slots_with(band, metrics, text, theme))
         })
     }
@@ -2478,7 +2475,7 @@ impl ListRow {
         self.change.as_ref()?.show.as_ref()?;
         let theme = self.theme.as_ref()?;
         let band = self.text_band();
-        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        crate::text_render::with_layout_renderer(theme, |text| {
             self.with_face(|face| face.change_rect(band, text, theme))
         })
     }
@@ -2497,10 +2494,9 @@ impl ListRow {
             return None;
         }
         let band = self.text_band();
-        Some(crate::text_render::with_layout_renderer(
-            theme.text_scale,
-            |text| self.with_face(|face| face.leading_rect(band, text, theme)),
-        ))
+        Some(crate::text_render::with_layout_renderer(theme, |text| {
+            self.with_face(|face| face.leading_rect(band, text, theme))
+        }))
     }
 
     fn toggle_checkbox(&mut self) -> bool {
@@ -2705,7 +2701,7 @@ impl Widget for ListRow {
         self.theme = Some(theme.clone());
         if let Some(badges) = &self.column_badges {
             let badges: Vec<&str> = badges.iter().map(String::as_str).collect();
-            let width = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            let width = crate::text_render::with_layout_renderer(theme, |text| {
                 badge_column_width(text, theme, &badges)
             });
             if self.leading_column != Some(width) {
@@ -2884,7 +2880,7 @@ impl Widget for ListRow {
             let shift = theme.map_or(0.0, |theme| {
                 let band_rect = self.text_band();
                 let m = self.metrics(&theme);
-                crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+                crate::text_render::with_layout_renderer(&theme, |text| {
                     self.with_face(|face| face.text_x(band_rect, &m, text, &theme))
                 }) - self.rect.x0
                     - f64::from(child_layout.location.x)

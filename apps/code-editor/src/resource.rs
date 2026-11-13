@@ -411,10 +411,17 @@ mod tests {
         // A path the sandbox cannot see looks missing from inside it: the
         // answer names the way a file is handed to Code.
         assert!(error.to_string().contains("open it from Files"), "{error}");
-        assert!(
-            editor(&mut sample.app, |app| app.notice().cloned())
-                .is_some_and(|notice| notice.is_error)
-        );
+        let held = editor(&mut sample.app, |_| ui::window_toolbar::notice())
+            .expect("the failure is said in the window's bar");
+        assert_eq!(held.kind, ui::widget::toast::ToastKind::Error);
+        // And the window's bar shows it, above the editor's frame.
+        sample.app.harness().present_in_window_bar();
+        let shown = sample
+            .app
+            .harness()
+            .window_bar_notice(1280.0)
+            .expect("the failure is up in the bar");
+        assert_eq!(shown.text, held.text);
     }
 
     /// Every file type the package claims is one the editor knows the

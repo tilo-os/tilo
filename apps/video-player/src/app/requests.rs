@@ -241,7 +241,10 @@ impl PlayerState {
         let mut declarations: Vec<ActionDecl<PlayerResource>> = PlayerResource::ADD_ANNOTATION
             .bind(paths.media_ref, bookmark.media_ref)
             .and(paths.time_ms, bookmark.time_ms)
-            .declaration("bookmark-current-time", "Bookmark this moment")
+            .declaration(
+                "bookmark-current-time",
+                ui::tilo_resource::word!("video-player-library-bookmark-current-time"),
+            )
             .into_iter()
             .map(|decl| decl.describe("Add a shared bookmark at the playback time shown."))
             .collect();
@@ -253,7 +256,9 @@ impl PlayerState {
                     .and(paths.title, add.title)
                     .declaration(
                         "add-this-video-to-watch-later",
-                        "Add this video to Watch later",
+                        ui::tilo_resource::word!(
+                            "video-player-library-add-this-video-to-watch-later"
+                        ),
                     )
                     .map(|decl| {
                         decl.describe("Add the open video to the shared Watch later playlist.")

@@ -1065,8 +1065,13 @@ def edit_shows_on(run: Run, ws: dict, writer: str, reader: str, label: str, time
 
 
 def branch(facts: dict, run: Run) -> None:
+    """The person's own flow: `vm branch` makes a and b, boots each once beside box to have it
+    re-keyed and taken into every workspace box hosts, and stops them all again."""
     box = run.vm(SOURCE)
-    out = box.vm_cmd("branch", SOURCE, *BRANCHES, "--stop", timeout=900)
+    started = time.monotonic()
+    out = box.vm_cmd("branch", SOURCE, *BRANCHES, "--stop", timeout=2400)
+    facts["branch_seconds"] = round(time.monotonic() - started, 1)
+    facts["branch_said"] = out.strip().splitlines()[-12:]
     run.write("S04-branch.txt", out)
     for name in NAMES:
         plug_lan(run, name)
@@ -1255,6 +1260,10 @@ def steps(run: Run, args) -> None:
     run.step("S04", "box is stopped and branched into a and b", branch, run)
     if not run.passed("S04"):
         return
+    run.step("S04b", "a and b, started before box, wait for no host", admitted_alone, run)
+    if not together:
+        # Two boxes at a time: b waits for its turn after S12, as before.
+        run.vm("b").vm_cmd("stop", "b", timeout=600)
     first = (SOURCE, *BRANCHES) if together else (SOURCE, "a")
     devices: dict[str, dict] = {}
 
@@ -1269,7 +1278,7 @@ def steps(run: Run, args) -> None:
                      "person's secret, API key, SSH key and git config", judge_person, run, name,
                      source_person, source_ident, devices, key_digest, passwords)
 
-    run.step("S05", f"{', '.join(first)} boot", boot, run, first)
+    run.step("S05", "box boots beside them", boot, run, (SOURCE,))
     judge(first)
     if args.boot_only:
         return
@@ -1285,15 +1294,37 @@ def steps(run: Run, args) -> None:
         run.step("S12", "after the reboot, an edit on box shows on a", lambda f: f.update(
             edit_shows_on(run, ws, SOURCE, "a", "S12")))
     if not together:
-        run.step("S05-b", "b boots, with a stopped to make room and box, its host, up", boot_later, run)
+        run.step("S05-b", "b boots again, with a stopped to make room", boot_later, run)
         judge(("b",))
     run.step("S13", "vm rm box leaves a and b bootable", remove_source, run)
 
 
+def hosts_of(vm: TiloVm) -> list[dict]:
+    """Each workspace `vm` 's session holds, who hosts it, and whether it still waits for that
+    host to take this device in (`workspace_hosts`)."""
+    answer = first_json(vm.run("control", "raw", '{"op":"workspace_hosts"}', timeout=60))
+    return ((answer.get("answer") or answer).get("workspaces")) or []
+
+
+def admitted_alone(facts: dict, run: Run) -> None:
+    """a and b, started while box is still off, wait for no host: `vm branch` had each taken in
+    by box before it returned."""
+    boot(facts, run, BRANCHES)
+    waiting = {}
+    for name in BRANCHES:
+        rows = hosts_of(run.vm(name))
+        facts[f"hosts_{name}"] = rows
+        expect(rows, f"{name}'s session names no workspace it holds")
+        late = [f"{row.get('name')} (host {row.get('host')})" for row in rows
+                if row.get("awaiting_host")]
+        if late:
+            waiting[name] = late
+    expect(not waiting, f"right after vm branch, with box off, these still wait for their host: "
+                        f"{waiting}")
+
+
 def boot_later(facts: dict, run: Run) -> None:
-    """b boots beside box, the host of the person's workspaces: a branch is a device of its own,
-    and only the host admits it, once it reaches it, as a was at its first boot. Until then its
-    apps there run nothing (`device_branch.rs` proves that refusal); a box gone for good is S13's."""
+    """b boots again, with a stopped to make room: `vm branch` had it taken in already."""
     run.vm("a").vm_cmd("stop", "a", timeout=600)
     boot(facts, run, ("b",))
 

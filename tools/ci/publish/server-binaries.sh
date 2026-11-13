@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # The programs the tilo.sh server images run, compiled by t's own check and cached like any other
 # build here: the API server, the VM host's service, its jail helper and its member, the
-# relay's daemon, its admin and its enroll program with the filesystem replica, or the agent host's
-# runtime. The images package what this leaves (api-build.sh, vm-host-build.sh,
-# relay-build.sh, agent-host-build.sh); none compiles Rust inside its build, so an image after a
-# change costs that crate's compile and a layering run.
+# relay's daemon, its admin and its enroll program with the filesystem replica. The images package
+# what this leaves (api-build.sh, vm-host-build.sh, relay-build.sh); none compiles Rust inside its
+# build, so an image after a change costs that crate's compile and a layering run.
 #
-# usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host, relay or agent-host)
+# usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host or relay)
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-usage='usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host, relay or agent-host)'
+usage='usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host or relay)'
 image=${1:?$usage}
 out=${2:?$usage}
 cd "$repo_root"
@@ -33,13 +32,8 @@ case $image in
     # by package root.
     packages=(-p tilo-relay -p tilo-fs --bins)
     bins=(tilo-relay tilo-relay-admin tilo-enroll fs) ;;
-  agent-host)
-    # The headless runtime and the enroll CLI, one graph: tilo-runtime depends on tilo-relay as a
-    # library.
-    packages=(-p tilo-runtime -p tilo-relay --bin tilo-runtime --bin tilo-enroll)
-    bins=(tilo-runtime tilo-enroll) ;;
   *)
-    die "unknown server image $image: api, vm-host, relay or agent-host" ;;
+    die "unknown server image $image: api, vm-host or relay" ;;
 esac
 rm -rf "$out"
 mkdir -p "$out"

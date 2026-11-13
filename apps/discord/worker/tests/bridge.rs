@@ -69,7 +69,7 @@ fn governor() -> (SigningKey, DeviceCert) {
 /// are the sealed channels a Lounge's are, and everything that reads or
 /// writes them — the bridge included — goes through their keys.
 fn governor_owning_workspaces() -> (SigningKey, DeviceCert) {
-    governor_with(tilo_user_identity::cloud_enrollment::host_capabilities())
+    governor_with(tilo_user_identity::DeviceCapabilities::host())
 }
 
 fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {

@@ -306,7 +306,7 @@ impl Shared {
         });
         let (workspace, target) = match addressed(self.feedback.as_ref(), workspace, to)? {
             Addressed::Message { workspace, to } => {
-                let resolved = self.recipients_of(&workspace, &to, &agent_name(text, attached))?;
+                let resolved = self.recipients_of(&workspace, &to, &agent_name(attached))?;
                 // Only a person's box opens the conversation where it stood.
                 let target = send_target(&workspace, &resolved, attached, text, agent.is_none())?;
                 (workspace, target)
@@ -339,7 +339,7 @@ impl Shared {
     /// Who a message goes to, as the names a box holds: an agent named as a
     /// new one is made here first, so the message never goes to an agent the
     /// workspace does not list. A new agent the person did not name is named
-    /// `asked`, by what it is asked to do.
+    /// `asked`, by what it is sent.
     ///
     /// # Errors
     /// A new agent could not be made or admitted, or nobody is left to go to.
@@ -405,23 +405,26 @@ impl Shared {
     }
 }
 
-/// The most characters a new agent's name takes from what it is asked.
-const AGENT_NAME_CHARS: usize = 40;
+/// The most characters a new agent's name takes from what it is sent.
+const AGENT_NAME_CHARS: usize = 24;
 
-/// What a new agent nobody named is called: the first words it is asked, else what it is sent,
-/// so the many agents a person makes from boxes are told apart in every list and search.
-fn agent_name(text: &str, attached: &[tilo_reference::Attached]) -> String {
-    let asked = text.lines().map(str::trim).find(|line| !line.is_empty());
-    let source = asked
-        .or_else(|| {
-            attached
-                .iter()
-                .map(|attached| attached.label().trim())
-                .find(|label| !label.is_empty())
-        })
+/// What a new agent nobody named is called: a short label of what it is sent — the subject chip,
+/// without the number its list gives the item — else the default name. Never the message: a
+/// sentence asks the agent something, it does not name it.
+fn agent_name(attached: &[tilo_reference::Attached]) -> String {
+    let label = attached
+        .iter()
+        .map(|attached| attached.label().trim())
+        .find(|label| !label.is_empty())
         .unwrap_or_default();
+    let label = match label.strip_prefix('#') {
+        Some(numbered) if numbered.starts_with(|c: char| c.is_ascii_digit()) => numbered
+            .trim_start_matches(|c: char| c.is_ascii_digit())
+            .trim_start(),
+        _ => label,
+    };
     let mut name = String::new();
-    for word in source.split_whitespace() {
+    for word in label.split_whitespace() {
         let wanted = name
             .chars()
             .count()
@@ -442,10 +445,10 @@ fn agent_name(text: &str, attached: &[tilo_reference::Attached]) -> String {
         }
         name.push_str(word);
     }
-    let mut letters = name.chars();
-    match letters.next() {
-        Some(first) => first.to_uppercase().chain(letters).collect(),
-        None => crate::i18n::t("send-to-agent-unnamed"),
+    if name.is_empty() {
+        crate::i18n::t("send-to-agent-unnamed")
+    } else {
+        name
     }
 }
 
@@ -581,31 +584,25 @@ mod tests {
             "where the box stood is the desk's to place the conversation by, not the chat's"
         );
     }
-    /// A new agent nobody named is called by what it is asked, else by what it is sent, so a
-    /// person's many agents are told apart.
+    /// A new agent nobody named is called by a short label of what it is sent, else the default
+    /// name: never the sentence it is asked.
     #[test]
-    fn a_new_agent_is_named_by_what_it_is_asked() {
-        let task = Attached::Text {
-            text: "Launch checklist".into(),
+    fn a_new_agent_is_named_by_what_it_is_sent_never_the_message() {
+        let chip = |label: &str| Attached::Text {
+            text: label.into(),
             from: None,
         };
         assert_eq!(
-            agent_name(
-                "split this into subtasks\nand label them",
-                std::slice::from_ref(&task)
-            ),
-            "Split this into subtasks"
+            agent_name(&[chip("#1 Book the room for Friday")]),
+            "Book the room for Friday",
+            "the subject chip names it, without its list number"
         );
-        assert_eq!(
-            agent_name("  ", std::slice::from_ref(&task)),
-            "Launch checklist"
-        );
-        let long = agent_name(
-            "summarise every review comment on the release notes and draft replies",
-            &[],
-        );
-        assert_eq!(long, "Summarise every review comment on the…");
+        assert_eq!(agent_name(&[chip("#general")]), "#general");
+        let long = agent_name(&[chip("Summarise every review comment on the release notes")]);
+        assert_eq!(long, "Summarise every review…");
         assert!(long.chars().count() <= AGENT_NAME_CHARS + 1);
+        assert_eq!(agent_name(&[]), "Agent", "nothing sent: the default name");
+        assert_eq!(agent_name(&[chip("  ")]), "Agent");
     }
 
     /// A report's chip is the one place this computer sends reports: one send

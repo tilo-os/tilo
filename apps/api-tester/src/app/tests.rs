@@ -7,6 +7,7 @@ use crate::http::Outgoing;
 use crate::model::HttpMethod;
 use crate::resource::ApiTesterShell;
 use automerge::{AutoCommit, ROOT};
+use test_http::{Reply, Responder};
 use ui::Theme;
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::{Edit, Invoke, Operation as _, Replica, Resource as _};
@@ -716,54 +717,21 @@ fn open(app: &mut TestApp<ApiTesterShell>, request: &Request) {
     reason = "end-to-end scenario that reads top-to-bottom"
 )]
 fn resource_send_performs_a_real_http_round_trip() {
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let address = listener.local_addr().unwrap();
     let (release_response, response_ready) = std::sync::mpsc::channel();
-    let server = std::thread::spawn(move || {
-        let mut stream =
-            tilo_test_env::wait_for("the app's HTTP request to reach the probe server", || {
-                match listener.accept() {
-                    Ok((stream, _)) => Some(stream),
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => None,
-                    Err(error) => panic!("accept request: {error}"),
-                }
-            });
-        // Windows inherits the listener's nonblocking mode on accept.
-        stream.set_nonblocking(false).unwrap();
-        stream
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        stream
-            .set_write_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        let mut request = Vec::new();
-        while !request.ends_with(b"\r\n\r\n") {
-            let mut byte = [0];
-            stream.read_exact(&mut byte).unwrap();
-            request.push(byte[0]);
-            assert!(request.len() < 8192, "unbounded request headers");
-        }
-        let request = String::from_utf8(request).unwrap();
-        assert!(
-            request.starts_with("GET /probe?name=Gr%C3%BCn HTTP/1.1\r\n"),
-            "{request}"
-        );
-        assert!(
-            request
-                .to_ascii_lowercase()
-                .contains("x-tilo-probe: native\r\n"),
-            "{request}"
-        );
+    let response_ready = std::sync::Mutex::new(response_ready);
+    let served = Responder::serve(move |peer| {
         response_ready
+            .lock()
+            .unwrap()
             .recv_timeout(tilo_test_env::hang_bound())
             .expect("the admitted pending job is released by its caller");
-        let body = "{\"result\":\"Grün\"}";
-        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        peer.reply(
+            &Reply::status(200)
+                .header("Content-Type", "application/json; charset=utf-8")
+                .body("{\"result\":\"Grün\"}"),
+        );
     });
+    let address = format!("127.0.0.1:{}", served.port());
 
     let mut app = TestApp::<ApiTesterShell>::new().unwrap();
     let mut request = Request::new("HTTP proof");
@@ -820,7 +788,10 @@ fn resource_send_performs_a_real_http_round_trip() {
             .any(|update| matches!(update, ui::tilo_actions::InvocationUpdate::Succeeded { .. })),
         "admitted HTTP invocation {admitted:?} must succeed after the held backend replies: {updates:?}"
     );
-    server.join().unwrap();
+    let request = served.next_request();
+    assert_eq!(request.method, "GET");
+    assert_eq!(request.target, "/probe?name=Gr%C3%BCn");
+    assert_eq!(request.header("x-tilo-probe"), Some("native"));
     let response = app
         .with_surface::<ApiTesterApp, _>(|surface| surface.state().response.clone())
         .unwrap()
@@ -1035,37 +1006,18 @@ fn a_guests_send_is_asked_in_the_window_saying_who_decides() {
 
 /// A server that answers one request with `head` and then `body`, and stops
 /// writing when the client hangs up.
-fn serve_once(head: String, body: Vec<u8>) -> String {
-    use std::io::{Read, Write};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream.set_nonblocking(false).unwrap();
-        stream
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        stream
-            .set_write_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        let mut request = Vec::new();
-        while !request.ends_with(b"\r\n\r\n") {
-            let mut byte = [0];
-            if stream.read_exact(&mut byte).is_err() {
-                return;
-            }
-            request.push(byte[0]);
-        }
-        if stream.write_all(head.as_bytes()).is_err() {
+fn serve_once(head: String, body: Vec<u8>) -> (String, Responder) {
+    let served = Responder::serve(move |peer| {
+        if !peer.write(head.as_bytes()) {
             return;
         }
         for chunk in body.chunks(64 * 1024) {
-            if stream.write_all(chunk).is_err() {
+            if !peer.write(chunk) {
                 return;
             }
         }
     });
-    format!("http://{address}/body")
+    (format!("{}/body", served.url()), served)
 }
 
 /// Send the open request through the effect and wait for the response the
@@ -1097,7 +1049,7 @@ fn sent_response(url: String) -> ResponseData {
 #[test]
 fn send_answers_its_caller_with_the_response() {
     let body = "{\"ok\":true}";
-    let url = serve_once(
+    let (url, _served) = serve_once(
         format!(
             "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nX-Request-Id: probe-7\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
@@ -1143,10 +1095,11 @@ fn send_answers_its_caller_with_the_response() {
 #[test]
 fn a_huge_response_is_shown_in_part_without_downloading_it_whole() {
     let total = 4 * crate::http::MAX_SHOWN_BODY_BYTES;
-    let response = sent_response(serve_once(
+    let (url, _served) = serve_once(
         "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n".to_owned(),
         vec![b'a'; total],
-    ));
+    );
+    let response = sent_response(url);
     assert_eq!(response.status, 200);
     assert_eq!(response.body.len(), crate::http::MAX_SHOWN_BODY_BYTES);
     assert_eq!(response.shown_bytes, crate::http::MAX_SHOWN_BODY_BYTES);
@@ -1162,12 +1115,13 @@ fn a_huge_response_is_shown_in_part_without_downloading_it_whole() {
     );
 
     // With a declared length, the size is the body's own.
-    let response = sent_response(serve_once(
+    let (url, _served) = serve_once(
         format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
         ),
         vec![b'a'; total],
-    ));
+    );
+    let response = sent_response(url);
     assert_eq!(response.size_bytes, total);
     assert!(response.size_exact);
     assert_eq!(response.shown_bytes, crate::http::MAX_SHOWN_BODY_BYTES);
@@ -1181,13 +1135,14 @@ fn a_binary_response_is_shown_as_hex_at_its_size() {
         .into_iter()
         .chain((0..=255).cycle().take(1000))
         .collect();
-    let response = sent_response(serve_once(
+    let (url, _served) = serve_once(
         format!(
             "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             png.len()
         ),
         png.clone(),
-    ));
+    );
+    let response = sent_response(url);
     assert_eq!(
         response.size_bytes,
         png.len(),
@@ -1212,10 +1167,11 @@ fn a_binary_response_is_shown_as_hex_at_its_size() {
 
     // Text in another encoding stays text, with its stray bytes replaced.
     let latin1 = b"caf\xe9".to_vec();
-    let response = sent_response(serve_once(
+    let (url, _served) = serve_once(
         "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=iso-8859-1\r\nContent-Length: 4\r\nConnection: close\r\n\r\n".to_owned(),
         latin1,
-    ));
+    );
+    let response = sent_response(url);
     assert!(!response.binary);
     assert_eq!(response.body, "caf\u{FFFD}");
     assert_eq!(response::shown_caption(&response), None);

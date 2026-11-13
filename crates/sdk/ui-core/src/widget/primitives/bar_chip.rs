@@ -236,6 +236,70 @@ impl<'a> BarChipFace<'a> {
         FaceStack::in_face(self.height_of(theme)).width(self.faces.len() + self.overflow)
     }
 
+    /// The chip as a page shows it ([`crate::composition::Face`]), on
+    /// `ground`, in the inks and geometry [`Self::paint`] paints it with;
+    /// `None` for a chip of faces or of more than one glyph, which shows as
+    /// its paint. Reached through [`crate::composition::bar_chip_face`].
+    pub(crate) fn composed(
+        &self,
+        theme: &Theme,
+        ground: Color,
+    ) -> Option<crate::composition::Face> {
+        use crate::composition::{Face, TextLook, rgba8};
+        if !self.faces.is_empty() || self.overflow > 0 || self.icons.len() > 1 {
+            return None;
+        }
+        let colors = &theme.tokens.colors;
+        let control = BarControlFace::new(self.name)
+            .open(self.open)
+            .pressed(self.pressed)
+            .hovered(self.hovered)
+            .focused(self.focused);
+        let lift = control.fill(theme, ground);
+        // A tone is a faint wash inside the control's own lift.
+        let fill = match (lift, self.tone) {
+            (Some(lift), Some(tone)) => Some(over(tone.multiply_alpha(0.15), lift)),
+            (None, Some(tone)) => Some(tone.multiply_alpha(0.15)),
+            (lift, None) => lift,
+        };
+        let lit = self.open || self.hovered || self.pressed;
+        let ink = if lit {
+            colors.ink_on(ground, colors.text_primary, 4.5)
+        } else {
+            colors.ink_on(ground, colors.text_dim, 3.0)
+        };
+        let label_ink = colors.ink_on(ground, colors.text_primary, 4.5);
+        let icon = Self::icon_size(theme);
+        let leading = match self.icons.first() {
+            Some(i) => Some(i.glyph(icon, ink, false)?),
+            None => None,
+        };
+        let trailing = match self.trailing {
+            Some(i) => Some(i.glyph(icon, ink, false)?),
+            None => None,
+        };
+        let alone = self.label.is_empty() && self.trailing.is_none();
+        Some(Face {
+            icon: leading,
+            label: (!self.label.is_empty()).then(|| {
+                TextLook::new(
+                    self.label.to_owned(),
+                    &Self::label_style(theme),
+                    Some(label_ink),
+                )
+                .with_max_lines(Some(1))
+            }),
+            detail: None,
+            trailing,
+            fill: fill.map(rgba8),
+            edge: None,
+            radius: f64::from(theme.tokens.radii.control),
+            pad: if alone { 0.0 } else { Self::pad(theme) },
+            gap: Self::gap(theme),
+            spread: false,
+        })
+    }
+
     /// Paint the chip in `rect` (its width from [`Self::width`], its height
     /// [`Self::height`]) standing on `ground`.
     #[must_use]
@@ -395,6 +459,18 @@ impl<'a> BarChipFace<'a> {
     pub fn place_at(x: f64, cy: f64, width: f64, height: f64) -> Rect {
         Rect::new(x, cy - height / 2.0, x + width, cy + height / 2.0)
     }
+}
+
+/// `top` laid over an opaque `under`, as the canvas paints a wash on a lift.
+fn over(top: Color, under: Color) -> Color {
+    let [r, g, b, a] = top.components;
+    let [ur, ug, ub, ua] = under.components;
+    Color::new([
+        r * a + ur * (1.0 - a),
+        g * a + ug * (1.0 - a),
+        b * a + ub * (1.0 - a),
+        a + ua * (1.0 - a),
+    ])
 }
 
 #[cfg(test)]

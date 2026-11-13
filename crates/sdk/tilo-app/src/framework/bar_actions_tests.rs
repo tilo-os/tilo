@@ -11,7 +11,7 @@ pub struct Counter {
     pub count: i64,
 }
 
-#[resource(kind = "test.bar-counter", label = "Counter")]
+#[resource(kind = "test.bar-counter", catalogue = "tests/locales")]
 impl Counter {
     /// Add one
     #[action(icon = "plus")]
@@ -27,7 +27,7 @@ impl Counter {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "test.bar-counter.view")]
+#[effect(operation = "test.bar-counter.view", catalogue = "tests/locales")]
 pub enum CounterView {
     /// Zoom in
     #[effect(view, icon = "zoom-in")]

@@ -621,6 +621,12 @@ pub struct ActionContract {
     /// the part of the record it acts on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<crate::StepKind>,
+    /// The collection of its resource a create adds to (`writes = issues`),
+    /// when its declaration names one: what it makes, which presence says by
+    /// that collection's own noun ("Creating an issue in Issues"). `None` for
+    /// an action that makes nothing, or whose declaration names no collection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creates: Option<String>,
 }
 
 /// Largest CPU time an [`Offload`] may declare: a compute job's ceiling.
@@ -713,6 +719,7 @@ impl Default for ActionContract {
             tags: Vec::new(),
             offload: None,
             step: None,
+            creates: None,
         }
     }
 }

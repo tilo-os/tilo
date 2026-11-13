@@ -8230,7 +8230,7 @@ fn draw_formula_run(idx: usize, ctx: &mut BlockDrawCtx<'_>, formulas: &mut Formu
 /// minimum its content height is clamped to.
 #[derive(Clone, Copy, Debug)]
 struct StackBox {
-    margin_top: f32,
+    pub(super) margin_top: f32,
     fixed: Option<f32>,
     min: f32,
 }

@@ -206,6 +206,17 @@ pub fn user_color(user_id: &str) -> (u8, u8, u8) {
     identity_rgb(PresenceHue::of_identity(user_id))
 }
 
+/// What every task agent's id starts with: a task agent is minted for a run of one, never a
+/// collaborator the workspace's governance admits.
+pub const TASK_AGENT_PREFIX: &str = "task-";
+
+/// Whether `agent` names a task agent, minted for a run, rather than a collaborator: its id
+/// tells one run of it from the next, so the agent it works as is the one its admission names.
+#[must_use]
+pub fn is_task_agent(agent: &str) -> bool {
+    agent.starts_with(TASK_AGENT_PREFIX)
+}
+
 /// The MCP client an agent is, by the name it goes by: a run is named for its client and a number
 /// of the person's runs ("Claude Code #3"), a grant or a live face for the client itself. A name
 /// that only ends in a number ("Cursor 2") keeps it: only a run's `#<digits>` names a number.
@@ -257,6 +268,27 @@ impl PresenceHue {
     pub fn of_agent(name: &str) -> Self {
         let name = agent_identity(name);
         Self::of_agent_client(name).unwrap_or_else(|| Self::of_identity(agent_client(name)))
+    }
+
+    /// This hue worn clearly apart from `other`: itself, unless it sits on `other`'s hue or
+    /// next to it, where it steps round the ring to the first entry two slots or more away, so
+    /// software is never painted in the colour of the person it acts for. `other` stays where
+    /// it is: a person's colour is theirs.
+    #[must_use]
+    pub fn apart_from(self, other: Self) -> Self {
+        let distance = |hue: Self| {
+            let ahead = hue
+                .slot()
+                .wrapping_add(PRESENCE_LEN)
+                .wrapping_sub(other.slot())
+                .checked_rem(PRESENCE_LEN)
+                .unwrap_or(0);
+            ahead.min(PRESENCE_LEN.wrapping_sub(ahead))
+        };
+        (0..PRESENCE_LEN)
+            .map(|step| Self::from_slot(self.slot().wrapping_add(step)))
+            .find(|hue| distance(*hue) >= 2)
+            .unwrap_or(self)
     }
 }
 
@@ -364,7 +396,7 @@ pub fn assign_peer_colors_from(
 
 #[cfg(test)]
 mod agent_client_tests {
-    use super::{PresenceHue, agent_client, agent_identity};
+    use super::{PRESENCE_LEN, PresenceHue, agent_client, agent_identity};
 
     #[test]
     fn a_run_is_its_clients_and_a_client_has_its_hue() {
@@ -415,6 +447,45 @@ mod agent_client_tests {
             PresenceHue::of_agent(agent_identity("agent:claude-code@host#9")),
             PresenceHue::Orange,
             "a known client keeps the colour it is known by"
+        );
+    }
+
+    /// Software is never painted in the colour of the person it acts for, and never beside it:
+    /// every pair of hues there is lands at least two entries apart, and an agent already clear
+    /// of its person keeps the hue it is known by.
+    #[test]
+    fn an_agent_wears_a_hue_clear_of_its_persons() {
+        let apart = |a: PresenceHue, b: PresenceHue| {
+            let ahead = a
+                .slot()
+                .wrapping_add(PRESENCE_LEN)
+                .wrapping_sub(b.slot())
+                .checked_rem(PRESENCE_LEN)
+                .unwrap_or(0);
+            ahead.min(PRESENCE_LEN.wrapping_sub(ahead))
+        };
+        for person in PresenceHue::ALL {
+            for agent in PresenceHue::ALL {
+                let worn = agent.apart_from(person);
+                assert_ne!(worn, person, "{agent:?} on {person:?}");
+                assert!(apart(worn, person) >= 2, "{worn:?} beside {person:?}");
+            }
+        }
+        // A hue already clear of the person's is the one the agent wears.
+        assert_eq!(
+            PresenceHue::Blue.apart_from(PresenceHue::Red),
+            PresenceHue::Blue
+        );
+        // One that is not steps to the next entry that is.
+        assert_eq!(
+            PresenceHue::Blue.apart_from(PresenceHue::Sky),
+            PresenceHue::Violet,
+            "the entry after its neighbour"
+        );
+        assert_eq!(
+            PresenceHue::Blue.apart_from(PresenceHue::Blue),
+            PresenceHue::Magenta,
+            "and the one after its own neighbour"
         );
     }
 

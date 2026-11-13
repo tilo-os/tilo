@@ -103,10 +103,22 @@ read_through_json_value!(ActionContext);
 /// named, under the caller's `group`: one id for every change of that step,
 /// and never one the caller chose.
 fn ambient_gesture(gesture: crate::ActionId, group: Option<&WorkGroup>) -> crate::ActionId {
+    recorded_gesture(
+        gesture,
+        group.map(|group| (group.kind.as_str(), group.id.as_str())),
+    )
+}
+
+/// The gesture history records for the undo step `gesture` a caller named,
+/// under the run (its kind and id, as history lists them) the change was
+/// stamped with: how the caller finds its own step's changes in a record's
+/// history, without it ever naming a gesture someone else's change records.
+#[must_use]
+pub fn recorded_gesture(gesture: crate::ActionId, run: Option<(&str, &str)>) -> crate::ActionId {
     let mut hasher = blake3::Hasher::new_derive_key("tilo ambient gesture v1");
     hasher.update(gesture.0.as_bytes());
-    if let Some(group) = group {
-        for part in [&group.kind, &group.id] {
+    if let Some((kind, id)) = run {
+        for part in [kind, id] {
             hasher.update(&u64::try_from(part.len()).unwrap_or(u64::MAX).to_le_bytes());
             hasher.update(part.as_bytes());
         }

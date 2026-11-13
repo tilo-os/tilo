@@ -114,6 +114,47 @@ const letterBytes = await review.files.download(String(letter));
 console.log("the letter is", letterBytes.length, "bytes; a person opens it at", await review.link("word-processor"));
 ```
 
+```curl example=workspace-per-customer
+api=$TILO_API_URL/v1
+auth="Authorization: Bearer $TILO_API_KEY"                 # your backend's key
+json="Content-Type: application/json"
+
+for applicant in "Jane Doe" "Amir Haddad"; do               # one per customer, no limit
+  workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "$json" \
+    -d "{\"name\": \"Applicant: $applicant\"}" | jq -r .id)
+
+  # Their files: the bytes go up once, then an app takes the reference.
+  printf 'a passport scan, in bytes' | curl -sS --fail-with-body "$api/workspaces/$workspace/uploads" \
+    -H "$auth" -H "Content-Type: application/octet-stream" --data-binary @- > /dev/null
+
+  # A key for this applicant's agent: it reaches this workspace alone.
+  key=$(curl -sS --fail-with-body "$api/keys" -H "$auth" -H "$json" \
+    -d "{\"workspace\": \"$workspace\", \"name\": \"$applicant's agent\"}")
+  echo "$applicant: MCP at $(jq -r .mcp_url <<<"$key")"
+  [[ $applicant == "Jane Doe" ]] && jane=$workspace jane_key=$(jq -r .token <<<"$key")
+done
+
+# The customer's agent, with only its own key: it writes the cover letter, as one run.
+agent="Authorization: Bearer $jane_key"
+run=(-H "Tilo-Run: cover-letter" -H "Tilo-Run-Title: Write the cover letter")
+word=$api/workspaces/$jane/resources/word-processor/actions
+for text in "Dear Visa Officer," "My passport and application form are enclosed."; do
+  curl -sS --fail-with-body "$word/append-paragraph" -H "$agent" -H "$json" "${run[@]}" \
+    -d "{\"text\": \"$text\"}" > /dev/null
+done
+letter=$(curl -sS --fail-with-body "$word/export-content" -H "$agent" -H "$json" "${run[@]}" \
+  -d '{"format": "docx"}' | jq -r '[.. | strings | select(startswith("tilo.content:"))][0]')
+
+# The same key cannot reach anyone else, or make a workspace of its own.
+curl -sS "$api/workspaces" -H "$agent" -H "$json" -d '{"name": "Applicant: someone else"}' \
+  | jq -r '"the agent cannot make workspaces: \(.error.code)"'
+
+# Later, for review: your backend takes the letter out and hands a person the link to it.
+bytes=$(curl -sS --fail-with-body "$api/workspaces/$jane/content/$letter" -H "$auth" | wc -c)
+link=$(curl -sS --fail-with-body "$api/workspaces/$jane/links?path=word-processor" -H "$auth" | jq -r .link)
+echo "the letter is $bytes bytes; a person opens it at $link"
+```
+
 Hand the agent its MCP URL and token. Any MCP client connects with them. For example, with Claude Code:
 
 ```sh
@@ -190,13 +231,15 @@ tilo account workspaces rm applicant-jane-doe   # when the customer leaves
 
 ## What is underneath
 
-Making and deleting workspaces and minting keys are actions on your account
-(`account/workspaces#create`, `account/workspaces#delete`, `account/keys#mint`), inviting is the
-workspace's own (`workspace/members#invite`), and everything in a workspace is reached through the API at
-`https://mcp.tilo.sh/w/<workspace>/`. A minted key is a certificate your key signed, narrower than it: the
+Making and deleting workspaces and minting keys are the account's
+(`POST /v1/workspaces`, `DELETE /v1/workspaces/<workspace>`, `POST /v1/keys`), inviting is the
+workspace's own (`POST /v1/workspaces/<workspace>/members/invitations`), and everything in a
+workspace is a resource under `/v1/workspaces/<workspace>/resources/...`. A minted key is a
+certificate your key signed, narrower than it: the
 hosts and the runtime check it like any other device of yours, and it ends when your key is revoked
 ([design](../architecture/workspace-api.md)).
 
-There is no separate REST API, and nothing here needs one: the SDKs ask for typed answers over the same
-calls an agent makes, and a file's bytes go up in one request before an app takes the reference
+Every one of these is also an MCP call an agent makes (`account/workspaces#create`,
+`account/keys#mint`, `workspace/members#invite`), answered typed: one API, two ways to say it
+([`api.md`](api.md)). A file's bytes go up in one request before an app takes the reference
 ([files](../tilo-sh/files.md)).

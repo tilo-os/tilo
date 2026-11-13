@@ -76,10 +76,9 @@ pub(super) fn display_name(path: &Path) -> String {
 /// the floor, and the line was painted in the success tint on top of that.
 pub(super) fn import_report_notice(report: &ImportReport) -> Notice {
     if report.refused.is_empty() {
-        return Notice::ok(format!(
-            "Imported {} clip{}",
-            report.added,
-            if report.added == 1 { "" } else { "s" },
+        return Notice::ok(crate::resource::CATALOG.t_args(
+            "video-editor-import-counted",
+            &[("count", ui::i18n::ArgValue::Number(report.added as f64))],
         ));
     }
     // Name the files and quote the probe. Two fit a one-line strip; the rest
@@ -88,20 +87,47 @@ pub(super) fn import_report_notice(report: &ImportReport) -> Notice {
         .refused
         .iter()
         .take(IMPORT_REFUSALS_NAMED)
-        .map(|(name, reason)| format!("{name}: {reason}"))
+        .map(|(name, reason)| {
+            crate::resource::CATALOG.t_args(
+                "video-editor-import-refused",
+                &[
+                    ("head", ui::i18n::ArgValue::Text(name.clone())),
+                    ("why", ui::i18n::ArgValue::Text(reason.clone())),
+                ],
+            )
+        })
         .collect();
     let mut why = listed.join("; ");
     let hidden = report.refused.len() - listed.len();
     if hidden > 0 {
-        why = format!("{why} and {hidden} more");
+        why = crate::resource::CATALOG.t_args(
+            "video-editor-import-more",
+            &[
+                ("why", ui::i18n::ArgValue::Text(why)),
+                ("hidden", ui::i18n::ArgValue::Number(hidden as f64)),
+            ],
+        );
     }
     let head = if report.added == 0 {
-        "No media could be imported".to_string()
+        crate::resource::CATALOG.t("video-editor-import-none")
     } else {
-        format!("Imported {} of {}", report.added, report.total())
+        crate::resource::CATALOG.t_args(
+            "video-editor-import-partial",
+            &[
+                ("count", ui::i18n::ArgValue::Number(report.added as f64)),
+                ("total", ui::i18n::ArgValue::Number(report.total() as f64)),
+            ],
+        )
     };
     // A refused file is fixed by choosing another one.
-    Notice::failed(format!("{head} — {why}")).with_action(super::notices::NoticeAction::ChooseMedia)
+    let report = crate::resource::CATALOG.t_args(
+        "video-editor-import-refused",
+        &[
+            ("head", ui::i18n::ArgValue::Text(head)),
+            ("why", ui::i18n::ArgValue::Text(why)),
+        ],
+    );
+    Notice::failed(report).with_action(super::notices::NoticeAction::ChooseMedia)
 }
 
 /// Blit an RGBA frame into `canvas`, scaled to fit (letterboxed), centred.
@@ -592,23 +618,34 @@ pub(super) const ANCHOR_STOPS: [f64; 3] = [0.0, 0.5, 1.0];
 /// different states, and a summary that showed only the first would hide the
 /// second.
 pub(super) fn curve_summary(clip: &Clip, at: f64) -> Option<String> {
-    use std::fmt::Write as _;
     let shaped = clip.curves.shaped_channels();
     if shaped.is_empty() {
         return None;
     }
     let names: Vec<&str> = shaped.iter().map(|c| c.label()).collect();
-    let mut s = names.join(", ");
+    let s = names.join(", ");
     // How much of the curve is mixed in *at the playhead*. The amount is an
     // animatable parameter, so the raw `curves.mix` is dead the moment it is
     // keyed — a grade ramping on reported itself as bypassed for its whole
     // length while the canvas beside it graded.
     let mix = clip.param_at(Param::CurveMix, at);
     if mix <= 1e-9 {
-        s.push_str(", bypassed");
-    } else if mix < 0.999 {
-        // Writing into a `String` cannot fail.
-        let _ = write!(s, " at {:.0}%", mix * 100.0);
+        return Some(crate::resource::CATALOG.t_args(
+            "video-editor-summary-bypassed",
+            &[("channels", ui::i18n::ArgValue::Text(s))],
+        ));
+    }
+    if mix < 0.999 {
+        return Some(crate::resource::CATALOG.t_args(
+            "video-editor-summary-curve-amount",
+            &[
+                ("channels", ui::i18n::ArgValue::Text(s)),
+                (
+                    "percent",
+                    ui::i18n::ArgValue::Text(format!("{:.0}", mix * 100.0)),
+                ),
+            ],
+        ));
     }
     Some(s)
 }

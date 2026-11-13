@@ -187,6 +187,10 @@ pub struct Declaration {
     /// The kind of step it takes, as it declares it
     /// ([`tilo_actions::StepKind`]), published with its contract.
     pub step: Option<tilo_actions::StepKind>,
+    /// The collection of its resource it adds to, when it is a create whose
+    /// declaration names one (`writes = issues`): what the step makes, so a
+    /// surface says that collection's own noun ("Creating an issue in Issues").
+    pub creates: Option<&'static str>,
     /// The units the action writes ([`crate::footprint`]): `record`, an
     /// item's unit, declared fields'.
     pub writes: Vec<String>,
@@ -231,6 +235,16 @@ impl Declaration {
             .map_or_else(|| self.label.clone(), crate::label::Word::read)
     }
 
+    /// Its parameters, each called what the person reads it by where its
+    /// catalogue has a word for it ([`crate::label::titled`]).
+    #[must_use]
+    pub fn shown_params(&self) -> Vec<ActionParam> {
+        match &self.word {
+            Some(word) => crate::label::titled(word, self.resource, self.params.clone()),
+            None => self.params.clone(),
+        }
+    }
+
     /// The declaration `id` of the resource `vocabulary`, labelled `label`,
     /// taking `params`, built by `build`.
     pub(crate) fn new(
@@ -257,6 +271,7 @@ impl Declaration {
             content: None,
             refines: false,
             step: None,
+            creates: None,
             writes: vec![crate::footprint::RECORD_UNIT.to_owned()],
             resource: vocabulary.kind,
             action_type: vocabulary.action_type,

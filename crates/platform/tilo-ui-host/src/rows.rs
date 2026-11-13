@@ -609,6 +609,7 @@ mod tests {
         let mut checked = UiNode::empty(&kind("ListRow"), "list/v/a/row");
         checked.binding = Some(Binding {
             field: Some(("v/a".into(), "done".into())),
+            kind: Some("tasks.Task".into()),
             name: "done".into(),
         });
         row.children.push(checked);

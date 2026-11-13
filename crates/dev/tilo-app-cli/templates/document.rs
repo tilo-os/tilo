@@ -10,7 +10,7 @@ pub struct Document {
 
 /// Each field is edited at its path (`Document::paths().title`); the verbs
 /// are what one field edit cannot say.
-#[resource(kind = "generated.document", label = "Document")]
+#[resource(kind = "generated.document")]
 impl Document {
     /// Replace the title and body in one undo step.
     #[action]

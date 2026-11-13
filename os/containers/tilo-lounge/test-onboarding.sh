@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # A stranger's way into tilo.sh, end to end, on a whole tilo.sh of this run's
-# own: the Lounge relay, the front door, the web entry and production's Caddy,
+# own: the Lounge relay, the API server, the web entry and production's Caddy,
 # started the way production's manifests start them (os/containers/tilo-sh's
 # stack.sh), so the door a stranger meets here is the one tilo.sh runs — taking
 # people by invitation, keeping a wait list, and mailing through a sink this run
-# reads. The person who runs it is declared an owner in the roles file, as the
-# deployment declares its own people, which is how a fresh invitation-only
-# Lounge gets its first member.
+# reads. The person who runs it is declared an owner through the running
+# workspace's operator socket, as the deployment declares its own people, which
+# is how a fresh invitation-only Lounge gets its first member.
 #
 # The stranger's walk: the wait list and its confirmation mail; the invitation
 # the person who runs the host sends from the workspace's own wait list, and
@@ -14,11 +14,6 @@
 # with the agent setup that puts their agent there; the passkey that brings
 # them back to it; a second workspace they make; and a visitor with no
 # invitation, who still cannot get in.
-#
-# It stops at the passkey: a browser that forgot the site signs the person in
-# with their passkey, and the host then refuses to certify the tab as one of
-# their devices, so the walk ends where that refusal is. What it proves today
-# is everything up to the person's own workspace with their agent in it.
 #
 # usage: test-onboarding.sh BUNDLE WORK
 # BUNDLE is the web desktop bundle the stack's site serves
@@ -65,11 +60,10 @@ bash "$tilo_sh/stack.sh" up --fresh || { echo 'FAIL: the stack did not come up' 
 # the mail sink, all production's own.
 # shellcheck source=../tilo-sh/stack.sh
 . "$tilo_sh/stack.sh"
-role=$state/secrets/roles.json
+owner_socket=$state/relay/lounge/operator.sock
 bash "$tilo_sh/stack.sh" status || true
 
-node "$driver" "$site_origin" "$relay_origin" "$out" "$tilo_bin" \
-  "$state/local-ca.pem" "$door_origin" "$role" \
+node "$driver" "$site_origin" "$relay_origin" "$out" "$tilo_bin" "$owner_socket" \
   || { echo 'FAIL: a stranger did not get from the wait list to a workspace of their own' >&2
        echo '--- the mails the door sent:' >&2; bash "$tilo_sh/stack.sh" mail >&2 || true
        exit 1; }

@@ -51,3 +51,53 @@ fn a_link_awaited_from_a_store_no_loop_reads_arrives() {
         "the store still knows where it left it, to take it back"
     );
 }
+
+/// The sheet hands over one link form, the site's short one: with no site to
+/// keep it, or a site that keeps nothing, it shows no link and says why,
+/// never the invitation's own text.
+#[test]
+fn a_link_no_site_keeps_is_not_handed_over_as_the_invitations_text() {
+    use tilo_sheets::invite::Making;
+
+    let text = tilo_workspace_join::encode_invitation_text(b"the signed invitation");
+    let store = Store::default();
+    let mut made = Making::default();
+    let refused = store.hand_over(
+        &mut made,
+        "invite",
+        &text,
+        u64::MAX,
+        String::new(),
+        None,
+        None,
+    );
+    assert!(refused.is_err(), "no site, no link");
+    assert!(made.made().is_none() && !made.making());
+
+    // A site that refuses it: the sheet says why once its answer is in.
+    let site = Responder::start(vec![Reply::status(500)]);
+    let site_url = url::Url::parse(&format!("{}/", site.url())).expect("the site's address");
+    store
+        .hand_over(
+            &mut made,
+            "invite",
+            &text,
+            u64::MAX,
+            String::new(),
+            Some(&site_url),
+            None,
+        )
+        .expect("the invitation is on its way to the site");
+    assert!(made.making(), "the sheet waits for the site");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !store.answered() {
+        assert!(std::time::Instant::now() < deadline, "the site answers");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(store.follow_shelf(&mut made));
+    assert!(made.made().is_none(), "nothing is handed over");
+    assert!(
+        made.note().is_some_and(|note| note.bad),
+        "the sheet says why"
+    );
+}

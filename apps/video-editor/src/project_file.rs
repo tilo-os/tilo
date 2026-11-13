@@ -231,7 +231,12 @@ pub fn load(path: &Path) -> Result<Project, ProjectFileError> {
 /// remember the extension — and never ends up with `Holiday.qvp.qvp`.
 pub fn with_extension(name: &str) -> String {
     let stem = name.trim();
-    let stem = if stem.is_empty() { "Untitled" } else { stem };
+    let untitled = crate::resource::CATALOG.t("video-editor-untitled");
+    let stem = if stem.is_empty() {
+        untitled.as_str()
+    } else {
+        stem
+    };
     if stem
         .rsplit_once('.')
         .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case(EXTENSION))

@@ -1,6 +1,7 @@
-//! What a view shows of what only the window knows — a participant's name, how the person
-//! writes a day or a time of day — is a read like any other: the boundary that showed it runs
-//! again when the window says something else, and no other boundary does.
+//! What a view shows of what only the window knows — a participant's name, how the person writes
+//! a day or a time of day, a word in the language their window speaks — is a read like any
+//! other: the boundary that showed it runs again when the person's environment changes, and no
+//! other boundary does.
 
 #[cfg(test)]
 mod cases {
@@ -11,6 +12,7 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::{
         AmStore, NameHost, Principal, Runtime, ShownHost, SimpleAuthority, Value, ViewInstance,
+        Words,
     };
 
     const SOURCE: &str = r#"app so.tilo.named "Named"
@@ -49,6 +51,19 @@ view who_has_it() {
 /// A note's title alone: a view that shows no name.
 view just_title(n: Note) {
     text(n.title)
+}
+
+/// The word the window speaks beside it: no name, and nothing of the record.
+view greeting() {
+    text("Hello", role: .label)
+}
+
+/// The note's title and the window's word, as two boundaries of their own.
+view titled_and_greeted(n: Note) {
+    stack {
+        title_of(n)
+        greeting()
+    }
 }
 
 /// When a meeting is, as the person reads a clock.
@@ -100,6 +115,17 @@ view when(m: Meeting) {
         }
     }
 
+    /// The language the person's window speaks: every word it is asked for reads in it.
+    struct Speech(Rc<RefCell<&'static str>>);
+
+    impl Words for Speech {
+        fn add(&self, _: &[(String, String)]) {}
+        fn add_used(&self, _: &[(String, String)]) {}
+        fn word(&self, _key: &str, _args: &[(String, String)], _source: &str) -> String {
+            (*self.0.borrow()).to_owned()
+        }
+    }
+
     fn texts(v: &ViewInstance) -> Vec<String> {
         of_kind(v.tree(), "ui.Text")
             .into_iter()
@@ -146,7 +172,7 @@ view when(m: Meeting) {
         names
             .borrow_mut()
             .insert("ada".to_owned(), "Ada Lovelace".to_owned());
-        v.names_moved();
+        v.person_moved();
         assert!(v.is_stale(), "the boundary that shows a name runs again");
         assert!(!v.poll_patches().unwrap().is_empty());
         assert_eq!(
@@ -187,7 +213,7 @@ view when(m: Meeting) {
         names
             .borrow_mut()
             .insert("ada".to_owned(), "Ada Lovelace".to_owned());
-        v.names_moved();
+        v.person_moved();
         assert!(!v.is_stale(), "a view that shows no name reads none");
         assert!(v.poll_patches().unwrap().is_empty());
         assert_eq!(v.stats().renders, before.renders);
@@ -209,7 +235,7 @@ view when(m: Meeting) {
 
         // The person chose the other clock in Settings.
         *twelve.borrow_mut() = true;
-        v.formats_moved();
+        v.person_moved();
         assert!(
             v.is_stale(),
             "the boundary that writes a time of day runs again"
@@ -218,5 +244,68 @@ view when(m: Meeting) {
         assert_eq!(texts(&v), ["2:05 PM"]);
         assert_eq!(v.stats().renders, before.renders + 1);
         assert_eq!(v.stats().root_runs, before.root_runs + 1);
+    }
+
+    #[test]
+    fn another_language_runs_again_only_the_boundary_that_shows_a_word() {
+        let app = App::compile(SOURCE, &[]);
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        app.load(&rt);
+        let language = Rc::new(RefCell::new("Hello"));
+        rt.set_words(Speech(Rc::clone(&language)));
+        let note = rt.create("Note").unwrap();
+        let retitle = app.action("retitle");
+        rt.invoke_action(
+            &ada(),
+            (
+                retitle.as_str(),
+                vec![
+                    Value::resource(&note),
+                    Value::text("a list of what to bring"),
+                ],
+            ),
+        )
+        .unwrap();
+        let mut v = rt
+            .open_view(
+                &ada(),
+                &app.view("titled_and_greeted"),
+                vec![Value::resource(&note)],
+            )
+            .unwrap();
+        assert_eq!(texts(&v), ["a list of what to bring", "Hello"]);
+        let before = v.stats();
+
+        // The person reads another language, and the window says its words in it.
+        *language.borrow_mut() = "Hallo";
+        v.person_moved();
+        assert!(v.is_stale(), "the boundary that shows a word runs again");
+        assert!(!v.poll_patches().unwrap().is_empty());
+        assert_eq!(
+            texts(&v),
+            ["a list of what to bring", "Hallo"],
+            "what the word boundary shows reads in the language the window speaks"
+        );
+        assert_eq!(
+            v.stats().renders,
+            before.renders + 1,
+            "the boundary that shows a word, and no other: before {before:?}, after {:?}",
+            v.stats()
+        );
+
+        // A view that shows no word is not run for a language.
+        let mut titled = rt
+            .open_view(
+                &ada(),
+                &app.view("just_title"),
+                vec![Value::resource(&note)],
+            )
+            .unwrap();
+        titled.poll_patches().unwrap();
+        let before = titled.stats();
+        *language.borrow_mut() = "Bonjour";
+        titled.person_moved();
+        assert!(!titled.is_stale(), "a view that shows no word reads none");
+        assert_eq!(titled.stats().renders, before.renders);
     }
 }

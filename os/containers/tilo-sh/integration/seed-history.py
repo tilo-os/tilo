@@ -34,7 +34,7 @@ def size(path: str) -> int:
 
 
 async def main() -> int:
-    tilo = AsyncTilo(key=KEY, door=DOOR)
+    tilo = AsyncTilo(key=KEY, url=DOOR)
     lounge = tilo.workspace("Lounge")
     rng = random.Random(1)
     began, posted = time.monotonic(), 0

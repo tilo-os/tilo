@@ -145,7 +145,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     let host = enrol(
         &identity_key,
         "temporary-node",
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     );
     let browser_device = enrol(
         &identity_key,

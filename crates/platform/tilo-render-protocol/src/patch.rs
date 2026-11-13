@@ -220,6 +220,11 @@ impl Value {
 pub struct Binding {
     /// The resource and field it edits; `None` for the view's own state.
     pub field: Option<(String, String)>,
+    /// The kind of record that field is of (`so.tilo.lang.notes.Note`), when it edits one: what
+    /// names the place a control edits however the window composes around it, where the record
+    /// it edits names one document. Every field is written, `None` included: the batch is postcard,
+    /// which cannot skip one.
+    pub kind: Option<String>,
     /// What it is called, for assistive technology.
     pub name: String,
 }
@@ -408,9 +413,10 @@ pub enum RowChange {
         from: u32,
         to: u32,
     },
-    /// A rendered row shows something else now.
+    /// A rendered row shows something else now: boxed, as one row is far larger than the index
+    /// changes beside it.
     Changed {
-        row: Node,
+        row: Box<Node>,
     },
     /// The list was replaced as a whole: its rows are read anew.
     Reset,

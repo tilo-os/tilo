@@ -1515,6 +1515,18 @@ impl Client {
         });
     }
 
+    /// Have this session's live plane lent its own streams' media keys by `lender` in every
+    /// workspace whose keys it may hold none of ([`crate::live::Live::lend_media_keys`]): false when
+    /// it has no plane yet, and nothing was handed over.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn lend_media_keys(&self, lender: Arc<dyn crate::live::MediaKeysLender>) -> bool {
+        let Some(live) = self.hosting.seat.live() else {
+            return false;
+        };
+        live.lend_media_keys(lender);
+        true
+    }
+
     /// Give this session's Nearby Send the fabric it runs on.
     #[cfg(target_os = "linux")]
     pub(crate) fn attach_nearby(&self, nearby: Arc<crate::nearby_transfer::NearbyTransfer>) {

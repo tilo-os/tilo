@@ -21,8 +21,8 @@ use ui::widget::TaffyTreeExt;
 
 use ui::theme::Theme;
 use ui::widget::{
-    Button, Card, Column, Container, Row, ScrollAxis, Scrollable, Section, Spacer, Text, TextInput,
-    Toggle, Widget,
+    Banner, BannerNotice, Button, Card, Column, Container, Row, ScrollAxis, Scrollable, Section,
+    Spacer, Text, TextInput, Toggle, Widget,
 };
 
 use ui::tilo_resource::{self, Model, Refusal};
@@ -187,7 +187,7 @@ impl Default for Settings {
 /// controls. Typed actions mutate durable settings; local mirrors only
 /// present the action-applied result in this window.
 pub struct SettingsPane {
-    notices: Vec<crate::notice::Notice>,
+    notices: Vec<BannerNotice>,
     presentation: SettingsPresentation,
     /// Composed child tree, rebuilt on every `build_layout`.
     composed: ui::widget::Composed,
@@ -389,7 +389,7 @@ impl SettingsPane {
         }
 
         for notice in &self.notices {
-            body = body.push(notice.widget(false));
+            body = body.push(Box::new(notice_banner(notice)));
         }
 
         // Inset from the window edges (a Container's default padding) and
@@ -583,9 +583,18 @@ impl Widget for SettingsPane {
 }
 
 impl SettingsPane {
-    pub(crate) fn with_notices(mut self, notices: Vec<crate::notice::Notice>) -> Self {
+    pub(crate) fn with_notices(mut self, notices: Vec<BannerNotice>) -> Self {
         self.notices = notices;
         self
+    }
+}
+
+/// A notice as the toolkit's banner: it says its title, and its message under it.
+pub(crate) fn notice_banner(notice: &BannerNotice) -> Banner {
+    let banner = Banner::new(notice.kind, notice.title.clone());
+    match &notice.message {
+        Some(message) => banner.with_message(message.clone()),
+        None => banner,
     }
 }
 pub(crate) fn page(parts: Vec<Box<dyn Widget>>) -> Box<dyn Widget> {

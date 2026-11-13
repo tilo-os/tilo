@@ -39,8 +39,6 @@ mod history_and_agents;
 mod interaction_event_path;
 #[path = "launch_cli.rs"]
 mod launch_cli;
-#[path = "legacy_notebook.rs"]
-mod legacy_notebook;
 #[path = "live_block_anchor.rs"]
 mod live_block_anchor;
 #[path = "main_panel_scroll.rs"]
@@ -89,6 +87,8 @@ mod typed_markdown;
 mod typing_damage;
 #[path = "typing_order.rs"]
 mod typing_order;
+#[path = "typing_while_an_agent_edits.rs"]
+mod typing_while_an_agent_edits;
 #[path = "welcome_page_renders_all_block_kinds.rs"]
 mod welcome_page_renders_all_block_kinds;
 #[path = "workspace_notebook.rs"]

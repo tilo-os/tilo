@@ -3,7 +3,7 @@
 //! once at startup, and the routing of an item's agent's turns to it while
 //! the coordinator's and whole tasks' turns stay with the agent's own model.
 
-use super::tests::{endpoint, open_notes, plan_answer};
+use super::tests::{endpoint, open_notes, plan_answer, seen, taken};
 use super::*;
 use crate::planner::{PlanRole, Role};
 use crate::profile::{
@@ -276,11 +276,11 @@ fn the_host_planner_routes_items_and_logs_each_model() {
             .as_str()
             .map(str::to_owned)
     };
-    let (_, own_body) = to_own.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+    let (_, own_body) = seen(&to_own.next_request());
     assert_eq!(model_of(&own_body).as_deref(), Some("coordinator-x"));
-    let (_, item_body) = to_items.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+    let (_, item_body) = seen(&to_items.next_request());
     assert_eq!(model_of(&item_body).as_deref(), Some("item-y"));
-    assert_eq!(to_own.try_iter().count() + to_items.try_iter().count(), 0);
+    assert!(taken(&to_own).is_empty() && taken(&to_items).is_empty());
 
     let lines: Vec<serde_json::Value> = std::fs::read_to_string(&usage)
         .unwrap()

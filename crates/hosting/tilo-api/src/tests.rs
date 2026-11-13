@@ -1136,3 +1136,28 @@ async fn an_invitation_the_site_keeps_not_names_the_relay_in_its_link() {
         "{link}"
     );
 }
+
+/// A page's form may lead to the person's sign-in card on a local site
+/// named under `localhost` (the local stack's `tilo.localhost`), which is
+/// plain http: a form-action that left it out blocked the grants page's
+/// new key at the redirect to that card.
+#[test]
+fn a_page_form_may_lead_to_a_local_site_under_localhost() {
+    let page = html(StatusCode::OK, "<p>grants</p>");
+    let policy = page
+        .headers()
+        .get(header::CONTENT_SECURITY_POLICY)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    let form_action = policy
+        .split(';')
+        .map(str::trim)
+        .find_map(|directive| directive.strip_prefix("form-action "))
+        .unwrap_or_default();
+    assert!(
+        form_action
+            .split(' ')
+            .any(|source| source == "http://*.localhost:*"),
+        "{policy}"
+    );
+}

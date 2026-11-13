@@ -572,6 +572,7 @@ dependencies = [
  "serde",
  "serde_json",
  "taffy",
+ "test-http",
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-net",
@@ -809,7 +810,7 @@ version = "0.38.0+1.3.281"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -2319,7 +2320,7 @@ checksum = "0b023947811758c97c59bf9d1c188fd619ad4718dcaa767947df1cadb14f39f4"
 dependencies = [
  "glob",
  "libc",
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -2623,15 +2624,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0732ab1a27b4ea05e6f9f60a5122c9924dd5123defde0d8e907f58cf643d40e6"
 dependencies = [
  "chinese-number",
-]
-
-[[package]]
-name = "collab-fixtures"
-version = "0.1.0"
-dependencies = [
- "collab-types",
- "ed25519-dalek 3.0.0",
- "workspace-hack",
 ]
 
 [[package]]
@@ -2987,6 +2979,15 @@ name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "633458d4ef8c78b72454de2d54fd6ab2e60f9e02be22f3c6104cdc8a4e0fceb9"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "convert_case"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1af709f1f33454bf52eadfc8c78b3b9ef9cb26fb54d16dc9cd9a7299f899fd1b"
 dependencies = [
  "unicode-segmentation",
 ]
@@ -3437,6 +3438,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctor"
+version = "1.0.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "914a755b7c2d4af2bdcff7ce1739e2db9a1b81a9b07123d8015786ae03c0980d"
+
+[[package]]
 name = "ctr"
 version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3879,7 +3886,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
 dependencies = [
- "convert_case",
+ "convert_case 0.10.0",
  "proc-macro2",
  "quote",
  "rustc_version",
@@ -4135,7 +4142,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -5302,19 +5309,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "frame-link"
-version = "0.1.0"
-dependencies = [
- "cosmic-text",
- "proptest",
- "tilo-callstream",
- "tilo-lock",
- "tilo-media",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -7785,6 +7779,7 @@ dependencies = [
  "semver",
  "serde_json",
  "tempfile",
+ "test-http",
  "thiserror 2.0.21",
  "tilo-app-package",
  "tilo-clock",
@@ -8445,7 +8440,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
 dependencies = [
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "pkg-config",
 ]
 
@@ -8593,7 +8588,7 @@ dependencies = [
  "install",
  "landlock",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "package-store",
  "runtime-bundle",
  "runtime-identity",
@@ -9023,6 +9018,16 @@ name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link 0.2.1",
+]
+
+[[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
 dependencies = [
  "cfg-if",
  "windows-link 0.2.1",
@@ -10189,6 +10194,67 @@ dependencies = [
 ]
 
 [[package]]
+name = "napi"
+version = "3.16.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "567c62b9c2d0fae123713f766686ad66a2c75b45ba3ee01ed8b06a7e99bc435b"
+dependencies = [
+ "bitflags 2.11.0",
+ "ctor",
+ "futures",
+ "libc",
+ "napi-build",
+ "napi-sys",
+ "nohash-hasher",
+ "rustc-hash 2.1.3",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "napi-build"
+version = "2.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b899b545d3aa6dca985939059f258c5488d34e4ecf39c274e20009748f4b846d"
+
+[[package]]
+name = "napi-derive"
+version = "3.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94c8098ed9d61a1bbd019519c637817531b0e24023ef4b5678f2f0cbe24bed9c"
+dependencies = [
+ "convert_case 0.12.0",
+ "ctor",
+ "napi-derive-backend",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
+name = "napi-derive-backend"
+version = "7.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "314cd6ca42bd978fd8bae84b4137e1322bbf3e83552fca8dbd7d18034188ff3a"
+dependencies = [
+ "convert_case 0.12.0",
+ "proc-macro2",
+ "quote",
+ "semver",
+ "syn 3.0.9",
+]
+
+[[package]]
+name = "napi-sys"
+version = "3.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d153beb7d5c973f4b9395be8a83054a28968b61188f1dd1a2cc2321af22daea2"
+dependencies = [
+ "libloading 0.9.0",
+]
+
+[[package]]
 name = "ndk"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10397,6 +10463,12 @@ dependencies = [
  "libc",
  "memoffset",
 ]
+
+[[package]]
+name = "nohash-hasher"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
 
 [[package]]
 name = "nom"
@@ -11879,7 +11951,7 @@ dependencies = [
  "console_log",
  "itertools 0.15.0",
  "js-sys",
- "libloading",
+ "libloading 0.9.0",
  "log",
  "maybe-owned",
  "once_cell",
@@ -13055,6 +13127,77 @@ dependencies = [
 ]
 
 [[package]]
+name = "pyo3"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "229ca13b8a15bb0d1487b81ab975bfcd97513416499a8312011b6036e42e0de4"
+dependencies = [
+ "libc",
+ "once_cell",
+ "portable-atomic",
+ "pyo3-build-config",
+ "pyo3-ffi",
+ "pyo3-macros",
+]
+
+[[package]]
+name = "pyo3-async-runtimes"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b877331c7817ccb6379e9d19a06993160141f1d0a386e55276128717df85e3fc"
+dependencies = [
+ "futures-channel",
+ "futures-util",
+ "once_cell",
+ "pin-project-lite",
+ "pyo3",
+ "tokio",
+]
+
+[[package]]
+name = "pyo3-build-config"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70130e2b6dd1ee589a8788026a429561ca5c40fa7a2fa7914c2282eddae24700"
+dependencies = [
+ "target-lexicon",
+]
+
+[[package]]
+name = "pyo3-ffi"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e7ff73c555c286d212d4ce7e5fbda845a973c4f61bd5f160f5f2c3c2a04d1c4"
+dependencies = [
+ "libc",
+ "pyo3-build-config",
+]
+
+[[package]]
+name = "pyo3-macros"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c46d2e5862c7bb8207e3b639f713dda3c499933444784154c11d013c5a691b60"
+dependencies = [
+ "proc-macro2",
+ "pyo3-macros-backend",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
+name = "pyo3-macros-backend"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38b89f066f2ae72a2aef52d1537ca2fcd104440ebfadee06e97aa90738a25b9b"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "qcms"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13549,6 +13692,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "test-http",
  "thiserror 2.0.21",
  "tilo-action-policy",
  "tilo-advisory-lock",
@@ -14213,6 +14357,7 @@ dependencies = [
  "tilo-seal",
  "tilo-secrets",
  "tilo-test-env",
+ "tilo-user-identity",
  "tokio",
  "workspace-hack",
  "zeroize",
@@ -15665,7 +15810,7 @@ dependencies = [
  "indexmap",
  "input",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "libseat",
  "pixman",
  "pkg-config",
@@ -17087,6 +17232,7 @@ dependencies = [
  "tilo-lock",
  "tilo-selector",
  "tilo-test-env",
+ "tilo-wake",
  "tracing",
  "unicode-normalization",
  "uuid",
@@ -17241,23 +17387,6 @@ dependencies = [
  "weather",
  "wire-frame",
  "word-processor",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-ai-bench"
-version = "0.1.0"
-dependencies = [
- "agent-provider-config",
- "regex-lite",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "test-http",
- "tilo-actions",
- "tilo-net",
  "workspace-hack",
 ]
 
@@ -17944,15 +18073,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-canvas"
-version = "0.1.0"
-dependencies = [
- "tilo-ui",
- "tilo-ui-paint",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-caps"
 version = "0.1.0"
 dependencies = [
@@ -18058,6 +18178,8 @@ dependencies = [
  "collab-types",
  "ed25519-dalek 3.0.0",
  "hex",
+ "http-body-util",
+ "percent-encoding",
  "postcard",
  "rand 0.10.3",
  "rustix 1.1.6",
@@ -18066,6 +18188,7 @@ dependencies = [
  "serde_json",
  "settings-store",
  "tempfile",
+ "test-http",
  "tilo-actions",
  "tilo-advisory-lock",
  "tilo-api",
@@ -18163,6 +18286,7 @@ name = "tilo-compositor"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "khronos-egl",
  "libc",
  "neighbour-wire",
  "qcms",
@@ -18185,6 +18309,7 @@ dependencies = [
  "tilo-winit",
  "tracing",
  "wayland-client",
+ "wayland-egl",
  "wayland-protocols",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
@@ -18629,6 +18754,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-clock",
+ "tilo-test-env",
  "tilo-user-identity",
  "tokio",
  "workspace-hack",
@@ -18888,7 +19014,6 @@ version = "0.1.0"
 dependencies = [
  "data-encoding",
  "iroh",
- "iroh-relay",
  "n0-future",
  "serde_json",
  "settings-store",
@@ -19153,7 +19278,6 @@ dependencies = [
  "iroh",
  "iroh-base",
  "iroh-blobs",
- "iroh-relay",
  "irpc",
  "libc",
  "moka",
@@ -19663,18 +19787,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-lockdown-policy"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tempfile",
- "tilo-files",
- "tilo-lock",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-mail-engine"
 version = "0.1.0"
 dependencies = [
@@ -19860,6 +19972,7 @@ dependencies = [
  "settings-store",
  "sha2 0.11.0",
  "tempfile",
+ "test-http",
  "tilo-clock",
  "tilo-files",
  "tilo-lock",
@@ -20556,7 +20669,6 @@ dependencies = [
  "tilo-documents",
  "tilo-files",
  "tilo-lock",
- "tilo-lockdown-policy",
  "tilo-notifications-service",
  "tilo-paths",
  "tilo-power-mgmt",
@@ -21150,9 +21262,6 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "hex",
- "http-body-util",
- "hyper",
- "hyper-util",
  "iroh",
  "iroh-blobs",
  "launcher",
@@ -21243,6 +21352,31 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-sdk-node-native"
+version = "0.1.0"
+dependencies = [
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "serde_json",
+ "tilo-api",
+ "tilo-automerge-isolate",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-sdk-python-native"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "pyo3-async-runtimes",
+ "serde_json",
+ "tilo-api",
+ "tilo-automerge-isolate",
  "workspace-hack",
 ]
 
@@ -21941,7 +22075,6 @@ dependencies = [
  "tilo-resource",
  "tilo-service",
  "tilo-session-core",
- "tilo-topbar",
  "tilo-ui",
  "tilo-ui-host",
  "tilo-vello",
@@ -22006,6 +22139,8 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "getrandom 0.4.3",
+ "iroh",
+ "iroh-relay",
  "libc",
  "serde_json",
  "tempfile",
@@ -22063,26 +22198,6 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "runtime-dylib",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-topbar"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "image",
- "libc",
- "tempfile",
- "tilo-app",
- "tilo-compositor",
- "tilo-desktop",
- "tilo-desktop-model",
- "tilo-desktop-surface",
- "tilo-session",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
  "workspace-hack",
 ]
 
@@ -22694,6 +22809,7 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "test-http",
  "tilo-net",
  "tilo-web-search",
  "tokio",
@@ -25921,7 +26037,7 @@ dependencies = [
  "js-sys",
  "khronos-egl",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "log",
  "naga",
  "ndk-sys",
@@ -27016,7 +27132,6 @@ dependencies = [
  "portable-atomic",
  "postcard",
  "potential_utf",
- "ppv-lite86",
  "prettyplease 0.2.37",
  "proc-macro2",
  "quick-xml 0.41.0",
@@ -27322,7 +27437,6 @@ dependencies = [
  "code-editor",
  "codespan-reporting",
  "codex",
- "collab-fixtures",
  "collab-types",
  "collaboration",
  "color",
@@ -27345,7 +27459,8 @@ dependencies = [
  "constant_time_eq",
  "contacts",
  "containers",
- "convert_case",
+ "convert_case 0.10.0",
+ "convert_case 0.12.0",
  "cookie-factory",
  "cordyceps",
  "core_maths",
@@ -27381,6 +27496,7 @@ dependencies = [
  "crypto-primes",
  "csv",
  "csv-core",
+ "ctor",
  "ctr 0.10.1",
  "ctr 0.9.2",
  "ctutils",
@@ -27528,7 +27644,6 @@ dependencies = [
  "fontconfig-parser",
  "fontdb",
  "form_urlencoded",
- "frame-link",
  "frost-core",
  "frost-ed25519",
  "frost-rerandomized",
@@ -27771,7 +27886,8 @@ dependencies = [
  "libcrux-sha3",
  "libcrux-traits",
  "libgit2-sys",
- "libloading",
+ "libloading 0.8.9",
+ "libloading 0.9.0",
  "libm",
  "librespot",
  "librespot-audio",
@@ -27854,6 +27970,11 @@ dependencies = [
  "n0-future",
  "n0-watcher",
  "naga",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "napi-derive-backend",
+ "napi-sys",
  "neighbour-wire",
  "nested_enum_utils",
  "netdev",
@@ -27865,6 +27986,7 @@ dependencies = [
  "new_debug_unreachable",
  "nix 0.28.0",
  "nix 0.31.3",
+ "nohash-hasher",
  "nom 7.1.3",
  "nom 8.0.0",
  "nonzero_ext",
@@ -28038,6 +28160,12 @@ dependencies = [
  "pulley-interpreter",
  "pulley-macros",
  "pxfm",
+ "pyo3",
+ "pyo3-async-runtimes",
+ "pyo3-build-config",
+ "pyo3-ffi",
+ "pyo3-macros",
+ "pyo3-macros-backend",
  "qcms",
  "qrcode",
  "quick-error 1.2.3",
@@ -28339,7 +28467,6 @@ dependencies = [
  "tilo-activities",
  "tilo-advisory-lock",
  "tilo-agent-participant",
- "tilo-ai-bench",
  "tilo-api",
  "tilo-app",
  "tilo-app-cli",
@@ -28368,7 +28495,6 @@ dependencies = [
  "tilo-browser-runtime",
  "tilo-browser-sessions",
  "tilo-callstream",
- "tilo-canvas",
  "tilo-caps",
  "tilo-capture",
  "tilo-capture-studio",
@@ -28409,6 +28535,7 @@ dependencies = [
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-doc-pdf",
+ "tilo-docs",
  "tilo-document",
  "tilo-documents",
  "tilo-durable-writer",
@@ -28456,7 +28583,6 @@ dependencies = [
  "tilo-locale",
  "tilo-location",
  "tilo-lock",
- "tilo-lockdown-policy",
  "tilo-media",
  "tilo-messaging",
  "tilo-messaging-protocol",
@@ -28553,7 +28679,6 @@ dependencies = [
  "tilo-theme-bauhaus",
  "tilo-theme-sdk",
  "tilo-thumbnail",
- "tilo-topbar",
  "tilo-tray-host",
  "tilo-tts",
  "tilo-typst-fonts",
@@ -28931,7 +29056,7 @@ dependencies = [
  "as-raw-xcb-connection",
  "gethostname",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "once_cell",
  "rustix 1.1.6",
  "x11rb-protocol",

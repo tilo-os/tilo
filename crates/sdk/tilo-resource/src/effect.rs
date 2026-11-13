@@ -842,7 +842,7 @@ impl EffectDecl {
     pub fn of_row(row: &EffectRow) -> Self {
         Self {
             id: row.id,
-            label: row.label,
+            label: row.label.clone(),
             keywords: row.keywords,
             icon: row.icon,
             description: row.description,
@@ -911,6 +911,7 @@ impl EffectDecl {
     ) -> ActionSpec {
         let view = self.kind == OperationKind::View;
         let label = self.label.read();
+        let params = crate::label::titled(&self.label, operation, params);
         let mut spec = ActionSpec::typed_operation_on(
             self.id,
             label.clone(),
@@ -1181,7 +1182,7 @@ mod tests {
 
     /// What the derive must produce, checked through the spec a caller sees.
     #[derive(Clone, Debug, PartialEq, Effect)]
-    #[effect(operation = "test.effects")]
+    #[effect(operation = "test.effects", catalogue = "tests/locales")]
     enum Sample {
         /// Reload everything.
         Reload,
@@ -1194,7 +1195,7 @@ mod tests {
             thing: String,
             label: Option<String>,
         },
-        #[effect(label = "Wipe", job, cancellable, destructive)]
+        #[effect(job, cancellable, destructive)]
         Wipe { passes: u32 },
         /// Copy a thing's key.
         #[effect(privileged, kind = "read")]
@@ -1224,7 +1225,7 @@ mod tests {
 
     /// A content transform declared offloadable.
     #[derive(Clone, Debug, PartialEq, Effect)]
-    #[effect(operation = "test.transforms")]
+    #[effect(operation = "test.transforms", catalogue = "tests/locales")]
     enum Transforms {
         /// Shrink images.
         #[effect(
@@ -1420,7 +1421,7 @@ mod tests {
     /// A vocabulary with presentation-only effects and effects offered only
     /// on the items they act on.
     #[derive(Clone, Debug, PartialEq, Effect)]
-    #[effect(operation = "test.rows")]
+    #[effect(operation = "test.rows", catalogue = "tests/locales")]
     enum Rows {
         /// Open an item.
         #[effect(view, row)]
@@ -1493,7 +1494,7 @@ mod tests {
     /// A copy of private data leaving the app asks first, without being a
     /// credential or a deletion.
     #[derive(Clone, Debug, PartialEq, Effect)]
-    #[effect(operation = "test.exports")]
+    #[effect(operation = "test.exports", catalogue = "tests/locales")]
     enum Exports {
         /// Export the address book.
         #[effect(job, sensitive)]
@@ -1509,7 +1510,7 @@ mod tests {
 
     /// A secret argument is published as one, and still reaches the handler.
     #[derive(Clone, Debug, PartialEq, Effect)]
-    #[effect(operation = "test.secrets")]
+    #[effect(operation = "test.secrets", catalogue = "tests/locales")]
     enum Pairing {
         /// Pair a device.
         Pair {
@@ -1537,7 +1538,7 @@ mod tests {
     }
 
     #[derive(Clone, Debug, PartialEq, Effect)]
-    #[effect(operation = "test.files")]
+    #[effect(operation = "test.files", catalogue = "tests/locales")]
     enum Files {
         /// Save a copy.
         SaveCopy {
@@ -1595,7 +1596,7 @@ mod tests {
 
     /// A content transform whose inputs are the bytes themselves.
     #[derive(Clone, Debug, PartialEq, Effect)]
-    #[effect(operation = "test.readers")]
+    #[effect(operation = "test.readers", catalogue = "tests/locales")]
     enum Readers {
         /// Open documents.
         #[effect(kind = "read")]

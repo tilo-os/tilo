@@ -142,3 +142,41 @@ d-nki6assy = Notizangaben
 
 d-ttq2d5ah = Dateiname
     .w-note = Notiz
+
+# What each argument is called where a person gives it.
+
+d-37dxigeq-n = N
+
+d-qhmjwgei-pinned = Angeheftet
+
+d-7jhaq3a5-moved = Verschoben
+
+d-7jhaq3a5-parent = Übergeordnet
+
+d-7jhaq3a5-before = Davor
+
+d-ai4sxgvt-moved = Verschoben
+
+d-ai4sxgvt-n = N
+
+d-c34rzynx-n = N
+
+d-jo2tztsx-n = N
+
+d-nydyehwn-n = N
+
+d-zvgl2tzt-title = Titel
+
+d-gc34cbhl-title = Titel
+
+d-gc34cbhl-tag = Schlagwort
+
+d-7ow26bju-t = T
+
+d-3u3bevec-t = T
+
+d-4s5iqnfo-image = Bild
+
+d-t4nxxtng-file = Datei
+
+d-h3zczsen-file = Datei

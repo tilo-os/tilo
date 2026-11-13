@@ -302,7 +302,8 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         : block.kind === 'divider' ? 'hr' : block.kind === 'bullet' || block.kind === 'numbered' || block.kind === 'check' ? 'li' : 'p';
       const item = elementFor(`${node.path}#block:${block.id}`, tag, next);
       item.className = `tilo-block tilo-${block.kind}${block.soft_break ? ' tilo-soft' : ''}${block.done ? ' tilo-done' : ''}`;
-      write(item, 'css', `--tilo-indent:${block.level};`);
+      // Set as the editor sets it: its gap above, its size, leading and weight.
+      write(item, 'css', `--tilo-indent:${block.level};margin-top:${block.gap}px;font-size:${block.size}px;line-height:${block.line_height};font-weight:${block.weight};`);
       write(item, '@data-ordinal', block.ordinal ?? null);
       item.dataset.block = block.id;
       item.dataset.editor = node.path;
@@ -555,19 +556,14 @@ export const VIEW_CSS = `
 .tilo-view li:hover{background:color-mix(in srgb,var(--tilo-raised) 70%,transparent);}
 .tilo-words{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;}
 .tilo-view h1,.tilo-view h2,.tilo-view h3,.tilo-view h4,.tilo-view p,.tilo-view blockquote,.tilo-view pre{margin:0;}
-.tilo-doc{font-size:16px;line-height:1.6;}
-.tilo-doc .tilo-block{margin:0;padding:3px 0;white-space:pre-wrap;overflow-wrap:anywhere;position:relative;}
-.tilo-doc .tilo-soft{padding-top:0;}
-.tilo-doc h1.tilo-block{font-size:30px;line-height:1.25;font-weight:700;padding:14px 0 6px;letter-spacing:-0.01em;}
-.tilo-doc h2.tilo-block{font-size:23px;line-height:1.3;font-weight:650;padding:12px 0 4px;}
-.tilo-doc h3.tilo-block{font-size:19px;line-height:1.35;font-weight:600;padding:10px 0 2px;}
+.tilo-doc .tilo-block{margin:0;padding:0;white-space:pre-wrap;overflow-wrap:anywhere;position:relative;}
 .tilo-doc li.tilo-block{list-style:none;padding-left:calc(var(--tilo-list,28px) + var(--tilo-indent,0) * var(--tilo-step,28px));}
-.tilo-doc li.tilo-bullet::before{content:"";position:absolute;left:calc(var(--tilo-list,28px) / 2 - 2.5px + var(--tilo-indent,0) * var(--tilo-step,28px));top:calc(3px + 0.8em - 2.5px);width:5px;height:5px;border-radius:50%;background:var(--tilo-text-dim,#6e6e73);}
+.tilo-doc li.tilo-bullet::before{content:"";position:absolute;left:calc(var(--tilo-list,28px) / 2 - 2.5px + var(--tilo-indent,0) * var(--tilo-step,28px));top:calc(0.5lh - 2.5px);width:5px;height:5px;border-radius:50%;background:var(--tilo-text-dim,#6e6e73);}
 .tilo-doc li.tilo-numbered::before{content:attr(data-ordinal) ".";position:absolute;left:calc(var(--tilo-indent,0) * var(--tilo-step,28px));width:calc(var(--tilo-list,28px) - 8px);text-align:right;color:var(--tilo-text-dim,#6e6e73);font-variant-numeric:tabular-nums;}
 .tilo-doc li.tilo-check .tilo-check{position:absolute;left:calc(var(--tilo-list,28px) / 2 - 7.5px + var(--tilo-indent,0) * var(--tilo-step,28px));top:0.45em;margin:0;width:15px;height:15px;accent-color:var(--tilo-accent,#2f6fed);}
 .tilo-doc li.tilo-done{color:var(--tilo-text-dim,#6e6e73);text-decoration:line-through;}
 .tilo-doc blockquote.tilo-block{border-left:3px solid var(--tilo-accent,#2f6fed);padding-left:calc(var(--tilo-quote,16px) - 3px);color:var(--tilo-text-dim,#6e6e73);}
-.tilo-doc pre.tilo-block{font-family:var(--tilo-mono);font-size:14px;background:var(--tilo-raised,rgba(127,127,127,.08));border-radius:6px;padding:10px 12px;}
+.tilo-doc pre.tilo-block{font-family:var(--tilo-mono);background:var(--tilo-raised,rgba(127,127,127,.08));border-radius:6px;padding:10px 12px;}
 .tilo-doc hr.tilo-block{border:0;border-top:1px solid var(--tilo-line,rgba(127,127,127,.25));margin:12px 0;padding:0;}
 .tilo-doc code{font-family:var(--tilo-mono);font-size:.9em;background:var(--tilo-raised,rgba(127,127,127,.12));border-radius:4px;padding:1px 4px;}
 .tilo-doc a{color:var(--tilo-accent,#2f6fed);text-decoration:underline;text-underline-offset:2px;}

@@ -26,14 +26,20 @@ d-l7s2czjp = Comment
     .did = commented
     .w-write-a-comment-first = Write a comment first
 
+d-l7s2czjp-text = Text
+
 d-iae4o5k3 = Edit
     .doc = Changes what a comment says.
     .w-only-its-author-can-edit-a = Only its author can edit a comment
     .w-write-a-comment-first = Write a comment first
 
+d-iae4o5k3-text = Text
+
 d-l3wyj42h = Delete
     .doc = Deletes a comment.
     .w-only-its-author-can-delete-a = Only its author can delete a comment
+
+d-l3wyj42h-c = C
 
 d-vzn4frig = Comment~present
 

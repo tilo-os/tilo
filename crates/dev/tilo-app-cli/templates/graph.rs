@@ -17,7 +17,7 @@ pub struct Projects {
 
 /// The draft is edited at its path (`Projects::paths().draft`); creating a
 /// project from it is a verb.
-#[resource(kind = "generated.graph-project", label = "Project")]
+#[resource(kind = "generated.graph-project")]
 impl Projects {
     /// Create a project from the draft.
     #[action]

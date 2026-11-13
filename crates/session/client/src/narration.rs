@@ -49,6 +49,7 @@ pub fn frame(narrated: &Narrated<'_>, seq: u64, sent_at_ms: u64) -> Option<Seman
             label: action_label(&narrated.action.action),
             app: Some(app.clone()),
             step: None,
+            creates: None,
         },
         resource: ActionResource {
             id: narrated.action.resource.clone(),
@@ -113,16 +114,6 @@ pub mod lines {
     use tilo_actions::StepKind;
     use tilo_actions::step::{COMMAND_PARAMS, Step};
 
-    /// An app as a person reads it: the last part of its id, capitalised
-    /// (`Sheets`).
-    fn short(app: &str) -> String {
-        let mut letters = app.rsplit('.').next().unwrap_or(app).chars();
-        letters
-            .next()
-            .map(|first| first.to_uppercase().chain(letters).collect())
-            .unwrap_or_default()
-    }
-
     /// Connected, and asked nothing yet: an agent thinking, or waiting on
     /// its person.
     #[must_use]
@@ -133,7 +124,7 @@ pub mod lines {
     /// Looking at the apps, or at the one `app` names.
     #[must_use]
     pub fn looking(app: Option<&str>) -> String {
-        match app.map(short).filter(|app| !app.is_empty()) {
+        match app.map(super::app_label).filter(|app| !app.is_empty()) {
             Some(app) => clip(&ui::step::saying("step-looking-at", Some(&app))),
             None => clip(&ui::step::saying("step-looking-at-apps", None)),
         }
@@ -142,7 +133,7 @@ pub mod lines {
     /// Reading what `app` shows.
     #[must_use]
     pub fn reading(app: &str) -> String {
-        let record = short(app);
+        let record = super::app_label(app);
         clip(&ui::step::line(&Step::new(StepKind::Read, Some(&record))))
     }
 
@@ -171,7 +162,7 @@ pub mod lines {
         } else {
             StepKind::Work
         };
-        let record = short(app);
+        let record = super::app_label(app);
         let step = Step::new(kind, Some(&record)).running(command);
         clip(&ui::step::line(&step))
     }
@@ -224,7 +215,8 @@ pub mod lines {
             );
             assert_eq!(
                 doing("so.tilo.word-processor", "append-paragraph", None),
-                "Working in Word-processor"
+                "Working in Word processor",
+                "an app is named in words: its id's last part as a person reads it"
             );
             let command = serde_json::json!({"command": "cargo build"});
             assert_eq!(
@@ -265,9 +257,11 @@ pub mod lines {
     }
 }
 
-/// An app's name as a person reads it: the last word of its id, capitalised.
+/// An app's name as a person reads it: the last part of its id in words,
+/// capitalised (`so.tilo.word-processor` is "Word processor").
 fn app_label(app: &str) -> String {
-    capitalised(app.rsplit('.').next().unwrap_or(app)).unwrap_or_else(|| app.to_owned())
+    let last = app.rsplit('.').next().unwrap_or(app);
+    capitalised(&tilo_actions::in_words(last)).unwrap_or_else(|| app.to_owned())
 }
 
 /// An action's id as the words a person reads (`append-paragraph` is

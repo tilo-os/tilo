@@ -1,10 +1,11 @@
 //! The API server on a relay with its app workers, on loopback, for an
 //! SDK's end-to-end run: what tilo.sh runs, in one process.
 //!
-//! `api-on-relay` prints `{"api", "key", "invitee", "person"}` and
-//! serves until its standard input closes; `api-on-relay -- <command…>`
-//! runs the command with `TILO_API_URL`, `TILO_API_KEY` and `TILO_INVITEE` set
-//! and exits as it does. `POST {"link": …}` to `TILO_INVITEE` and another
+//! `api-on-relay` prints `{"api", "key", "key_file", "invitee", "person"}`
+//! and serves until its standard input closes; `api-on-relay -- <command…>`
+//! runs the command with `TILO_API_URL`, `TILO_API_KEY`, `TILO_KEY_FILE` (a
+//! key file of a device of the person, for an SDK's native part) and
+//! `TILO_INVITEE` set and exits as it does. `POST {"link": …}` to `TILO_INVITEE` and another
 //! person follows the invitation link, approves a key of their own and
 //! answers `{"key", "person", "joined"}`:
 //!

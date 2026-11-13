@@ -43,6 +43,7 @@ pub(crate) enum Ask {
 pub(crate) struct Selected {
     pub(crate) slide: Id,
     pub(crate) element: Id,
+    /// What the element is called in the edits bound to it.
     pub(crate) label: String,
 }
 
@@ -299,7 +300,10 @@ pub(crate) fn selection_declarations(selected: Option<&Selected>) -> Vec<ActionD
             crate::deck::deck::DeleteElement::paths().element,
             element.clone(),
         )
-        .declaration("delete-selection", format!("Delete {label}"))
+        .declaration(
+            "delete-selection",
+            ui::tilo_resource::word!("slides-deck-delete-selection", name = label.as_str()),
+        )
     {
         declarations.push(delete.describe("Delete the element selected in the editor."));
     }
@@ -312,14 +316,20 @@ pub(crate) fn selection_declarations(selected: Option<&Selected>) -> Vec<ActionD
             crate::deck::deck::BringToFront::paths().element,
             element.clone(),
         )
-        .declaration("bring-selection-front", format!("Bring to front: {label}"));
+        .declaration(
+            "bring-selection-front",
+            ui::tilo_resource::word!("slides-deck-bring-selection-front", name = label.as_str()),
+        );
     let back = DeckRecord::SEND_TO_BACK
         .bind(crate::deck::deck::SendToBack::paths().slide, slide.clone())
         .and(
             crate::deck::deck::SendToBack::paths().element,
             element.clone(),
         )
-        .declaration("send-selection-back", format!("Send to back: {label}"));
+        .declaration(
+            "send-selection-back",
+            ui::tilo_resource::word!("slides-deck-send-selection-back", name = label.as_str()),
+        );
     for restack in [front, back].into_iter().flatten() {
         declarations.push(restack.describe("Restack the element selected in the editor."));
     }

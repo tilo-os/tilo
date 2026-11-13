@@ -177,6 +177,7 @@ impl Store for TiloStore {
             touched,
             items,
             placed,
+            reshapes,
         } = planned;
         let seed = format!("{}:{}", txn.0, inner.counter).into_bytes();
         let collections = collections_by_doc(items.iter().map(|(key, _)| key));
@@ -212,6 +213,7 @@ impl Store for TiloStore {
             state.saved = state.saved.saturating_add(1);
         }
         state.edits.extend(dyn_edits);
+        state.reshapes |= reshapes;
         for change in listings.into_values().flatten() {
             record_splices(&mut state.listings, &change.key, change.splices);
         }

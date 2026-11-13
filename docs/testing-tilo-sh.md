@@ -62,7 +62,7 @@ Everything listens on `127.0.0.1`. Ports start at `TILO_SH_PORT_BASE`
 
 | Service | Production | Locally |
 | --- | --- | --- |
-| Lounge relay (room host and relay) | `eu1.tilo.sh` and `live-eu1.tilo.sh`, image `lounge` | `tilo-relay` through the image's entrypoint (`os/containers/tilo-lounge/entrypoint.sh`), laid out by the image's own context script, behind production's Caddy and Caddyfile at `http://127.0.0.1:24100` and `http://127.0.0.1:24106`; its door takes people by invitation and keeps a wait list, as production's does (`TILO_SH_ADMISSION=open` lets anyone in as a guest, which `check.sh` and the e2e flows ask for), and `stack.sh owner KEY` declares the first person who invites the others |
+| Lounge relay (room host and relay) | `eu1.tilo.sh` and `live-eu1.tilo.sh`, image `lounge` | `tilo-relay` through the image's entrypoint (`os/containers/tilo-lounge/entrypoint.sh`), laid out by the image's own context script, behind production's Caddy and Caddyfile at `http://127.0.0.1:24100` and `http://127.0.0.1:24106`; its door takes people by invitation and keeps a wait list, as production's does (`TILO_SH_ADMISSION=open` lets anyone in as a guest, which `check.sh` and the e2e flows ask for), and `stack.sh owner` declares the identity this computer's `tilo` command holds the first owner through the running workspace's own governance, then prints a link that makes whoever opens it, in the browser they use for the Lounge, an owner too (`stack.sh owner KEY` declares a user public key instead) |
 | Mail (wait-list confirmations, invitations) | Resend | a sink that keeps each mail as a file, at `http://127.0.0.1:24123`; `stack.sh mail` lists them with their links |
 | API server (MCP, `/v1`, keys, OAuth) | `mcp.tilo.sh`, image `api` | `tilo-api` at `http://localhost:24110` |
 | Web entry (site, `/sign-in`, `/install.sh`, `/releases`) | `tilo.sh`, image `web-entry` | the image's entrypoint and Caddyfile serving this checkout's desktop bundle, laid out and precompressed as the image does it, on `127.0.0.1:24121` behind the same Caddy, which serves it as Cloudflare serves tilo.sh, here over plain HTTP, at `http://tilo.localhost:24120`; `/releases/latest` serves this checkout's `tilo` command, signed with the stack's own key, which the site's installer downloads (`stack.sh env` exports `TILO_RELEASE_KEY` for it) |
@@ -310,8 +310,8 @@ that half to what a customer gets (`integration/hosted-terminal.py`):
     command, where it ran, when, how it ended, what it printed, who ran it)
     and a step of History named after the key that ran it, for the person.
 16. an agent's key, minted for that one workspace, runs a command there
-    through the `tilo` command (with `TILO_API_KEY`, the MCP behind it), and
-    History keeps that run as the agent's, apart from the person's.
+    through the `tilo` command (with `TILO_API_KEY`, the API's `/v1` behind
+    it), and History keeps that run as the agent's, apart from the person's.
 17. the Linux session runs as the VM's tenant, not as the account its Browser
     session runs as: `id` says `tilo` (uid 1000), the tenant cannot read the
     Browser user's home, and the Browser user cannot read a file the tenant

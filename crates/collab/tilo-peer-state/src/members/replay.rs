@@ -6,8 +6,7 @@
 //! operations a device holds is the workspace's record of who changed what.
 //! Replay is a function of that set alone:
 //!
-//! - the genesis operation gives the membership the legacy rows held, and
-//!   names the heads it is read at, so every device projects the same rows;
+//! - the genesis operation gives the membership the workspace starts from;
 //! - the rest are applied in one deterministic order: no operation before one
 //!   it was written on top of, and operations written concurrently ordered by
 //!   their author's standing in the workspace as it stands when they are
@@ -28,7 +27,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use tilo_action_policy::{Change, Context, Grant, GrantId, Role, WorkspacePolicy, roles};
 
-use super::legacy;
 use super::op::{MEMBERS_KEY, MembershipOpCommand, OpId, SignedMembershipOp};
 
 /// The operations a workspace document holds, by id.
@@ -114,11 +112,9 @@ struct Replayed {
     named: BTreeSet<String>,
     /// The state's membership heads ([`heads`]).
     heads: BTreeSet<OpId>,
-    /// Who wrote the state's genesis operation ([`genesis`]), when it holds
-    /// one, and the
-    /// heads of the history it was read at (`None` when they do not read):
+    /// Who wrote the state's genesis operation ([`genesis`]) if it holds one:
     /// whether the log starts in a later state ([`start`]).
-    genesis_at: Option<(String, Option<Vec<automerge::ChangeHash>>)>,
+    genesis_at: Option<String>,
 }
 
 /// The document states whose membership was read, by workspace and heads.
@@ -308,14 +304,7 @@ fn admitted(
     // rows name ([`start`]), still does not.
     if !replayed.started {
         let owner = rows(after, workspace).owner;
-        let starts = replayed.genesis_at.as_ref().is_some_and(|(author, at)| {
-            owner.as_ref() == Some(author)
-                && at.as_ref().is_some_and(|heads| {
-                    heads
-                        .iter()
-                        .all(|head| after.get_change_by_hash(head).is_some())
-                })
-        });
+        let starts = replayed.genesis_at.as_ref() == owner.as_ref();
         if starts {
             return false;
         }
@@ -387,16 +376,9 @@ fn read_replay(doc: &AutoCommit, workspace: &str) -> Replayed {
         turned_away,
         named: named(&held),
         heads: heads(&held).into_iter().collect(),
-        genesis_at: genesis(&held).and_then(|id| held.get(&id)).map(|op| {
-            let at = match &op.command {
-                MembershipOpCommand::Genesis { legacy_heads, .. } => legacy_heads
-                    .iter()
-                    .map(|bytes| automerge::ChangeHash::try_from(bytes.as_slice()).ok())
-                    .collect(),
-                _ => None,
-            };
-            (op.person(), at)
-        }),
+        genesis_at: genesis(&held)
+            .and_then(|id| held.get(&id))
+            .map(|op| op.person()),
     }
 }
 
@@ -589,16 +571,9 @@ fn start(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> Option<WorkspaceP
     if op.person() != owner {
         return None;
     }
-    let MembershipOpCommand::Genesis {
-        legacy_heads,
-        membership,
-    } = &op.command
-    else {
+    let MembershipOpCommand::Genesis { membership } = &op.command else {
         return None;
     };
-    if !legacy_heads.is_empty() && legacy::at_heads(doc, legacy_heads).is_none() {
-        return None;
-    }
     // The built-in roles as this build defines them, as the rows read them:
     // a log an earlier build started holds that build's definitions, which
     // no operation may rewrite, so read as written they would set the log
@@ -977,8 +952,7 @@ pub fn growth(before: Option<&AutoCommit>, candidate: &AutoCommit) -> Result<usi
 }
 
 /// The workspace document's membership operations as stored, by operation key:
-/// each under its own root key ([`super::op::op_key`]), and — in a document
-/// written before operations had a key each — in the map [`MEMBERS_KEY`] names.
+/// each under its own root key ([`super::op::op_key`]).
 pub(crate) fn raw(doc: &AutoCommit) -> BTreeMap<String, Vec<u8>> {
     let mut held = BTreeMap::new();
     for key in doc.keys(ROOT) {
@@ -989,17 +963,6 @@ pub(crate) fn raw(doc: &AutoCommit) -> BTreeMap<String, Vec<u8>> {
             && let ScalarValue::Bytes(bytes) = value.as_ref()
         {
             held.insert(op_key.to_owned(), bytes.clone());
-        }
-    }
-    if let Some((Value::Object(automerge::ObjType::Map), map)) =
-        doc.get(ROOT, MEMBERS_KEY).ok().flatten()
-    {
-        for key in doc.keys(&map) {
-            if let Some((Value::Scalar(value), _)) = doc.get(&map, key.as_str()).ok().flatten()
-                && let ScalarValue::Bytes(bytes) = value.as_ref()
-            {
-                held.insert(key, bytes.clone());
-            }
         }
     }
     held

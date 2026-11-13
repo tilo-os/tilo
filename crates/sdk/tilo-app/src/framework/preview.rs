@@ -440,7 +440,7 @@ mod tests {
         pub heading: String,
     }
 
-    #[resource(kind = "test.page", label = "Page")]
+    #[resource(kind = "test.page", catalogue = "tests/locales")]
     impl Page {
         /// Set the heading.
         #[action]
@@ -476,7 +476,7 @@ mod tests {
         pub read: bool,
     }
 
-    #[resource(kind = "test.shelf", label = "Shelf")]
+    #[resource(kind = "test.shelf", catalogue = "tests/locales")]
     impl Shelf {
         /// Rename the shelf.
         #[action]

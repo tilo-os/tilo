@@ -20,11 +20,6 @@ use crate::resource::Resource;
 /// document, a `tilo-doc` page.
 pub const VERSION_KEY: &str = "tilo:version";
 
-/// The root keys some documents stored their version under before there was
-/// one key. Read once ([`stored_version`]) and dropped the next time the
-/// document is brought up to date ([`adopt`], [`migrate`]).
-pub const LEGACY_VERSION_KEYS: &[&str] = &["tilo:schema_version", "schema_version"];
-
 /// The `u32` a stored version scalar names.
 fn version_of(value: &Value<'_>) -> Option<u32> {
     let Value::Scalar(scalar) = value else {
@@ -46,53 +41,11 @@ pub fn stored_version(doc: &Doc) -> u32 {
 /// [`stored_version`] of the document whose root is `at`.
 #[must_use]
 pub fn stored_version_at(doc: &Doc, at: &ObjId) -> u32 {
-    std::iter::once(VERSION_KEY)
-        .chain(LEGACY_VERSION_KEYS.iter().copied())
-        .find_map(|key| {
-            doc.get(at, key)
-                .ok()
-                .flatten()
-                .and_then(|(value, _)| version_of(&value))
-        })
+    doc.get(at, VERSION_KEY)
+        .ok()
+        .flatten()
+        .and_then(|(value, _)| version_of(&value))
         .unwrap_or(1)
-}
-
-/// Whether `doc` still keeps its version under one of the keys this one
-/// replaced.
-#[must_use]
-pub fn needs_adoption(doc: &Doc) -> bool {
-    needs_adoption_at(doc, &ROOT)
-}
-
-/// [`needs_adoption`] of the document whose root is `at`.
-#[must_use]
-pub fn needs_adoption_at(doc: &Doc, at: &ObjId) -> bool {
-    LEGACY_VERSION_KEYS
-        .iter()
-        .any(|key| matches!(doc.get(at, *key), Ok(Some(_))))
-}
-
-/// Drop the version keys this one replaced: the document keeps its version
-/// under [`VERSION_KEY`], or names none because it is at the first. Returns
-/// whether it dropped any.
-pub fn adopt(doc: &mut Doc) -> Result<bool, ModelError> {
-    adopt_at(doc, &ROOT)
-}
-
-/// [`adopt`] of the document whose root is `at`, for a document another
-/// document embeds (a page inside an app's record).
-pub fn adopt_at(doc: &mut Doc, at: &ObjId) -> Result<bool, ModelError> {
-    if !needs_adoption_at(doc, at) {
-        return Ok(false);
-    }
-    let version = stored_version_at(doc, at);
-    for key in LEGACY_VERSION_KEYS {
-        if doc.get(at, *key)?.is_some() {
-            doc.delete(at, *key)?;
-        }
-    }
-    write_version_at(doc, at, version)?;
-    Ok(true)
 }
 
 /// Record that `doc` is at `version` (nothing for the first version, so
@@ -138,9 +91,6 @@ fn check_version_at(version: u32, doc: &Doc) -> Result<(), ModelError> {
 /// from, so two devices migrating the same document produce the same change.
 /// Returns whether it changed anything.
 ///
-/// A document already at `R`'s version still changes once, to drop the
-/// version key this one replaced; see [`needs_migrate`].
-///
 /// # Errors
 /// Returns the migration's error; `doc` is left as it was.
 pub fn migrate<R: Resource>(doc: &mut Doc) -> Result<bool, ModelError> {
@@ -151,11 +101,10 @@ pub fn migrate<R: Resource>(doc: &mut Doc) -> Result<bool, ModelError> {
     )
 }
 
-/// Whether [`migrate`] would change `doc`: it is older than `R`, or still
-/// keeps its version under a key this one replaced.
+/// Whether [`migrate`] would change `doc`: it is older than `R`.
 #[must_use]
 pub fn needs_migrate<R: Resource>(doc: &Doc) -> bool {
-    stored_version(doc) < R::VERSION || needs_adoption(doc)
+    stored_version(doc) < R::VERSION
 }
 
 /// [`migrate`] of the resource of the kind, label and storage version
@@ -166,8 +115,7 @@ fn migrate_with(
     doc: &mut Doc,
 ) -> Result<bool, ModelError> {
     let from = stored_version(doc);
-    let legacy = needs_adoption(doc);
-    if from >= to && !legacy {
+    if from >= to {
         return Ok(false);
     }
     let mut heads = doc.get_heads();
@@ -183,11 +131,8 @@ fn migrate_with(
     let actor =
         automerge::ActorId::from(hasher.finalize().as_bytes().get(..16).unwrap_or_default());
     let mut migrated = doc.fork_at(&heads)?.with_actor(actor);
-    if from < to {
-        migration(&mut migrated, from)?;
-        migrated.put(ROOT, VERSION_KEY, ScalarValue::Uint(u64::from(to)))?;
-    }
-    adopt_at(&mut migrated, &ROOT)?;
+    migration(&mut migrated, from)?;
+    migrated.put(ROOT, VERSION_KEY, ScalarValue::Uint(u64::from(to)))?;
     let context = tilo_actions::ActionContext {
         change: tilo_actions::ChangeKind::Housekeeping,
         ..tilo_actions::ActionContext::for_resource(kind, kind, label).with_described(

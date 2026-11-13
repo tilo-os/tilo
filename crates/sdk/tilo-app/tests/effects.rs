@@ -185,7 +185,7 @@ pub struct Mailbox {
     pub fetched: String,
 }
 
-#[resource(kind = "test.mailbox", label = "Mailbox")]
+#[resource(kind = "test.mailbox", catalogue = "tests/locales")]
 impl Mailbox {
     /// Queue a message for delivery.
     #[action(undo = Self::unsend)]
@@ -218,7 +218,7 @@ impl Mailbox {
 }
 
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.mailbox.effects")]
+#[effect(operation = "test.mailbox.effects", catalogue = "tests/locales")]
 pub enum MailEffect {
     /// Count the delivered messages.
     #[effect(returns, kind = "read")]
@@ -803,7 +803,7 @@ fn delayed_receipt_completion_cannot_exceed_its_original_read_admission() {
 
 /// A surface's own effects: answered with `&mut self`, completed with it.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.tally.effects")]
+#[effect(operation = "test.tally.effects", catalogue = "tests/locales")]
 pub enum TallyEffect {
     /// Tally.
     #[effect(job, returns)]
@@ -1081,7 +1081,7 @@ impl Widget for Counter {
 
 /// Effects a view answers on its [`Counter`] window.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.counter.effects")]
+#[effect(operation = "test.counter.effects", catalogue = "tests/locales")]
 pub enum CounterEffect {
     /// Count.
     Count {
@@ -1154,7 +1154,7 @@ fn a_view_answers_effects_on_its_window_and_refuses_them_while_it_is_closed() {
 /// Effects a view answers on its [`Counter`] window, which hosts their
 /// work: what finishes later counts on the window itself.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.hosted-counter.effects")]
+#[effect(operation = "test.hosted-counter.effects", catalogue = "tests/locales")]
 pub enum HostedCounterEffect {
     /// Count off the UI thread.
     #[effect(job, returns)]
@@ -1361,7 +1361,7 @@ impl Widget for Mounting {
 
 /// Effects that open and close the [`Mounting`] window's child.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.mounting.effects")]
+#[effect(operation = "test.mounting.effects", catalogue = "tests/locales")]
 pub enum MountingEffect {
     /// Mount the child window.
     OpenChild,
@@ -1574,7 +1574,7 @@ fn an_outbox_looks_again_when_the_outside_it_could_not_reach_changed() {
 }
 
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.mailbox.files")]
+#[effect(operation = "test.mailbox.files", catalogue = "tests/locales")]
 pub enum FileEffect {
     /// Import a message from a file.
     #[effect(job)]
@@ -1839,7 +1839,7 @@ fn a_job_nobody_invoked_says_how_far_it_is_until_it_ends() {
 }
 
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.mailbox.device")]
+#[effect(operation = "test.mailbox.device", catalogue = "tests/locales")]
 pub enum DeviceEffect {
     /// Choose a mail folder on this computer.
     #[effect(attended)]
@@ -1924,7 +1924,7 @@ fn a_launch_invokes_a_view_effect_even_for_a_viewer() {
 }
 
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.mailbox.disks")]
+#[effect(operation = "test.mailbox.disks", catalogue = "tests/locales")]
 pub enum DiskEffect {
     /// Erase a disk.
     #[effect(risk = "erase_risk")]

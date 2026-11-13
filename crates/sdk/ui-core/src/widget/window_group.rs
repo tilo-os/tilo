@@ -3243,10 +3243,11 @@ impl Widget for WindowGroup {
         }
     }
     fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
-        // A chip pressed from assistive technology arrives outside
-        // `handle_event`: run it here, before the frame lays out. So does a
-        // press on the window's own furniture in the row its app draws.
-        let pressed = self.drain_chip_presses();
+        // A chip or a window control pressed from assistive technology, an agent or a key arrives
+        // outside `handle_event`: run it here, before the frame lays out — a card's snap goes back
+        // into its strip this frame, not with the next pointer move. So does a press on the
+        // window's own furniture in the row its app draws.
+        let pressed = self.drain_bar_signals();
         let furniture = self.drain_held_controls();
         let opened = self.opened_by.take_press() && self.bar.activate_opened_by();
         // The search follows the active tab, and the content under it: a

@@ -71,10 +71,8 @@ pub struct Rendered {
     /// What it saw of the collections it read item by item.
     pub(crate) colls: Vec<CollSeen>,
     pub space_reads: Vec<(String, f64)>,
-    /// The participants whose names it asked the window for.
-    pub name_reads: Vec<Principal>,
-    /// Whether it wrote a day or a time of day in the person's format.
-    pub format_reads: bool,
+    /// Whether it showed anything only the window knows: a name, a format, a word.
+    pub person_reads: bool,
     pub retained: Vec<Retained>,
     /// The view state slots read, with their generations.
     pub state_reads: Vec<(StateKey, u64)>,
@@ -93,8 +91,7 @@ pub(crate) struct Acc {
     pub listed: Vec<(String, String)>,
     pub colls: Vec<CollSeen>,
     pub space_reads: Vec<(String, f64)>,
-    pub name_reads: Vec<Principal>,
-    pub format_reads: bool,
+    pub person_reads: bool,
     pub retained: Vec<Retained>,
     pub state_reads: Vec<(StateKey, u64)>,
     pub state_seen: Vec<(StateKey, Value)>,
@@ -278,12 +275,7 @@ impl Acc {
         self.reads.extend(nested.reads);
         merge_seen(&mut self.colls, nested.colls);
         self.space_reads.extend(nested.space_reads);
-        for who in &nested.name_reads {
-            if !self.name_reads.contains(who) {
-                self.name_reads.push(who.clone());
-            }
-        }
-        self.format_reads |= nested.format_reads;
+        self.person_reads |= nested.person_reads;
         self.retained.extend(nested.retained);
         self.state_reads.extend(nested.state_reads);
         self.state_seen.extend(nested.state_seen);
@@ -424,8 +416,7 @@ impl Core {
             listed: Vec::new(),
             colls: state.colls,
             space_reads: state.space_reads,
-            name_reads: state.name_reads,
-            format_reads: state.format_reads,
+            person_reads: state.person_reads,
             retained: Vec::new(),
             state_reads: state.state_reads,
             state_seen: state.state_seen,
@@ -462,8 +453,7 @@ impl Core {
             reads: acc.reads,
             colls: acc.colls,
             space_reads: acc.space_reads,
-            name_reads: acc.name_reads,
-            format_reads: acc.format_reads,
+            person_reads: acc.person_reads,
             retained: acc.retained,
             state_reads: acc.state_reads,
             state_seen: acc.state_seen,
@@ -551,8 +541,7 @@ impl Core {
             listed: Vec::new(),
             colls: Vec::new(),
             space_reads: Vec::new(),
-            name_reads: Vec::new(),
-            format_reads: false,
+            person_reads: false,
             retained: Vec::new(),
             state_reads: Vec::new(),
             state_seen: Vec::new(),
@@ -588,8 +577,7 @@ impl Core {
             reads: acc.reads,
             colls: acc.colls,
             space_reads: acc.space_reads,
-            name_reads: acc.name_reads,
-            format_reads: acc.format_reads,
+            person_reads: acc.person_reads,
             retained: acc.retained,
             state_reads: acc.state_reads,
             state_seen: acc.state_seen,
@@ -608,8 +596,7 @@ impl Core {
             listed: Vec::new(),
             colls: Vec::new(),
             space_reads: Vec::new(),
-            name_reads: Vec::new(),
-            format_reads: false,
+            person_reads: false,
             retained: Vec::new(),
             state_reads: Vec::new(),
             state_seen: Vec::new(),
@@ -627,10 +614,7 @@ impl Core {
         acc.state_seen.push((state_key, seen));
         // The words are the reader's, through the words the host set, so a person in any
         // language reads what happened: the title, with the reason under it.
-        let title = self
-            .words
-            .borrow()
-            .word("tilolang-view-failed", &[], "This couldn't be shown");
+        let title = self.word_args("tilolang-view-failed", &[], "This couldn't be shown");
         let mut children = Vec::new();
         if !failure.reason.is_empty() {
             children.push(UiNode {
@@ -663,8 +647,7 @@ impl Core {
             reads: acc.reads,
             colls: acc.colls,
             space_reads: acc.space_reads,
-            name_reads: acc.name_reads,
-            format_reads: acc.format_reads,
+            person_reads: acc.person_reads,
             retained: acc.retained,
             state_reads: acc.state_reads,
             state_seen: acc.state_seen,

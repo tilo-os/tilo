@@ -569,7 +569,7 @@ work = os.path.dirname(path)
 # The hosted Browser's and its Linux commands' own numbers, when this stack
 # ran with its VM host.
 for name, key in (("hosted/report.json", "hosted"), ("vm/vm-proofs.json", "vm"),
-                  ("hosted/terminal.json", "linux")):
+                  ("hosted/terminal.json", "linux"), ("hosted/gui.json", "linux_app")):
     where = os.path.join(work, name)
     if os.path.isfile(where):
         report[key] = json.load(open(where))

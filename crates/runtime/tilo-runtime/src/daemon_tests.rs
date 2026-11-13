@@ -851,7 +851,7 @@ fn a_result_another_process_was_handed_opens_through_the_action_host() {
 /// answer while two invokes of the same connection wait.
 #[test]
 fn native_socket_serves_parallel_requests() {
-    use crate::mcp_http::tests::settle_tests::{GatedHost, overlapping_lines};
+    use crate::mcp_test_hosts::{GatedHost, overlapping_lines};
     let host = GatedHost::default();
     let search = std::sync::Arc::new(tilo_os_search::OsSearch::new(
         std::sync::Arc::new(host.clone()),
@@ -973,10 +973,10 @@ fn connect_asks_for_a_workspace_by_its_id() {
     }
 }
 
-/// The relay writes the workspace into the client's `initialize` and nothing
+/// The relay writes the workspace and the agent key into the client's `initialize` and nothing
 /// else: a probe before it and every line after it reach the door as sent.
 #[test]
-fn the_relay_writes_the_workspace_into_the_initialize_alone() {
+fn the_relay_writes_the_workspace_and_key_into_the_initialize_alone() {
     let sent = concat!(
         r#"{"jsonrpc":"2.0","id":0,"method":"server/discover"}"#,
         "\n",
@@ -986,7 +986,11 @@ fn the_relay_writes_the_workspace_into_the_initialize_alone() {
         "\n",
     );
     let mut relayed = Vec::new();
-    let total = super::relay_asking(&mut sent.as_bytes(), &mut relayed, "w-1").unwrap();
+    let asking = super::Asking {
+        workspace: Some("w-1".into()),
+        key: Some("tilo_ak_0123".into()),
+    };
+    let total = super::relay_asking(&mut sent.as_bytes(), &mut relayed, &asking).unwrap();
     assert_eq!(total, sent.len() as u64, "every byte read is relayed");
     let lines: Vec<serde_json::Value> = relayed
         .split(|byte| *byte == b'\n')
@@ -995,6 +999,11 @@ fn the_relay_writes_the_workspace_into_the_initialize_alone() {
         .collect();
     assert_eq!(lines.len(), 3);
     assert_eq!(lines[0]["method"], "server/discover");
+    assert_eq!(
+        lines[1].pointer(crate::session_door::KEY),
+        Some(&serde_json::json!("tilo_ak_0123")),
+        "the agent key rides in the initialize"
+    );
     assert_eq!(
         lines[1].pointer(crate::session_door::WORKSPACE),
         Some(&serde_json::json!("w-1"))
@@ -1010,4 +1019,14 @@ fn the_relay_writes_the_workspace_into_the_initialize_alone() {
     );
     let hello = crate::session_door::parse_hello(&serde_json::to_vec(&lines[1]).unwrap()).unwrap();
     assert_eq!(hello.workspace.as_deref(), Some("w-1"), "the door reads it");
+    assert_eq!(
+        hello.key.as_deref(),
+        Some("tilo_ak_0123"),
+        "the door reads the key"
+    );
+    assert_eq!(
+        hello.request.pointer(crate::session_door::KEY),
+        None,
+        "the key is kept out of the request the door goes on to answer"
+    );
 }

@@ -41,7 +41,10 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     assign: url => { calls.push('assign'); assigned = url; }};
   globalThis.history = {pushState: (_state, _title, url) => { calls.push('history'); assigned = url ?? assigned; }};
   globalThis.document = {body: new Element('body'), documentElement: {dataset: {}, toggleAttribute() {}}, createElement: tag => new Element(tag),
-    getElementById: id => id === 'status' ? status : id === 'surface' ? new Element('canvas') : null};
+    getElementById: id => id === 'status' ? status : id === 'surface' ? new Element('canvas')
+      : id.startsWith('arrival-failure') ? (screen[id] ??= new Element(id)) : null};
+  // The failure screen's parts (index.html, `#arrival-failure`), by id.
+  const screen = {};
   const status = {textContent: 'Loading…'};
   const calls = [];
   const shown = [];
@@ -101,9 +104,9 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     {origin: ORIGIN, room: 'other', hostDevice: 'cd'.repeat(32), name: 'Other'}, ...remembered]));
   let source = await readFile(new URL('./entry-page.mjs', import.meta.url), 'utf8');
   source = source
-    .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot;')
+    .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot, grammar = () => globalThis.__entryPageFixture.page.link;')
     .replace("import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchDesktop, prefetchOfferedApplications, prepareGpu, reportPageErrors} from './host.mjs';", 'const applicationName = async () => null, loadRuntime = async () => globalThis.__entryPageFixture.runtime, mountDesktop = (...args) => globalThis.__entryPageFixture.mounted.push(args), prefetchApplication = () => {}, prefetchDesktop = () => {}, prefetchOfferedApplications = () => {}, prepareGpu = () => globalThis.__entryPageFixture.prepareGpu(), reportPageErrors = () => {};')
-    .replace("import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';", "const startArrival = () => {}, failureMessage = error => error.message, STOPPED_DRAWING = 'stopped';")
+    .replace(/import \{([^}]*)\bstartArrival, ([^}]*)\} from '.\/arrival.mjs';/, "import {$1$2} from './arrival.mjs';\nconst startArrival = () => {};")
     .replace("import {servedVersion, watchForUpdate} from './bundle-update.mjs';", "import {servedVersion} from './bundle-update.mjs';\nconst watchForUpdate = () => {};")
     .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
     .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;')
@@ -115,7 +118,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   // A page that cannot get in throws its cause on, to the console.
   const failure = await startEntryPage({mode: 'desktop'}).then(() => null, error => error);
   await tick();
-  return {calls, shown, diagnostics, page, prepared, mounted: globalThis.__entryPageFixture.mounted, listeners, session: stored, failure, at: () => assigned};
+  return {calls, shown, diagnostics, page, prepared, mounted: globalThis.__entryPageFixture.mounted, listeners, session: stored, failure, at: () => assigned, screen};
 }
 
 test('the GPU device opens as the page starts, while the host is asked, once', async () => {
@@ -143,6 +146,47 @@ test('a page the host refuses mounts nothing, so it compiles no renderer for the
   // The device alone: the renderer's pipelines compile as a mount draws.
   assert.equal(prepared.length, 1);
   assert.deepEqual(mounted, []);
+});
+
+test('a page that cannot open its workspace shows one failure screen: the cause, Try again, and the other workspaces in it', async () => {
+  const {failure, screen, calls} = await fixture({boot: async ({deps, onStep}) => {
+    deps.onScope({scope: {kind: 'room', host: 'https://127.0.0.1:24100', room: 'current'},
+      entry: {base: 'https://web.example/', home: null}});
+    onStep('join');
+    throw Object.assign(new Error('join: HTTP 500'), {name: 'HostAdmissionError', code: 'refused', status: 500});
+  }});
+  assert.equal(failure?.message, 'join: HTTP 500', 'the cause is thrown on, to the console');
+  const root = document.documentElement.dataset;
+  assert.equal(root.failure, 'host-error');
+  assert.equal(screen['arrival-failure-heading'].textContent, '127.0.0.1:24100 couldn’t open this workspace');
+  assert.match(screen['arrival-failure-body'].textContent, /answered with an error/);
+  assert.equal(screen['arrival-failure-retry'].hidden, false);
+  assert.match(screen['arrival-failure-text'].textContent, /Host: 127\.0\.0\.1:24100/);
+  assert.match(screen['arrival-failure-text'].textContent, /HTTP 500/);
+  // The other workspaces are part of the screen, never a card over it.
+  assert.equal(document.body.children.length, 0, 'no card over the screen');
+  assert.equal(screen['arrival-failure-elsewhere'].hidden, false);
+  const labels = screen['arrival-failure-others'].children.map(item => item.children[0].children[0].textContent);
+  assert.ok(labels.includes('Other'), labels.join());
+  const other = screen['arrival-failure-others'].children[labels.indexOf('Other')];
+  other.children[0].listeners.get('click')();
+  assert.ok(calls.includes('history') || calls.includes('assign'), 'it opens the other workspace');
+});
+
+test('a page whose host never answers names that host, not this site', async () => {
+  globalThis.fetch = async () => ({ok: true});
+  const {screen} = await fixture({boot: async ({deps}) => {
+    deps.onScope({scope: {kind: 'room', host: 'https://127.0.0.1:24100', room: 'current'},
+      entry: {base: 'https://web.example/', home: null}});
+    // Let in, then the host's connection goes.
+    deps.onAdmitted({workspaceName: 'Lounge'});
+    throw new TypeError('Failed to fetch');
+  }});
+  assert.equal(document.documentElement.dataset.failure, 'unreachable');
+  assert.equal(screen['arrival-failure-heading'].textContent, 'Can’t connect to 127.0.0.1:24100');
+  assert.match(screen['arrival-failure-body'].textContent, /doesn’t trust its certificate/);
+  assert.equal(screen['arrival-failure-host'].hidden, false);
+  assert.equal(screen['arrival-failure-host'].textContent, 'Open 127.0.0.1:24100');
 });
 
 test('the account choice says it is the account choice, and resolves to the account taken', async () => {

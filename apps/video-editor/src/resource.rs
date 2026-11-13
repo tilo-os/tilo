@@ -116,7 +116,15 @@ impl Project {
         #[param("left, center or right; center when omitted")] align: Option<String>,
     ) -> Result<(), Refusal> {
         let words = text.trim();
-        let content = if words.is_empty() { "Title" } else { words };
+        let content = if words.is_empty() {
+            crate::resource::CATALOG.t("video-editor-kind-title")
+        } else {
+            words.to_owned()
+        };
+        let name = content.lines().next().map_or_else(
+            || crate::resource::CATALOG.t("video-editor-kind-title"),
+            str::to_owned,
+        );
         let mut source = TextSource::new(content);
         crate::agent_timeline::TitleStyle {
             text: None,
@@ -128,7 +136,7 @@ impl Project {
         let palette = u8::try_from(self.media.len() % 7).unwrap_or(0);
         self.media.push(MediaItem {
             id: tilo_resource::fresh_uuid(),
-            name: content.lines().next().unwrap_or("Title").to_owned(),
+            name,
             kind: MediaKind::Text,
             // Long enough to be trimmed down rather than stretched.
             duration: 5.0,
@@ -254,7 +262,12 @@ impl Project {
     ) -> Result<(), Refusal> {
         let at = instant(at)?;
         let name = name.trim();
-        self.add_marker(at, if name.is_empty() { "Marker" } else { name }, 1);
+        let name = if name.is_empty() {
+            crate::resource::CATALOG.t("video-editor-marker")
+        } else {
+            name.to_owned()
+        };
+        self.add_marker(at, &name, 1);
         Ok(())
     }
 
@@ -923,7 +936,7 @@ impl ResourceApp for VideoEditor {
 
     fn label(project: &Project) -> String {
         if project.name.is_empty() {
-            "Project".to_owned()
+            crate::resource::CATALOG.t("video-editor-project")
         } else {
             project.name.clone()
         }

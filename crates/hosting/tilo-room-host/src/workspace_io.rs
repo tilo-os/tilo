@@ -286,6 +286,11 @@ pub(crate) async fn replace_governed_access(
         let _slot = slot;
         let (store, lane) = authority_handles(&workspace).await;
         let _lane = lane.lock_owned().await;
+        // The governor's projection: from here on governance owns who joins.
+        let access = GovernedAccessRecord {
+            governed: true,
+            ..access
+        };
         let (narrowed, removed) = {
             let mut runtime = workspace.lock().await;
             runtime.membership_revision = runtime
@@ -531,6 +536,12 @@ mod tests {
     use crate::store::test_barrier;
 
     fn runtime(root: &std::path::Path) -> SharedWorkspace {
+        // A workspace whose membership is kept: its access record, the one
+        // projection of who is a member.
+        WorkspaceStore::open(root, 7, false)
+            .unwrap()
+            .save_governed_access(&crate::store::GovernedAccessRecord::default())
+            .unwrap();
         Arc::new(tokio::sync::Mutex::new(
             WorkspaceRuntime::open(root, 7, false, Membership::default()).unwrap(),
         ))
@@ -630,7 +641,10 @@ mod tests {
         replace_membership(&workspace, vec![[1; 32], [2; 32]])
             .await
             .unwrap();
-        let path = tmp.path().join("workspaces/7/membership.json");
+        let path = tmp
+            .path()
+            .join("workspaces/7")
+            .join(crate::store::GOVERNED_ACCESS_FILE);
         let saved = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
@@ -671,7 +685,7 @@ mod tests {
         store.save_membership(&[[1; 32], [2; 32]]).unwrap();
         // This external update has not yet reached the cached routing metadata.
         assert!(workspace.lock().await.membership.devices.is_empty());
-        let path = store.root().join("membership.json");
+        let path = store.root().join(crate::store::GOVERNED_ACCESS_FILE);
         let saved = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
@@ -813,7 +827,10 @@ mod tests {
         replace_membership(&workspace, vec![[1; 32], [2; 32]])
             .await
             .unwrap();
-        let path = tmp.path().join("workspaces/7/membership.json");
+        let path = tmp
+            .path()
+            .join("workspaces/7")
+            .join(crate::store::GOVERNED_ACCESS_FILE);
         let saved = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();

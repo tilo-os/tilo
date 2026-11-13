@@ -74,12 +74,11 @@ case $group in
     # What a person waits for when an agent works in their session: the round
     # trip of the calls an agent makes — list the actions, read the state,
     # invoke one, and the same through the MCP server — and how many complete
-    # at once. A whole app task (Notes) cannot be timed here: a builder starts
+    # at once. A whole app task (Notes) is not timed here: a builder starts
     # no app, its sandboxes needing a /proc of their own, so such a step would
-    # measure nothing. `scripts/perf/agent_task.py` times that on a session
-    # where apps start, and the agent's own task pipeline is the
-    # `agent-native` group's. tilo-runtime's dev-overrides carry the throwaway
-    # identity the run's session mints for the desk it opens.
+    # measure nothing; the agent's own task pipeline is the `agent-native`
+    # group's. tilo-runtime's dev-overrides carry the throwaway identity the
+    # run's session mints for the desk it opens.
     cargo build --locked --release -p tilo-session --bin tilo-session -p tilo-runtime --bin tilo-runtime-mcp \
       --features dev-overrides
     test -r "$VK_DRIVER_FILES"

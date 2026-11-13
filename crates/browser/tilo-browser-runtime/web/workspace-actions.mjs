@@ -11,10 +11,11 @@
  *   (`enterOwnWorkspace`), however many they ask for. The page then opens it.
  * - `copy-invite-link`: one press, and a link to this workspace is on the
  *   clipboard — the sheet is for choosing what someone gets, not for handing
- *   a link over. The link is made when the page attaches (a clipboard write
- *   has to be inside the press, and the host's answer is not), and another is
- *   made after each is handed over. Whoever wants a role chosen, or the
- *   invitation listed and taken back, opens the sheet (`invite.rs`).
+ *   a link over. The invitation is made in the press, never before: the host
+ *   answers in tens of milliseconds, and a browser that will not take the
+ *   copy by then gets the link in a card to copy by hand. Whoever wants a
+ *   role chosen, or the invitation listed and taken back, opens the sheet
+ *   (`invite.rs`).
  *
  * - `waiting-to-join`: the addresses people left at the door of a workspace
  *   that takes people by invitation (`membership.waitList`), for the owner
@@ -78,11 +79,6 @@ export const keepsOwn = peer => Boolean(peer?.workspace) && Boolean(peer?.host?.
  * `fail(text)`. Attach the desktop with `attach(mount)`; route its host
  * actions to `perform`.
  */
-/** How long a link made ahead of the press is handed over for: an
- * invitation is good for an hour, and one older than this is made again
- * rather than handed on half spent. */
-const READY_LINK_MS = 30 * 60_000;
-
 export function createWorkspaceActions({
   peer = null, machines = () => [], lobby, inviteLink, open, ui,
   onError = error => console.warn('workspaces:', error),
@@ -91,12 +87,6 @@ export function createWorkspaceActions({
   let lettingIn = false;
   let workspaceName = null;
   const inWorkspace = Boolean(peer?.workspace && peer.createInvitation);
-  // A link made before it is asked for: copying it is then the press itself,
-  // which is what lets the browser take it (a clipboard write outside a
-  // gesture is a write the page may not make). One is made when the page
-  // attaches, and another after each is handed over.
-  let ready = null;
-  let making = null;
   const actions = () => [
     ...(ownHost(peer) || machines().length || keepsOwn(peer) ? [NEW_WORKSPACE] : []),
     ...(lettingIn ? [INVITE_LINK] : []),
@@ -136,50 +126,14 @@ export function createWorkspaceActions({
     if (created) await open({origin, room: created.room, name: created.name, hostDevice: created.hostDevice});
   };
 
-  /** Make the next link this page hands over, and keep it ready. A failure
-   * is not the person's to read yet: pressing the action says it. */
-  const armInviteLink = () => {
-    if (ready) return Promise.resolve(ready);
-    // A press while the link is being made waits for that one, rather than
-    // asking the workspace for a second.
-    making ??= (async () => {
-      // The page says what its link is doing (`data-invite-link`), so a person
-      // who opens the search sees a link that is there, and a tool driving the
-      // page knows when a press will hand one over.
-      ui.said?.('invite-link', 'making');
-      try {
-        const text = await peer.createInvitation({role: 'editor'});
-        ready = {link: await inviteLink(text), madeAt: Date.now()};
-        ui.said?.('invite-link', 'ready');
-      } catch (refusal) {
-        ui.said?.('invite-link', 'failed');
-        onError(refusal);
-        return null;
-      }
-      return ready;
-    })().finally(() => { making = null; });
-    return making;
-  };
-  /** Hand over a link in one press: the one kept ready when it is still
-   * good, else one made now (which the share card shows, having no press to
-   * copy inside). */
+  /** Hand over a link in one press: made now, copied when the browser takes
+   * it, else shown in a card to copy by hand. */
   const copyInviteLink = async () => {
-    const now = Date.now();
-    const held = ready && now - ready.madeAt < READY_LINK_MS ? ready : null;
-    const made = held ?? await armInviteLink();
-    if (!made) {
-      say(new Error('the workspace did not answer with an invitation'), 'Could not make an invite link');
-      return;
-    }
-    ready = null;
-    if (held && await ui.copy?.(made.link)) {
-      void armInviteLink();
-      return;
-    }
+    const link = await inviteLink(await peer.createInvitation({role: 'editor'}));
+    if (await ui.copy?.(link)) return;
     await ui.share({title: 'Invite someone to join',
       body: 'Anyone with this link joins as an editor. Take it back whenever you like, in the invite sheet.',
-      link: made.link, copied: true});
-    void armInviteLink();
+      link, copied: true});
   };
 
   /** An invitation for the address `entry` left at the door: mailed there
@@ -228,9 +182,6 @@ export function createWorkspaceActions({
       lettingIn = await peer.membership.mayInvite().catch(() => false)
         && await peer.membership.waitList().then(() => true, () => false);
       refresh();
-      // Whoever may invite is handed a link without waiting for one to be
-      // made: it is made now, while nothing is being asked of them.
-      if (lettingIn) void armInviteLink();
     },
     /** Make a workspace on the machine at `origin` (one just set up). */
     async createOn(origin) {

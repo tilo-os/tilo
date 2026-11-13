@@ -297,7 +297,8 @@ impl OptionsPanel {
         if abilities.replace {
             y += gap;
             self.replace_rect = Rect::new(x0 + pad, y, x1 - pad, y + control);
-            self.replace_field.apply_layout_external(self.replace_rect);
+            self.replace_field
+                .apply_layout_external(self.replace_rect, theme);
             y += control + gap;
             let all = Rect::new(x1 - pad - replace_all_w, y, x1 - pad, y + control);
             let one = Rect::new(all.x0 - gap - replace_w, y, all.x0 - gap, y + control);

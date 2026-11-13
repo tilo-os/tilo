@@ -29,6 +29,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use collab_types::scope::Scope;
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use tilo_desktop_model::WorkspaceId;
+use tilo_live::frame::PlaneKeys;
 use tilo_live::grant;
 use tilo_live::live::{self, Namespace};
 use tilo_live::native;
@@ -239,7 +240,27 @@ struct Shared {
     /// The runtime the planes run on, once the plane's thread started it: what a plane's readers
     /// are started on, whichever thread asks the plane to show a track.
     runtime: std::sync::OnceLock<tokio::runtime::Handle>,
+    /// Where a device that holds none of a workspace's media keys is lent the keys of its own
+    /// streams ([`MediaKeysLender`]): a session in a workspace's VM, once it can ask its host.
+    lender: std::sync::OnceLock<Arc<dyn MediaKeysLender>>,
 }
+
+/// One sender's media keys, lent: what a device confined to its own record publishes its presence,
+/// windows and pages with on a workspace's live plane, holding nothing that opens anyone's stream
+/// ([`tilo_live::plane::PlaneKeys::Sender`]).
+pub(crate) trait MediaKeysLender: Send + Sync {
+    /// This device's own media keys in `workspace` at the media channel's current epoch, as its
+    /// host lends them; `None` when they could not be had now.
+    fn lend(
+        &self,
+        workspace: WorkspaceId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Option<channel_crypto::SenderMediaKeys>> + Send + '_>,
+    >;
+}
+
+/// How long one ask for lent keys is waited for before the plane waits for the next event instead.
+const LEND_PATIENCE: Duration = Duration::from_secs(20);
 
 impl RelayAuthority for Shared {
     fn admit<'a>(&'a self, peer: Peer, proof: &'a [u8]) -> Admission<'a> {
@@ -332,6 +353,21 @@ impl Shared {
         Some((members, candidates))
     }
 
+    /// The keys of this device's own streams in `workspace`, lent by its host, when this session
+    /// has a lender and the host answers in time.
+    async fn lent(&self, workspace: WorkspaceId) -> Option<channel_crypto::SenderMediaKeys> {
+        let lender = Arc::clone(self.lender.get()?);
+        match tokio::time::timeout(LEND_PATIENCE, lender.lend(workspace)).await {
+            Ok(Some(lent)) if lent.sender() == self.device => Some(lent),
+            Ok(_) => None,
+            Err(_) => {
+                // Nothing this device shows reaches anyone until it has them: worth a warning.
+                tracing::warn!(%workspace, "the host lent no media keys in time");
+                None
+            }
+        }
+    }
+
     /// Read `workspace` as it is now and join through the first of its relays
     /// this device reaches, move the plane's keys and roster when they changed,
     /// or leave when the workspace names no relay any more.
@@ -346,11 +382,19 @@ impl Shared {
             collab_types::scope::MEDIA_APP,
             collab_types::scope::WORKSPACE_RECORD,
         );
-        let Ok(crate::engine::SealKeys::Here(keys)) = keys else {
-            // The plane opens when the workspace's keys are here; a plane already open keeps what
-            // it has until they move.
-            tracing::debug!(%workspace, "the live plane waits for the workspace's keys");
-            return;
+        // A device that may hold none of them (a session in a workspace's VM) is lent its own
+        // streams' keys instead, asked afresh at each join: a plane whose epoch moved is cut, and
+        // joins again on the keys its host lends then.
+        let keys = if let Ok(crate::engine::SealKeys::Here(keys)) = keys {
+            PlaneKeys::from(keys)
+        } else {
+            let Some(lent) = self.lent(workspace).await else {
+                // The plane opens when the workspace's keys are here; a plane already open keeps
+                // what it has until they move.
+                tracing::debug!(%workspace, "the live plane waits for the workspace's keys");
+                return;
+            };
+            PlaneKeys::from(lent)
         };
         self.observe(workspace, keys.epoch());
         self.observe_roster(workspace, &members);
@@ -611,6 +655,7 @@ impl Live {
             rejoin,
             wake,
             runtime: std::sync::OnceLock::new(),
+            lender: std::sync::OnceLock::new(),
         });
         let (relayed, named) = tokio::sync::watch::channel::<Option<Arc<Relay>>>(None);
         let handler = native::handler(move |session: native::Session| {
@@ -634,6 +679,19 @@ impl Live {
             thread: None,
             protocols,
             rejoin: rejoined,
+        }
+    }
+
+    /// Have `lender` lend this device its own streams' media keys in every workspace whose keys
+    /// it holds none of, from now on: each such workspace is joined again at once. Only the first
+    /// lender counts.
+    pub(crate) fn lend_media_keys(&self, lender: Arc<dyn MediaKeysLender>) {
+        if self.shared.lender.set(lender).is_err() {
+            return;
+        }
+        for workspace in self.shared.engine.workspaces() {
+            // ignored-failure: a plane thread that ended settles nothing again
+            let _ = self.shared.rejoin.send(workspace);
         }
     }
 

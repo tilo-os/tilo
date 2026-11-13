@@ -18,7 +18,7 @@
 //! #[derive(Model, Default)]
 //! pub struct Note { pub body: String }
 //!
-//! #[resource(kind = "example.note", label = "Note")]
+//! #[resource(kind = "example.note")]
 //! impl Note {
 //!     /// Edit the note.
 //!     #[action]
@@ -481,11 +481,6 @@ impl ResourceKind {
     /// own.
     pub fn holds_or_older(&self, doc: &Doc) -> bool {
         crate::evolution::stored_version(doc) < self.version || self.holds(doc)
-    }
-
-    /// The heads of a saved document; `None` when `bytes` are no document.
-    pub fn saved_heads(bytes: &[u8]) -> Option<Vec<automerge::ChangeHash>> {
-        Doc::load(bytes).ok().map(|mut doc| doc.get_heads())
     }
 
     /// What the open resource is called, from a state [`Self::read`]

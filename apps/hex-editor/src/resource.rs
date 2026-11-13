@@ -135,13 +135,19 @@ impl HexEditor {
         let mut bound = vec![
             Self::INSERT_BYTES
                 .bind(hex_editor::InsertBytes::paths().offset, at)
-                .declaration("insert-byte", "Insert at cursor"),
+                .declaration(
+                    "insert-byte",
+                    ui::tilo_resource::word!("hex-editor-document-insert-byte"),
+                ),
         ];
         if cursor < len {
             bound.push(
                 Self::OVERWRITE_BYTES
                     .bind(hex_editor::OverwriteBytes::paths().offset, cursor)
-                    .declaration("overwrite-byte", "Overwrite at cursor"),
+                    .declaration(
+                        "overwrite-byte",
+                        ui::tilo_resource::word!("hex-editor-document-overwrite-byte"),
+                    ),
             );
         }
         let delete = |offset: usize, len: usize| {
@@ -150,9 +156,15 @@ impl HexEditor {
                 .and(hex_editor::DeleteBytes::paths().len, len)
         };
         if let Some((lo, hi)) = selection {
-            bound.push(delete(lo, hi - lo + 1).declaration("delete-selection", "Delete selection"));
+            bound.push(delete(lo, hi - lo + 1).declaration(
+                "delete-selection",
+                ui::tilo_resource::word!("hex-editor-document-delete-selection"),
+            ));
         } else if cursor < len {
-            bound.push(delete(cursor, 1).declaration("delete-byte", "Delete byte"));
+            bound.push(delete(cursor, 1).declaration(
+                "delete-byte",
+                ui::tilo_resource::word!("hex-editor-document-delete-byte"),
+            ));
         }
         bound.into_iter().flatten().collect()
     }

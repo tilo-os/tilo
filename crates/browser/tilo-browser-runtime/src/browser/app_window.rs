@@ -138,13 +138,12 @@ impl AppPage {
             Some(id) => HostContext::prepare_new_record(definition, inputs, id),
             None => HostContext::prepare(definition, inputs, &target),
         };
-        let mut context = match prepared {
+        let mut context = match prepared.map_err(crate::app_page::Unbuilt::of) {
+            Ok(context) => context,
             // A named record the workspace still sends: the window waits for it
             // like one this page named itself.
-            Err(ui::launch::LaunchError::Record(ui::record::RecordOpenError::Arriving)) => {
-                return Ok(self.arrival());
-            }
-            prepared => prepared.map_err(error)?,
+            Err(crate::app_page::Unbuilt::Arriving) => return Ok(self.arrival()),
+            Err(crate::app_page::Unbuilt::Failed(detail)) => return Err(error(detail)),
         };
         context.provide_models(config.models()?);
         context.provide_content(self.content.clone());

@@ -57,7 +57,7 @@ impl Checklist {
 
 /// The name, every title and every done flag are edited at their paths; the
 /// verbs are what a field edit cannot say.
-#[resource(kind = "example.checklist", label = "Checklist")]
+#[resource(kind = "example.checklist")]
 impl Checklist {
     /// Add an item.
     #[action]

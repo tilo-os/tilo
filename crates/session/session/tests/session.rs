@@ -1710,7 +1710,7 @@ fn setup_lists_its_steps_by_name_and_a_press_by_name_takes_the_step() {
     let names: Vec<String> = session
         .controls()
         .into_iter()
-        .map(|(name, _)| name)
+        .map(|control| control.name)
         .collect();
     let skip = "onboarding.tour.skip.button";
     assert!(

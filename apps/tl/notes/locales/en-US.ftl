@@ -50,44 +50,76 @@ d-qymo5lg2 = New note
 d-37dxigeq = New sub-note
     .doc = Starts a note inside `n`'s own, after the notes it already holds.
 
+d-37dxigeq-n = N
+
 d-qhmjwgei = Pin
     .doc = Pins or unpins a note.
     .w-pin = Pin
     .w-unpin = Unpin
 
+d-qhmjwgei-pinned = Pinned
+
 d-7jhaq3a5 = Move to
     .doc = Moves a note to a place in the tree: at the end of `parent`'s own, or where `before` stands.
     .w-a-note-cannot-go-inside-itself = A note cannot go inside itself
+
+d-7jhaq3a5-moved = Moved
+
+d-7jhaq3a5-parent = Parent
+
+d-7jhaq3a5-before = Before
 
 d-ai4sxgvt = Move to
     .doc = Moves a note to just after `n` and every note under it: the place a drop after a row asks for, which names the row it lands after rather than the row after that one.
     .w-a-note-cannot-go-inside-itself = A note cannot go inside itself
 
+d-ai4sxgvt-moved = Moved
+
+d-ai4sxgvt-n = N
+
 d-c34rzynx = Duplicate
     .doc = Copies a note, with every note under it, just after the one it copies.
+
+d-c34rzynx-n = N
 
 d-jo2tztsx = Sort by title
     .doc = Puts a note's own in the order of their titles, once, for a branch that grew out of order.
     .w-it-holds-no-notes = It holds no notes
 
+d-jo2tztsx-n = N
+
 d-nydyehwn = Delete
     .doc = Deletes a note and every note under it, as one change a person takes back at once.
+
+d-nydyehwn-n = N
 
 d-zvgl2tzt = Rename
     .doc = Renames a note.
 
+d-zvgl2tzt-title = Title
+
 d-gc34cbhl = File a note
     .doc = Files a note titled `title` and tagged `tag` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it.
+
+d-gc34cbhl-title = Title
+
+d-gc34cbhl-tag = Tag
 
 d-7ow26bju = Tag
     .doc = Gives a note a tag.
 
+d-7ow26bju-t = T
+
 d-3u3bevec = Untag
     .doc = Untags a note.
+
+d-3u3bevec-t = T
 
 d-4s5iqnfo = Insert image
     .doc = Puts a picture in a note, where its words end: the person picks the file, and the note keeps the address of its content rather than the picture, and the name it came in as.
     .did = added an image
+
+d-4s5iqnfo-image = Image
 
 d-xptsjaii = Export markdown
     .doc = A note as Markdown: its title, then its body, each picture it shows standing beside it as `<note>/images/<name>`, a path another reader of the file follows and this app reads again as the address of the picture's bytes.
@@ -102,9 +134,13 @@ d-t4nxxtng = Import markdown
     .doc = Imports a Markdown file as a note at the top of the tree, or opens the note that file already made: a note keeps the address of the file it came from, so importing the same file twice makes one note.
     .did = imported a note
 
+d-t4nxxtng-file = File
+
 d-h3zczsen = Import archive
     .doc = Imports a zip of Markdown (a notebook this app exported, or a Notion export) as notes under the notebook, a page under the page that held it, in one change: undo takes the whole import back.
     .did = imported a notebook
+
+d-h3zczsen-file = File
 
 d-ttq2d5ah = File name
     .w-note = Note

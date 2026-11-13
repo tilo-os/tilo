@@ -43,6 +43,16 @@ http://127.0.0.1:{$TILO_SH_LIVE_PORT} {
 # It is a name under localhost, which a browser resolves to loopback itself
 # and treats as a secure context: a passkey's relying party is the page's
 # host name, which an address cannot be.
+#
+# `/owner/` is `stack.sh owner`'s page, here rather than at an address of its
+# own because it reads the Lounge's key out of the site's localStorage, which
+# only this origin has. It listens while that command waits for its link.
 http://tilo.localhost:{$TILO_SH_SITE_PORT} {
-	reverse_proxy 127.0.0.1:{$TILO_SH_WEB_PORT}
+	@owner path /owner/*
+	handle @owner {
+		reverse_proxy 127.0.0.1:{$TILO_SH_OWNER_PORT}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:{$TILO_SH_WEB_PORT}
+	}
 }

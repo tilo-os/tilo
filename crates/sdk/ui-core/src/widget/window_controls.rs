@@ -299,15 +299,19 @@ impl WindowControls {
         )
     }
 
-    /// Where the controls begin, less the gap anything before them keeps;
-    /// the row's trailing edge for none.
+    /// Where the controls begin, less the gap anything before them keeps: the pill's start, or the
+    /// first control's on a card, whose controls stand with no pill; the row's trailing edge for
+    /// none.
     #[must_use]
     pub fn content_limit(&self, row: Rect) -> f64 {
-        if self.pill.area() > 0.0 {
-            self.pill.x0 - LEAD_GAP
+        let lead = if self.pill.area() > 0.0 {
+            self.pill.x0
         } else {
-            row.x1
-        }
+            self.iter()
+                .map(|(_, at)| at.x0)
+                .fold(row.x1 + LEAD_GAP, f64::min)
+        };
+        lead - LEAD_GAP
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (WindowControl, Rect)> {
@@ -610,6 +614,16 @@ mod tests {
             "the pill is centred on the bar",
         );
         assert_eq!(WindowControls::around(bar, Rect::ZERO), Rect::ZERO);
+    }
+
+    #[test]
+    fn a_cards_title_stops_before_its_controls() {
+        let c = WindowControls::lay_out_card(row());
+        assert_eq!(c.pill, Rect::ZERO, "a card's controls stand with no pill");
+        assert!(
+            c.content_limit(row()) <= c.minimize.x0 - LEAD_GAP + f64::EPSILON,
+            "the title ellipsizes before the collapse, snap and close: {c:?}"
+        );
     }
 
     #[test]

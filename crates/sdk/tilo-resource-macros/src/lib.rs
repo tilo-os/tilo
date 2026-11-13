@@ -88,6 +88,63 @@ pub fn committed_surface(_input: TokenStream) -> TokenStream {
     .into()
 }
 
+/// What `tilo_resource::word!` expands to: the word `key` of the catalogue
+/// beside the crate being built, named through `krate`, the path that crate
+/// reaches `tilo_resource` by, its placeables filled with the arguments the
+/// word carries.
+#[proc_macro]
+pub fn word(input: TokenStream) -> TokenStream {
+    let WordInput {
+        krate,
+        key,
+        catalogue,
+        arguments,
+    } = parse_macro_input!(input as WordInput);
+    let catalogue = words::Catalogue::read(catalogue.as_deref().unwrap_or(words::LOCALES));
+    match catalogue.named(&krate, key.span(), &key.value(), &arguments) {
+        Ok(word) => word.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+/// What `word!` takes: the path to `tilo_resource`, a key, the arguments its
+/// placeables show (`name = …`), and the catalogue it is in when not
+/// `locales`.
+struct WordInput {
+    krate: Tokens,
+    key: syn::LitStr,
+    catalogue: Option<String>,
+    arguments: Vec<(syn::Ident, syn::Expr)>,
+}
+
+impl syn::parse::Parse for WordInput {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let mut krate = Tokens::new();
+        while !input.peek(syn::Token![,]) {
+            krate.extend([input.parse::<proc_macro2::TokenTree>()?]);
+        }
+        input.parse::<syn::Token![,]>()?;
+        let key = input.parse()?;
+        let mut catalogue = None;
+        let mut arguments = Vec::new();
+        while input.parse::<Option<syn::Token![,]>>()?.is_some() && !input.is_empty() {
+            let name: syn::Ident = input.parse()?;
+            input.parse::<syn::Token![=]>()?;
+            if name == "catalogue" {
+                catalogue = Some(input.parse::<syn::LitStr>()?.value());
+            } else {
+                arguments.push((name, input.parse()?));
+            }
+        }
+        Ok(Self {
+            krate,
+            key,
+            catalogue,
+            arguments,
+        })
+    }
+}
+
 #[proc_macro_derive(Model, attributes(model))]
 pub fn derive_model(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -1750,13 +1807,19 @@ fn is_action_cx(ty: &Type) -> bool {
 /// vocabulary, and implement `Resource` for it.
 ///
 /// ```ignore
-/// #[resource(kind = "example.note", label = "Note")]
+/// #[resource(kind = "example.note")]
 /// impl Note {
 ///     /// Replace the note's text.
 ///     #[action]
 ///     pub fn edit(&mut self, #[param("Note text")] text: String) { self.body = text; }
 /// }
 /// ```
+///
+/// The record is called by the message `example-note` of the crate's
+/// `locales/en-US.ftl` and each action by `<kind>-<id>` (`example-note-edit`),
+/// read in the person's language whenever it is published; a key the
+/// catalogue does not hold does not build. Each parameter is called by
+/// `<action key>-<param>`, else `<kind>-<param>`, where the catalogue has it.
 ///
 /// Generates, per action, a parameter struct in a module named after the
 /// type (`note::Edit { text }`, with a JSON Schema derived from the
@@ -1778,7 +1841,7 @@ fn is_action_cx(ty: &Type) -> bool {
 /// like the parameter, or the record's only one; `#[action(item = field)]`
 /// names it otherwise, and anything else does not compile.
 ///
-/// Action options: `label = "..."`, `destructive` (it deletes or overwrites:
+/// Action options: `label = "key"` (another key of the catalogue), `destructive` (it deletes or overwrites:
 /// when Undo takes it back, as it does any change of the document alone, it
 /// runs at once and offers Undo; otherwise people confirm it, through any
 /// door), `irreversible` (it also loses what Undo cannot bring back, such

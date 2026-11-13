@@ -454,7 +454,7 @@ impl SharedDesktops {
         let changes = candidate.save_after(heads);
         // A write on no history is the whole record: the one that founds it.
         let (engine, founding) = (std::sync::Arc::clone(engine), heads.is_empty());
-        let mut writing = crate::engine_write::Writing::new(self.wake.handle(), async move {
+        let mut writing = crate::engine_write::Writing::write(self.wake.handle(), async move {
             let route = (DESKTOP_APP, DESKTOP_RECORD);
             engine
                 .write_record(room, route, &changes, founding, sealed.as_ref())

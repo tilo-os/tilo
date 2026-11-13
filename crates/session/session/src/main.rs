@@ -1,6 +1,6 @@
 //! The native session: `tilo-session [--backend drm|headless|nested] [--size WxH]
 //! [--connector NAME] [--output [NAME=]WxH[@X,Y]]... [--scale S|--panel-mm WxH]
-//! [--shell screen] [--host-desktop] [--admit-repl PATH]...
+//! [--shell screen] [--host-desktop] [--admit-repl PATH]... [--agent-key FILE]
 //! [--test-control PATH] [--admin-control PATH] [--seed-apps] [-- command args...]`.
 //! It listens on a fresh `wayland-N` socket, serves X11 clients one display per
 //! workspace (unless `--no-x11`), prints the socket and the agent door it serves,
@@ -203,6 +203,8 @@ struct CommandLine {
     /// (`--admit-repl PATH`, as often as they name one): their decision,
     /// made as they start the session.
     admit_repl: Vec<std::path::PathBuf>,
+    /// The agent key the person starts the session with (`--agent-key FILE`).
+    agent_key: Option<std::path::PathBuf>,
     /// Where the development test-control socket opens, when the command line named one and this
     /// build opens it.
     test_control: Option<std::path::PathBuf>,
@@ -569,6 +571,7 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
         shell: output.shell,
         reach: reach(ours, output.backend),
         admit_repl: admit_repl(ours),
+        agent_key: value(ours, "--agent-key").map(std::path::PathBuf::from),
         test_control: test_control(ours),
         admin_control: admin_control(ours, output.backend),
         seed_apps: seed_apps(ours),
@@ -601,6 +604,7 @@ fn start(
         reach,
         shell,
         admit_repl,
+        agent_key,
         test_control,
         admin_control,
         seed_apps,
@@ -700,6 +704,7 @@ fn start(
         machine,
         shell,
         admit_repl,
+        agent_key,
         test_control,
         admin_control,
         hosted_browser,

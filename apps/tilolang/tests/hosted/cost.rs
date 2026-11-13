@@ -2546,12 +2546,9 @@ fn opening_a_rows_page_mounts_the_document_where_the_row_stands() {
 fn choosing_a_note_in_the_tree_opens_it_without_composing_the_window() {
     let mut session = Session::rich();
     for round in 0..3 {
-        // The action stands where the window offers it now: the one empty state a first run
-        // shows draws it in the bar, and the columns that come with the first note draw it in
-        // their header row.
         press_new_note(&mut session);
         session.settle();
-        let title = session.field("Untitled");
+        let title = session.field("title");
         session.window.click_at(title.0, title.1);
         session.window.type_text(&format!("Note {round}"));
         session.settle();
@@ -2589,15 +2586,14 @@ fn choosing_another_note_in_the_tree_keeps_the_windows_composition() {
     let _motion = ui::motion::testing::settled();
     let mut session = Session::rich();
     for round in 0..2 {
-        // The action stands where the window offers it now, as above.
         press_new_note(&mut session);
         session.settle();
-        let title = session.field("Untitled");
+        let title = session.field("title");
         session.window.click_at(title.0, title.1);
         session.window.type_text(&format!("Note {round}"));
         session.settle();
         // The notes read differently: it is their bodies that another note replaces.
-        let body = session.field("Write something");
+        let body = session.field("body");
         session.window.click_at(body.0, body.1);
         session
             .window

@@ -546,3 +546,5 @@ browser-application-set-site-protection = Tracker protection
 
 ## What the app is called in a window and in the launcher
 browser-app-title = Browser
+browser-application-protection-off = Turn tracker protection off for this site
+browser-application-protection-on = Turn tracker protection on for this site

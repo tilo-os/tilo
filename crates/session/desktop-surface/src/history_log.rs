@@ -144,7 +144,7 @@ pub fn desk_document(
     // they would be a change of the desk of their own, at no time at all.
     let mut wrote_names = false;
     for change in log.get_changes(&[]) {
-        let Some(desktop) = shared_record::read(log, Some(&[change.hash()])) else {
+        let Some(desktop) = shared_record::read_as_kept(log, Some(&[change.hash()])) else {
             continue;
         };
         doc.set_actor(actor_of(&change));

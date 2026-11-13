@@ -112,16 +112,9 @@ fn removing(who: &DeviceCert) -> Vec<Change> {
 fn genesis(
     cert: &DeviceCert,
     key: &ed25519_dalek::SigningKey,
-    doc: &mut AutoCommit,
+    doc: &AutoCommit,
 ) -> SignedMembershipOp {
-    legacy::genesis_op(
-        cert,
-        key,
-        &doc.get_heads(),
-        &policy(doc),
-        1_700_000_000_000_000_000,
-    )
-    .unwrap()
+    genesis_op(cert, key, &policy(doc), 1_700_000_000_000_000_000).unwrap()
 }
 
 /// A log-holding document: `doc` with `ops` written into it in the order given.
@@ -131,7 +124,7 @@ fn holding(doc: &AutoCommit, ops: &[SignedMembershipOp]) -> AutoCommit {
     let mut seed = doc.clone();
     let mut held = seed.fork();
     for op in ops {
-        legacy::put_op(&mut held, op).unwrap();
+        put_op(&mut held, op).unwrap();
     }
     held
 }
@@ -140,12 +133,12 @@ fn holding(doc: &AutoCommit, ops: &[SignedMembershipOp]) -> AutoCommit {
 fn the_genesis_projection_is_the_membership_the_rows_held() {
     let (owner_key, owner) = device(1);
     let (_, member) = device(2);
-    let mut doc = rows(
+    let doc = rows(
         &owner,
         &[(&member, Role::Editor)],
         vec![admin_grant(&owner, &member)],
     );
-    let genesis = genesis(&owner, &owner_key, &mut doc);
+    let genesis = genesis(&owner, &owner_key, &doc);
     let started = holding(&doc, &[genesis]);
     assert_eq!(replay(&started, WORKSPACE), policy(&doc));
     assert_eq!(replay(&started, WORKSPACE), policy(&started));
@@ -157,7 +150,6 @@ fn a_workspace_without_a_genesis_reads_its_rows() {
     let (_, member) = device(2);
     let doc = rows(&owner, &[(&member, Role::Viewer)], Vec::new());
     assert!(super::replay::genesis(&ops(&doc)).is_none());
-    assert!(legacy::needs_genesis(&doc));
     assert_eq!(replay(&doc, WORKSPACE), policy(&doc));
 }
 
@@ -168,25 +160,18 @@ fn a_workspace_without_a_genesis_reads_its_rows() {
 fn only_the_owners_device_starts_the_log() {
     let (owner_key, owner) = device(1);
     let (admin_key, admin) = device(2);
-    let mut doc = rows(
+    let doc = rows(
         &owner,
         &[(&admin, Role::Moderator)],
         vec![admin_grant(&owner, &admin)],
     );
     let mut claimed = policy(&doc);
     claimed.members.insert(person(&admin), Role::Owner);
-    let op = legacy::genesis_op(
-        &admin,
-        &admin_key,
-        &doc.get_heads(),
-        &claimed,
-        1_700_000_000_000_000_000,
-    )
-    .unwrap();
+    let op = genesis_op(&admin, &admin_key, &claimed, 1_700_000_000_000_000_000).unwrap();
     let held = holding(&doc, &[op]);
     assert_eq!(replay(&held, WORKSPACE), policy(&doc));
     // The owner's own genesis governs.
-    let owner_genesis = genesis(&owner, &owner_key, &mut doc);
+    let owner_genesis = genesis(&owner, &owner_key, &doc);
     let held = holding(&held, &[owner_genesis]);
     assert_eq!(replay(&held, WORKSPACE), policy(&doc));
 }
@@ -199,12 +184,12 @@ fn every_device_reaches_the_same_membership_from_the_same_operations() {
     let (owner_key, owner) = device(1);
     let (admin_key, admin) = device(2);
     let (guest_key, guest) = device(3);
-    let mut doc = rows(
+    let doc = rows(
         &owner,
         &[(&admin, Role::Moderator)],
         vec![admin_grant(&owner, &admin)],
     );
-    let genesis = genesis(&owner, &owner_key, &mut doc);
+    let genesis = genesis(&owner, &owner_key, &doc);
     let start = holding(&doc, std::slice::from_ref(&genesis));
     let id = genesis.id().unwrap();
 
@@ -261,8 +246,8 @@ fn settled(doc: &AutoCommit) -> (AutoCommit, Vec<(String, Vec<u8>)>) {
 fn two_owners_removing_each_other_reach_the_same_membership_in_any_order() {
     let (owner_key, owner) = device(1);
     let (co_owner_key, co_owner) = device(2);
-    let mut doc = rows(&owner, &[(&co_owner, Role::Owner)], Vec::new());
-    let genesis = genesis(&owner, &owner_key, &mut doc);
+    let doc = rows(&owner, &[(&co_owner, Role::Owner)], Vec::new());
+    let genesis = genesis(&owner, &owner_key, &doc);
     let start = holding(&doc, std::slice::from_ref(&genesis));
     let id = genesis.id().unwrap();
 
@@ -294,12 +279,12 @@ fn a_role_change_racing_a_removal_reaches_the_same_membership_in_any_order() {
     let (owner_key, owner) = device(1);
     let (admin_key, admin) = device(2);
     let (_, viewer) = device(3);
-    let mut doc = rows(
+    let doc = rows(
         &owner,
         &[(&admin, Role::Moderator), (&viewer, Role::Viewer)],
         vec![admin_grant(&owner, &admin)],
     );
-    let genesis = genesis(&owner, &owner_key, &mut doc);
+    let genesis = genesis(&owner, &owner_key, &doc);
     let start = holding(&doc, std::slice::from_ref(&genesis));
     let id = genesis.id().unwrap();
 
@@ -339,12 +324,12 @@ fn two_admins_inviting_at_the_same_time_both_admit() {
     let (second_key, second) = device(3);
     let (_, guest_a) = device(4);
     let (_, guest_b) = device(5);
-    let mut doc = rows(
+    let doc = rows(
         &owner,
         &[(&first, Role::Editor), (&second, Role::Editor)],
         vec![admin_grant(&owner, &first), admin_grant(&owner, &second)],
     );
-    let genesis = genesis(&owner, &owner_key, &mut doc);
+    let genesis = genesis(&owner, &owner_key, &doc);
     let start = holding(&doc, std::slice::from_ref(&genesis));
     let id = genesis.id().unwrap();
 
@@ -398,12 +383,12 @@ fn an_operation_written_after_its_author_lost_the_grant_has_no_effect() {
     let (owner_key, owner) = device(1);
     let (admin_key, admin) = device(2);
     let (guest_key, guest) = device(3);
-    let mut doc = rows(
+    let doc = rows(
         &owner,
         &[(&admin, Role::Moderator)],
         vec![admin_grant(&owner, &admin)],
     );
-    let genesis = genesis(&owner, &owner_key, &mut doc);
+    let genesis = genesis(&owner, &owner_key, &doc);
     let start = holding(&doc, std::slice::from_ref(&genesis));
     let genesis_id = genesis.id().unwrap();
     let base = replay(&start, WORKSPACE);
@@ -439,8 +424,8 @@ fn an_operation_written_after_its_author_lost_the_grant_has_no_effect() {
 fn an_operation_its_author_could_not_make_changes_nothing() {
     let (owner_key, owner) = device(1);
     let (viewer_key, viewer) = device(2);
-    let mut doc = rows(&owner, &[(&viewer, Role::Viewer)], Vec::new());
-    let genesis = genesis(&owner, &owner_key, &mut doc);
+    let doc = rows(&owner, &[(&viewer, Role::Viewer)], Vec::new());
+    let genesis = genesis(&owner, &owner_key, &doc);
     let start = holding(&doc, std::slice::from_ref(&genesis));
     let base = replay(&start, WORKSPACE);
     assert_eq!(base.members.get(&person(&viewer)), Some(&Role::Viewer));
@@ -477,8 +462,8 @@ fn one_change_its_author_could_not_make_takes_the_whole_operation() {
     let (owner_key, owner) = device(1);
     let (editor_key, editor) = device(2);
     let (_, guest) = device(3);
-    let mut doc = rows(&owner, &[(&editor, Role::Editor)], Vec::new());
-    let genesis = genesis(&owner, &owner_key, &mut doc);
+    let doc = rows(&owner, &[(&editor, Role::Editor)], Vec::new());
+    let genesis = genesis(&owner, &owner_key, &doc);
     let start = holding(&doc, std::slice::from_ref(&genesis));
     let base = replay(&start, WORKSPACE);
     let held = holding(
@@ -533,8 +518,8 @@ fn one_change_its_author_could_not_make_takes_the_whole_operation() {
 fn grants_are_the_operations_they_name() {
     let (owner_key, owner) = device(1);
     let (member_key, member) = device(2);
-    let mut doc = rows(&owner, &[(&member, Role::Editor)], Vec::new());
-    let genesis = genesis(&owner, &owner_key, &mut doc);
+    let doc = rows(&owner, &[(&member, Role::Editor)], Vec::new());
+    let genesis = genesis(&owner, &owner_key, &doc);
     let start = holding(&doc, std::slice::from_ref(&genesis));
     let base = replay(&start, WORKSPACE);
     let grant = Grant::new(
@@ -584,8 +569,8 @@ fn grants_are_the_operations_they_name() {
 fn settling_projects_the_operations_into_the_rows() {
     let (owner_key, owner) = device(1);
     let (_, member) = device(2);
-    let mut doc = rows(&owner, &[(&member, Role::Editor)], Vec::new());
-    let genesis = genesis(&owner, &owner_key, &mut doc);
+    let doc = rows(&owner, &[(&member, Role::Editor)], Vec::new());
+    let genesis = genesis(&owner, &owner_key, &doc);
     let start = holding(&doc, std::slice::from_ref(&genesis));
     let base = replay(&start, WORKSPACE);
 
@@ -616,8 +601,8 @@ fn settling_projects_the_operations_into_the_rows() {
 #[test]
 fn held_operations_are_kept_and_new_ones_prove_their_writer() {
     let (owner_key, owner) = device(1);
-    let mut doc = rows(&owner, &[], Vec::new());
-    let genesis = genesis(&owner, &owner_key, &mut doc);
+    let doc = rows(&owner, &[], Vec::new());
+    let genesis = genesis(&owner, &owner_key, &doc);
     let start = holding(&doc, std::slice::from_ref(&genesis));
     assert_eq!(growth(Some(&doc), &start).unwrap(), 1);
     assert_eq!(growth(Some(&start), &start).unwrap(), 0);
@@ -710,7 +695,7 @@ fn settling_leaves_everything_that_is_not_membership_alone() {
         .unwrap();
     doc.commit();
 
-    let genesis = genesis(&owner, &owner_key, &mut doc);
+    let genesis = genesis(&owner, &owner_key, &doc);
     let mut held = holding(&doc, std::slice::from_ref(&genesis));
     settle(&mut held, WORKSPACE).unwrap();
     assert_eq!(
@@ -878,9 +863,9 @@ fn lounge() -> (ed25519_dalek::SigningKey, DeviceCert, AutoCommit) {
 
 #[test]
 fn a_lounge_shaped_workspace_starts_from_its_rows_unchanged() {
-    let (owner_key, relay, mut doc) = lounge();
+    let (owner_key, relay, doc) = lounge();
     let legacy = policy(&doc);
-    let genesis = genesis(&relay, &owner_key, &mut doc);
+    let genesis = genesis(&relay, &owner_key, &doc);
     assert_eq!(genesis.person(), person(&relay));
     let mut started = holding(&doc, &[genesis]);
     assert_eq!(replay(&started, WORKSPACE), legacy);
@@ -945,7 +930,7 @@ mod arrival {
         let (editor_key, editor) = device(3);
         let (viewer_key, viewer) = device(4);
         let keys = [&owner_key, &admin_key, &editor_key, &viewer_key];
-        let mut doc = rows(
+        let doc = rows(
             &owner,
             &[
                 (&admin, Role::Moderator),
@@ -954,7 +939,7 @@ mod arrival {
             ],
             vec![admin_grant(&owner, &admin)],
         );
-        let genesis = genesis(&owner, &owner_key, &mut doc);
+        let genesis = genesis(&owner, &owner_key, &doc);
         let start = holding(&doc, std::slice::from_ref(&genesis));
         let mut ops = Vec::new();
         for (index, (author, on_parent, step)) in plan.iter().enumerate() {
@@ -1036,20 +1021,13 @@ mod arrival {
 /// step the log refuses and where the rows differ from it.
 #[test]
 fn a_change_on_rows_the_log_never_wrote_says_why_it_is_refused() {
-    let (owner_key, relay, mut doc) = lounge();
+    let (owner_key, relay, doc) = lounge();
     let rows = policy(&doc);
     let (_, co_owner) = device(2);
     let mut logged = rows.clone();
     logged.members.remove(&person(&co_owner));
     logged.joined.remove(&person(&co_owner));
-    let genesis = legacy::genesis_op(
-        &relay,
-        &owner_key,
-        &doc.get_heads(),
-        &logged,
-        1_700_000_000_000_000_000,
-    )
-    .unwrap();
+    let genesis = genesis_op(&relay, &owner_key, &logged, 1_700_000_000_000_000_000).unwrap();
     let started = holding(&doc, std::slice::from_ref(&genesis));
     let held = replay(&started, WORKSPACE);
     assert_ne!(held, rows);
@@ -1077,7 +1055,7 @@ fn a_change_on_rows_the_log_never_wrote_says_why_it_is_refused() {
 /// through.
 #[test]
 fn a_log_holding_an_earlier_builds_roles_takes_its_owners_next_change() {
-    let (owner_key, relay, mut doc) = lounge();
+    let (owner_key, relay, doc) = lounge();
     let rows = policy(&doc);
     let mut earlier = rows.clone();
     let preset = earlier
@@ -1095,14 +1073,7 @@ fn a_log_holding_an_earlier_builds_roles_takes_its_owners_next_change() {
         .id
         .clone();
     earlier.grants.retain(|grant| grant.id != renamed);
-    let genesis = legacy::genesis_op(
-        &relay,
-        &owner_key,
-        &doc.get_heads(),
-        &earlier,
-        1_700_000_000_000_000_000,
-    )
-    .unwrap();
+    let genesis = genesis_op(&relay, &owner_key, &earlier, 1_700_000_000_000_000_000).unwrap();
     let started = holding(&doc, std::slice::from_ref(&genesis));
     let held = replay(&started, WORKSPACE);
     assert_eq!(differences(&held, &rows), Vec::<String>::new());
@@ -1140,10 +1111,9 @@ fn rows_read_in_another_order_are_the_membership_the_log_holds() {
         "the rows read the Files app's grant last"
     );
     assert_ne!(read, super::rows(&doc, WORKSPACE), "out of the log's order");
-    let genesis = legacy::genesis_op(
+    let genesis = genesis_op(
         &relay,
         &owner_key,
-        &doc.get_heads(),
         &super::rows(&doc, WORKSPACE),
         1_700_000_000_000_000_000,
     )

@@ -355,6 +355,53 @@ fn published_selection_capture_observes_the_real_selected_rows() {
     assert_eq!(guard.attempts(), 0, "a capture read ambient state");
 }
 
+/// The edits bound to what the person selected name it in the language the
+/// window reads: the file's own name inside the German sentence, not
+/// "Auswahl umbenennen".
+#[test]
+fn the_edits_bound_to_a_selection_name_it_in_the_windows_language() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("Bericht.pdf"), b"x").unwrap();
+    let launch = [root.path().to_str().unwrap()];
+    let mut app = TestApp::<FileExplorerShell>::launched(&launch).unwrap();
+    app.effect(&FilesEffect::SelectEntries {
+        entries: vec![crate::search_provider::entry_resource_id(
+            &root.path().join("Bericht.pdf"),
+        )],
+    })
+    .unwrap();
+    let labels = |app: &mut TestApp<FileExplorerShell>| -> Vec<String> {
+        app.with_surface(|files: &mut FileExplorerWidget| {
+            files
+                .state()
+                .bound_declarations()
+                .iter()
+                .filter(|decl| matches!(decl.id, "rename-selected" | "trash-selected"))
+                .map(|decl| decl.shown_label())
+                .collect()
+        })
+        .unwrap()
+    };
+    crate::i18n::set_locale("de-DE");
+    let german = labels(&mut app);
+    crate::i18n::set_locale("en-US");
+    let english = labels(&mut app);
+    assert_eq!(
+        german,
+        [
+            "„Bericht.pdf“ umbenennen",
+            "„Bericht.pdf“ in den Papierkorb verschieben"
+        ]
+    );
+    assert_eq!(
+        english,
+        [
+            "Rename \u{201c}Bericht.pdf\u{201d}",
+            "Move \u{201c}Bericht.pdf\u{201d} to Trash"
+        ]
+    );
+}
+
 #[test]
 fn published_selection_changes_stay_in_the_addressed_files_window() {
     let root = tempfile::tempdir().unwrap();
@@ -558,7 +605,10 @@ fn queued_file_changes_declare_that_they_can_be_undone() {
     let bound = FileExplorer::RENAME
         .bind(file_explorer::Rename::paths().device, "device".to_owned())
         .and(file_explorer::Rename::paths().folder, "/tmp".to_owned())
-        .declaration("rename-here", "Rename an entry here")
+        .declaration(
+            "rename-here",
+            ui::tilo_resource::word!("files-folder-rename-here"),
+        )
         .unwrap();
     assert_eq!(bound.kind, ActionKind::Outside);
     let spec = ui::tilo_resource::declaration_spec(&*bound);

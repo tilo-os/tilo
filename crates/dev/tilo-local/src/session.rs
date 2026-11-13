@@ -62,6 +62,12 @@ bus and state. It runs in the foreground until Ctrl-C; once it answers it
 prints how to reach it: tilo-control (snapshot, list-targets, click, type,
 actions list and invoke) on its control socket, and the agent door.
 
+No one answers a headless session's agent door, so it is started with an
+agent key, STATE/agent.key: an MCP client presenting it (TILO_AGENT_KEY=FILE
+tilo-runtime-mcp --connect, or tilo mcp) is admitted as an agent of the
+session's person without a click. The person's root certifies the key's
+grant, which is listed and revoked with their devices.
+
 Usage: cargo headless [OPTIONS] [-- SESSION ARGUMENTS]
 
 Options:
@@ -77,8 +83,10 @@ Options:
   --install-tapp FILE, --community SITE, --model-provider SPEC
                       passed to dist/dev/nested-session.sh (see its --help)
   --check             smoke test: start it, list its actions through
-                      tilo-control, take a snapshot, stop it; fails if it does
-                      not answer or anything reached the host's buses
+                      tilo-control, take a snapshot, let an MCP agent in with
+                      the agent key and have it list the apps and open one,
+                      stop it; fails if any of that fails or anything reached
+                      the host's buses
 
 Environment: TILO_HEADLESS_SIZE=WxH sizes the output (default 1280x800).
 Logs: STATE/logs/session.log.
@@ -87,6 +95,11 @@ Examples:
   cargo headless --apps notes --ready /tmp/tilo.json &   # then read the file
   cargo headless --check --apps notes
 ";
+
+/// The file in a headless session's state its agent key is kept in: the session is started with it
+/// (`tilo-session --agent-key`), its person's root certifies a grant for it, and an MCP client
+/// presenting it is admitted without anyone answering the door.
+pub const AGENT_KEY_FILE: &str = "agent.key";
 
 /// What the command line asked for.
 pub struct Options {
@@ -208,8 +221,15 @@ pub fn script(repo: &Path, options: &Options, ready: &Path, build: bool) -> Comm
         command.arg("--no-build");
     }
     apps_to_build(&mut command, options);
-    if !options.session.is_empty() {
-        command.arg("--").args(&options.session);
+    let mut session = options.session.clone();
+    if options.mode == Mode::Headless {
+        // A headless session has no one at its door: the person starts it with a key for their
+        // agent.
+        session.push("--agent-key".into());
+        session.push(options.state.join(AGENT_KEY_FILE).display().to_string());
+    }
+    if !session.is_empty() {
+        command.arg("--").args(&session);
     }
     command
 }
@@ -283,9 +303,19 @@ fn reach(options: &Options, ready: &str, took: Duration) -> String {
          \x20   logs:       {state}/logs/session.log\n\
          \x20   drive it:   TILO_TEST_CONTROL={control} {bin}/tilo-control actions list\n\
          \x20               (also: windows, list-targets, click TARGET, type TEXT; headless: snapshot FILE.png)\n\
-         \x20   agent door: {runtime}/tilo-session/agent.sock (MCP over newline-delimited JSON-RPC)\n\
+         \x20   agent door: {runtime}/tilo-session/agent.sock (MCP over newline-delimited JSON-RPC){agent}\n\
          \x20   where:      {runtime}/session.json\n\n",
         seconds(took),
         state = options.state.display(),
+        agent = match options.mode {
+            Mode::Desktop => String::new(),
+            Mode::Headless => format!(
+                "\n    an agent:   TILO_AGENT_SOCK={runtime}/tilo-session/agent.sock \\\n\
+                 \x20               TILO_AGENT_KEY={key} {bin}/tilo-runtime-mcp --connect\n\
+                 \x20               (an MCP server on stdio; the key admits it without a click, as an\n\
+                 \x20               agent of the session's person, listed and revoked with their devices)",
+                key = options.state.join(AGENT_KEY_FILE).display(),
+            ),
+        },
     )
 }

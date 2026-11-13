@@ -10,7 +10,7 @@ pub struct Probe {
     pub count: i64,
 }
 
-#[resource(kind = "test.probe", label = "Probe")]
+#[resource(kind = "test.probe", catalogue = "tests/locales")]
 impl Probe {
     /// Set the count.
     #[action]
@@ -20,7 +20,7 @@ impl Probe {
 }
 
 #[derive(Clone, Debug, tilo_resource::Effect)]
-#[effect(operation = "test.probe.effects")]
+#[effect(operation = "test.probe.effects", catalogue = "tests/locales")]
 enum Work {
     /// Count until cancelled.
     #[effect(cancellable)]

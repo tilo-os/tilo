@@ -343,3 +343,12 @@ ebook-library-delete-scheme = Farbschema löschen
 
 ## What the app is called in a window and in the launcher
 ebook-app-title = Bücher
+## Actions bound to what the person is looking at
+
+ebook-library-bookmark-page = Lesezeichen für diese Seite
+ebook-library-note-page = Notiz zu dieser Seite
+ebook-library-highlight-selection = Auswahl markieren
+ebook-library-note-selection = Notiz zur Auswahl
+
+## What the records are called, and the actions on them
+settings-books-catalogues = Buchkataloge

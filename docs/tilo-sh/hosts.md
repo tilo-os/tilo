@@ -18,7 +18,7 @@ Browser](hosted-browser.md)).
 ## One host or several
 
 A person can have workspaces on more than one host. Listing them says which host each is on, and a
-workspace is made on a named host when you want one other than the default:
+workspace you make is one of your own, on the host that keeps your others:
 
 ```python example=workspaces-and-hosts
 from tilo import Tilo
@@ -29,11 +29,7 @@ listing = tilo.workspaces.list()
 for workspace in listing:
     print(f"{workspace.name}  on {workspace.host}  as {workspace.role or 'owner'}")
 
-hosts = [host.name for host in listing.hosts]
-print("hosts to create on:", ", ".join(hosts))
-print("default:", next(host.name for host in listing.hosts if host.default))
-
-created = tilo.workspaces.create("A workspace of my own")   # on the default host
+created = tilo.workspaces.create("A workspace of my own")
 print("created:", created.name, "on", created.host)
 ```
 
@@ -47,16 +43,24 @@ for (const workspace of listing.workspaces) {
   console.log(`${workspace.name}  on ${workspace.host}  as ${workspace.role || "owner"}`);
 }
 
-console.log("hosts to create on:", listing.hosts.map((host) => host.name).join(", "));
-console.log("default:", listing.hosts.find((host) => host.default)?.name);
-
-const created = await tilo.workspaces.create("A workspace of my own"); // the default host
+const created = await tilo.workspaces.create("A workspace of my own");
 console.log("created:", created.name, "on", created.host);
 ```
 
-`workspaces.create(name, host)` names the host when you want one that is not the default. The rows you
-list carry the role you hold in each workspace: `owner` for one of your own, else the role you were
-invited with.
+```curl example=workspaces-and-hosts
+api=$TILO_API_URL/v1
+auth="Authorization: Bearer $TILO_API_KEY"
+
+curl -sS --fail-with-body "$api/workspaces" -H "$auth" \
+  | jq -r '.workspaces[] | "\(.name)  on \(.host)  as \(.role // "owner")"'
+
+created=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Idempotency-Key: my-own" \
+  -H "Content-Type: application/json" -d '{"name": "A workspace of my own"}')
+echo "created: $(jq -r .name <<<"$created") on $(jq -r .host <<<"$created")"
+```
+
+The rows you list carry the role you hold in each workspace: `owner` for one of your own, else the role
+you were invited with.
 
 ## Running your own host
 

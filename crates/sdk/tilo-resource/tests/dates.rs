@@ -9,7 +9,7 @@ pub struct Diary {
     pub days: Vec<NaiveDate>,
 }
 
-#[resource(kind = "test.diary", label = "Diary", params = diary)]
+#[resource(kind = "test.diary", params = diary, catalogue = "tests/locales")]
 impl Diary {
     /// Plan a moment
     #[action]

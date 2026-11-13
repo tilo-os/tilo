@@ -46,7 +46,7 @@ FIXTURE_FILES = (
     'os/scripts/installer-source-fixture/flatpak_material.py',
     'os/scripts/installer-source-fixture/source_sessions.py',
     'os/scripts/installer-source-fixture/secret_owner.py',
-    'scripts/headless-examples/_control.py',
+    'scripts/headless-examples/real_apps.py',
     'apps/imager/packaging/service-source-assets.py',
     'os/scripts/installer-receive-fixture/prerequisite-image.py',
     'os/scripts/installer-receive-fixture/prerequisite-readiness.py',

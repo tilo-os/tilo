@@ -41,9 +41,9 @@ use ui::webview::{
     SharedEngine, WebViewCommand, WebViewEvent,
 };
 use ui::widget::{
-    AppKind, AppWidget, Button, Column, Container, ContextMenu, Continuable, EmptyState,
-    FloatingSurfaceProvider, IconDescriptor, MenuItem, Popover, RuleEdge, WebView, Widget,
-    paint_rule,
+    AppKind, AppWidget, BannerNotice, Button, Column, Container, ContextMenu, Continuable,
+    EmptyState, FloatingSurfaceProvider, IconDescriptor, MenuItem, Popover, RuleEdge, WebView,
+    Widget, paint_rule,
 };
 
 use crate::CATALOG;
@@ -1697,7 +1697,10 @@ impl BrowserWidget {
         Browser::ADD_BOOKMARK
             .bind(params.url, self.current_uri.clone())
             .and(params.title, Some(self.title.clone()))
-            .declaration("bookmark-page", "Bookmark this page")
+            .declaration(
+                "bookmark-page",
+                ui::tilo_resource::word!("browser-bookmark-page"),
+            )
             .into_iter()
             .collect()
     }
@@ -2918,7 +2921,7 @@ impl BrowserWidget {
         // under the toolbar, over the settings or library page they are the
         // first part of the page.
         let on_page = self.show_settings || self.show_library;
-        let mut notices: Vec<crate::notice::Notice> = Vec::new();
+        let mut notices: Vec<BannerNotice> = Vec::new();
         if self.service_pending.is_some() {
             notices.push(crate::service_sessions::PendingView::notice());
         }
@@ -2934,26 +2937,27 @@ impl BrowserWidget {
         // take a row from every page.
         if let Some(message) = &self.private_window_notice {
             notices.push(
-                crate::notice::Notice::warning("Couldn’t open a private window")
-                    .with_message(message.clone()),
+                BannerNotice::warning("Couldn’t open a private window").message(message.clone()),
             );
         }
         if self.close_blocked {
             notices.push(
-                crate::notice::Notice::warning("This tab has an active download")
-                    .with_message(CATALOG.t("browser-download-active-hint")),
+                BannerNotice::warning("This tab has an active download")
+                    .message(CATALOG.t("browser-download-active-hint")),
             );
         }
         // The history notice would only repeat the Library's own control.
         if self.history_paused() && !self.show_library {
             notices.push(
-                crate::notice::Notice::neutral("History paused")
-                    .with_message(CATALOG.t("browser-history-paused-hint")),
+                BannerNotice::neutral("History paused")
+                    .message(CATALOG.t("browser-history-paused-hint")),
             );
         }
         if !on_page {
             for notice in &notices {
-                column = column.push(notice.widget(true));
+                column = column.push(Box::new(
+                    Container::new().with_child(Box::new(crate::settings::notice_banner(notice))),
+                ));
             }
         }
         if self.daily.open && !on_page {

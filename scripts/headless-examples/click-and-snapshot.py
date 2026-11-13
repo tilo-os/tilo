@@ -14,16 +14,16 @@ widget gets a stable name like `strip_switcher` or `command_palette_input`;
 others fall back to the path-based form `Parent/Child[index]`.
 """
 import sys
-from _control import call, require_ok, socket_path_from_argv
+from real_apps import Session, control_socket_from_argv
 
-sock = socket_path_from_argv()
+session = Session.attach(control_socket_from_argv())
 target = sys.argv[2] if len(sys.argv) > 2 else "strip_switcher"
 out = sys.argv[3] if len(sys.argv) > 3 else "/tmp/click-result.png"
 
 print(f"clicking {target!r} ...")
-require_ok(call(sock, {"op": "click_named", "name": target}))
+session.control({"op": "click_named", "name": target})
 
 print(f"snapshotting to {out} ...")
-require_ok(call(sock, {"op": "snapshot", "path": out}))
+session.control({"op": "snapshot", "path": out})
 
 print(f"done — open {out} to inspect")

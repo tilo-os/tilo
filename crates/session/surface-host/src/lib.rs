@@ -299,28 +299,54 @@ impl Published for AppHost {
             .collect()
     }
 
-    /// The controls the app's window shows by name, each where it stands on
-    /// the desktop: what its accessibility tree exports, read with the same
-    /// rule the app's own window hands the desktop ([`ui::App::window_controls`]),
-    /// moved from the window's content to where the window is placed.
-    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+    /// The controls the app's window shows by name and by what it does, each
+    /// where it stands on the desktop: what its accessibility tree exports,
+    /// read with the same rule the app's own window hands the desktop
+    /// ([`ui::App::window_controls`]), moved from the window's content to
+    /// where the window is placed.
+    fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
         let (ox, oy) = self.placement.origin;
-        let mut shown: std::collections::BTreeMap<String, (f64, f64, f64, f64)> =
+        let mut shown: std::collections::BTreeMap<String, ui::window_targets::WindowControl> =
             std::collections::BTreeMap::new();
-        for (name, (x, y, width, height)) in self.app.window_controls() {
+        for control in self.app.window_controls() {
             // Two controls of one name: the first in reading order is the one
             // the name means, as the window itself finds it.
-            shown
-                .entry(name)
-                .or_insert_with(|| (f64::from(ox) + x, f64::from(oy) + y, width, height));
+            shown.entry(control.name.clone()).or_insert_with(|| {
+                ui::window_targets::WindowControl {
+                    rect: (
+                        f64::from(ox) + control.rect.0,
+                        f64::from(oy) + control.rect.1,
+                        control.rect.2,
+                        control.rect.3,
+                    ),
+                    ..control
+                }
+            });
         }
-        shown.into_iter().collect()
+        shown.into_values().collect()
     }
 
     /// Press the control `name` the app's window shows: the activation an
     /// assistive technology performs on it.
     fn press(&mut self, name: &str) -> Result<(), String> {
         self.press_action(name, ui::window_targets::TargetAction::Activate)
+    }
+
+    /// Act on the control that does `identity`, through the same path a screen
+    /// reader's activation takes in the app's own window: the control is found
+    /// by what it does, never by what the person's language calls it.
+    fn press_identity(
+        &mut self,
+        identity: &str,
+        action: ui::window_targets::TargetAction,
+    ) -> Result<(), String> {
+        // The same route [`Self::press_action`] takes: the app finds the control by what it does
+        // and acts on it, as assistive technology does.
+        if self.app.press_window_control(identity, action) {
+            self.wants = true;
+            return Ok(());
+        }
+        Err(format!("no control does {identity} answers {action:?}"))
     }
 
     /// Act on the control `name` the app's window shows, through the same

@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Declare a person an owner of a running Lounge, through its operator socket.
+
+Usage: declare-owner SOCKET USER_PUBLIC_KEY
+
+SOCKET is the workspace's `--operator-socket` (a UNIX socket in its state
+directory), and USER_PUBLIC_KEY the person's user root, 64 hex characters. The
+workspace's door lets them in from then on, and its governance makes them an
+administrator once they are a member.
+
+Answers 0 once the workspace says so, 1 with the reason on stderr otherwise.
+"""
+import json
+import socket
+import sys
+
+
+def main(argv):
+    if len(argv) != 3:
+        print(__doc__.strip().splitlines()[2], file=sys.stderr)
+        return 2
+    path, key = argv[1], argv[2].strip()
+    if len(key) != 64 or any(character not in "0123456789abcdef" for character in key):
+        print(f"{key!r} is not a user public key: 64 lowercase hex characters", file=sys.stderr)
+        return 2
+    command = json.dumps({"op": "declare_owner", "user_public_key": key}) + "\n"
+    try:
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.connect(path)
+    except OSError as error:
+        print(f"the workspace is not listening on {path}: {error}", file=sys.stderr)
+        return 1
+    with connection:
+        connection.sendall(command.encode())
+        answer = b""
+        while True:
+            chunk = connection.recv(4096)
+            if not chunk:
+                break
+            answer += chunk
+    line = answer.decode(errors="replace").strip()
+    prefix = "tilo-room-operator "
+    if not line.startswith(prefix):
+        print(f"the workspace answered nothing: {line!r}", file=sys.stderr)
+        return 1
+    event = json.loads(line[len(prefix):])
+    if event.get("event") == "owner_declared":
+        print(f"{key} is an owner of the workspace")
+        return 0
+    print(event.get("reason") or f"the workspace answered {event}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -1152,14 +1152,6 @@ pub fn initial_path() -> PathBuf {
     if let Some(root) = workspace_record_authority_roots().into_iter().next() {
         return root;
     }
-    // `/workspace` predates `TILO_WORKSPACE_ROOTS`; retain it only when no
-    // override was supplied, so old installations keep their start location.
-    if std::env::var_os("TILO_WORKSPACE_ROOTS").is_none() {
-        let legacy = PathBuf::from("/workspace");
-        if legacy.exists() {
-            return legacy;
-        }
-    }
     if let Some(home) = user_home() {
         return home;
     }

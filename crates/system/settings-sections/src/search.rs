@@ -37,5 +37,5 @@ impl ui::storage::SettingsSchema for SearchHistory {
     ui::settings_codec!();
 }
 
-#[ui::tilo_resource::resource(kind = "settings.search_history", label = "Search history")]
+#[ui::tilo_resource::resource(kind = "settings.search_history")]
 impl SearchHistory {}

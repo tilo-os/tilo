@@ -254,7 +254,12 @@ fi
 # The env-runtime environment image the system app store ships, resolved the
 # way CI resolves it (by the fingerprint of os/Containerfile.env-runtime). An
 # explicit ENV_RUNTIME_REF wins; with none published yet the image ships none.
-if [ -z "${ENV_RUNTIME_REF:-}" ] && [ "${TILO_SKIP_BUILD:-0}" != 1 ]; then
+if [ -z "${ENV_RUNTIME_REF:-}" ] && [ -n "${TILO_LAYER_TARGET:-}" ] \
+  && ! grep -Fq 'FROM ${ENV_RUNTIME_REF}' "${TILO_CONTAINERFILE:-}"; then
+  # One layer action whose piece builds nothing from it doesn't ask the registry for it: an
+  # action that connects out is never served from t's cache.
+  ENV_RUNTIME_REF=scratch
+elif [ -z "${ENV_RUNTIME_REF:-}" ] && [ "${TILO_SKIP_BUILD:-0}" != 1 ]; then
   if ! ENV_RUNTIME_REF="$("$TILO_OS_DIR/dev/resolve-env-runtime.sh")"; then
     "$TILO_OS_DIR/dev/resolve-env-runtime.sh" --exists \
       && die "the published env-runtime does not verify"
@@ -316,6 +321,14 @@ if [ "$TILO_SKIP_BUILD" != "1" ]; then
 if [ "${TILO_PUBLIC_TRUST_MODE:-production}" = production ]; then
 if [ "$TILO_RPMS_TRUST" = unsigned ]; then
   warn "TILO_RPMS_TRUST=unsigned: not verifying the signature or provenance of the RPM snapshot $RPMS_REF"
+elif [ -n "${TILO_LAYER_TARGET:-}" ]; then
+  # One layer action (os/image/build-layer.sh) is given the snapshot its run verified: t's
+  # rpm-snapshot-<arch> checked this signature, provenance and architecture
+  # (os/dev/resolve-rpm-snapshot.sh), and the action loads image-rpms-<arch>'s copy only where it is
+  # that digest. Asking the registry again here would make the action connect out, which t never
+  # serves from its cache.
+  [[ "$RPMS_REF" =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] \
+    || die "RPMS_REF must pin registry.tilo.so/tilo/rpms by sha256 digest"
 else
   [[ "$RPMS_REF" =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] \
     || die "RPMS_REF must pin registry.tilo.so/tilo/rpms by sha256 digest"
@@ -362,9 +375,11 @@ else
     || die "the Tilo kernel $KERNEL_RPMS_REF is not authenticated for this build"
 fi
 fi # Production provenance; development inputs have independent pinned receipts.
-if [ -n "${TILO_LAYER_TARGET:-}" ] && ! grep -Fq 'FROM ${RPMS_REF}' "${TILO_CONTAINERFILE:-}"; then
-  # One layer action whose piece installs nothing from the snapshot doesn't load it to compare
-  # its package set; the layers that install from it do (os/image/build-layer.sh).
+if [ -n "${TILO_LAYER_TARGET:-}" ]; then
+  # One layer action is given the snapshot of this tree's package set: the published one's
+  # provenance binds that set (rpm-snapshot-<arch> verified it), and an unpublished one is built
+  # from it (image-rpms-<arch>). Comparing again would read every Containerfile, and key the
+  # action, and every check built in its image, by all of them.
   :
 else
   bash "$TILO_OS_DIR/dev/verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF" \
@@ -416,6 +431,13 @@ if [ -z "${TILO_GENERATION:-}" ] && [ "$TILO_SKIP_BUILD" = "1" ]; then
   TILO_GENERATION="$(podman run --rm --entrypoint cat "$TILO_IMAGE" /usr/lib/tilo/generation 2>/dev/null | tr -d '[:space:]')"
   [ -n "$TILO_GENERATION" ] || TILO_GENERATION="unknown"
   msg "generation $TILO_GENERATION (read from $TILO_IMAGE, not allocated)"
+fi
+if [ -z "${TILO_GENERATION:-}" ] && [ -n "${TILO_LAYER_TARGET:-}" ] \
+  && ! grep -Fq 'TILO_GENERATION' "${TILO_CONTAINERFILE:-}"; then
+  # One layer action whose piece seals no generation doesn't ask the published series for one:
+  # an action that connects out is never served from t's cache. Not a number, so a piece that
+  # came to read it would fail on it.
+  TILO_GENERATION=unread
 fi
 if [ -z "${TILO_GENERATION:-}" ]; then
   TILO_GENERATION="$("$TILO_OS_DIR/dev/next-generation.sh")" \

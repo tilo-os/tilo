@@ -86,13 +86,13 @@ fn where_shown(session: &Session, name: &str) -> (f64, f64, f64, f64) {
     session
         .controls()
         .into_iter()
-        .find(|(shown, _)| shown == name)
-        .map(|(_, rect)| rect)
+        .find(|control| control.name == name)
+        .map(|control| control.rect)
         .unwrap_or_else(|| {
             let names: Vec<String> = session
                 .controls()
                 .into_iter()
-                .map(|(shown, _)| shown)
+                .map(|control| control.name)
                 .collect();
             panic!("no control named {name:?}; the session shows {names:?}")
         })

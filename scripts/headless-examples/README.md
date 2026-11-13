@@ -6,18 +6,16 @@ For app automation, begin with `tilo-control actions list QUERY --json`, then
 invoke the chosen `(provider, id)`. The [search selection guide](../../docs/headless-testing.md#select-search-results-by-identity)
 explains how to distinguish same-named native and host apps and verify execution
 without opening the palette. Use the input examples below when testing input or
-rendering itself. `action-api-demo.py` starts its own
-isolated session and exercises semantic invocation.
+rendering itself.
 
 ## Proofs
 
-Three proofs start a headless session of their own, on a scratch home, and read
+Two proofs start a headless session of their own, on a scratch home, and read
 every claim back off that session rather than off the thing that asked for it.
-`tools/ci/session-proofs.sh` runs all three, and the nightly workflow runs that.
+`tools/ci/session-proofs.sh` runs both, and the nightly workflow runs that.
 
 | Proof | What it asserts |
 |---|---|
-| `mcp-live-proof.py` | A model drives the desktop over MCP: the tools and resources it is offered, taking Setup's way forward and watching the desk move on to its second step, and a refusal arriving as an error with the compositor's own code. |
 | `agent-seats-proof.py` | Two agents at the session's agent door, each admitted as itself through the workspace's governance, each served its own tools, the desk's Stop ending one of their connections alone. |
 | `session-lock-proof.py` | The desk's own lock action locks the session, the lock screen's own frame covers the desk, a password that is not the person's is refused, and the person's own password brings the desk back. |
 
@@ -40,28 +38,32 @@ method running, and checks that the desk holds the body's caret, that it follows
 the typing, and that Super+V, pressed the moment the caret moves, opens the
 clipboard pane under that caret's line, its first frame as tall as its page.
 
-For examples that connect to an existing compositor, start it once with:
+For examples that connect to an existing compositor, start it once:
 
 ```bash
-./scripts/headless-examples/spawn-headless.sh
+python3 scripts/headless-examples/real_apps.py --start --keep --state ~/tilo-headless
 ```
 
-The socket defaults to the session's own runtime directory, `$RUNTIME/tilo-session/test-control.sock`, which the script prints as `RUNTIME <dir>`; pass a path to use another (keep it in a directory only you can write, never `/tmp`). The runtime directory is the one `dist/dev/nested-session.sh` picks for the profile's state, so its sockets sit under the same short private directory every session's do. The script refuses a socket a live compositor still answers on. It spawns `tilo-session --backend headless` against a scratch profile — its own HOME, XDG homes, device identity and filesystem-daemon handoff directories, so your real identity and workspaces are never touched — waits for the socket, and prints `READY <socket>` to stdout when usable. Tear down with `kill` (or use `Ctrl+C` if you ran it in the foreground); the scratch profile goes with it.
+It prints `{control, runtime, state, pid}` once the desktop answers: pass `control`
+as a script's first argument, or export it as `TILO_TEST_CONTROL` so every
+script and `tilo-control` finds the session by itself. It starts
+`dist/dev/nested-session.sh` (the tree's apps installed as signed packages and
+launched through the desktop's own launcher) on a private home, runtime
+directory and throwaway identity, so your real identity and workspaces are
+never touched. Stop a kept session with `kill -TERM -<pid>`, which stops its
+apps, services and bus too.
 
-`TILO_HEADLESS_TIMEOUT` sets how long to wait for the socket, in seconds (default 60). `TILO_HEADLESS_PROFILE=DIR` keeps a scratch profile in `DIR` across runs instead of a fresh one each time.
-
-For background lifetime management:
-
-```bash
-./scripts/headless-examples/spawn-headless.sh &
-COMP_PID=$!
-trap "kill $COMP_PID" EXIT
-# ... your commands ...
-```
+`cargo headless` is the same session from the tree's build with no window, and
+prints how to drive it; `--ready FILE` writes the same JSON. A harness that has
+to drive a build of its own (this tree's debug binaries, a release session a
+performance lane compiled) starts it through `real_apps.ScriptedSession`, which
+keeps the same rules: a scratch profile, the runtime directory
+`dist/dev/nested-session.sh --print-runtime` names for it, and nothing left
+behind.
 
 ## Examples
 
-Each script takes the socket path as its first argument (default `$TILO_TEST_CONTROL`, else `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`).
+Each script drives a running session: the socket path is its first argument, else `$TILO_TEST_CONTROL`, else `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`. `real_apps.py` is the client they all use (`Session.attach` for a session another tool started, `ScriptedSession` for the tree's own build on a scratch profile, `Agent` for the session's agent door).
 
 | Script | What it shows |
 |---|---|
@@ -69,11 +71,9 @@ Each script takes the socket path as its first argument (default `$TILO_TEST_CON
 | `click-and-snapshot.py` | Click a named widget, write a PNG of the post-click state. |
 | `keyboard-flow.py` | Ctrl+K opens the palette, type text, snapshot. |
 | `drag-demo.py` | Press-then-drag a tab handle between two coordinates. |
-| `full-loop.py` | Spawn → list → click → key → drag → snapshot → tear down. |
+| `full-loop.py` | Spawn a session of this tree's build → open search → type → snapshot → close → tear down. |
 | `real_apps.py` | A headless session with the tree's own apps installed, launched through the desktop's own launcher: `Session` for a check, `--start --open notes --shot out.png` for a person. Every check of a desktop with apps starts here. |
 | `files-clipboard-e2e.py` | Copy and cut files in Files, paste them into another folder through the session's file clipboard, and read the bytes back off disk. |
-| `tilo_client.py` | Library with `TiloClient` class; `from tilo_client import TiloClient`. Higher-level than the raw socket calls below. |
-| `library-demo.py` | Same flow as `full-loop.py` but via `TiloClient` — shows the library's API. |
 
 The input examples use the Python standard library. Native protocol proofs below
 have their own explicit external prerequisites.

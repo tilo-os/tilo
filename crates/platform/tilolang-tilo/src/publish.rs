@@ -23,7 +23,7 @@ use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::words::Words;
 
 use crate::meta::{MetaExt as _, action_kind};
-use crate::surface::{Merge, arguments, editable_field_names, is_destructive, published_param};
+use crate::surface::{Merge, editable_field_names, is_destructive, published_param};
 
 /// What the declaration `id` is called in the reader's language: `source`, its words in the
 /// package's own, when no catalogue of theirs holds it.
@@ -177,9 +177,15 @@ pub fn action_type(
     planner: &Arc<dyn Planner>,
     words: &dyn Words,
 ) -> Arc<ActionType> {
-    let params: Vec<ActionParam> = arguments(meta, &action.params)
+    let params: Vec<ActionParam> = meta
+        .arguments(&action.params)
         .iter()
-        .map(|param| published_param(meta, param))
+        .map(|param| {
+            // What the parameter is called where a person gives it (a form, a consent sheet).
+            let key = tilolang::messages::param_key(&action.id, &param.name);
+            let source = tilolang::messages::label(&param.name);
+            published_param(meta, param).titled(words.word(&key, &[], &source))
+        })
         .collect();
     let (app, kind, id) = (meta.app.clone(), kind.to_owned(), action.id.clone());
     let planner = Arc::clone(planner);
@@ -256,7 +262,8 @@ pub fn action_type(
     };
     // Every argument has a default (a checkbox's `check(item, done: Bool = not item.done)`): a
     // person choosing it is asked nothing, and an agent may still pass `done:`.
-    let defaulted = arguments(meta, &action.params)
+    let defaulted = meta
+        .arguments(&action.params)
         .iter()
         .all(|param| param.default.is_some());
     let spec = if defaulted && !no_params {
@@ -620,32 +627,55 @@ type Field = (String, String);
 
 /// What the updates since a revision changed, as a reader of an action's availability needs it.
 pub enum Moved {
-    /// These fields changed, by published resource id and field: a record's own, and every
-    /// item's under it.
-    These(Vec<Field>),
+    /// These fields changed, by published resource id: a record's own, and every item's under
+    /// it.
+    These(std::collections::BTreeMap<String, std::collections::BTreeSet<String>>),
     /// Every resource: an update since read them all again, and what it changed is every one.
     Everything,
 }
 
-/// Whether a change to `changed` moves what a read of `read` saw.
-///
-/// The same resource and field, either read or changed whole, is the same thing read and changed
-/// again. A requirement that read a resource whole sees everything published under it, so a
-/// change to one of its items reads it again. A change to a resource above what was read does
-/// not: what an item's own fields are is what a requirement of the item reads, and a collection
-/// changing around it is a change to the collection.
-#[must_use]
-pub fn reached(changed: &Field, read: &Field) -> bool {
-    const WHOLE: &str = tilolang_runtime::ANY_FIELD;
-    let above = |outer: &str, inner: &str| {
-        inner
-            .strip_prefix(outer)
-            .is_some_and(|rest| rest.starts_with('/'))
-    };
-    if changed.0 == read.0 {
-        return changed.1 == read.1 || changed.1 == WHOLE || read.1 == WHOLE;
+impl Moved {
+    /// Whether what changed moves what a read of `read` saw, found by the resources read rather
+    /// than by comparing every change with every read.
+    ///
+    /// The same resource and field, either read or changed whole, is the same thing read and
+    /// changed again. A requirement that read a resource whole sees everything published under
+    /// it, so a change to one of its items reads it again. A change to a resource above what was
+    /// read does not, unless it changed whole: what an item's own fields are is what a
+    /// requirement of the item reads, and a collection changing around it is a change to the
+    /// collection.
+    #[must_use]
+    pub fn reaches(&self, (resource, field): &Field) -> bool {
+        const WHOLE: &str = tilolang_runtime::ANY_FIELD;
+        let changed = match self {
+            Self::Everything => return true,
+            Self::These(changed) => changed,
+        };
+        if changed.get(resource).is_some_and(|fields| {
+            fields.contains(field) || fields.contains(WHOLE) || field == WHOLE
+        }) {
+            return true;
+        }
+        let under = format!("{resource}/");
+        if changed
+            .range(under.clone()..)
+            .next()
+            .is_some_and(|(inner, _)| inner.starts_with(&under))
+        {
+            return true;
+        }
+        let mut at = resource.as_str();
+        while let Some((outer, _)) = at.rsplit_once('/') {
+            if changed
+                .get(outer)
+                .is_some_and(|fields| fields.contains(WHOLE))
+            {
+                return true;
+            }
+            at = outer;
+        }
+        false
     }
-    above(&read.0, &changed.0) || (changed.1 == WHOLE && above(&changed.0, &read.0))
 }
 
 /// What the updates since a revision moved of the records' text, as a reader that keeps one
@@ -1253,7 +1283,7 @@ impl Publications {
     #[must_use]
     pub fn changed_since(&self, since: u64) -> Option<Moved> {
         if since == self.moved {
-            return Some(Moved::These(Vec::new()));
+            return Some(Moved::These(std::collections::BTreeMap::new()));
         }
         if since > self.moved {
             return None;
@@ -1271,11 +1301,19 @@ impl Publications {
         {
             return Some(Moved::Everything);
         }
-        let mut out: std::collections::BTreeSet<Field> = std::collections::BTreeSet::new();
-        for (_, moved) in self.motions.iter().skip(first) {
-            out.extend(moved.iter().flatten().cloned());
+        let mut out: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        for (resource, field) in self
+            .motions
+            .iter()
+            .skip(first)
+            .flat_map(|(_, moved)| moved.iter().flatten())
+        {
+            out.entry(resource.clone())
+                .or_default()
+                .insert(field.clone());
         }
-        Some(Moved::These(out.into_iter().collect()))
+        Some(Moved::These(out))
     }
 
     /// What the updates since `since` moved of the records' text, each once: the entries a
@@ -2546,7 +2584,8 @@ pub fn edit_action(
                     _ => return Err(format!("the field `{field}` takes a rich text")),
                 },
             };
-            crate::store::rich_edit(&rich).map_err(|error| error.to_string())?
+            let blocks = rich.blocks.iter().map(tilo_document::ClipBlock::from_view);
+            crate::store::rich_edit(blocks.collect(), None, 0).map_err(|error| error.to_string())?
         }
         _ => return Err(format!("the field `{field}` cannot be set to that value")),
     };

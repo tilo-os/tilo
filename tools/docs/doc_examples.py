@@ -12,9 +12,9 @@ whose info string says `fragment` is a partial snippet and is not run.
 
 `check` enforces the conventions and runs nothing. `list` prints what the pages
 carry. `run` executes every block against a local Tilo: `--api` names the
-`api-on-relay` example of `tilo-agent-participant`, which serves a host with
-its API and runs the program with `TILO_API_URL` and `TILO_API_KEY` set, so an
-example reaches the API the way the published one reaches tilo.sh. Python runs
+`api-on-relay` example of `tilo-agent-participant`, which serves a host with its
+API and runs the program with `TILO_API_URL`, `TILO_API_KEY` and `TILO_INVITEE`
+set, so an example reaches the API the way the published one reaches tilo.sh. Python runs
 from `sdk/python` with uv, TypeScript resolves `tilo-sdk` to the tree's
 `sdk/typescript` and runs with bun, and `sh` runs the `tilo` command `--tilo`
 names.
@@ -317,6 +317,9 @@ def execute(block: Block, repository: Path, api: Path, tilo: Path | None, timeou
         if block.lang == "typescript":
             (directory / TYPESCRIPT_CONFIG).write_text(typescript_configuration(repository), encoding="utf-8")
         environment = dict(os.environ)
+        if block.lang == "python":
+            # `import tilo` is the tree's: uv syncs the SDK's dependencies, not the SDK.
+            environment["PYTHONPATH"] = str(repository / "sdk/python/src")
         if block.lang == "sh":
             # `tilo` on PATH, as the command is installed.
             assert tilo is not None

@@ -2,6 +2,7 @@ use super::{
     AutoCommit, CodeApp, Conflict, ConflictChoice, EditorDoc, PortalIntent, Project, Session,
     TreeId, disk, source_filter,
 };
+use ui::widget::toast::ToastKind;
 
 /// What follows a write once it landed.
 pub(crate) enum AfterSave {
@@ -75,7 +76,7 @@ impl CodeApp {
                     .get(id)
                     .map(|n| n.name.clone())
                     .unwrap_or_default();
-                self.note(format!("Could not read {name}: {e}"), true);
+                Self::note(format!("Could not read {name}: {e}"), ToastKind::Error);
             }
         }
         self.invalidate_search_projection();
@@ -106,7 +107,7 @@ impl CodeApp {
                     self.session.close_file(node);
                     self.invalidate_search_projection();
                 }
-                self.note(format!("Could not open {name}: {error}"), true);
+                Self::note(format!("Could not open {name}: {error}"), ToastKind::Error);
                 self.bound_node = None;
             }
         }
@@ -206,7 +207,7 @@ impl CodeApp {
                     .session
                     .buffer_of(node)
                     .map_or_else(String::new, |b| b.name.clone());
-                self.note(format!("Could not save {name}: {e}"), true);
+                Self::note(format!("Could not save {name}: {e}"), ToastKind::Error);
                 then.failed(self);
                 false
             }
@@ -276,13 +277,13 @@ impl CodeApp {
                 let base = EditorDoc::read_buffer_key(doc, &file_id).unwrap_or_default();
                 if let Err(error) = self.dispatch_text_action(doc, file_id, &base, &text) {
                     self.editor.reconcile_from_doc(doc);
-                    self.note(format!("Reload was refused: {error}"), true);
+                    Self::note(format!("Reload was refused: {error}"), ToastKind::Error);
                     return;
                 }
                 if let Some(buf) = self.session.buffer_of_mut(node) {
                     buf.mark_saved(text, stamp);
                 }
-                self.note(format!("Reloaded {name} from disk"), false);
+                Self::note(format!("Reloaded {name} from disk"), ToastKind::Success);
                 self.bound_node = None;
             }
             Err(e) => {
@@ -290,7 +291,7 @@ impl CodeApp {
                     .session
                     .buffer_of(node)
                     .map_or_else(String::new, |b| b.name.clone());
-                self.note(format!("Could not reload {name}: {e}"), true);
+                Self::note(format!("Could not reload {name}: {e}"), ToastKind::Error);
             }
         }
     }
@@ -351,7 +352,7 @@ impl CodeApp {
             }
             ConflictChoice::Reload => self.reload_buffer(doc, conflict.node),
             ConflictChoice::Cancel => {
-                self.note(format!("{} was not saved", conflict.name), false);
+                Self::note(format!("{} was not saved", conflict.name), ToastKind::Info);
             }
         }
     }
@@ -448,7 +449,7 @@ impl CodeApp {
                     Some(PortalIntent::SaveAs(_)) => "Couldn't save the file",
                     None => "Couldn't choose a file",
                 };
-                self.note(format!("{doing}. {reason}"), true);
+                Self::note(format!("{doing}. {reason}"), ToastKind::Error);
                 self.finish_file_effect(Err(reason));
                 return;
             }
@@ -523,7 +524,7 @@ impl CodeApp {
             }
             Err(error) => {
                 let message = format!("Could not save {}: {error}", path.display());
-                self.note(&message, true);
+                Self::note(&message, ToastKind::Error);
                 Err(message)
             }
         }
@@ -577,7 +578,7 @@ impl CodeApp {
             }
             Err(e) => {
                 let message = could_not_open(path, &e);
-                self.note(&message, true);
+                Self::note(&message, ToastKind::Error);
                 Err(message)
             }
         }
@@ -633,7 +634,7 @@ impl CodeApp {
             }
             Err(e) => {
                 let message = could_not_open(path, &e);
-                self.note(&message, true);
+                Self::note(&message, ToastKind::Error);
                 Err(message)
             }
         }

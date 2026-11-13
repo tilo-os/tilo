@@ -1,4 +1,5 @@
 use super::{AutoCommit, CodeApp, EditorDoc, LspAsk, LspStatus, TreeId};
+use ui::widget::toast::ToastKind;
 
 impl CodeApp {
     /// The `file://` URI for a project node.
@@ -285,9 +286,9 @@ impl CodeApp {
             return;
         };
         let Some(path) = ui::portal::to_local_path(&url) else {
-            self.note(
+            Self::note(
                 format!("Definition is outside this machine: {}", loc.uri),
-                true,
+                ToastKind::Error,
             );
             return;
         };

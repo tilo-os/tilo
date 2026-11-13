@@ -20,7 +20,9 @@
 //                   accessible name matches NAME (a case-blind pattern); they
 //                   click it and type TEXT, then Enter, key by key as a
 //                   keyboard sends it. report.window says when it appeared,
-//                   and a picture of it is kept as window.png;
+//                   how long each key took to change the window's picture
+//                   (keyToFrameMs), and a picture of it is kept as
+//                   window.png;
 //   --passkey       they keep themselves with a passkey (a virtual
 //                   authenticator, as a platform one answers), the browser
 //                   then forgets the site, and they sign in again with that
@@ -278,15 +280,39 @@ if (windowName) {
   await sleep(1500);
   const before = await tab.screenshot().catch(() => null);
   if (before) writeFileSync(join(out, 'window-before.png'), before);
+  // Each key is timed from the press to the next picture of the window that
+  // differs from the one before it: what a person feels as the window
+  // answering their typing, the whole way through the VM and back.
+  const clip = {x: quad[0], y: quad[1], width: quad[4] - quad[0], height: quad[5] - quad[1], scale: 1};
+  const picture = async () => (await tab.send('Page.captureScreenshot', {format: 'png', clip})
+    .catch(() => ({data: ''}))).data;
+  const answered = [];
   const typing = Date.now();
   for (const char of typed) {
     const key = keyOf(char);
     if (!key) await finish(2, `--type has ${JSON.stringify(char)}, which no key here types`);
+    const seen = await picture();
+    const pressed = performance.now();
     await press(key);
+    for (;;) {
+      const elapsed = performance.now() - pressed;
+      if (elapsed > 3000) { answered.push(null); break; }
+      if (await picture() !== seen) { answered.push(Math.round(elapsed)); break; }
+    }
   }
   await press({code: 'Enter', key: 'Enter'}, '\r');
   report.window.typedAt = typing;
   report.window.typedMs = Date.now() - typing;
+  const timed = answered.filter(ms => ms !== null).sort((a, b) => a - b);
+  const at = share => timed[Math.min(timed.length - 1, Math.floor(share * timed.length))];
+  report.window.keyToFrameMs = {
+    keys: answered.length,
+    unanswered: answered.length - timed.length,
+    median: timed.length ? at(0.5) : null,
+    p90: timed.length ? at(0.9) : null,
+    each: answered,
+  };
+  console.error(`ok: a key reaches the window's next picture in ${report.window.keyToFrameMs.median} ms (median), ${report.window.keyToFrameMs.p90} ms (90th percentile) over ${timed.length} of ${answered.length} keys`);
   await sleep(1500);
   const after = await tab.screenshot().catch(() => null);
   if (after) writeFileSync(join(out, 'window.png'), after);

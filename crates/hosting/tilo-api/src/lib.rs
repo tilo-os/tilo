@@ -1315,7 +1315,7 @@ fn html(status: StatusCode, page: &str) -> Reply {
     );
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https: http://localhost:* http://127.0.0.1:*; frame-ancestors 'none'"),
+        HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https: http://localhost:* http://*.localhost:* http://127.0.0.1:*; frame-ancestors 'none'"),
     );
     headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

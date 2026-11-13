@@ -35,6 +35,8 @@ mod palette_above_windows;
 mod popover_frame;
 #[path = "press_outside.rs"]
 mod press_outside;
+#[path = "retained_popover.rs"]
+mod retained_popover;
 #[path = "search_overlay.rs"]
 mod search_overlay;
 #[path = "shortcuts.rs"]

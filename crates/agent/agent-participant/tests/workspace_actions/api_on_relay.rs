@@ -124,7 +124,7 @@ pub async fn api_on_relay_limiting(
     let host = enrol(
         &operator,
         "relay",
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     );
     let state = crate::support::scratch_dir();
     let hosted = crate::harness::hosted::start(
@@ -537,10 +537,12 @@ async fn invitee(on_relay: &OnRelay, listener: tokio::net::TcpListener, root: Si
 
 /// Serve the door on a relay with its app workers on loopback, for a client
 /// outside this process. A person approves a key reaching all their
-/// workspaces there, for their backend; another person, their reviewer,
-/// follows the invitation links posted to the invitee endpoint. It prints
-/// one JSON line naming the door, the key and that endpoint, then runs
-/// `command` with them in its environment (`TILO_API_URL`, `TILO_API_KEY`,
+/// workspaces there, for their backend, and holds another device's key in a
+/// key file, for a program that reaches the relay directly (an SDK's native
+/// part); another person, their reviewer, follows the invitation links posted
+/// to the invitee endpoint. It prints one JSON line naming the door, the key,
+/// the key file and that endpoint, then runs `command` with them in its
+/// environment (`TILO_API_URL`, `TILO_API_KEY`, `TILO_KEY_FILE`,
 /// `TILO_INVITEE`) and answers its exit status, or with no command serves
 /// until its standard input closes.
 #[cfg(not(test))]
@@ -553,6 +555,21 @@ pub async fn serve(command: &[std::ffi::OsString]) -> std::process::ExitCode {
     let (person, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&person, "Ada's browser", DeviceCapabilities::member());
     let key = approved_key(&on_relay, &person, &page, "Backend").await;
+    // A device of the person's whose key a program holds, now that the
+    // person came to the relay.
+    let script = enrol(&person, "Ada's script", DeviceCapabilities::member());
+    let key_file = on_relay.state.path().join("key-file.json");
+    std::fs::write(
+        &key_file,
+        serde_json::to_vec(&tilo_api::direct::KeyFile::new(
+            &on_relay.relay,
+            "Ada's script",
+            &script.key,
+            &script.cert,
+        ))
+        .unwrap(),
+    )
+    .unwrap();
     tokio::spawn(tilo_api::serve(Arc::clone(&on_relay.api), listener));
     let accepting = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let invitee_url = format!("http://{}/accept", accepting.local_addr().unwrap());
@@ -560,6 +577,7 @@ pub async fn serve(command: &[std::ffi::OsString]) -> std::process::ExitCode {
     let ready = json!({
         "api": issuer,
         "key": key,
+        "key_file": key_file,
         "invitee": invitee_url,
         "person": hex::encode(person.verifying_key().to_bytes()),
     });
@@ -582,6 +600,7 @@ pub async fn serve(command: &[std::ffi::OsString]) -> std::process::ExitCode {
     run.args(arguments)
         .env("TILO_API_URL", &issuer)
         .env("TILO_API_KEY", &key)
+        .env("TILO_KEY_FILE", &key_file)
         .env("TILO_INVITEE", &invitee_url);
     let status = tokio::select! {
         status = async {

@@ -1500,7 +1500,7 @@ mod tests {
     use super::*;
 
     #[derive(Clone, Debug, tilo_resource::Effect)]
-    #[effect(operation = "test.display")]
+    #[effect(operation = "test.display", catalogue = "tests/locales")]
     enum TestEffect {
         #[effect(returns, row)]
         MoveDisplay { display: String, x: i32, y: i32 },

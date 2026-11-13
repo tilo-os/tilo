@@ -66,9 +66,17 @@ case $status in
     ref=$(bash "$repo_root/os/dev/resolve-rpm-snapshot.sh" --arch "$arch")
     [[ $ref =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] || die "unexpected snapshot $ref"
     digest=${ref##*@}
-    # skopeo copies blobs and manifest verbatim, so the archive holds the published digest; buildah
-    # rewrites the manifest, which would make this a second snapshot of the same package set.
-    skopeo copy --quiet "docker://$ref" "oci-archive:$out/image.oci.tar"
+    # skopeo copies blobs and manifest verbatim, so the layout holds the published digest; buildah
+    # rewrites the manifest, which would make this a second snapshot of the same package set. The
+    # layout is packed here rather than by skopeo's oci-archive:, whose tar carries the time of
+    # the copy: the same snapshot left a different archive in every run, and every check that
+    # needs this one was keyed anew by it (t keys a check by its needs' outputs).
+    layout=$(mktemp -d "$scratch/published.XXXXXX")
+    skopeo copy --quiet "docker://$ref" "oci:$layout"
+    rm -f "$out/image.oci.tar"
+    tar -C "$layout" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu \
+      --mode=u=rwX,go=rX -cf "$out/image.oci.tar" oci-layout index.json blobs
+    rm -rf -- "$layout"
     [[ $(archive_digest "$out/image.oci.tar") == "$digest" ]] \
       || die "the copy of $digest is not the published image"
     printf '%s\n' "$digest" > "$out/digest"

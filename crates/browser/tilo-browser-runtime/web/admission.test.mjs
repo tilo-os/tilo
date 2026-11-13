@@ -246,6 +246,13 @@ test('a member whose device keys other tabs hold gets in as a new device, or is 
   assert.ok(!uninvited.asked.some(([, failed]) => failed === 'reconnect'), 'the runtime is not asked what follows');
 });
 
+test('reconnecting says the page is connecting, so a host that does not answer is not blamed on this device', async () => {
+  const progress = [];
+  const back = doors({reconnect: async ({origin, room: wanted}) => ({origin, room: wanted})});
+  await admit({scope: room, runtime: rules(['reconnect']).runtime, deps: back.deps, onProgress: event => progress.push(event.phase)});
+  assert.deepEqual(progress, ['connecting']);
+});
+
 test('a host this browser set up or joined as its person is reconnected to, and the door is the way in only when that fails', async () => {
   const back = doors({reconnect: async ({origin, room: wanted}) => ({owner: true, origin, room: wanted})});
   assert.deepEqual(await admit({scope: room, runtime: rules(['accounts', 'reconnect']).runtime, deps: back.deps}),

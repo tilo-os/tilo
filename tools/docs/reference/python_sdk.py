@@ -37,7 +37,8 @@ TYPES = "sdk/python/src/tilo/types"
 # new export cannot reach the page without a place to sit.
 GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Client", ("Tilo", "AsyncTilo", "SignIn")),
-    ("Workspaces", ("Workspaces", "Workspace", "WorkspaceInfo", "WorkspaceList", "Host")),
+    ("Transports", ("Transport", "HttpTransport", "NativeTransport")),
+    ("Workspaces", ("Workspaces", "Workspace", "WorkspaceInfo", "WorkspaceList")),
     ("Resources", ("Resource", "FieldMap", "Listing", "Row", "Hit")),
     ("Runs", ("Run", "RunGroup", "RunOpening", "ProgramAnswer", "Event")),
     ("Files", ("Files",)),
@@ -46,7 +47,7 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Usage", ("Usage", "WorkspaceUsage")),
     ("Errors", (
         "Refused", "RateLimited", "AskPending", "ProtocolError",
-        "KeyRefused", "KeyRevoked", "KeyExpired",
+        "KeyRefused", "KeyRevoked", "KeyExpired", "SurfaceChanged", "UnsupportedVersion",
     )),
 )
 
@@ -60,7 +61,7 @@ INTERNAL_MEMBERS = frozenset({
     ("RunGroup", "note"),
 })
 
-# A classmethod that reads the value out of the door's answer. Every model has
+# A classmethod that reads the value out of the API's answer. Every model has
 # one under the same name, and the SDK calls it.
 INTERNAL_METHOD = "of"
 

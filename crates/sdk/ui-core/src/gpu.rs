@@ -239,6 +239,18 @@ pub fn prefer_adapter(accepts: fn(&Adapter) -> bool) {
     let _ = PREFERRED_ADAPTER.set(accepts);
 }
 
+/// Which of a machine's GPUs new devices are asked for, where the process
+/// chose ([`prefer_power`]); otherwise `WGPU_POWER_PREF`, or wgpu's default.
+static PREFERRED_POWER: Mutex<Option<wgpu::PowerPreference>> = Mutex::new(None);
+
+/// Ask for adapters by `power` from now on: devices opened afterwards come
+/// from the GPU it names. A page has no other say in which GPU the browser
+/// hands it, and on a laptop with two the right one is the one that drives
+/// the display (`LowPower`): a canvas the other draws must cross over to it.
+pub fn prefer_power(power: wgpu::PowerPreference) {
+    *PREFERRED_POWER.lock_recover() = Some(power);
+}
+
 /// The backends a context starts with when `WGPU_BACKEND` names none.
 ///
 /// Windows uses DX12 alone: probing every backend can enter optional Vulkan
@@ -402,6 +414,19 @@ impl RenderContext {
                     return Some(adapter);
                 }
             }
+        }
+        let preferred_power = *PREFERRED_POWER.lock_recover();
+        if let Some(power_preference) = preferred_power {
+            self.settle_backends().await;
+            return self
+                .instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference,
+                    force_fallback_adapter: false,
+                    compatible_surface,
+                })
+                .await
+                .ok();
         }
         if self.fallback.is_some()
             && self.devices.is_empty()

@@ -732,11 +732,20 @@ impl IndexedContent {
                 .then(right.1.cmp(&left.1))
                 .then(right.2.cmp(&left.2))
         });
-        let mut seen: HashSet<(ui::floating_surface::RecipientKind, String)> = HashSet::new();
+        // One row each: a direct conversation and the agent in it are one,
+        // and the line under it is whichever of them has one.
         let mut out: Vec<ui::floating_surface::Recipient> = Vec::new();
         for (_, _, _, recipient) in found {
-            if seen.insert((recipient.kind, recipient.id.clone())) {
-                out.push(recipient);
+            match out
+                .iter_mut()
+                .find(|kept| kept.kind == recipient.kind && kept.id == recipient.id)
+            {
+                Some(kept) => {
+                    if kept.detail.as_deref().is_none_or(str::is_empty) {
+                        kept.detail = recipient.detail;
+                    }
+                }
+                None => out.push(recipient),
             }
         }
         out.truncate(MAX_RECIPIENTS);
@@ -764,25 +773,29 @@ impl IndexedContent {
             }
             IndexKind::Person => {
                 let person = who?;
-                // The identity as the app that keeps the person spells it,
-                // without the prefix the index adds to say what it is.
-                let id = person
-                    .identity
-                    .strip_prefix("agent:")
-                    .or_else(|| person.identity.strip_prefix("person:"))
-                    .unwrap_or(&person.identity);
+                let id = bare_identity(&person.identity);
                 if id == self.person {
                     return None;
                 }
-                let kind = if person.agent {
-                    RecipientKind::Agent
-                } else {
-                    RecipientKind::Person
-                };
-                Recipient::found(kind, id, &entry.title)
+                Recipient::found(party_kind(person), id, &entry.title)
                     .with_detail(entry.subtitle.clone().unwrap_or_default())
             }
             IndexKind::Conversation => {
+                // A direct conversation is the one other person or agent in
+                // it: a message to them goes there, so a box lists them once.
+                let others: Vec<&IndexPerson> = entry
+                    .people
+                    .iter()
+                    .filter(|person| bare_identity(&person.identity) != self.person)
+                    .collect();
+                if let ([_, _], [other]) = (entry.people.as_slice(), others.as_slice()) {
+                    let name = Some(other.name.as_str()).filter(|name| !name.is_empty());
+                    return Some(Recipient::found(
+                        party_kind(other),
+                        bare_identity(&other.identity),
+                        name.unwrap_or(&entry.title),
+                    ));
+                }
                 let id = conversation_id(&entry.resource)?;
                 let people: Vec<&str> = entry
                     .people
@@ -816,6 +829,24 @@ impl IndexedContent {
         }
         self.entry(id)
             .map(|indexed| self.row(&indexed, MAX_PROVIDER_SCORE, needle))
+    }
+}
+
+/// A person's or an agent's identity as the app that keeps them spells it,
+/// without the prefix the index adds to say what it is.
+fn bare_identity(identity: &str) -> &str {
+    identity
+        .strip_prefix("agent:")
+        .or_else(|| identity.strip_prefix("person:"))
+        .unwrap_or(identity)
+}
+
+/// Whether a message to `person` goes to an agent or a person.
+fn party_kind(person: &IndexPerson) -> ui::floating_surface::RecipientKind {
+    if person.agent || person.identity.starts_with("agent:") {
+        ui::floating_surface::RecipientKind::Agent
+    } else {
+        ui::floating_surface::RecipientKind::Person
     }
 }
 
@@ -1239,14 +1270,13 @@ mod tests {
         assert_eq!(
             listed,
             [
-                (RecipientKind::Conversation, "c_ada"),
                 (RecipientKind::Agent, "a_ada"),
                 (RecipientKind::Person, "u_ada"),
             ],
-            "the conversation is the most recent, and nobody is listed twice"
+            "the direct conversation with the agent is the agent, listed once"
         );
         assert_eq!(
-            found[1].detail.as_deref(),
+            found[0].detail.as_deref(),
             Some("you"),
             "the agent says this person keeps it"
         );
@@ -1261,7 +1291,6 @@ mod tests {
         assert_eq!(
             all,
             [
-                (RecipientKind::Conversation, "c_ada"),
                 (RecipientKind::Agent, "a_ada"),
                 (RecipientKind::Person, "u_ada"),
             ]

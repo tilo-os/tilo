@@ -38,6 +38,16 @@ pub struct ActionCx {
     invocation: Option<tilo_actions::InvocationId>,
 }
 
+/// Software that acted for someone, as what it wrote keeps it ([`ActionCx::acting`]): the
+/// same invoker History names a change by, so a reader names it the same after it left.
+#[derive(crate::Model, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Acting {
+    /// The name the host that admitted it knew it by.
+    pub name: Option<crate::Atom>,
+    /// The person it acted for.
+    pub person: Option<crate::Atom>,
+}
+
 /// Who invoked the action applying now, as its envelope pinned it.
 fn invoking_author() -> Option<String> {
     tilo_actions::invoking_context()
@@ -152,13 +162,20 @@ impl ActionCx {
         uuid
     }
 
-    /// The person the invoker acted for (an agent's or a Shortcut's person),
-    /// as the envelope pinned it; `None` when someone acted for themselves.
+    /// Software acting for someone (an agent, an app), as the envelope pinned it: the name the
+    /// host that admitted it knew it by and the person it acted for. `None` for a person acting
+    /// for themselves.
     #[must_use]
-    pub fn for_person(&self) -> Option<String> {
-        tilo_actions::invoking_context()
-            .and_then(|context| context.invoker)
-            .and_then(|invoker| invoker.on_behalf_of)
+    pub fn acting(&self) -> Option<Acting> {
+        let invoker = tilo_actions::invoking_context()?.invoker?;
+        let acting = Acting {
+            name: invoker
+                .name
+                .filter(|name| !name.trim().is_empty())
+                .map(crate::Atom),
+            person: invoker.on_behalf_of.map(crate::Atom),
+        };
+        (invoker.kind.acts_for_someone() && acting != Acting::default()).then_some(acting)
     }
 
     /// The name and avatar a bot showed for this action instead of its own,

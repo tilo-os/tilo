@@ -126,6 +126,7 @@ impl Widget for ActionPalette {
         }
         self.rect = crate::widget::layout_rect(tree, node, origin);
         self.sync_list();
+        self.place_field();
     }
     fn take_structure_dirty(&mut self) -> bool {
         if !self.hosts_rows() {

@@ -41,7 +41,7 @@ fn page_views(field: &str, _: &Id) -> Vec<tilo_actions::ResourceViewSpec> {
     }
 }
 
-#[resource(kind = "test.notebook", label = "Notebook", item_views = page_views)]
+#[resource(kind = "test.notebook", item_views = page_views, catalogue = "tests/locales")]
 impl Notebook {
     /// Add a page.
     #[action]

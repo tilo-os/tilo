@@ -17,8 +17,8 @@ struct ScanReads {
 
 impl ScanReads {
     fn new() -> Self {
-        let mut looks = Looks::new('a');
-        let scan = looks.keep('b', png(1600, 1200));
+        let looks = Looks::new();
+        let scan = looks.keep(&png(1600, 1200));
         Self { looks, scan }
     }
 }

@@ -480,7 +480,7 @@ impl Published for People {
 
     /// The controls the open roster, its card and the pinned roster show, where they stand: what
     /// the host drew.
-    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+    fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
         match self.layer() {
             Some(layer) if self.open.get() || self.shown.borrow().standing() => layer.controls(),
             _ => Vec::new(),

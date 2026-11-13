@@ -140,7 +140,8 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-mu
 serde = { workspace = true, features = ["derive"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-tilo-test-env = { path = "../../dev/test-env" }
+# The relay tests' home relay is a loopback one no test shares.
+tilo-test-env = { path = "../../dev/test-env", features = ["iroh-relay"] }
 # The iroh trust test: endpoints and a relay under a locally issued CA.
 iroh.workspace = true
 iroh-relay = { version = "1.0.3", features = ["server"] }

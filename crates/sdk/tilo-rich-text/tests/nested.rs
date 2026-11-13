@@ -38,7 +38,7 @@ pub struct Letters {
     pub notes: RichText,
 }
 
-#[resource(kind = "test.letters", label = "Letters")]
+#[resource(kind = "test.letters", catalogue = "tests/locales")]
 impl Letters {
     /// Write a letter.
     #[action]

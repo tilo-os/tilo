@@ -5125,7 +5125,16 @@ impl AppBrokerState {
             }
         }
         // Never trust an envelope's invoker: the host sets it.
-        let context = invoker::host_set_invoker(context, actor, caller, execution.as_ref())?;
+        let mut context = invoker::host_set_invoker(context, actor, caller, execution.as_ref())?;
+        // A door connection's run is the host's own and goes by the name its agent is seated as:
+        // what everything the agent writes is named by, after it left too.
+        if let Some(DurableContext::Task { binding, .. }) = &durable
+            && tilo_broker_core::services::is_door_run(&binding.task_id)
+            && let Some(context) = context.as_mut()
+            && let Some(invoker) = context.invoker.as_mut()
+        {
+            invoker.name = context.group.as_ref().map(|group| group.label.clone());
+        }
         // A certified local origin retains its original registered clock and
         // exact person/workspace through an asynchronous directory lookup. Never
         // recapture a replacement origin at dispatch or accept a payload actor.
@@ -7325,7 +7334,7 @@ impl AppBrokerState {
             let is_self = admitted.agent_id.as_deref() == Some(agent.as_str());
             // The colour its face wears everywhere ([`participant_color`] of an agent): an app
             // draws it as the bar does, one rule for every surface.
-            let colour = ui::presence::participant_hue(&agent, true);
+            let colour = ui::presence::participant_hue(&agent, true, None);
             collaborators.push(ui::collaboration::Collaborator {
                 id: format!("agent:{agent}"),
                 name: agent,
@@ -13328,7 +13337,7 @@ pub mod tests {
                 .expect("an agent's id names its key");
             assert_eq!(
                 agent.colour,
-                Some(ui::presence::participant_hue(key, true)),
+                Some(ui::presence::participant_hue(key, true, None)),
                 "{key}"
             );
         }

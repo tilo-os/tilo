@@ -4421,7 +4421,12 @@ mod tests {
             ]
             .map(tilo_onboarding::t)
             .join(" ");
-            for surface in ["Settings", "Devices & Sync", "Add device", "six-digit code"] {
+            for surface in [
+                "Settings",
+                "Sync between devices",
+                "Add device",
+                "six-digit code",
+            ] {
                 assert!(
                     steps.contains(surface),
                     "nearby steps must name {surface}: {steps}"

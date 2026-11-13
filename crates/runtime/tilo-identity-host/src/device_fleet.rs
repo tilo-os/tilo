@@ -40,6 +40,33 @@ pub(crate) struct ConsumedEnrollment {
 }
 
 impl DeviceFleet {
+    /// Check that this is a fleet of `identity_id` a verifier takes: of the
+    /// current schema, of that identity, and with every certificate and
+    /// revocation in it verifying under it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the schema version or identity id is another,
+    /// or a stored record does not verify.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn check(&self, identity_id: &str) -> std::io::Result<()> {
+        if self.schema_version != FLEET_SCHEMA_VERSION || self.identity_id != identity_id {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "device fleet identity/schema mismatch",
+            ));
+        }
+        for cert in &self.certificates {
+            tilo_user_identity::verify_device_cert(cert)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        }
+        for entry in &self.revocations {
+            tilo_user_identity::verify_revocation_entry(entry)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        }
+        Ok(())
+    }
+
     /// An empty fleet of `identity_id`: no certificates, revocations or
     /// consumed enrollments.
     #[must_use]

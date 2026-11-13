@@ -5,11 +5,11 @@
 //! the launcher's own bundle checks.
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use test_http::{Reply, Responder};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
@@ -261,38 +261,26 @@ impl tilo_app_package::BlobSink for Collected {
     }
 }
 
-/// A registry serving `blobs` at `/blobs/<hex>` until the test ends; every
-/// requested path is recorded.
-fn registry(blobs: HashMap<String, Vec<u8>>) -> (String, Arc<Mutex<Vec<String>>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
+/// A registry serving `blobs` at `/blobs/<hex>`; every requested path is
+/// recorded.
+fn registry(blobs: HashMap<String, Vec<u8>>) -> (String, Arc<Mutex<Vec<String>>>, Responder) {
     let requested = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&requested);
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { return };
-            let mut request = [0; 2048];
-            let read = stream.read(&mut request).unwrap_or(0);
-            let text = String::from_utf8_lossy(&request[..read]).to_string();
-            let path = text.split_whitespace().nth(1).unwrap_or("").to_string();
-            seen.lock().unwrap().push(path.clone());
-            let body = path
+    let blobs = Arc::new(blobs);
+    let served = Responder::handle(move |request| {
+        let path = request.target.clone();
+        seen.lock().unwrap().push(path.clone());
+        Some(
+            match path
                 .strip_prefix("/blobs/")
-                .and_then(|hash| blobs.get(hash));
-            let mut reply = match body {
-                Some(body) => format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                )
-                .into_bytes(),
-                None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                    .to_vec(),
-            };
-            reply.extend_from_slice(body.map_or(&[][..], Vec::as_slice));
-            let _ = stream.write_all(&reply);
-        }
+                .and_then(|hash| blobs.get(hash))
+            {
+                Some(body) => Reply::status(200).body(body.clone()),
+                None => Reply::status(404),
+            },
+        )
     });
-    (url, requested)
+    (served.url(), requested, served)
 }
 
 #[test]
@@ -309,7 +297,7 @@ fn runtime_install_reuses_verified_local_blobs() {
     let (thin, blobs) = env.thin_runtime_tapp("two", &two_bundle, &format!("tilo-runtime/{two}"));
     let shared = tilo_app_package::BlobHash::of(b"loader").to_hex();
     assert!(blobs.contains_key(&shared), "both builds carry the loader");
-    let (url, requested) = registry(blobs);
+    let (url, requested, _served) = registry(blobs);
 
     // Phase `only_bytes_this_device_lacks_are_fetched`.
     let (ok, out) = env.cmd(&[
@@ -357,7 +345,7 @@ fn runtime_install_refuses_a_local_file_whose_hash_differs() {
     std::fs::write(&loader_path, b"loadeR").unwrap();
     let (two, two_bundle) = env.bundle("two", b"toolkit build two", &runtime_identity);
     let (thin, blobs) = env.thin_runtime_tapp("two", &two_bundle, &format!("tilo-runtime/{two}"));
-    let (url, requested) = registry(blobs);
+    let (url, requested, _served) = registry(blobs);
     let (ok, out) = env.cmd(&[
         "install",
         thin.to_str().unwrap(),

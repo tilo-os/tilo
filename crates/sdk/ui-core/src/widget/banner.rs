@@ -1174,7 +1174,7 @@ impl Banner {
             return;
         }
         let theme = self.body.theme.clone();
-        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        crate::text_render::with_layout_renderer(&theme, |text| {
             self.place_buttons(text, &theme);
         });
     }
@@ -1188,7 +1188,7 @@ impl Banner {
             return;
         }
         let theme = self.body.theme.clone();
-        let height = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        let height = crate::text_render::with_layout_renderer(&theme, |text| {
             self.body.geometry(text, &theme, slot.width()).height.ceil()
         });
         let box_ = Rect::new(slot.x0, slot.y0, slot.x1, slot.y0 + height);
@@ -1335,11 +1335,20 @@ impl Widget for Banner {
         self.band
             .place_first(self.rect, visible, self.arrives_in_place);
         if !self.band.laid_in_flow {
-            // On its way: its container puts it in its slot and its contents
-            // there ([`Self::place_in_slot`]), the frame before it is drawn.
-            self.band.unplaced = true;
+            // On its way, out of the layout. A shown banner no container puts
+            // in its slot lands here, and the next layout takes it in; one its
+            // container places ([`Self::place_disclosing`]) stands there with
+            // its contents. Either way the frame that follows reads what this
+            // one placed, and lays nothing out.
+            if visible && self.band.land_unplaced(visible) {
+                self.layout_dirty = true;
+                return;
+            }
+            self.band.unplaced = visible;
+            self.place_in_slot();
             return;
         }
+        self.band.unplaced = false;
         self.band.laid_rect = self.rect;
         let origin = self.rect.origin();
         if let Some(&body) = self.nodes.first() {
@@ -1368,18 +1377,8 @@ impl Widget for Banner {
             self.band.show_at_rest(painted, scene, transform);
             return;
         }
-        if self.band.land_unplaced(self.visible()) {
-            // Out of the layout with no container to put it in its slot:
-            // it lands, and the next layout takes it in.
-            self.layout_dirty = true;
-            return;
-        }
-        // On its way, out of the layout: in its slot at its full height, and
-        // its contents there. A container that placed it this frame already
-        // put them there; one that never did leaves nothing outside the box.
-        if !self.band.laid_in_flow {
-            self.place_in_slot();
-        }
+        // On its way, out of the layout: it is drawn in its slot, where the
+        // layout put its contents.
         if self.band.laid_rect.width() <= 0.0 {
             return;
         }

@@ -1,8 +1,9 @@
 //! A stream's frames: the lane and source they belong to, the track they are
 //! sealed under, sealing them, and opening what arrives.
 
-use channel_crypto::{ChannelContentKeys, MEDIA_STREAM_TAG_LEN};
+use channel_crypto::{ChannelContentKeys, MEDIA_STREAM_TAG_LEN, SenderMediaKeys};
 use collab_types::scope::Scope;
+use tilo_seal::SymmetricKey;
 use tilo_seal::live::FrameCipher;
 
 use crate::roster::Roster;
@@ -79,6 +80,64 @@ pub enum Refusal {
     Primitive,
 }
 
+/// What a plane seals and opens under.
+///
+/// A device that holds its scope's channel content keys seals every stream of
+/// every sender with them ([`PlaneKeys::Channel`]). A device that may not hold
+/// them — a hosted machine confined to its own record — is handed the media
+/// keys of exactly its own streams at one epoch ([`PlaneKeys::Sender`]): it
+/// seals what it was given, and it opens nobody's frames, its own included.
+#[derive(Clone)]
+pub enum PlaneKeys {
+    /// The scope's channel content keys.
+    Channel(ChannelContentKeys),
+    /// One sender's media keys, for the streams it may publish.
+    Sender(SenderMediaKeys),
+}
+
+impl From<ChannelContentKeys> for PlaneKeys {
+    fn from(keys: ChannelContentKeys) -> Self {
+        Self::Channel(keys)
+    }
+}
+
+impl From<SenderMediaKeys> for PlaneKeys {
+    fn from(keys: SenderMediaKeys) -> Self {
+        Self::Sender(keys)
+    }
+}
+
+impl PlaneKeys {
+    /// The epoch these keys seal under.
+    #[must_use]
+    pub fn epoch(&self) -> u64 {
+        match self {
+            Self::Channel(keys) => keys.epoch(),
+            Self::Sender(keys) => keys.epoch(),
+        }
+    }
+
+    /// The key `sender`'s frames of `stream` are sealed under at `epoch`.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::NoKey`] when these keys do not cover `epoch`, `sender` and
+    /// `stream`: content keys cover every sender, one sender's media keys only
+    /// that sender and the streams it was handed.
+    pub fn media_key(
+        &self,
+        epoch: u64,
+        sender: [u8; 32],
+        stream: Stream,
+    ) -> Result<SymmetricKey, Refusal> {
+        let key = match self {
+            Self::Channel(keys) => keys.media_key(epoch, sender, stream.tag()),
+            Self::Sender(keys) => keys.media_key(epoch, sender, stream.tag()),
+        };
+        key.map_err(|_| Refusal::NoKey(epoch))
+    }
+}
+
 /// Which lane of a call a frame travels on.
 ///
 /// Voice travels on the workspace's live plane, not on a lane; the place its
@@ -121,6 +180,12 @@ pub enum Stream {
 }
 
 impl Stream {
+    /// The streams a device publishes of its own when it holds none of the
+    /// workspace's media keys and is lent theirs instead (a session in a
+    /// workspace's VM): who is here, its shared windows and its windows'
+    /// pages. Never a call's audio or camera, and nothing anyone else sends.
+    pub const OWN: [Self; 3] = [Self::Presence, Self::Window, Self::Page];
+
     /// The two bytes a media key is derived for: the kind of media, then the
     /// stream within it. A key is never one another stream's.
     #[must_use]
@@ -159,7 +224,7 @@ impl Stream {
 }
 
 /// What one device seals one stream's frames with: the stream's media key at
-/// the epoch the channel is on, derived once, and the track those frames are
+/// the epoch its keys are at, derived once, and the track those frames are
 /// named as.
 ///
 /// The key is the same for every session of the device and every track of
@@ -181,18 +246,18 @@ impl Sealer {
     ///
     /// # Errors
     ///
-    /// [`Refusal::NoKey`] when `keys` holds no key for its own epoch, and
-    /// [`Refusal::Primitive`] if the cipher cannot be built for the key.
+    /// [`Refusal::NoKey`] when `keys` do not cover this device and this
+    /// stream — a device handed its own media keys seals only the streams it
+    /// was handed — and [`Refusal::Primitive`] if the cipher cannot be built
+    /// for the key.
     pub fn new(
-        keys: &ChannelContentKeys,
+        keys: &PlaneKeys,
         sender: [u8; 32],
         stream: Stream,
         track: TrackName,
     ) -> Result<Self, Refusal> {
         let epoch = keys.epoch();
-        let key = keys
-            .media_key(epoch, sender, stream.tag())
-            .map_err(|_| Refusal::NoKey(epoch))?;
+        let key = keys.media_key(epoch, sender, stream)?;
         let cipher = FrameCipher::new(&key).map_err(|_| Refusal::Primitive)?;
         Ok(Self {
             cipher,
@@ -233,17 +298,17 @@ impl Sealer {
     }
 }
 
-/// What opens the frames a call receives: the channel's keys, and who may
-/// send.
+/// What opens the frames a call receives: the keys frames are sealed under,
+/// and who may send.
 pub struct Opener {
-    keys: ChannelContentKeys,
+    keys: PlaneKeys,
     roster: Roster,
 }
 
 impl Opener {
     /// Open frames under `keys`, from the devices `roster` names.
     #[must_use]
-    pub const fn new(keys: ChannelContentKeys, roster: Roster) -> Self {
+    pub const fn new(keys: PlaneKeys, roster: Roster) -> Self {
         Self { keys, roster }
     }
 
@@ -260,8 +325,9 @@ impl Opener {
     /// anything is derived or decrypted ([`Refusal::OffRoster`]); one sealed
     /// under an epoch this device holds no key for is refused as
     /// [`Refusal::NoKey`], which is what a device removed before that epoch
-    /// gets. Repeat and reordering are not the frames' business: a carrier's
-    /// jitter buffer drops what it has already played.
+    /// gets, and what a device handed only its own media keys gets for every
+    /// frame it reads. Repeat and reordering are not the frames' business: a
+    /// carrier's jitter buffer drops what it has already played.
     ///
     /// # Errors
     ///
@@ -282,10 +348,12 @@ impl Opener {
         let (seq, sealed) = rest.split_first_chunk::<4>().ok_or(Refusal::Truncated)?;
         let epoch = u64::from_le_bytes(*epoch);
         let seq = u32::from_le_bytes(*seq);
-        let key = self
-            .keys
-            .media_key(epoch, sender, stream.tag())
-            .map_err(|_| Refusal::NoKey(epoch))?;
+        if matches!(&self.keys, PlaneKeys::Sender(_)) {
+            // A device handed only its own media keys holds nobody's: it
+            // opens nothing, not even frames it sealed itself.
+            return Err(Refusal::NoKey(epoch));
+        }
+        let key = self.keys.media_key(epoch, sender, stream)?;
         let cipher = FrameCipher::new(&key).map_err(|_| Refusal::Primitive)?;
         cipher
             .open(&aad(epoch, seq, stream, track), sealed)
@@ -327,7 +395,7 @@ mod tests {
             .unwrap()
     }
 
-    fn sealer(keys: &ChannelContentKeys, track: &str) -> Sealer {
+    fn sealer(keys: &PlaneKeys, track: &str) -> Sealer {
         let name = TrackName::new(&Scope::workspace(WORKSPACE), track);
         Sealer::new(keys, DEVICE, Stream::Presence, name).unwrap()
     }
@@ -344,7 +412,7 @@ mod tests {
     /// the XOR of the ciphertexts would be the XOR of the plaintexts.
     #[test]
     fn frames_with_one_sequence_under_one_key_never_share_a_keystream() {
-        let keys = keys();
+        let keys = PlaneKeys::from(keys());
         let first = sealer(&keys, "presence");
         let second = sealer(&keys, "presence");
         let other_track = sealer(&keys, "presence/2");
@@ -370,9 +438,65 @@ mod tests {
         assert_ne!(first.seal(1, a).unwrap(), first.seal(1, a).unwrap());
     }
 
+    /// A device handed one sender's media keys seals exactly the streams it
+    /// was handed, under its own device and epoch, and opens nothing: what it
+    /// seals the member that derived them opens, and nothing else does.
+    #[test]
+    fn a_device_on_its_own_media_keys_seals_only_what_it_was_handed() {
+        let channel = keys();
+        let epoch = channel.epoch();
+        let scope = Scope::workspace(WORKSPACE);
+        let presence = TrackName::new(&scope, "presence");
+        let handed = channel
+            .sender_media_keys(epoch, DEVICE, &[Stream::Presence.tag(), Stream::Page.tag()])
+            .unwrap();
+        let keys = PlaneKeys::from(handed);
+        assert!(Sealer::new(&keys, DEVICE, Stream::Presence, presence.clone()).is_ok());
+        assert!(
+            Sealer::new(
+                &keys,
+                DEVICE,
+                Stream::Page,
+                TrackName::new(&scope, "page/1")
+            )
+            .is_ok()
+        );
+        for stream in [Stream::Microphone, Stream::Camera, Stream::Window] {
+            assert_eq!(
+                Sealer::new(&keys, DEVICE, stream, TrackName::new(&scope, "elsewhere")).err(),
+                Some(Refusal::NoKey(epoch)),
+                "a stream it was not handed is not one it can seal"
+            );
+        }
+        assert_eq!(
+            Sealer::new(&keys, [4; 32], Stream::Presence, presence.clone()).err(),
+            Some(Refusal::NoKey(epoch)),
+            "one sender's keys speak for that sender alone"
+        );
+
+        let sealed = Sealer::new(&keys, DEVICE, Stream::Presence, presence.clone())
+            .unwrap()
+            .seal(1, b"here")
+            .unwrap();
+        let member = Opener::new(PlaneKeys::from(channel), Roster::new([DEVICE]));
+        assert_eq!(
+            member
+                .open(DEVICE, Stream::Presence, &presence, &sealed)
+                .unwrap(),
+            b"here"
+        );
+
+        let held = Opener::new(keys, Roster::new([DEVICE]));
+        assert_eq!(
+            held.open(DEVICE, Stream::Presence, &presence, &sealed),
+            Err(Refusal::NoKey(epoch)),
+            "it holds nobody's keys, its own included"
+        );
+    }
+
     #[test]
     fn a_sealed_frame_opens_only_as_its_sender_stream_track_and_sequence() {
-        let keys = keys();
+        let keys = PlaneKeys::from(keys());
         let scope = Scope::workspace(WORKSPACE);
         let name = TrackName::new(&scope, "presence");
         let frame = sealer(&keys, "presence").seal(7, b"here").unwrap();

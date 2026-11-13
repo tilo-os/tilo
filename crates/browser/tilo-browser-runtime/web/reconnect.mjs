@@ -66,14 +66,31 @@ export function redact(text) {
 }
 
 /** An error in one line: its name and words, and the codes the host gave. */
-function describeError(error) {
+export function describeError(error) {
   if (error == null) return 'none';
   const parts = [`${error.name ?? 'Error'}: ${error.message ?? String(error)}`];
   if (error.code) parts.push(`code ${error.code}`);
   if (error.status) parts.push(`HTTP ${error.status}`);
   if (error.retryAfter) parts.push(`retry after ${error.retryAfter} s`);
   if (error.reason && error.reason !== error.message) parts.push(`host said: ${error.reason}`);
+  if (error.phase) parts.push(`session ${error.phase}${error.connected ? ', connected' : ''}`);
+  if (error.sessionError) parts.push(`session said: ${error.sessionError}${error.sessionErrorCode ? ` (${error.sessionErrorCode})` : ''}`);
   return redact(parts.join(' · '));
+}
+
+/** The host's address as a screen names it: `host[:port]`, no scheme. */
+export function hostName(origin) {
+  try { return new URL(origin).host; } catch { return null; }
+}
+
+/** Whether `origin` is a machine's own address (an IP address, `localhost`
+ * or a local network name) rather than a public name: only such a host can
+ * serve a certificate this browser was never told to trust. */
+export function localHost(origin) {
+  let host;
+  try { host = new URL(origin).hostname; } catch { return false; }
+  return /^\[?[0-9a-f:.]+\]?$/i.test(host) && /[.:]/.test(host)
+    || host === 'localhost' || /\.(localhost|local|lan|internal|home\.arpa)$/i.test(host);
 }
 
 /** The origin of `url` alone (no path, no query, no fragment), or `unknown`. */
@@ -222,7 +239,21 @@ export function domReconnectView({document = globalThis.document, messages = () 
       const named = workspace();
       const [heading, unnamed, body] = COPY[state.reason] ?? COPY.unreachable;
       const title = named ? say(heading[0], heading[1], {workspace: named}) : say(unnamed[0], unnamed[1]);
-      const words = say(body[0], body[1]);
+      // A host on a machine's own address that never answers may be one
+      // whose certificate this browser refuses: waiting does not fix that,
+      // and only the browser can say which it is.
+      const local = state.reason === 'unreachable' && localHost(state.origin);
+      const words = local
+        ? say('arrival-reconnect-unreachable-local-body', '{ $host } may be restarting, or this browser doesn’t trust its certificate. Open it to see which; the workspace opens here as soon as it answers.', {host: hostName(state.origin)})
+        : say(body[0], body[1]);
+      const opener = $('arrival-reconnect-host');
+      if (opener) {
+        opener.hidden = !local;
+        if (local) {
+          opener.href = state.origin;
+          opener.textContent = say('entry-failure-open-host', 'Open { $host }', {host: hostName(state.origin)});
+        }
+      }
       const next = state.waiting === 'trying' ? say('arrival-reconnect-trying', 'Trying now…')
         : state.waiting === 'offline' ? say('arrival-reconnect-waiting-online', 'Waiting for the network…')
           : say('arrival-reconnect-next', 'Trying again in { $time }', {time: countdownText(state.remainingMs)});

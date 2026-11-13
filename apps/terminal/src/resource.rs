@@ -498,7 +498,7 @@ impl Terminal {
         let request = RunRequest {
             command: Atom(command.to_owned()),
             requested_by: Atom(cx.author().unwrap_or_default().to_owned()),
-            for_person: cx.for_person().map(Atom),
+            for_person: cx.acting().and_then(|acting| acting.person),
             pane,
             agent: cx.actor_kind() == Some(ui::tilo_actions::ActorKind::Agent),
         };

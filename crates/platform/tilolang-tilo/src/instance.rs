@@ -47,7 +47,6 @@ use tilo_render_protocol::patch::{self as ui, Lane, ToApp, ToUi, Transport, Word
 
 use crate::bundle::Bundle;
 use crate::host::{Host, Opening, Package, RootView};
-use crate::meta::MetaExt;
 use crate::publish::{COMMIT, HOST_RESOURCE};
 use crate::runtime::meta::{Meta, TypeMeta};
 use crate::runtime::{
@@ -316,10 +315,9 @@ pub struct Instance {
     )>,
     /// How the policy's people are the runtime's principals, as presence pairs them.
     people: crate::members::People,
-    names_changed: bool,
-    /// The person's formats moved: what a view writes of a time or a day (`.clock()`, a date in a
-    /// sentence) is written again, and what it shows is shown in the new style.
-    formats_changed: bool,
+    /// The person's environment moved: their language, their formats, or what the window calls
+    /// someone. What a view shows of any of them is shown again, and what it sent is sent again.
+    person_changed: bool,
     outgoing: Outgoing,
     in_flight: VecDeque<u64>,
     door_work: Rc<Cell<bool>>,
@@ -433,8 +431,7 @@ impl Instance {
             lenses_changed: false,
             members_from: None,
             people,
-            names_changed: false,
-            formats_changed: false,
+            person_changed: false,
             outgoing: Rc::default(),
             in_flight: VecDeque::new(),
             door_work: Rc::default(),
@@ -573,10 +570,11 @@ impl Instance {
     }
 
     /// Have the window read in `locale` (`de-DE`), the language the instance's words now come in:
-    /// its own chrome relabels with the next frame it is sent, and every view is drawn again.
+    /// its own chrome relabels with the next frame it is sent, and every view that shows a word
+    /// is drawn again.
     pub fn speak(&mut self, locale: String) {
         self.out.push(ToUi::Speak(locale));
-        self.formats_changed = true;
+        self.person_changed = true;
     }
 
     /// What search hits and agents asked the window to show, until it shows them.
@@ -798,15 +796,11 @@ impl Instance {
         self.moved = true;
     }
 
-    /// The names of the workspace changed: views showing names show them again.
-    pub fn names_changed(&mut self) {
-        self.names_changed = true;
-    }
-
-    /// The person's formats changed: every view that writes a time or a day writes it again in
-    /// the new style, and the window shows what it wrote.
-    pub fn formats_changed(&mut self) {
-        self.formats_changed = true;
+    /// The person's environment changed — the language their window speaks, their formats, or
+    /// the name the window calls someone: every view that shows what only the window knows shows
+    /// it again, and no other boundary runs.
+    pub fn person_changed(&mut self) {
+        self.person_changed = true;
     }
 
     /// Say whether this replica is the workspace's origin (the device that governs the workspace). Only
@@ -933,7 +927,7 @@ impl Instance {
     fn field_name(host: &Host, binding: &Binding) -> String {
         announced(binding, |target, field| {
             type_of(host, &target.ty)
-                .and_then(|(_, ty)| {
+                .and_then(|ty| {
                     ty.fields
                         .iter()
                         .find(|declared| declared.id == field)
@@ -1467,7 +1461,7 @@ impl Instance {
             ToApp::Composing(composing) => self.composing = composing,
             ToApp::Names { me, others } => {
                 if self.told.tell(me, others) {
-                    self.names_changed = true;
+                    self.person_changed = true;
                 }
             }
             ToApp::Space {
@@ -2335,22 +2329,16 @@ impl Instance {
         let opened = self.take_open_requests();
         let pulled = self.poll_origins();
         let settled = self.settle_outbox();
-        // What the window calls a participant, or how the person writes a day or a time of day,
-        // changed: the boundaries that show one run again, and no other.
-        let named = std::mem::take(&mut self.names_changed);
-        let formatted = std::mem::take(&mut self.formats_changed);
-        if named || formatted {
+        // The person's environment — their language, their formats, what the window calls
+        // someone — changed: the boundaries that show what only the window knows run again, and
+        // no other.
+        let person = std::mem::take(&mut self.person_changed);
+        if person {
             for view in [self.root.as_ref(), self.detail.as_ref()]
                 .into_iter()
                 .flatten()
             {
-                let mut view = view.view.borrow_mut();
-                if named {
-                    view.names_moved();
-                }
-                if formatted {
-                    view.formats_moved();
-                }
+                view.view.borrow_mut().person_moved();
             }
         }
         // Who is at a resource shows wherever a view reads its lenses.
@@ -2364,17 +2352,16 @@ impl Instance {
             || pulled
             || settled
             || lenses
-            || named
-            || formatted
+            || person
             || members
             || timed
             || self.views_stale();
         if changed {
             self.poll_views();
         }
-        if named || formatted {
-            // A name, and how a day or a time of day reads, go into a node's value when it is
-            // sent: every tree is sent again.
+        if person {
+            // A name, a word and how a day or a time of day reads go into a node's value when it
+            // is sent: every tree is sent again.
             for lane in [Lane::Root, Lane::Detail] {
                 self.resend(lane);
             }
@@ -2728,17 +2715,16 @@ fn used_packages(host: &Host, app: &str) -> Vec<Package> {
         .collect()
 }
 
-/// The package that declares the type `ty` (an id), with the type.
+/// The type `ty` (an id), as the package that declares it declares it.
 #[must_use]
-pub fn type_of(host: &Host, ty: &str) -> Option<(Meta, TypeMeta)> {
+pub fn type_of(host: &Host, ty: &str) -> Option<TypeMeta> {
     host.find_in_packages(|package| {
-        let declared = package
+        package
             .meta
             .types
             .iter()
-            .find(|declared| declared.id == ty)?
-            .clone();
-        Some((package.meta.clone(), declared))
+            .find(|declared| declared.id == ty)
+            .cloned()
     })
 }
 

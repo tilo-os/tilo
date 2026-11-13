@@ -17,7 +17,11 @@ pub struct Board {
     pub title: String,
 }
 
-#[resource(kind = "test.board", label = "Board", app = "so.tilo.test-board")]
+#[resource(
+    kind = "test.board",
+    app = "so.tilo.test-board",
+    catalogue = "tests/locales"
+)]
 impl Board {
     /// Retitle the board.
     #[action]
@@ -55,7 +59,11 @@ impl Display {
     }
 }
 
-#[resource(kind = "test.display", label = "Display", app = "so.tilo.test-board")]
+#[resource(
+    kind = "test.display",
+    app = "so.tilo.test-board",
+    catalogue = "tests/locales"
+)]
 impl Display {
     /// Draw everything at its natural size.
     #[action]
@@ -76,7 +84,11 @@ pub struct Playback {
     pub muted: Set<String>,
 }
 
-#[resource(kind = "test.playback", label = "Playback", app = "so.tilo.test-board")]
+#[resource(
+    kind = "test.playback",
+    app = "so.tilo.test-board",
+    catalogue = "tests/locales"
+)]
 impl Playback {
     /// Mute a channel.
     #[action]
@@ -619,7 +631,11 @@ impl Lock {
     }
 }
 
-#[resource(kind = "test.lock", label = "Lock", app = "so.tilo.test-board")]
+#[resource(
+    kind = "test.lock",
+    app = "so.tilo.test-board",
+    catalogue = "tests/locales"
+)]
 impl Lock {}
 
 impl SettingsSchema for Lock {

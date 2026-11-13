@@ -1148,6 +1148,14 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
     if let Some(kind) = &access.role_description {
         ak.set_role_description(kind.clone());
     }
+    // What the control does, in the language of ids: the author id, which a
+    // screen reader, an inspection tool and the session's own listing of a
+    // window's controls read back. It outlives the window's composition
+    // moving the control and the person's language renaming it, which its
+    // name does not.
+    if let Some(action) = &access.action {
+        ak.set_author_id(action.clone());
+    }
     // This must be part of the platform tree, not only the built-in reader's
     // narration pass.  `accesskit_unix` turns these into AT-SPI live-region
     // attributes/events, which is what Orca and braille clients observe when

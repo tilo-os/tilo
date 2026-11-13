@@ -1213,8 +1213,13 @@ impl App {
                         );
                     }
                 }
-                FloatingSurfaceHostMessage::PressTarget { name, role, action } => {
-                    self.press_window_target(name, role, *action);
+                FloatingSurfaceHostMessage::PressTarget {
+                    name,
+                    role,
+                    identity,
+                    action,
+                } => {
+                    self.press_window_target(name, role, identity.as_deref(), *action);
                 }
                 FloatingSurfaceHostMessage::ActivateTestId { test_id } => {
                     if self.input.window_focused && !self.activate_test_id(test_id) {

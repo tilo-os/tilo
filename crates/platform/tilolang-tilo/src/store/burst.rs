@@ -18,26 +18,25 @@
 //! next one. A change that is no letter of a text field — a press, a command, an undo, a
 //! collection's change — ends the burst too.
 //!
-//! A keystroke that gives the field a *structure* rather than more words ends it as well: `# `
+//! A keystroke that gives the field a *structure* rather than more words starts one as well: `# `
 //! typed at the start of a line makes it a heading, which is a step of its own, so undo takes
-//! the marker back rather than the words typed before it ([`Typing::of`]).
+//! the marker back rather than the words typed before it; the letters after it join its step
+//! (`TxnState::reshapes`).
 //!
 //! A trial run ([`Inner::trials`]) neither joins nor ends a burst: planning an action writes the
 //! mirror and is taken back, and what a person is typing is no part of that.
 
 use std::time::Instant;
 
-use serde::Deserialize as _;
 use tilo_actions::ActionId;
-use tilo_document::{ClipBlock, RichTextAction};
 use tilo_resource::EditOp;
 use tilolang_runtime::ids::AppId;
 use tilolang_runtime::store::ChangeNote;
 
 use super::{DynEdit, Inner, TxnState};
 
-/// What a burst's keystrokes type into: one field of one resource, by one person, in one app,
-/// made of the paragraphs it is made of. A keystroke that is not of it is a change of its own.
+/// What a burst's keystrokes type into: one field of one resource, by one person, in one app.
+/// A keystroke that is not of it is a change of its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Typing {
     app: AppId,
@@ -46,10 +45,6 @@ pub(super) struct Typing {
     resource: String,
     field: String,
     by: String,
-    /// Each paragraph of what the keystroke leaves, its kind and attributes and nothing of its
-    /// words: a keystroke that changes one of them has made a line a heading (or a list, or a
-    /// quote) rather than typed into it, which is a step of the person's on its own.
-    shape: Vec<ClipBlock>,
 }
 
 impl Typing {
@@ -79,46 +74,18 @@ impl Typing {
             resource: resource.clone(),
             field: field.to_owned(),
             by: note.invoker.clone(),
-            shape: shape(state.edits.first()?)?,
         })
     }
 }
 
-/// Whether the edit writes a text field whole: what a bound control hands over on each
-/// keystroke, and what a typing burst is made of.
+/// Whether the edit writes a text field: what a bound control hands over on each keystroke, and
+/// what a typing burst is made of.
 fn writes_text(edit: &DynEdit) -> bool {
     matches!(
         edit.bare(),
         DynEdit::Edit { edit, .. }
             if matches!(edit.op(), EditOp::Replace { .. } | EditOp::Rich { .. })
     )
-}
-
-/// The structure of what the edit leaves: its paragraphs' kinds and attributes, and none of
-/// their words or marks. `None` for an edit whose paragraphs cannot be read back, which is no
-/// keystroke of a burst.
-fn shape(edit: &DynEdit) -> Option<Vec<ClipBlock>> {
-    let DynEdit::Edit { edit, .. } = edit.bare() else {
-        return None;
-    };
-    match edit.op() {
-        // A `Text` field keeps its document as Markdown, so what it is made of is its words.
-        EditOp::Replace { .. } => Some(Vec::new()),
-        EditOp::Rich { rich } => match RichTextAction::deserialize(rich).ok()? {
-            RichTextAction::SyncClips { blocks } => Some(
-                blocks
-                    .into_iter()
-                    .map(|block| ClipBlock {
-                        text: String::new(),
-                        marks: Vec::new(),
-                        ..block
-                    })
-                    .collect(),
-            ),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 /// The burst of typing the person is in: what its next keystroke continues, the gesture all of
@@ -143,7 +110,11 @@ impl Inner {
             return None;
         };
         let gesture = match self.burst.take() {
-            Some(burst) if burst.what == what && burst.at.elapsed() < self.edit_pause => {
+            Some(burst)
+                if burst.what == what
+                    && !state.reshapes
+                    && burst.at.elapsed() < self.edit_pause =>
+            {
                 burst.gesture
             }
             _ => ActionId::new(),

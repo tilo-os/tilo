@@ -596,6 +596,9 @@ pub struct WindowSearch {
     requests: Vec<WindowSearchRequest>,
     motion: EffectiveMotion,
     platform: PlatformConventions,
+    /// The theme the field's controls are placed in, as last laid out: the
+    /// search places its own field, so it keeps the type it measured in.
+    layout_theme: Theme,
 }
 
 impl Default for WindowSearch {
@@ -646,6 +649,7 @@ impl WindowSearch {
             adopted_serial: None,
             finishing: false,
             requests: Vec::new(),
+            layout_theme: Theme::default(),
             motion: EffectiveMotion::default(),
             platform: PlatformConventions::default(),
         }
@@ -840,7 +844,8 @@ impl WindowSearch {
             *rect = *rect + shift;
         }
         let field = self.field_rect;
-        self.field.apply_layout_external(field);
+        let theme = self.layout_theme.clone();
+        self.field.apply_layout_external(field, &theme);
     }
 
     /// The resting control's square.
@@ -1485,6 +1490,7 @@ impl WindowSearch {
     /// from the resting control, the parts after it fade in at their place.
     fn layout(&mut self, progress: f64, text: &mut TextRenderer, theme: &Theme) {
         self.parts.clear();
+        self.layout_theme = theme.clone();
         let gap = f64::from(theme.tokens.spacing.s1);
         let sibling = f64::from(theme.tokens.spacing.s2);
         let height = ControlSize::Small.height(theme);
@@ -1572,7 +1578,7 @@ impl WindowSearch {
         let drawn_x0 = self.anchor.x0 + (start - self.anchor.x0) * p;
         let drawn_w = CONTROL_PX + (field_w - CONTROL_PX) * p;
         self.field_rect = Rect::new(drawn_x0, y0, drawn_x0 + drawn_w, y1);
-        self.field.apply_layout_external(self.field_rect);
+        self.field.apply_layout_external(self.field_rect, theme);
         // The parts stand where the open search puts them, fading in.
         let mut x = start + field_w + sibling;
         let square = |x: f64| Rect::new(x, y0, x + CONTROL_PX, y1);

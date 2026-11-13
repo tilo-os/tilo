@@ -629,6 +629,7 @@ fn toolbar_more_menu_tracks_its_trigger_and_flips_inside_the_viewport() {
 #[test]
 fn keyboard_and_pointer_events_drive_rename_menus_and_retry() {
     keyboard_context_menu_reaches_selection_actions_and_executes_them();
+    a_click_runs_a_menu_row_and_send_to_opens_the_box_beside_the_menu();
     rename_is_edited_in_place_over_the_row();
     typing_in_the_in_place_editor_renames_on_enter();
     narrow_error_retry_uses_the_shared_button_and_recovers();
@@ -860,6 +861,72 @@ fn keyboard_context_menu_reaches_selection_actions_and_executes_them() {
         h.w.state().renaming.is_some(),
         "keyboard menu executes Rename"
     );
+}
+
+/// The pointer reaches the menu's rows through the menu itself, as the keys
+/// do: a click on "Send to…" opens the send-to box beside the menu, which
+/// stays open and draws it, and a click on another row runs its command.
+fn a_click_runs_a_menu_row_and_send_to_opens_the_box_beside_the_menu() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("budget.txt"), b"40 EUR").unwrap();
+    let mut h = H::new(Some(dir.path()), 900.0, 720.0);
+    ui::shared_selection::set_send_host_available(true);
+    let open_menu = |h: &mut H| {
+        let key = ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::ContextMenu),
+            None,
+            winit::event::ElementState::Pressed,
+        ));
+        ui::widget::context_menu::note_input(&key);
+        h.dispatch(&key);
+        assert!(h.w.chrome().context_menu.is_open());
+    };
+    let click_row = |h: &mut H, index: usize| {
+        let row =
+            h.w.chrome()
+                .context_menu
+                .item_rect(index)
+                .expect("the row is drawn")
+                .center();
+        h.cursor(row.x, row.y);
+        h.left_press();
+        h.left_release();
+    };
+    h.press_named(winit::keyboard::NamedKey::ArrowDown);
+    open_menu(&mut h);
+    let send = h.w.chrome().context_menu.items().len() - 1;
+    assert_eq!(
+        h.open_menu_labels().last().map(String::as_str),
+        Some("Send to…"),
+        "the file's menu ends in Send to…"
+    );
+    click_row(&mut h, send);
+    ui::shared_selection::set_send_host_available(false);
+    let menu = &h.w.chrome().context_menu;
+    assert!(menu.is_open(), "the menu stays beside its box");
+    assert!(menu.send_to().is_open(), "the box opened");
+    assert!(
+        menu.send_to().rect().x0 >= menu.get_rect().x1
+            || menu.send_to().rect().x1 <= menu.get_rect().x0,
+        "beside the menu: {:?} by {:?}",
+        menu.send_to().rect(),
+        menu.get_rect()
+    );
+    h.press_named(winit::keyboard::NamedKey::Escape);
+    h.press_named(winit::keyboard::NamedKey::Escape);
+    assert!(!h.w.chrome().context_menu.is_open());
+
+    open_menu(&mut h);
+    let rename =
+        h.w.chrome()
+            .context_menu
+            .items()
+            .iter()
+            .position(|item| item.label() == Some("Rename"))
+            .expect("Rename is offered");
+    click_row(&mut h, rename);
+    assert!(!h.w.chrome().context_menu.is_open());
+    assert!(h.w.state().renaming.is_some(), "a click runs Rename");
 }
 
 /// Narrow, the places are a screen of their own: the whole window, brought

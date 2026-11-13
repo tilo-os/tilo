@@ -33,8 +33,10 @@ the person it acted for.
 
 An undo is the app's own action, so it is recorded like anything else and is itself undoable:
 
-- **One step**: `undo` with `steps: 1` on the record, which takes back the last change.
-- **A run**: `undo` with `run: <run id>`, which takes back every step that run made in that app.
+- **A run**: `run.undo()` (`POST /v1/workspaces/{workspace}/runs/{run}/undo`) takes back exactly what
+  the run's calls changed, in every record they changed. When someone else's change stands on top of the
+  run's in a record, it is refused and nothing is taken back, naming whose change it is.
+- **One step**: `undo` with `steps: 1` on the record, which takes back its last change, whoever made it.
 - **A person**: Undo in the record's history, which is those same actions.
 
 ```python example=run-and-undo
@@ -47,15 +49,14 @@ workspace = tilo.workspace(tilo.workspaces.create("Runs and history").id)
 with workspace.run("Write the cover letter") as run:
     workspace.do("word-processor#append-paragraph", text="Dear Visa Officer,")
     workspace.do("word-processor#append-paragraph", text="Yours faithfully, Jane Doe")
-    history = workspace.do("word-processor#history", last=10)
 
+history = workspace.do("word-processor#history", last=10)
 print("one run:", run.title)
 for version in history["versions"]:
     print(" ", version.get("sentence"), "| undone:", version.get("undone", False))
 
-# Undo the run: the app's own step, named by the run it belongs to.
-run_id = next(version["run_id"] for version in history["versions"] if version.get("run_id"))
-workspace.do("word-processor#undo", run=run_id)
+# Take the run back: exactly what its calls changed.
+run.undo()
 
 after = workspace.do("word-processor#history", last=10)
 print("undone:", sum(1 for version in after["versions"] if version.get("undone")), "steps")
@@ -66,28 +67,48 @@ import { Tilo } from "tilo-sdk";
 
 const tilo = new Tilo();
 const workspace = tilo.workspace((await tilo.workspaces.create("Runs and history")).id);
+type History = { versions: Record<string, unknown>[] };
 
 // One run: every call inside it is one step of this app's history.
-const history = await workspace.run("Write the cover letter", async () => {
+const run = await workspace.run("Write the cover letter", async (run) => {
   await workspace.do("word-processor#append-paragraph", { text: "Dear Visa Officer," });
   await workspace.do("word-processor#append-paragraph", { text: "Yours faithfully, Jane Doe" });
-  return (await workspace.do("word-processor#history", { last: 10 })) as {
-    versions: Record<string, unknown>[];
-  };
+  return run;
 });
 
+const history = (await workspace.do("word-processor#history", { last: 10 })) as History;
+console.log("one run:", run.title);
 for (const version of history.versions) {
   console.log(" ", version.sentence, "| undone:", version.undone ?? false);
 }
 
-// Undo the run: the app's own step, named by the run it belongs to.
-const runId = history.versions.find((version) => version.run_id !== undefined)?.run_id as string;
-await workspace.do("word-processor#undo", { run: runId });
+// Take the run back: exactly what its calls changed.
+await run.undo();
 
-const after = (await workspace.do("word-processor#history", { last: 10 })) as {
-  versions: Record<string, unknown>[];
-};
+const after = (await workspace.do("word-processor#history", { last: 10 })) as History;
 console.log("undone:", after.versions.filter((version) => version.undone === true).length, "steps");
+```
+
+```curl example=run-and-undo
+api=$TILO_API_URL/v1
+auth="Authorization: Bearer $TILO_API_KEY"
+json="Content-Type: application/json"
+workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "$json" \
+  -d '{"name": "Runs and history"}' | jq -r .id)
+word=$api/workspaces/$workspace/resources/word-processor/actions
+
+# One run: every call naming it in Tilo-Run is one step of this app's history.
+run=(-H "Tilo-Run: cover-letter" -H "Tilo-Run-Title: Write the cover letter")
+for text in "Dear Visa Officer," "Yours faithfully, Jane Doe"; do
+  invocation=$(curl -sS --fail-with-body "$word/append-paragraph" -H "$auth" -H "$json" "${run[@]}" \
+    -d "{\"text\": \"$text\"}" | jq -r .run)
+done
+
+# Take the run back, by any of its calls: exactly what the run changed.
+curl -sS --fail-with-body -X POST "$api/workspaces/$workspace/runs/$invocation/undo" -H "$auth" \
+  | jq -r '"status: \(.status)"'
+curl -sS --fail-with-body "$word/history" -H "$auth" -H "$json" -d '{"last": 10}' \
+  | jq -r '"undone: \([.result.versions[] | select(.undone)] | length) steps"'
 ```
 
 ## Links for people

@@ -265,11 +265,10 @@ impl Core {
         let Some(declared) = pkg.meta.types.iter().find(|t| t.id == ty) else {
             return trap(format!("filters: type `{ty}` is not declared"));
         };
-        let words = &self.words.borrow();
         Ok(Value::List(filters_of(
             declared,
             &pkg.meta.enums,
-            &|key, source| words.word(key, &[], source),
+            &|key, source| self.word_args(key, &[], source),
         )))
     }
 
@@ -303,7 +302,7 @@ impl Core {
                 ));
             };
             valued_filter(&declared.id, f, &pkg.meta.enums, &value, &|key, source| {
-                self.words.borrow().word(key, &[], source)
+                self.word_args(key, &[], source)
             })
             .map_err(|why| format!("filter: `{}.{key}`: {why}", declared.name))?
         };
@@ -333,10 +332,7 @@ impl Core {
                     declared.name, f.ty
                 ));
             };
-            let label =
-                self.words
-                    .borrow()
-                    .word(&messages::key_of(&f.id), &[], &messages::label(&f.name));
+            let label = self.word_args(&messages::key_of(&f.id), &[], &messages::label(&f.name));
             Value::Tuple(vec![Value::Text(label), Value::Text(query)])
         };
         Ok(found)

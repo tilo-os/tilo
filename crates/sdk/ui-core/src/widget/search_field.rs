@@ -163,8 +163,10 @@ pub struct SearchField {
     cleared: bool,
     rect: Rect,
     clear_rect: Rect,
-    /// The "Search everywhere" action's hit rect, when it shows.
+    /// The "Search everywhere" action's hit rect and the face it is painted
+    /// as, when it shows.
     escalate_rect: Rect,
+    escalate_face: Rect,
     last_cursor: Point,
     platform: PlatformConventions,
     /// Where Enter and "Search everywhere" send the query; `None` keeps the
@@ -180,6 +182,13 @@ pub struct SearchField {
     /// character baked into its text.
     scope_token_icon: Icon,
     scope_token_rect: Rect,
+    /// The count's text in the trailing slot, placed by the layout (empty
+    /// when there is none, or none fits).
+    count_rect: Rect,
+    /// The prompt as the layout elided it to the room it has, and where the
+    /// layout put it.
+    prompt_shown: Option<String>,
+    prompt_rect: Rect,
     scope_cleared: bool,
     size: ControlSize,
     /// The query the bound view was last narrowed to ([`sync_filter`]).
@@ -192,6 +201,18 @@ pub struct SearchField {
     /// What the field is asking for, drawn dim before the text ("New
     /// name:") while a step collects a value in it.
     prompt: Option<String>,
+
+    /// The theme the layout places with: painting is handed one every frame,
+    /// the layout is handed none.
+    layout_theme: Theme,
+    /// A count, token, prompt or placeholder changed since the layout last
+    /// placed the controls. A change of the box or of the value alone shows in
+    /// [`Self::is_layout_dirty`].
+    layout_dirty: bool,
+    /// What the last placement was taken from, besides the box: whether the
+    /// field held anything, and whether it stood as its collapsed icon button.
+    placed_empty: bool,
+    placed_collapsed: bool,
 
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
@@ -243,6 +264,7 @@ impl SearchField {
             rect: Rect::ZERO,
             clear_rect: Rect::ZERO,
             escalate_rect: Rect::ZERO,
+            escalate_face: Rect::ZERO,
             last_cursor: Point::ZERO,
             platform: PlatformConventions::default(),
             escalation: None,
@@ -252,12 +274,19 @@ impl SearchField {
             scope_token: None,
             scope_token_icon: Icon::ChevronLeft,
             scope_token_rect: Rect::ZERO,
+            count_rect: Rect::ZERO,
+            prompt_shown: None,
+            prompt_rect: Rect::ZERO,
             scope_cleared: false,
             size: ControlSize::Regular,
             applied: None,
             placeholder: "Search".to_owned(),
             embedded: false,
             prompt: None,
+            layout_theme: Theme::default(),
+            layout_dirty: true,
+            placed_empty: true,
+            placed_collapsed: false,
         }
     }
 
@@ -287,6 +316,7 @@ impl SearchField {
     /// Show `count` in the trailing slot ("3 of 120"), or nothing.
     pub fn set_count(&mut self, count: Option<FilterCount>) {
         self.dirty = true;
+        self.layout_dirty = true;
         self.count = count;
     }
 
@@ -298,8 +328,8 @@ impl SearchField {
     /// Show a removable scope token before the text, e.g. "Only Inbox".
     pub fn set_scope_token(&mut self, token: Option<String>) {
         self.dirty = true;
+        self.layout_dirty = true;
         self.scope_token = token;
-        self.scope_token_rect = Rect::ZERO;
     }
 
     /// The glyph the scope token starts with: a chevron by default, since
@@ -307,6 +337,7 @@ impl SearchField {
     /// the chip, so it is never a character in the token's text.
     pub fn set_scope_token_icon(&mut self, icon: Icon) {
         self.dirty = true;
+        self.layout_dirty = true;
         self.scope_token_icon = icon;
     }
 
@@ -335,6 +366,7 @@ impl SearchField {
 
     pub fn set_placeholder(&mut self, hint: &str) {
         self.dirty = true;
+        self.layout_dirty = true;
         hint.clone_into(&mut self.placeholder);
         self.input.set_placeholder(hint);
     }
@@ -348,19 +380,11 @@ impl SearchField {
 
     /// Give the input the placeholder elided to the room it has, so a long
     /// one ends in an ellipsis instead of running under the trailing slot.
-    fn fit_placeholder(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
-        let room = (self.input.get_rect().width() - SLOT_PAD).max(0.0);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a field's width in logical pixels is far inside f32's range"
-        )]
-        let fitted = text_renderer.elide_to_width_style(
-            &widget_text(&self.placeholder),
-            room as f32,
-            &theme.text(TextRole::Body),
-        );
+    /// The layout places it, in the type the frame measures with; painting
+    /// only paints the words it left.
+    fn fit_placeholder(&mut self, fitted: &str) {
         if fitted != self.input.placeholder() {
-            self.input.set_placeholder(&fitted);
+            self.input.set_placeholder(fitted);
         }
     }
 
@@ -398,6 +422,7 @@ impl SearchField {
     /// for a plain query.
     pub fn set_prompt(&mut self, prompt: Option<String>) {
         self.dirty = true;
+        self.layout_dirty = true;
         self.prompt = prompt;
     }
 
@@ -556,29 +581,22 @@ impl SearchField {
         true
     }
 
-    /// Place the field at `rect` for a host that lays out by hand instead of
-    /// through the taffy tree.
-    pub fn apply_layout_external(&mut self, rect: Rect) {
+    /// Place the field at `rect` in `theme`, for a host that lays out by hand
+    /// instead of through the taffy tree: the field and its controls stand
+    /// where this puts them, and painting only paints.
+    pub fn apply_layout_external(&mut self, rect: Rect, theme: &Theme) {
         self.rect = rect;
-        self.input
-            .apply_layout_external(self.text_rect_in(rect, 0.0));
+        self.layout_theme = theme.clone();
+        self.place_controls();
     }
 
-    /// Empty until laid out + drawn.
+    /// Where the clear button stands, empty until laid out.
     pub fn clear_rect(&self) -> Rect {
         self.clear_rect
     }
 
-    /// Where the input's text sits inside `rect`, past the leading gutter
-    /// (and a scope token `token_w` wide) and before the trailing gutters.
-    fn text_rect_in(&self, rect: Rect, token_w: f64) -> Rect {
-        let x0 = rect.x0 + ICON_GUTTER + token_w;
-        let x1 = (rect.x1 - self.trailing_gutter()).max(x0);
-        Rect::new(x0, rect.y0, x1, rect.y1)
-    }
-
-    /// The clear button plus the reserved count slot. The slot is measured
-    /// at draw time; layout reserves a fixed share so the caret never runs
+    /// The clear button plus the reserved count slot. The slot is measured at
+    /// layout time; layout reserves a fixed share so the caret never runs
     /// under the count.
     fn trailing_gutter(&self) -> f64 {
         let slot = if self.reserve_count || self.count.is_some() {
@@ -606,59 +624,154 @@ impl SearchField {
             && self.count.is_some_and(|count| count.shown == 0)
     }
 
-    fn draw_trailing_slot(
-        &mut self,
+    /// Where the field's controls stand, from its box: the scope token, the
+    /// prompt, the room the text has, the count, "Search everywhere" and the
+    /// clear button. The layout runs this, so a frame read before the field is
+    /// drawn — a test, assistive technology, a press on a window that has laid
+    /// out and has not yet painted — finds them inside it rather than at the
+    /// window's origin.
+    fn place_controls(&mut self) {
+        let theme = self.layout_theme.clone();
+        let rect = self.rect;
+        if rect.width() <= 0.0 || rect.height() <= 0.0 || self.collapsed(&theme) {
+            self.clear_rect = Rect::ZERO;
+            self.escalate_rect = Rect::ZERO;
+            self.escalate_face = Rect::ZERO;
+            self.scope_token_rect = Rect::ZERO;
+            self.count_rect = Rect::ZERO;
+            self.prompt_shown = None;
+            self.prompt_rect = Rect::ZERO;
+        } else {
+            let token = self.scope_token.clone();
+            let icon = self.scope_token_icon;
+            let prompt = self.prompt.clone();
+            let count = self.count;
+            let placeholder = self.placeholder.clone();
+            let clear = self.clear_visible();
+            let escalation = self.escalation_shows();
+            let trailing = self.trailing_gutter();
+            let placed = crate::text_render::with_layout_renderer(&theme, |text| {
+                let (token_rect, token_w) = token.as_deref().map_or((Rect::ZERO, 0.0), |token| {
+                    place_scope_token(text, &theme, rect, token, icon)
+                });
+                let (prompt_shown, prompt_rect, prompt_w) = prompt
+                    .as_deref()
+                    .filter(|prompt| !prompt.is_empty())
+                    .map_or((None, Rect::ZERO, 0.0), |prompt| {
+                        place_prompt(text, &theme, rect, token_w, prompt)
+                    });
+                let text_rect = text_rect_in(rect, trailing, token_w + prompt_w);
+                let (count_rect, right) = place_count(text, &theme, rect, clear, count);
+                let (escalate_face, escalate_rect) = if escalation {
+                    place_escalation(text, &theme, rect, right).unwrap_or((Rect::ZERO, Rect::ZERO))
+                } else {
+                    (Rect::ZERO, Rect::ZERO)
+                };
+                let clear_rect = if clear {
+                    clear_hit_rect(rect)
+                } else {
+                    Rect::ZERO
+                };
+                Placed {
+                    scope_token: token_rect,
+                    prompt_shown,
+                    prompt_rect,
+                    count_rect,
+                    escalate_face,
+                    escalate_rect,
+                    clear: clear_rect,
+                    text_rect,
+                    placeholder: fitted_placeholder(text, &theme, text_rect, &placeholder),
+                }
+            });
+            self.scope_token_rect = placed.scope_token;
+            self.prompt_shown = placed.prompt_shown;
+            self.prompt_rect = placed.prompt_rect;
+            self.count_rect = placed.count_rect;
+            self.escalate_face = placed.escalate_face;
+            self.escalate_rect = placed.escalate_rect;
+            self.clear_rect = placed.clear;
+            self.input.apply_layout_external(placed.text_rect);
+            self.fit_placeholder(&placed.placeholder);
+        }
+        self.placed_empty = self.input.value().is_empty();
+        self.placed_collapsed = self.collapsed(&theme);
+        self.layout_dirty = false;
+    }
+
+    /// Paint the scope token chip where the layout placed it.
+    fn paint_scope_token(
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.escalate_rect = Rect::ZERO;
-        let mut right = if self.clear_visible() {
-            self.rect.x1 - CLEAR_GUTTER
-        } else {
-            self.rect.x1 - SLOT_PAD
+        let Some(token) = self.scope_token.as_deref() else {
+            return;
         };
+        let chip = self.scope_token_rect;
+        if chip.width() <= 0.0 {
+            return;
+        }
+        let lead = crate::widget::ChipLead::Glyph(self.scope_token_icon);
+        crate::widget::ChipFace::new(chip, token)
+            .lead(lead)
+            .removable(chip.contains(self.last_cursor))
+            .paint(scene, transform, text_renderer, theme);
+    }
+
+    /// Paint the prompt where the layout placed it, in the words the layout
+    /// elided it to.
+    fn paint_prompt(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(shown) = self.prompt_shown.as_deref() else {
+            return;
+        };
+        let style = theme.text(TextRole::Body);
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine composition is float matrix math and cannot overflow"
+        )]
+        let at = transform * Affine::translate((self.prompt_rect.x0, self.prompt_rect.y0));
+        text_renderer.draw_style(scene, shown, theme.text_dim, at, None, &style);
+    }
+
+    /// Paint the trailing slot where the layout placed it: the count, and
+    /// "Search everywhere" left of it.
+    fn paint_trailing_slot(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         // The count stays when nothing matches: "No matches" tells the person
         // so in words.
-        if let Some(count) = self.count {
+        if let Some(count) = self.count
+            && !self.count_rect.is_zero_area()
+        {
             let style = theme.text(TextRole::Caption).numeric();
-            let text = count.label();
-            let (w, h) = text_renderer.measure_style(&text, None, &style);
-            let x0 = right - f64::from(w);
-            if x0 >= self.rect.x0 + ICON_GUTTER {
-                let top = centered_text_top(self.rect.y0, self.rect.height(), f64::from(h));
-                #[allow(
-                    clippy::arithmetic_side_effects,
-                    reason = "Affine composition is float matrix math and cannot overflow"
-                )]
-                let at = transform * Affine::translate((x0, top));
-                text_renderer.draw_style(scene, &text, theme.text_tertiary, at, None, &style);
-                right = x0 - SLOT_PAD;
-            }
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "Affine composition is float matrix math and cannot overflow"
+            )]
+            let at = transform * Affine::translate((self.count_rect.x0, self.count_rect.y0));
+            text_renderer.draw_style(scene, &count.label(), theme.text_tertiary, at, None, &style);
         }
-        if self.escalation_shows() {
+        if !self.escalate_face.is_zero_area() {
             // "Search everywhere" is an action, not a hint: a small
             // secondary button with its own face and edge, so it never reads
             // as a label beside the count.
-            let label = "Search everywhere";
-            let size = ControlSize::Small;
-            let face = crate::widget::ButtonFace::new(Rect::ZERO, label)
+            let face = crate::widget::ButtonFace::new(self.escalate_face, "Search everywhere")
                 .role(crate::widget::ButtonRole::Secondary)
-                .control_size(size);
-            let width = face.intrinsic_width(text_renderer, theme);
-            let height = crate::widget::ButtonFace::height(size, theme).min(self.rect.height());
-            let x0 = right - width;
-            if x0 < self.rect.x0 + ICON_GUTTER {
-                return;
-            }
-            let cy = self.rect.center().y;
-            let rect = Rect::new(x0, cy - height / 2.0, right, cy + height / 2.0);
-            let face = crate::widget::ButtonFace::new(rect, label)
-                .role(crate::widget::ButtonRole::Secondary)
-                .control_size(size);
-            let hit = face.hit_rect(theme);
-            let hovered = hit.contains(self.last_cursor);
+                .control_size(ControlSize::Small);
+            let hovered = self.escalate_rect.contains(self.last_cursor);
             crate::widget::Button::paint(
                 scene,
                 transform,
@@ -666,74 +779,7 @@ impl SearchField {
                 theme,
                 &face.hovered(hovered),
             );
-            self.escalate_rect = hit;
         }
-    }
-
-    /// Draw the scope token chip and return the width it takes.
-    fn draw_scope_token(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) -> f64 {
-        let Some(token) = self.scope_token.clone() else {
-            self.scope_token_rect = Rect::ZERO;
-            return 0.0;
-        };
-        let height = ControlSize::Small.height(theme) - 6.0;
-        let lead = crate::widget::ChipLead::Glyph(self.scope_token_icon);
-        let natural =
-            crate::widget::ChipFace::intrinsic_width(&token, lead, true, text_renderer, theme);
-        let max = (self.rect.width() * 0.5).max(height);
-        let width = natural.min(max);
-        let cy = self.rect.center().y;
-        let chip = Rect::new(
-            self.rect.x0 + ICON_GUTTER - 4.0,
-            cy - height / 2.0,
-            self.rect.x0 + ICON_GUTTER - 4.0 + width,
-            cy + height / 2.0,
-        );
-        let hovered = chip.contains(self.last_cursor);
-        crate::widget::ChipFace::new(chip, &token)
-            .lead(lead)
-            .removable(hovered)
-            .paint(scene, transform, text_renderer, theme);
-        self.scope_token_rect = chip;
-        width + 4.0
-    }
-
-    /// Draw the prompt after `lead` px of the text's start; the width it
-    /// takes.
-    fn draw_prompt(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        lead: f64,
-    ) -> f64 {
-        let Some(prompt) = self.prompt.as_deref().filter(|p| !p.is_empty()) else {
-            return 0.0;
-        };
-        let style = theme.text(TextRole::Body);
-        let heading = format!("{prompt}:");
-        let max = (self.rect.width() * 0.5).max(0.0);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a field's width in logical pixels is far inside f32's range"
-        )]
-        let shown = text_renderer.elide_to_width_style(&heading, max as f32, &style);
-        let (w, h) = text_renderer.measure_style(&shown, None, &style);
-        let top = centered_text_top(self.rect.y0, self.rect.height(), f64::from(h));
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine composition is float matrix math and cannot overflow"
-        )]
-        let at = transform * Affine::translate((self.rect.x0 + ICON_GUTTER + lead, top));
-        text_renderer.draw_style(scene, &shown, theme.text_dim, at, None, &style);
-        f64::from(w) + f64::from(theme.tokens.spacing.s2)
     }
 
     fn press_at(&self, point: Point) -> Press {
@@ -754,6 +800,172 @@ enum Press {
     Escalate,
     Clear,
     Field,
+}
+
+/// Where the layout puts a field's controls inside its box.
+struct Placed {
+    scope_token: Rect,
+    prompt_shown: Option<String>,
+    prompt_rect: Rect,
+    count_rect: Rect,
+    escalate_face: Rect,
+    escalate_rect: Rect,
+    clear: Rect,
+    /// The room the text has, past the token and the prompt.
+    text_rect: Rect,
+    /// The placeholder elided to that room.
+    placeholder: String,
+}
+
+/// Where the input's text sits inside `rect`, past the leading gutter and a
+/// scope token and prompt `lead_w` wide, and before the trailing gutters.
+fn text_rect_in(rect: Rect, trailing: f64, lead_w: f64) -> Rect {
+    let x0 = rect.x0 + ICON_GUTTER + lead_w;
+    let x1 = (rect.x1 - trailing).max(x0);
+    Rect::new(x0, rect.y0, x1, rect.y1)
+}
+
+/// The clear button's × in `rect`: centred in the trailing gutter.
+fn clear_icon_rect(rect: Rect) -> Rect {
+    Rect::from_center_size(
+        Point::new(rect.x1 - CLEAR_GUTTER / 2.0, rect.center().y),
+        (CLEAR_D, CLEAR_D),
+    )
+}
+
+/// The clear button's hit target: its × and the margin a thumb wants.
+fn clear_hit_rect(rect: Rect) -> Rect {
+    clear_icon_rect(rect).inflate(4.0, 4.0)
+}
+
+/// Where the scope token chip stands in `rect`, and the room it takes before
+/// the text; empty without a token.
+fn place_scope_token(
+    text: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    token: &str,
+    icon: Icon,
+) -> (Rect, f64) {
+    let height = ControlSize::Small.height(theme) - 6.0;
+    let lead = crate::widget::ChipLead::Glyph(icon);
+    let natural = crate::widget::ChipFace::intrinsic_width(token, lead, true, text, theme);
+    let max = (rect.width() * 0.5).max(height);
+    let width = natural.min(max);
+    let cy = rect.center().y;
+    let chip = Rect::new(
+        rect.x0 + ICON_GUTTER - 4.0,
+        cy - height / 2.0,
+        rect.x0 + ICON_GUTTER - 4.0 + width,
+        cy + height / 2.0,
+    );
+    (chip, width + 4.0)
+}
+
+/// The prompt after `lead` px of the text's start, elided to half the field:
+/// the words it shows, where it stands, and the room it takes.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a field's width in logical pixels is far inside f32's range"
+)]
+fn place_prompt(
+    text: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    lead: f64,
+    prompt: &str,
+) -> (Option<String>, Rect, f64) {
+    let style = theme.text(TextRole::Body);
+    let heading = format!("{prompt}:");
+    let max = (rect.width() * 0.5).max(0.0);
+    let shown = text.elide_to_width_style(&heading, max as f32, &style);
+    let (w, h) = text.measure_style(&shown, None, &style);
+    let top = centered_text_top(rect.y0, rect.height(), f64::from(h));
+    let x0 = rect.x0 + ICON_GUTTER + lead;
+    (
+        Some(shown),
+        Rect::new(x0, top, x0 + f64::from(w), top + f64::from(h)),
+        f64::from(w) + f64::from(theme.tokens.spacing.s2),
+    )
+}
+
+/// The count's text where the trailing slot holds it, and the room left of it
+/// for "Search everywhere": empty when it does not fit, so the caret never
+/// runs under a count too wide for the slot.
+fn place_count(
+    text: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    clear: bool,
+    count: Option<FilterCount>,
+) -> (Rect, f64) {
+    let right = if clear {
+        rect.x1 - CLEAR_GUTTER
+    } else {
+        rect.x1 - SLOT_PAD
+    };
+    let Some(count) = count else {
+        return (Rect::ZERO, right);
+    };
+    let style = theme.text(TextRole::Caption).numeric();
+    let (w, h) = text.measure_style(&count.label(), None, &style);
+    let x0 = right - f64::from(w);
+    if x0 < rect.x0 + ICON_GUTTER {
+        return (Rect::ZERO, right);
+    }
+    let top = centered_text_top(rect.y0, rect.height(), f64::from(h));
+    (
+        Rect::new(x0, top, x0 + f64::from(w), top + f64::from(h)),
+        x0 - SLOT_PAD,
+    )
+}
+
+/// "Search everywhere", its right edge at `right`: its face and its hit
+/// target, or nothing when it leaves the field no room for the text.
+fn place_escalation(
+    text: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    right: f64,
+) -> Option<(Rect, Rect)> {
+    let label = "Search everywhere";
+    let size = ControlSize::Small;
+    let width = crate::widget::ButtonFace::new(Rect::ZERO, label)
+        .role(crate::widget::ButtonRole::Secondary)
+        .control_size(size)
+        .intrinsic_width(text, theme);
+    let height = crate::widget::ButtonFace::height(size, theme).min(rect.height());
+    let x0 = right - width;
+    if x0 < rect.x0 + ICON_GUTTER {
+        return None;
+    }
+    let cy = rect.center().y;
+    let face = Rect::new(x0, cy - height / 2.0, right, cy + height / 2.0);
+    let hit = crate::widget::ButtonFace::new(face, label)
+        .role(crate::widget::ButtonRole::Secondary)
+        .control_size(size)
+        .hit_rect(theme);
+    Some((face, hit))
+}
+
+/// `placeholder` elided to the room `text_rect` gives it, so a long one ends in
+/// an ellipsis instead of running under the trailing slot.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a field's width in logical pixels is far inside f32's range"
+)]
+fn fitted_placeholder(
+    text: &mut TextRenderer,
+    theme: &Theme,
+    text_rect: Rect,
+    placeholder: &str,
+) -> String {
+    let room = (text_rect.width() - SLOT_PAD).max(0.0);
+    text.elide_to_width_style(
+        &widget_text(placeholder),
+        room as f32,
+        &theme.text(TextRole::Body),
+    )
 }
 
 impl Default for SearchField {
@@ -790,6 +1002,9 @@ impl Widget for SearchField {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.input.build_layout(taffy, theme, node_map);
+        // The layout places the controls in this type; painting is handed the
+        // frame's own.
+        self.layout_theme = theme.clone();
         let height = self.size.height(theme);
         // A fluid control: it asks for the row's width and, when the row
         // overflows, it is the item that gives — never the fixed targets
@@ -829,8 +1044,19 @@ impl Widget for SearchField {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         if let Some(&child_node) = taffy.children(node).unwrap_or_default().first() {
             self.input
-                .apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
+                .apply_layout(taffy, child_node, self.rect.origin());
         }
+        self.place_controls();
+    }
+
+    /// The layout places a field's controls from its box and what it holds: a
+    /// count, a token, a prompt, a value that brings the clear button or
+    /// "Search everywhere" on, or the width that collapses it to its icon.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+            || self.layout_dirty
+            || self.placed_empty != self.input.value().is_empty()
+            || self.placed_collapsed != self.collapsed(&self.layout_theme)
     }
 
     fn draw(
@@ -867,9 +1093,6 @@ impl Widget for SearchField {
             let icon = Rect::from_center_size(target.center(), (ICON_D, ICON_D));
             self.leading
                 .draw_with_stroke(scene, transform, icon, theme.text_dim, 1.5);
-            self.clear_rect = Rect::ZERO;
-            self.escalate_rect = Rect::ZERO;
-            self.scope_token_rect = Rect::ZERO;
             return;
         }
         // A raised well with no edge, the caret its focus; embedded in a
@@ -902,32 +1125,19 @@ impl Widget for SearchField {
         self.leading
             .draw_with_stroke(scene, transform, icon_rect, theme.text_dim, 1.5);
 
-        let mut token_w = self.draw_scope_token(scene, transform, text_renderer, theme);
-        token_w += self.draw_prompt(scene, transform, text_renderer, theme, token_w);
-        if token_w > 0.0 {
-            // The text starts after the token; the input re-lays its line.
-            self.input
-                .apply_layout_external(self.text_rect_in(self.rect, token_w));
-        }
-        self.fit_placeholder(text_renderer, theme);
+        self.paint_scope_token(scene, transform, text_renderer, theme);
+        self.paint_prompt(scene, transform, text_renderer, theme);
         self.input
             .draw_child(scene, transform, text_renderer, theme, presence);
 
-        self.draw_trailing_slot(scene, transform, text_renderer, theme);
-        if self.clear_visible() {
-            let cr = Rect::from_center_size(
-                Point::new(self.rect.x1 - CLEAR_GUTTER / 2.0, self.rect.center().y),
-                (CLEAR_D, CLEAR_D),
-            );
-            self.clear_rect = cr.inflate(4.0, 4.0);
+        self.paint_trailing_slot(scene, transform, text_renderer, theme);
+        if self.clear_visible() && !self.clear_rect.is_zero_area() {
             let col = if self.clear_rect.contains(self.last_cursor) {
                 theme.text_primary
             } else {
                 theme.text_dim
             };
-            Icon::X.draw_with_stroke(scene, transform, cr, col, 1.5);
-        } else {
-            self.clear_rect = Rect::ZERO;
+            Icon::X.draw_with_stroke(scene, transform, clear_icon_rect(self.rect), col, 1.5);
         }
     }
 
@@ -954,7 +1164,7 @@ impl Widget for SearchField {
         {
             match self.press_at(self.last_cursor) {
                 Press::ScopeToken => {
-                    self.scope_token = None;
+                    self.set_scope_token(None);
                     self.scope_cleared = true;
                     *ctx.handled = true;
                     return;
@@ -997,7 +1207,7 @@ impl Widget for SearchField {
                 Key::Named(NamedKey::Backspace)
                     if self.input.value().is_empty() && self.scope_token.is_some() =>
                 {
-                    self.scope_token = None;
+                    self.set_scope_token(None);
                     self.scope_cleared = true;
                     *ctx.handled = true;
                     return;
@@ -1333,23 +1543,24 @@ mod tests {
         ))
     }
 
+    /// `w` laid out `vw` wide in `theme`, as a frame lays it out; it is never
+    /// drawn, so only the layout has placed anything.
     #[allow(
         clippy::cast_possible_truncation,
         reason = "test-only layout size is a small pixel value"
     )]
-    fn lay_out(w: &mut SearchField, vw: f32) -> (TaffyTree<()>, NodeId) {
-        let theme = Theme::dark();
+    fn lay_out_in(w: &mut SearchField, vw: f32, theme: &Theme) -> (TaffyTree<()>, NodeId) {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let mut tr = TextRenderer::new();
-        let node = w.build_layout(&mut taffy, &theme, &mut node_map);
+        let node = w.build_layout(&mut taffy, theme, &mut node_map);
         taffy
             .compute_layout_with_measure(
                 node,
                 taffy::Size {
                     width: taffy::AvailableSpace::Definite(vw),
                     height: taffy::AvailableSpace::Definite(
-                        ControlSize::Regular.height(&theme) as f32
+                        ControlSize::Regular.height(theme) as f32
                     ),
                 },
                 |k, a, id, _, _| {
@@ -1361,6 +1572,10 @@ mod tests {
             .unwrap();
         w.apply_layout(&taffy, node, Point::ZERO);
         (taffy, node)
+    }
+
+    fn lay_out(w: &mut SearchField, vw: f32) -> (TaffyTree<()>, NodeId) {
+        lay_out_in(w, vw, &Theme::dark())
     }
 
     fn draw(w: &mut dyn Widget) -> Scene {
@@ -1396,15 +1611,14 @@ mod tests {
     #[test]
     fn clear_appears_with_text_and_empties_the_query() {
         let mut sf = SearchField::new();
-        let (taffy, node) = lay_out(&mut sf, 320.0);
-        draw(&mut sf);
+        let _ = lay_out(&mut sf, 320.0);
         assert_eq!(
             sf.clear_rect(),
             Rect::ZERO,
             "empty query has no clear button"
         );
         sf.input.set_text("query text");
-        draw(&mut sf);
+        let (taffy, node) = lay_out(&mut sf, 320.0);
         let target = sf.clear_rect().center();
         assert!(target.x > 0.0);
         let _ = ctx_event(&mut sf, &taffy, node, &move_to(target));
@@ -1447,9 +1661,9 @@ mod tests {
 
         let mut sf =
             SearchField::filter().escalates_within(ScopeDecl::new("folder:inbox", "Inbox"));
-        let (taffy, node) = lay_out(&mut sf, 360.0);
         sf.input.set_text("invoice");
         sf.input.set_focus(true);
+        let (taffy, node) = lay_out(&mut sf, 360.0);
         let (handled, _) = ctx_event(&mut sf, &taffy, node, &key(NamedKey::Enter));
         assert!(handled);
         let invocation = take_control_invocation(&mut sf).expect("Enter escalates");
@@ -1463,7 +1677,7 @@ mod tests {
 
         sf.set_count(Some(FilterCount::new(0, 12)));
         sf.input.set_focus(false);
-        draw(&mut sf);
+        let (taffy, node) = lay_out(&mut sf, 360.0);
         assert_ne!(sf.escalate_rect, Rect::ZERO, "Search everywhere shows");
         let target = sf.escalate_rect.center();
         let _ = ctx_event(&mut sf, &taffy, node, &move_to(target));
@@ -1471,16 +1685,16 @@ mod tests {
         assert!(handled);
         assert!(take_control_invocation(&mut sf).is_some());
         sf.set_count(Some(FilterCount::new(3, 12)));
-        draw(&mut sf);
+        lay_out(&mut sf, 360.0);
         assert_eq!(sf.escalate_rect, Rect::ZERO, "a count shows instead");
     }
 
     #[test]
     fn the_scope_token_is_removed_by_its_cross_or_backspace() {
         let mut sf = SearchField::new();
-        let (taffy, node) = lay_out(&mut sf, 400.0);
+        let _ = lay_out(&mut sf, 400.0);
         sf.set_scope_token(Some("Only Inbox".into()));
-        draw(&mut sf);
+        let (taffy, node) = lay_out(&mut sf, 400.0);
         assert!(sf.scope_token_rect.width() > 0.0);
         assert!(
             sf.input.get_rect().x0 >= sf.scope_token_rect.x1,
@@ -1493,12 +1707,116 @@ mod tests {
         assert!(sf.scope_token().is_none());
 
         sf.set_scope_token(Some("Only Inbox".into()));
-        draw(&mut sf);
+        lay_out(&mut sf, 400.0);
         let target = sf.scope_token_rect.center();
         let _ = ctx_event(&mut sf, &taffy, node, &move_to(target));
         let (handled, _) = ctx_event(&mut sf, &taffy, node, &mouse_press());
         assert!(handled);
         assert!(sf.take_scope_cleared());
+    }
+
+    /// The layout places every control a field can show: a frame read before
+    /// it is drawn — a test, assistive technology, a press on a window that
+    /// has laid out and has not yet painted — finds the scope token, the
+    /// count, "Search everywhere" and the clear button inside the field,
+    /// rather than at the window's origin, where a control nothing placed
+    /// stands.
+    #[test]
+    fn the_layout_places_the_controls_without_a_paint() {
+        let mut sf = SearchField::filter();
+        sf.set_scope_token(Some("Only Inbox".into()));
+        sf.input.set_text("zzz");
+        sf.set_count(Some(FilterCount::new(0, 12)));
+        // Laid out, never drawn.
+        let _ = lay_out(&mut sf, 420.0);
+        let field = sf.get_rect();
+        for (what, control) in [
+            ("the scope token", sf.scope_token_rect),
+            ("the count", sf.count_rect),
+            ("Search everywhere", sf.escalate_face),
+        ] {
+            assert!(
+                !control.is_zero_area(),
+                "{what} stands where the layout put it: {control:?}"
+            );
+            assert!(
+                field.contains(control.center()),
+                "{what} {control:?} stands inside the field {field:?}"
+            );
+        }
+        assert!(
+            !sf.escalate_rect.is_zero_area(),
+            "Search everywhere is a whole target: {:?}",
+            sf.escalate_rect
+        );
+        let clear = clear_icon_rect(field);
+        assert!(
+            !sf.clear_rect.is_zero_area() && field.contains(clear.center()),
+            "the clear button stands in the field: {:?}",
+            sf.clear_rect
+        );
+        let text = sf.input.get_rect();
+        assert!(
+            text.x0 >= sf.scope_token_rect.x1 - 0.5,
+            "the text starts after the token: {text:?} against {:?}",
+            sf.scope_token_rect
+        );
+        assert!(
+            text.x1 <= clear.x0 + 0.5,
+            "and ends before the clear button: {text:?} against {clear:?}"
+        );
+    }
+
+    /// The type the person chose — a face whose look-alike letters are told
+    /// apart, at a larger text scale — is the type the layout places the
+    /// controls in: the scope token is as wide as its words measured in that
+    /// type, and wider than the default type would make it.
+    #[test]
+    fn a_themed_field_places_its_controls_in_the_themes_type() {
+        let mut theme = Theme::light().with_text_scale(1.5);
+        theme.tokens.typography.distinct_letters = true;
+        theme
+            .tokens
+            .typography
+            .set_face(crate::tokens::UiFace::Hyperlegible.name());
+        let mut sf = SearchField::new();
+        sf.set_scope_token(Some("Only Inbox".into()));
+        let (taffy, node) = lay_out_in(&mut sf, 460.0, &theme);
+        let field = crate::widget::layout_rect(&taffy, node, Point::ZERO);
+
+        // The same measurement, taken the way a caller outside the layout takes
+        // it: in the theme's own type.
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        text.apply_typography(&theme.tokens.typography);
+        let lead = crate::widget::ChipLead::Glyph(Icon::ChevronLeft);
+        let natural =
+            crate::widget::ChipFace::intrinsic_width("Only Inbox", lead, true, &mut text, &theme);
+        let height = ControlSize::Small.height(&theme) - 6.0;
+        let expected = natural.min((field.width() * 0.5).max(height));
+        assert!(
+            (sf.scope_token_rect.width() - expected).abs() <= 0.5,
+            "the token is as wide as its words in the theme's type: {:?} against {expected}",
+            sf.scope_token_rect
+        );
+
+        // A layout measuring in the default type would place a narrower chip.
+        let plain = Theme::light();
+        text.set_text_scale(plain.text_scale);
+        text.apply_typography(&plain.tokens.typography);
+        let default_natural =
+            crate::widget::ChipFace::intrinsic_width("Only Inbox", lead, true, &mut text, &plain);
+        assert!(
+            sf.scope_token_rect.width()
+                > default_natural.min((field.width() * 0.5).max(height)) + 1.0,
+            "the token is placed in the theme's larger type, not the default's"
+        );
+        assert!(
+            !sf.scope_token_rect.is_zero_area()
+                && field.contains(sf.scope_token_rect.center())
+                && sf.input.get_rect().x0 >= sf.scope_token_rect.x1 - 0.5,
+            "the token and the text after it stand in the field"
+        );
     }
 
     #[test]

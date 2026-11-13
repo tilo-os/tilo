@@ -413,11 +413,16 @@ impl Drop for Worker {
     }
 }
 
-/// How to start this executable as a worker. The same arguments select
-/// worker mode in a program that calls [`crate::dispatch_early`] and, as a
-/// test filter, the test `test_worker!` defines in a test binary.
+/// How to start a worker: this executable again, or the worker program a
+/// library in someone else's executable named ([`crate::serve_workers_from`]).
+/// The same arguments select worker mode in a program that calls
+/// [`crate::dispatch_early`] and, as a test filter, the test `test_worker!`
+/// defines in a test binary.
 fn command(limits: &Limits) -> Command {
-    let mut command = Command::new("/proc/self/exe");
+    let mut command = match crate::WORKER_PROGRAM.get() {
+        Some(program) => Command::new(program),
+        None => Command::new("/proc/self/exe"),
+    };
     command
         .args([worker::ARG, "--nocapture", "--test-threads=1", "--quiet"])
         .env(

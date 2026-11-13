@@ -94,6 +94,8 @@ pub struct Seen {
     pub locked: bool,
     pub compositor: Option<WlCompositor>,
     pub shm: Option<WlShm>,
+    /// The buffer formats `wl_shm` offered, in the order it sent them.
+    pub shm_formats: Vec<wl_shm::Format>,
     pub wm_base: Option<XdgWmBase>,
     pub seat: Option<WlSeat>,
     pub text_input_manager: Option<ZwpTextInputManagerV3>,
@@ -277,13 +279,19 @@ impl TestClient {
     /// Attach a buffer of `format` holding `word` in every pixel, and commit it with a frame
     /// callback.
     pub fn show_words(&self, width: i32, height: i32, format: wl_shm::Format, word: u32) {
+        self.show_pixels(width, height, format, &word.to_le_bytes());
+    }
+
+    /// Attach a buffer of `format` holding the bytes of `pixel` in every pixel, and commit it with
+    /// a frame callback.
+    pub fn show_pixels(&self, width: i32, height: i32, format: wl_shm::Format, pixel: &[u8]) {
         let qh = self.queue.handle();
-        let stride = width * 4;
+        let stride = width * i32::try_from(pixel.len()).unwrap();
         let len = usize::try_from(stride * height).unwrap();
         let fd = rustix::fs::memfd_create("tilo-compositor-test", rustix::fs::MemfdFlags::CLOEXEC)
             .unwrap();
         let mut file = std::fs::File::from(fd);
-        file.write_all(&word.to_le_bytes().repeat(len / 4)).unwrap();
+        file.write_all(&pixel.repeat(len / pixel.len())).unwrap();
         let pool = self.seen.shm.as_ref().expect("wl_shm").create_pool(
             file.as_fd(),
             stride * height,
@@ -299,7 +307,6 @@ impl TestClient {
         pool.destroy();
     }
 
-    /// A square buffer of one colour (RGBA), as a window draws its icon.
     pub fn icon_buffer(&self, edge: i32, rgba: [u8; 4]) -> WlBuffer {
         let qh = self.queue.handle();
         let stride = edge * 4;
@@ -1249,7 +1256,24 @@ delegate_noop!(Seen: ignore XdgWmDialogV1);
 delegate_noop!(Seen: ignore ZwpTextInputManagerV3);
 delegate_noop!(Seen: ignore ZwpInputMethodManagerV2);
 delegate_noop!(Seen: ignore XdgDialogV1);
-delegate_noop!(Seen: ignore WlShm);
+impl Dispatch<WlShm, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &WlShm,
+        event: wl_shm::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_shm::Event::Format {
+            format: WEnum::Value(format),
+        } = event
+        {
+            seen.shm_formats.push(format);
+        }
+    }
+}
+
 delegate_noop!(Seen: ignore WlShmPool);
 delegate_noop!(Seen: ignore WlBuffer);
 delegate_noop!(Seen: ignore WlSurface);

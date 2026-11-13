@@ -1,10 +1,12 @@
 /// A component's published tree as a shared forest that each edit changes in
 /// a few nodes. After every edit of a random walk — a root or item
-/// relabelled, items added, removed, moved, given actions or children, a
-/// repeated id and a grant expiring and coming back — what is derived from it
-/// incrementally (its permission filtering, its controls' allowed addresses,
-/// its semantic nodes and the delta reported for them) is exactly what a
-/// derivation from the same tree as ordinary resources gives.
+/// relabelled, items added, removed, moved, given actions, given a change
+/// deeper than their own head, and a grant expiring and coming back — what is
+/// derived from it incrementally (its permission filtering, its controls'
+/// allowed addresses, its semantic nodes and the delta reported for them) is
+/// exactly what a derivation from the same tree as ordinary resources gives.
+/// A tree that publishes one node id twice is not one of these: the harness
+/// reports that as the defect it is ([`crate::a11y_tree::SemanticTree`]).
 #[test]
 fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
     use crate::published::{SharedChildren, SharedResource};
@@ -131,9 +133,13 @@ fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
                 items[index] = node(&id, &label, &["open", "rename"], Vec::new());
             }
             6 if !items.is_empty() => {
-                // A repeated id: only a rebuild reports it as the full walk does.
-                let id = items[random(items.len())].id().to_owned();
-                items.push(node(&id, &label, &["open"], Vec::new()));
+                // A grandchild changes under an item whose own head stays as
+                // it was: the edit is deeper than the node that carries it.
+                let index = random(items.len());
+                let id = items[index].id().to_owned();
+                let carried = items[index].head().label.clone();
+                let part = node(&format!("{id}/part"), &label, &["open"], Vec::new());
+                items[index] = node(&id, &carried, &["open"], vec![part]);
             }
             7 if !items.is_empty() => {
                 let index = random(items.len());

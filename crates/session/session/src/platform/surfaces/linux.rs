@@ -80,7 +80,7 @@ impl Layer for RefCell<WidgetHost> {
         Published::accessible_labels(&mut *self.borrow_mut())
     }
 
-    fn controls(&self) -> Vec<(String, (f64, f64, f64, f64))> {
+    fn controls(&self) -> Vec<ui::window_targets::WindowControl> {
         Published::controls(&mut *self.borrow_mut())
     }
 

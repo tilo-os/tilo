@@ -101,24 +101,38 @@ pub use collab_types::presence::{
 /// The hue a participant wears, from who they are: a person the one their identity
 /// derives ([`crate::tokens::PresenceHue::of_identity`]), software the one what it is
 /// wears ([`crate::tokens::PresenceHue::of_agent`], the same for every run of it and
-/// every surface that draws it). The one lookup every surface asks — the bar's faces,
-/// the People list, a profile card, an agent's card in a window, its pointer, its text
-/// marks and carets, and the run a change is attributed to — so one actor is one colour
-/// everywhere, and no surface picks its own.
+/// every surface that draws it) — and, for software, never the hue of the person it acts
+/// for (`for_person`, its principal): an agent that would land on them, or beside them,
+/// steps round the palette ([`crate::tokens::PresenceHue::apart_from`]) so the two are
+/// told apart at a glance. A person yields a hue to nobody.
+///
+/// `id` is who the actor is, never the run it works in: an agent is named by its own
+/// identity (`agent:claude-code@box#2`), so it keeps one colour however often it comes.
+///
+/// The one lookup every surface asks — the bar's faces, the People list, a profile card,
+/// an agent's card in a window, its pointer, its text marks and carets, and the run a
+/// change is attributed to — so one actor is one colour everywhere, and no surface picks
+/// its own. `None` for software whose person the surface does not know.
 #[must_use]
-pub fn participant_hue(id: &str, is_agent: bool) -> crate::tokens::PresenceHue {
-    if is_agent {
-        crate::tokens::PresenceHue::of_agent(id)
-    } else {
-        crate::tokens::PresenceHue::of_identity(id)
+pub fn participant_hue(
+    id: &str,
+    is_agent: bool,
+    for_person: Option<&str>,
+) -> crate::tokens::PresenceHue {
+    if !is_agent {
+        return crate::tokens::PresenceHue::of_identity(id);
     }
+    let own = crate::tokens::PresenceHue::of_agent(id);
+    for_person.map_or(own, |person| {
+        own.apart_from(crate::tokens::PresenceHue::of_identity(person))
+    })
 }
 
 /// [`participant_hue`] as the colour it travels as: what the workspace paints a
 /// participant in until it hears the colour they chose.
 #[must_use]
-pub fn participant_color(id: &str, is_agent: bool) -> (u8, u8, u8) {
-    identity_rgb(participant_hue(id, is_agent))
+pub fn participant_color(id: &str, is_agent: bool, for_person: Option<&str>) -> (u8, u8, u8) {
+    identity_rgb(participant_hue(id, is_agent, for_person))
 }
 
 /// A presence colour as the surfaces paint it: the `(r, g, b)` a person's
@@ -422,6 +436,76 @@ mod color_tests {
             assert_eq!(before["alice"], after["alice"]);
             assert_eq!(before["bob"], after["bob"]);
         }
+    }
+
+    /// An agent keeps one colour however often it comes: the key is the agent it is, never the
+    /// run it works in.
+    #[test]
+    fn an_agent_keeps_one_colour_across_its_runs() {
+        let person = Some("person-ada");
+        for (first, second) in [
+            // The same agent admitted again, with a run of its own each time.
+            ("agent:claude-code@box#1", "agent:claude-code@box#4"),
+            ("agent:helper@box#2", "agent:helper@box#12"),
+            // The name a desk shows it under, numbered per connection.
+            ("Claude Code #1", "Claude Code #3"),
+            // Its identity, as the workspace grants name it.
+            ("agent:helper@box", "helper@box"),
+        ] {
+            assert_eq!(
+                participant_color(first, true, person),
+                participant_color(second, true, person),
+                "{first} and {second} are one agent, so one colour"
+            );
+        }
+    }
+
+    /// Software never wears the hue of the person it acts for, whichever hues the two land on:
+    /// the agent steps round the ring, and the person keeps theirs.
+    #[test]
+    fn an_agent_never_wears_the_hue_of_the_person_it_acts_for() {
+        use crate::tokens::PresenceHue;
+        let distance = |a: PresenceHue, b: PresenceHue| {
+            let len = PEER_PALETTE.len();
+            let ahead = a
+                .slot()
+                .wrapping_add(len)
+                .wrapping_sub(b.slot())
+                .checked_rem(len)
+                .unwrap_or(0);
+            ahead.min(len.wrapping_sub(ahead))
+        };
+        let ids = |hue: PresenceHue, agent: bool| {
+            (0..1000)
+                .map(|n| format!("{}-{n}", if agent { "agent" } else { "person" }))
+                .find(|id| {
+                    let own = if agent {
+                        PresenceHue::of_agent(id)
+                    } else {
+                        PresenceHue::of_identity(id)
+                    };
+                    own == hue
+                })
+                .expect("some identity lands on every hue")
+        };
+        for person_hue in PresenceHue::ALL {
+            let person = ids(person_hue, false);
+            for agent_hue in PresenceHue::ALL {
+                let agent = ids(agent_hue, true);
+                let worn = participant_hue(&agent, true, Some(&person));
+                assert!(
+                    distance(worn, person_hue) >= 2,
+                    "{agent} ({worn:?}) reads as {person}'s own ({person_hue:?})"
+                );
+                // The person's own colour never moves for it.
+                assert_eq!(participant_hue(&person, false, None), person_hue);
+            }
+        }
+        // Software whose person the surface does not know still wears its own hue.
+        assert_eq!(
+            participant_hue("agent:claude-code@box", true, None),
+            crate::tokens::PresenceHue::Orange
+        );
     }
 }
 
@@ -1479,7 +1563,7 @@ impl PresenceCtx {
     /// own, and for software the one what it is wears rather than the one its run's id
     /// would — [`participant_hue`], the rule every surface asks.
     fn identity_hue(&self, user: &UserId) -> crate::tokens::PresenceHue {
-        participant_hue(&user.0, self.is_agent(user))
+        participant_hue(&user.0, self.is_agent(user), None)
     }
 
     /// The hue `user` wears: the one the workspace announced for them (their

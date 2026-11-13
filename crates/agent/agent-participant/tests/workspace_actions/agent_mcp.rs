@@ -145,9 +145,6 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     // host as the workspace's own, whose History says it was the agent's run.
     // The agent's own computer says nothing of itself.
     let spoken_by = hex::encode(host.cert.device_public_key);
-    // What the run says of the action it takes, in the words every surface
-    // says a step in: the line the session client narrates it with.
-    let saying = tilo_session_client::narration::lines::doing(WRITER, "append-paragraph", None);
     let deadline = tilo_test_env::hang_deadline();
     let mut edited = false;
     let mut shown = false;
@@ -203,9 +200,16 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         // The workbook it works in is open on the workspace's desk, as a
         // window of the person's, for every page to draw.
         shown = shown || desk_windows(&mut browser, &sheets.record) > 0;
+        // What it does reads as the catalogue's own line for such a step, in
+        // the app as a person reads its name, not as an English verb glued to
+        // an id.
+        let working = tilo_session_client::narration::lines::step(&tilo_actions::Step::new(
+            tilo_actions::StepKind::Work,
+            Some("Word processor"),
+        ));
         let said = run.as_ref().is_some_and(|run| {
             run.spoken_by.as_deref() == Some(spoken_by.as_str())
-                && run.activity.as_deref() == Some(saying.as_str())
+                && run.activity.as_deref() == Some(working.as_str())
                 && run.selection.is_some()
         });
         let committed = phases.contains(&tilo_actions::InteractionPhase::Committed);

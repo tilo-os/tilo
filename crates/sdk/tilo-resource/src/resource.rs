@@ -1808,7 +1808,7 @@ pub(crate) fn spec_of_declaration_on(
             label.clone(),
             label,
             ExecutionLocus::ClientLocal,
-            decl.params.clone(),
+            decl.shown_params(),
             encoded,
         )
     };
@@ -1839,7 +1839,7 @@ pub(crate) fn spec_of_declaration_on(
         spec = spec.destructive();
     }
     let contract = &mut spec.type_mut().contract;
-    contract.step = decl.step;
+    (contract.step, contract.creates) = (decl.step, decl.creates.map(str::to_owned));
     if let Some(result) = &decl.result {
         contract.result = result.clone();
     }

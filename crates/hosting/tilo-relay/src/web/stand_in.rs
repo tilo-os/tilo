@@ -15,8 +15,12 @@
 //! the key, and every device it certified before stays valid.
 //!
 //! Each key is kept in the host's state directory, readable by the host
-//! alone, beside its certificate once the root sent it; at most
-//! [`MAX_STAND_INS`] people have one on a host.
+//! alone, beside its certificate once the root sent it. A tab asks for one
+//! only once its person's agent is in (a visitor who does nothing has
+//! none), and the host forgets what can approve nothing any more: a key
+//! whose root never certified it within [`UNCERTIFIED_MS`], and one whose
+//! certificate ran out. New keys are budgeted per client address, never
+//! counted in all.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,8 +32,15 @@ use tilo_relay_protocol::certify::MEMBER_APPROVAL_SKEW_NS;
 use tilo_relay_protocol::login_code::{StandInReply, StandInRequest};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-/// People with a stand-in on one host at most.
-pub(crate) const MAX_STAND_INS: usize = 4096;
+/// How long a key the root has not certified yet is kept: the tab certifies
+/// it right after asking for it.
+pub(crate) const UNCERTIFIED_MS: u64 = 10 * 60 * 1000;
+/// New stand-in keys one client address may have made in a minute.
+pub(crate) const KEYS_PER_ADDRESS: u32 = 10;
+/// How often the host looks for stand-ins to forget.
+const PRUNE_EVERY_MS: u64 = 60 * 1000;
+/// The window the budget counts in.
+const WINDOW_MS: u64 = 60 * 1000;
 
 /// Why a stand-in request was refused.
 #[derive(Debug, PartialEq, Eq)]
@@ -40,8 +51,8 @@ pub(crate) enum Refusal {
     Forbidden(&'static str),
     /// `404`: no stand-in key for this person.
     Unknown,
-    /// `503`.
-    Full,
+    /// `429`: too many new keys from this address this minute.
+    TooMany,
     /// `500`.
     Storage,
 }
@@ -51,7 +62,7 @@ impl Refusal {
         match self {
             Self::Malformed(message) | Self::Forbidden(message) => message,
             Self::Unknown => "this host keeps no stand-in for this person",
-            Self::Full => "this host keeps as many stand-ins as it can",
+            Self::TooMany => "too many new stand-ins from here; wait a minute",
             Self::Storage => "this host could not keep the stand-in",
         }
     }
@@ -68,6 +79,10 @@ struct Kept {
 pub(crate) struct StandIns {
     dir: PathBuf,
     kept: Mutex<HashMap<[u8; 32], Kept>>,
+    /// New keys per client address in the current minute, and that minute.
+    made: Mutex<(u64, HashMap<std::net::IpAddr, u32>)>,
+    /// When the host last looked for stand-ins to forget (Unix ms).
+    pruned_at_ms: std::sync::atomic::AtomicU64,
 }
 
 fn hex32(text: &str) -> Option<[u8; 32]> {
@@ -165,6 +180,8 @@ impl StandIns {
         Self {
             dir,
             kept: Mutex::default(),
+            made: Mutex::default(),
+            pruned_at_ms: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -199,19 +216,78 @@ impl StandIns {
         kept.get_mut(user)
     }
 
-    fn count_on_disk(&self) -> usize {
-        std::fs::read_dir(&self.dir).map_or(0, |entries| {
-            entries
-                .filter_map(Result::ok)
-                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "key"))
-                .count()
-        })
+    /// Forget, at most once a [`PRUNE_EVERY_MS`], every stand-in that can approve nothing: a key
+    /// its root never certified within [`UNCERTIFIED_MS`], and one whose certificate ran out.
+    fn prune(&self, kept: &mut HashMap<[u8; 32], Kept>, now_ns: u64) {
+        use std::sync::atomic::Ordering;
+        let millis = now_ns / 1_000_000;
+        let looked_ms = self.pruned_at_ms.load(Ordering::Relaxed);
+        if millis.saturating_sub(looked_ms) < PRUNE_EVERY_MS
+            || self
+                .pruned_at_ms
+                .compare_exchange(looked_ms, millis, Ordering::Relaxed, Ordering::Relaxed)
+                .is_err()
+        {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "key") {
+                continue;
+            }
+            let Some(user) = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .and_then(hex32)
+            else {
+                continue;
+            };
+            let cert: Option<DeviceCert> = std::fs::read(self.cert_path(&user))
+                .ok()
+                .and_then(|bytes| postcard::from_bytes(&bytes).ok());
+            let forget = match cert {
+                Some(cert) => check_stand_in_cert(&cert, now_ns).is_err(),
+                None => entry
+                    .metadata()
+                    .and_then(|meta| meta.modified())
+                    .ok()
+                    .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                    .and_then(|at| u64::try_from(at.as_millis()).ok())
+                    .is_some_and(|at_ms| millis.saturating_sub(at_ms) > UNCERTIFIED_MS),
+            };
+            if forget {
+                kept.remove(&user);
+                let _ = std::fs::remove_file(self.cert_path(&user));
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+
+    /// Count a new key for `client` this minute: whether it is within its budget.
+    fn within_budget(&self, client: Option<std::net::IpAddr>, now_ns: u64) -> bool {
+        let Some(client) = client else { return true };
+        let window = now_ns / 1_000_000 / WINDOW_MS;
+        let mut made = self.made.lock_recover();
+        if made.0 != window {
+            *made = (window, HashMap::new());
+        }
+        let count = made.1.entry(client).or_default();
+        let within = *count < KEYS_PER_ADDRESS;
+        if within {
+            *count = count.saturating_add(1);
+        }
+        drop(made);
+        within
     }
 
     /// Answer a root's request of its stand-in.
     pub(crate) fn answer(
         &self,
         request: StandInRequest,
+        client: Option<std::net::IpAddr>,
         now_ns: u64,
     ) -> Result<StandInReply, Refusal> {
         match request {
@@ -221,9 +297,10 @@ impl StandIns {
                 signature,
             } => {
                 let user = root_signed("key", &user, signed_at_ns, &signature, now_ns)?;
-                self.key(&user).map(|key| StandInReply::Key {
-                    key: hex::encode(key.to_bytes()),
-                })
+                self.key_for(&user, client, now_ns)
+                    .map(|key| StandInReply::Key {
+                        key: hex::encode(key.to_bytes()),
+                    })
             }
             StandInRequest::Certify { cert } => {
                 let bytes = hex::decode(cert)
@@ -250,20 +327,36 @@ impl StandIns {
     }
 
     /// `user`'s stand-in key, made the first time.
+    #[cfg(any(test, feature = "agents"))]
     fn key(&self, user: &[u8; 32]) -> Result<VerifyingKey, Refusal> {
-        self.with_kept(|kept| self.make_key(kept, user))
+        self.key_for(user, None, tilo_clock::unix_now_ns())
+    }
+
+    /// `user`'s stand-in key, made the first time for a request from `client`.
+    fn key_for(
+        &self,
+        user: &[u8; 32],
+        client: Option<std::net::IpAddr>,
+        now_ns: u64,
+    ) -> Result<VerifyingKey, Refusal> {
+        self.with_kept(|kept| {
+            self.prune(kept, now_ns);
+            self.make_key(kept, user, client, now_ns)
+        })
     }
 
     fn make_key(
         &self,
         kept: &mut HashMap<[u8; 32], Kept>,
         user: &[u8; 32],
+        client: Option<std::net::IpAddr>,
+        now_ns: u64,
     ) -> Result<VerifyingKey, Refusal> {
         if let Some(kept) = self.load(kept, user) {
             return Ok(kept.key.verifying_key());
         }
-        if self.count_on_disk() >= MAX_STAND_INS {
-            return Err(Refusal::Full);
+        if !self.within_budget(client, now_ns) {
+            return Err(Refusal::TooMany);
         }
         let key = SigningKey::from_bytes(&rand::random());
         std::fs::create_dir_all(&self.dir).map_err(|_| Refusal::Storage)?;
@@ -344,7 +437,63 @@ fn check_stand_in_cert(cert: &DeviceCert, now_ns: u64) -> Result<(), Refusal> {
 
 #[cfg(test)]
 mod tests {
-    use super::{keep, kept};
+    use super::{StandIns, UNCERTIFIED_MS, keep, kept};
+    use std::collections::HashMap;
+
+    /// The host forgets a key nobody certified once it is old, and a stand-in whose certificate
+    /// ran out; a live one stays. Nothing caps how many people have one.
+    #[test]
+    fn stand_ins_that_can_approve_nothing_are_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let user = root.verifying_key().to_bytes();
+        keep(dir.path(), &root).unwrap();
+        let stands = StandIns::new(dir.path().to_path_buf());
+        // Thousands of people who asked for a key and never certified it.
+        let abandoned: Vec<[u8; 32]> = (0u16..2_000)
+            .map(|index| {
+                let mut person = [0; 32];
+                person[..2].copy_from_slice(&index.to_le_bytes());
+                person[31] = 1;
+                stands.key(&person).unwrap();
+                person
+            })
+            .collect();
+        let old = std::time::SystemTime::now()
+            - std::time::Duration::from_millis(UNCERTIFIED_MS + 60_000);
+        for person in &abandoned[..1_500] {
+            std::fs::File::options()
+                .write(true)
+                .open(stands.key_path(person))
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+        let now = tilo_clock::unix_now_ns();
+        // Asking for those keys looked already; this look is a later one.
+        stands
+            .pruned_at_ms
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        stands.prune(&mut HashMap::new(), now);
+        assert!(
+            !stands.key_path(&abandoned[0]).exists(),
+            "an old key nobody certified goes"
+        );
+        assert!(
+            stands.key_path(&abandoned[1_999]).exists(),
+            "a fresh one waits for its certificate"
+        );
+        assert!(
+            kept(dir.path(), &user).is_some(),
+            "a certified stand-in stays"
+        );
+        // Its certificate run out, it goes too (looked at no sooner than a minute later).
+        let after = now
+            + tilo_relay_protocol::login_code::STAND_IN_LIFETIME_MS * 1_000_000
+            + 86_400_000_000_000;
+        stands.prune(&mut HashMap::new(), after);
+        assert!(!stands.key_path(&user).exists() && !stands.cert_path(&user).exists());
+    }
 
     /// The root a host holds signs one stand-in for it, kept across starts.
     #[test]

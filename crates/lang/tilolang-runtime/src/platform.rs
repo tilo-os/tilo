@@ -384,7 +384,7 @@ impl Core {
                 } else {
                     id.clone()
                 };
-                let text = self.words.borrow().word(&id, &args, &source);
+                let text = self.word_args(&id, &args, &source);
                 self.ret_h(Value::Text(text))
             }
             _ => trap("not a platform import"),
@@ -537,7 +537,7 @@ impl Core {
             .map_or_else(String::new, |a| match (&a.did, &a.id) {
                 (Some(source), id) => {
                     let key = format!("{}.did", tilolang::messages::key_of(id));
-                    self.words.borrow().word(&key, &[], source)
+                    self.word_args(&key, &[], source)
                 }
                 (None, _) => String::new(),
             })
@@ -560,7 +560,7 @@ impl Core {
             let kind = self
                 .item_nouns(&of.ty)
                 .map_or_else(String::new, |(_, many)| many);
-            return self.words.borrow().word(
+            return self.word_args(
                 "tilolang-did-many",
                 &[
                     ("count".to_owned(), v.count.to_string()),
@@ -665,7 +665,7 @@ impl Core {
                 Some(name) => verbs.source.replace("{ $field }", name),
                 None => verbs.source.to_owned(),
             };
-            let voices = self.words.borrow().word(verbs.key, &fills, &source);
+            let voices = self.word_args(verbs.key, &fills, &source);
             let value = match verbs.shows {
                 crate::did::Shows::After => self.change_shown(&ty, arg, looking.as_deref()).ok(),
                 _ => None,
@@ -709,7 +709,7 @@ impl Core {
                 lines.push(self.action_label(&rec.action));
             }
             let name = self.name_of(&rec.author);
-            let said = self.words.borrow().word(
+            let said = self.word_args(
                 "tilolang-suggestion-says",
                 &[("name".to_owned(), name)],
                 SAYS_FALLBACK,
@@ -790,7 +790,7 @@ impl Core {
                 Some(name) => said.source.replace("{ $field }", name),
                 None => said.source.to_owned(),
             };
-            let voices = self.words.borrow().word(said.key, &args, &source);
+            let voices = self.word_args(said.key, &args, &source);
             // One sentence for the whole version: who made it stands once, in the version's own
             // row, and "and" goes on with what a later change of the same version did.
             let words = if first {
@@ -814,7 +814,15 @@ impl Core {
     /// The platform's words for `key`, in the reader's language; `source` where no catalogue
     /// holds it.
     pub(crate) fn word(&self, key: &str, source: &str) -> String {
-        self.words.borrow().word(key, &[], source)
+        self.word_args(key, &[], source)
+    }
+
+    /// [`Self::word`] with the `args` a count or a name goes in. A view that shows a word shows
+    /// something only the window knows ([`Self::read_person`]): a window that speaks another
+    /// language runs again the boundaries that show one, and no others.
+    pub(crate) fn word_args(&self, key: &str, args: &[(String, String)], source: &str) -> String {
+        self.read_person();
+        self.words.borrow().word(key, args, source)
     }
 
     /// Who made a version, as a sentence names them: the person looking as the platform's word
@@ -829,17 +837,18 @@ impl Core {
     /// What the host calls `who`, and that a view showing it read it: the window calling someone
     /// something else runs again the boundaries that show a name, and no others.
     pub(crate) fn named(&self, who: &Principal) -> String {
-        self.in_view(|vs| vs.read_name(who));
+        self.read_person();
         self.names
             .borrow()
             .as_ref()
             .map_or_else(|| who.0.clone(), |host| host.name(who))
     }
 
-    /// Note that the code running writes a day or a time of day in the person's format: a view
-    /// that does runs again when they choose another.
-    pub(crate) fn read_format(&self) {
-        self.in_view(crate::handles::ViewState::read_format);
+    /// Note that the code running shows something only the window knows, when it draws a view: a
+    /// participant's name, a day or a time of day in the person's formats, a word in the language
+    /// their window speaks. The boundary runs again when any of them changes, and no other does.
+    pub(crate) fn read_person(&self) {
+        self.in_view(crate::handles::ViewState::read_person);
     }
 
     /// `value`, of the type `ty`, as `c.before` and `c.after` show it ([`Self::change_view`]):
@@ -1886,9 +1895,7 @@ impl Core {
     /// its catalogue's noun, else `source`.
     fn noun(&self, id: &str, count: i64, source: &str) -> String {
         let key = format!("{}.noun", tilolang::messages::key_of(id));
-        self.words
-            .borrow()
-            .word(&key, &[("count".to_owned(), count.to_string())], source)
+        self.word_args(&key, &[("count".to_owned(), count.to_string())], source)
     }
 
     /// What one item the window of `ty` shows is called, singular and plural, in the reader's
@@ -1948,15 +1955,11 @@ impl Core {
             }
         }
         if target.item.is_none() && meta.roots.contains(&ty.id) {
-            return Ok(self.words.borrow().word(
-                &tilolang::messages::key_of(&meta.app),
-                &[],
-                &meta.title,
-            ));
+            return Ok(self.word_args(&tilolang::messages::key_of(&meta.app), &[], &meta.title));
         }
         if let Some(untitled) = &ty.untitled {
             let key = format!("{}.untitled", tilolang::messages::key_of(&ty.id));
-            return Ok(self.words.borrow().word(&key, &[], untitled));
+            return Ok(self.word_args(&key, &[], untitled));
         }
         Ok(sentence(&ty.name))
     }
@@ -2095,7 +2098,7 @@ impl Core {
             }
             None => None,
         };
-        let group = self.words.borrow().word("tilolang-make", &[], "Make");
+        let group = self.word_args("tilolang-make", &[], "Make");
         let mut found: Vec<(usize, usize, bool, Offered<'m>)> = Vec::new();
         for (rank, pkg) in packages.iter().enumerate() {
             for action in pkg.meta.offered_actions() {
@@ -2257,7 +2260,7 @@ impl Core {
         let action = shown.action;
         let mut label = match &shown.label {
             Some(label) => label.clone(),
-            None => self.words.borrow().word(
+            None => self.word_args(
                 &tilolang::messages::key_of(&action.id),
                 &[],
                 &label_of(action),
@@ -2592,11 +2595,8 @@ impl Core {
                 vs.state_reads.extend(rendered.state_reads.iter().cloned());
                 vs.state_seen.extend(rendered.state_seen.iter().cloned());
                 vs.space_reads.extend(rendered.space_reads.iter().cloned());
-                for who in &rendered.name_reads {
-                    vs.read_name(who);
-                }
-                if rendered.format_reads {
-                    vs.read_format();
+                if rendered.person_reads {
+                    vs.read_person();
                 }
             }
         }
@@ -2658,7 +2658,7 @@ impl Core {
                 }
                 [Value::Text(kind), held, _] if kind == "date" || kind == "time" => {
                     let text = said_value(held);
-                    self.read_format();
+                    self.read_person();
                     self.shown
                         .borrow()
                         .as_ref()

@@ -855,6 +855,7 @@ fn agent_acting(
             label: descriptor.action_label.clone(),
             app: None,
             step: None,
+            creates: None,
         },
         resource: ui::tilo_actions::ActionResource {
             id: descriptor.address.resource.clone(),

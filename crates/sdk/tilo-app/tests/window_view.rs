@@ -23,7 +23,7 @@ pub struct Book {
     pub title: String,
 }
 
-#[resource(kind = "test.shelf", label = "Shelf")]
+#[resource(kind = "test.shelf", catalogue = "tests/locales")]
 impl Shelf {
     /// Add a book.
     #[action]

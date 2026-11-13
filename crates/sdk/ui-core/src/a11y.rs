@@ -421,6 +421,17 @@ pub struct AccessNode {
     /// its label or its place among its siblings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
+    /// What this control does, as a stable identity: the record kind it acts
+    /// on and the operation (`so.tilo.lang.notes.Notebook` and `new_note`, a
+    /// field's `title` for a control that edits one), written as
+    /// [`tilo_actions::ActionAddress`] writes an address. A window's
+    /// composition moves a control between its bar, its empty state and its
+    /// columns, and its language changes what it is called; this does not, so
+    /// a test, an agent or assistive technology finds the control by what it
+    /// does. Unique among the controls it stands beside is not required: two
+    /// controls of one action keep a node id each.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
 }
 
 /// A widget's [`AccessNode`] with its synthetic children shared rather than
@@ -474,7 +485,19 @@ impl AccessNode {
             interface_name: false,
             role_description: None,
             item: None,
+            action: None,
         }
+    }
+
+    /// Say what this control does ([`Self::action`]): the identity of the app
+    /// action it runs, or of the field it edits, in the language of ids.
+    ///
+    /// A control that invokes an app action says it here rather than relying
+    /// on its name: the name is in the reader's language and moves with the
+    /// window's composition, the identity does neither.
+    pub fn with_action(mut self, action: impl Into<String>) -> Self {
+        self.action = Some(action.into()).filter(|action| !action.is_empty());
+        self
     }
 
     /// Say which item of its collection this node shows

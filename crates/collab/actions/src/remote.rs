@@ -40,9 +40,11 @@ pub mod agent_runs;
 mod application;
 pub mod browser;
 mod caller;
+pub mod environment_device;
 pub mod linux_apps;
 pub use caller::Caller;
 mod catalogue;
+mod changes;
 mod confirmation;
 mod content_get;
 mod content_put;
@@ -88,6 +90,7 @@ pub use catalogue::{
     CatalogueResource, CatalogueRow, MAX_CATALOGUE_PAGE, ResourceViewLocator, RowVisibility,
     ViewResourceQuery,
 };
+pub use changes::{CHANGE_FEED_UNAVAILABLE, ChangeFeed, ChangePage, RecordChanged};
 pub use content_get::{CONTENT_GETS_UNAVAILABLE, ContentGetAnswer, ContentGets, ContentPiece};
 pub use content_put::{
     CONTENT_PUTS_UNAVAILABLE, ContentPut, ContentPutAnswer, ContentPutStep, ContentPuts,
@@ -946,11 +949,18 @@ pub trait ActionHost {
         None
     }
 
-    /// The one search the desktop runs ([`ResourceSearch`]), which an
-    /// agent's `find` asks: `None` for a host without a desktop's search
-    /// (a standalone runtime speaks for no desk), which answers by its
-    /// apps' own directories instead.
+    /// This host's search of what its workspace holds ([`ResourceSearch`]),
+    /// which an agent's `find` asks: a desktop's one search, or the records
+    /// a host with no desktop holds, ranked by what they say. `None` for a
+    /// host that holds no records to search.
     fn resource_search(&self) -> Option<std::sync::Arc<dyn ResourceSearch>> {
+        None
+    }
+
+    /// Every change to the records of a caller's workspace, as this host
+    /// keeps them ([`ChangeFeed`]): what a watch of the whole workspace
+    /// reads. `None` for a host that keeps no records.
+    fn change_feed(&self) -> Option<std::sync::Arc<dyn ChangeFeed>> {
         None
     }
 }
@@ -1107,6 +1117,27 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<String, ActionHostError>,
     },
+    /// Search what the caller's workspace holds by words, as the host
+    /// searches it ([`ActionHost::resource_search`]).
+    SearchRequest { correlation: u64, needle: String },
+    /// Answer to [`Self::SearchRequest`], same correlation: what it found,
+    /// best first.
+    SearchResponse {
+        correlation: u64,
+        result: Result<Vec<Found>, ActionHostError>,
+    },
+    /// Ask for the changes to the caller's workspace's records after
+    /// `after`, a cursor an earlier answer gave ([`ActionHost::change_feed`]).
+    ChangesRequest {
+        correlation: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
+    },
+    /// Answer to [`Self::ChangesRequest`], same correlation.
+    ChangesResponse {
+        correlation: u64,
+        result: Result<ChangePage, ActionHostError>,
+    },
 }
 
 /// One record a reader asks for over the action door: alone, or `joined`
@@ -1170,6 +1201,8 @@ impl RemoteActionMessage {
                 | Self::ContentPutRequest { .. }
                 | Self::ContentGetRequest { .. }
                 | Self::Confirm { .. }
+                | Self::SearchRequest { .. }
+                | Self::ChangesRequest { .. }
         )
     }
 }
@@ -1187,6 +1220,65 @@ fn confirmed<H: ActionHost>(
             correlation,
             result: result.map(Box::new),
         })
+}
+
+/// The refusal of a request [`serve`] keeps nothing for: canonical feedback,
+/// which only its own service answers; uploads over a session, kept by a
+/// host that keeps them open between steps ([`HostedContentPuts`]); and
+/// content, read from a store a device keeps. `None` for any other message.
+fn not_kept(message: &RemoteActionMessage) -> Option<RemoteActionMessage> {
+    let reason = match message {
+        RemoteActionMessage::FeedbackRequest { .. } => "canonical feedback service unavailable",
+        RemoteActionMessage::ContentPutRequest { .. } => CONTENT_PUTS_UNAVAILABLE,
+        RemoteActionMessage::ContentGetRequest { .. } => CONTENT_GETS_UNAVAILABLE,
+        _ => return None,
+    };
+    refuse(
+        message,
+        ActionHostError::Unavailable {
+            reason: reason.into(),
+        },
+    )
+}
+
+/// What `needle` finds in `caller`'s workspace, by `host`'s own search,
+/// answered for `correlation` ([`ActionHost::resource_search`]).
+fn searched<H: ActionHost>(
+    host: &H,
+    caller: &Caller,
+    correlation: u64,
+    needle: &str,
+) -> Pending<RemoteActionMessage> {
+    let respond = move |result| RemoteActionMessage::SearchResponse {
+        correlation,
+        result,
+    };
+    match host.resource_search() {
+        Some(search) => search.find(caller, needle).map(respond),
+        None => Pending::ready(respond(Err(ActionHostError::Unavailable {
+            reason: "this host holds no records to search".into(),
+        }))),
+    }
+}
+
+/// The changes to `caller`'s workspace's records after `after`, from
+/// `host`'s feed, answered for `correlation` ([`ActionHost::change_feed`]).
+fn changed<H: ActionHost>(
+    host: &H,
+    caller: &Caller,
+    correlation: u64,
+    after: Option<&str>,
+) -> Pending<RemoteActionMessage> {
+    let result = match host.change_feed() {
+        Some(feed) => feed.since(caller, after),
+        None => Pending::ready(Err(ActionHostError::Unavailable {
+            reason: CHANGE_FEED_UNAVAILABLE.into(),
+        })),
+    };
+    result.map(move |result| RemoteActionMessage::ChangesResponse {
+        correlation,
+        result,
+    })
 }
 
 /// A versioned [`RemoteActionMessage`], the unit a transport carries.
@@ -1281,14 +1373,10 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         },
     )?;
     let answer = match message {
-        RemoteActionMessage::FeedbackRequest { correlation, .. } => {
-            Pending::ready(RemoteActionMessage::FeedbackResponse {
-                correlation,
-                result: Err(ActionHostError::Unavailable {
-                    reason: "canonical feedback service unavailable".into(),
-                }),
-            })
-        }
+        // What a stateless host keeps none of, it refuses.
+        RemoteActionMessage::FeedbackRequest { .. }
+        | RemoteActionMessage::ContentPutRequest { .. }
+        | RemoteActionMessage::ContentGetRequest { .. } => Pending::ready(not_kept(&message)?),
         RemoteActionMessage::CatalogueRequest { correlation, query } => host
             .query(caller, query)
             .map(move |result| RemoteActionMessage::CatalogueResponse {
@@ -1338,30 +1426,17 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         RemoteActionMessage::ConfirmationRequest { correlation, .. } => Pending::ready(
             confirmation::unanswered(correlation, ActionHostError::confirmation_required()),
         ),
-        // Uploads over a session are kept by a host that keeps them open
-        // between steps ([`HostedContentPuts`]); a stateless one has none.
-        RemoteActionMessage::ContentPutRequest { correlation, .. } => {
-            Pending::ready(RemoteActionMessage::ContentPutResponse {
-                correlation,
-                result: Err(ActionHostError::Unavailable {
-                    reason: CONTENT_PUTS_UNAVAILABLE.into(),
-                }),
-            })
-        }
-        // Content is read from a store a device keeps; a host that keeps
-        // none says so.
-        RemoteActionMessage::ContentGetRequest { correlation, .. } => {
-            Pending::ready(RemoteActionMessage::ContentGetResponse {
-                correlation,
-                result: Err(ActionHostError::Unavailable {
-                    reason: CONTENT_GETS_UNAVAILABLE.into(),
-                }),
-            })
-        }
         RemoteActionMessage::Confirm {
             correlation,
             request,
         } => confirmed(host, caller, correlation, &request),
+        RemoteActionMessage::SearchRequest {
+            correlation,
+            needle,
+        } => searched(host, caller, correlation, &needle),
+        RemoteActionMessage::ChangesRequest { correlation, after } => {
+            changed(host, caller, correlation, after.as_deref())
+        }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
@@ -1376,6 +1451,8 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         | RemoteActionMessage::ContentPutResponse { .. }
         | RemoteActionMessage::ContentGetResponse { .. }
         | RemoteActionMessage::ConfirmResponse { .. }
+        | RemoteActionMessage::SearchResponse { .. }
+        | RemoteActionMessage::ChangesResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
@@ -1440,6 +1517,18 @@ pub fn refuse(
             correlation: *correlation,
             result: Err(error),
         },
+        RemoteActionMessage::SearchRequest { correlation, .. } => {
+            RemoteActionMessage::SearchResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
+        RemoteActionMessage::ChangesRequest { correlation, .. } => {
+            RemoteActionMessage::ChangesResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
@@ -1454,6 +1543,8 @@ pub fn refuse(
         | RemoteActionMessage::ContentPutResponse { .. }
         | RemoteActionMessage::ContentGetResponse { .. }
         | RemoteActionMessage::ConfirmResponse { .. }
+        | RemoteActionMessage::SearchResponse { .. }
+        | RemoteActionMessage::ChangesResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => return None,
     })
 }
@@ -2576,6 +2667,131 @@ mod tests {
 
     fn invoke_message(id: InvocationId) -> RemoteActionMessage {
         RemoteActionMessage::Invoke(archive(id))
+    }
+
+    /// A host's search and its change feed are asked across the door as any
+    /// request is, each answer the host's own; a host keeping neither says
+    /// so in the words a caller tells apart.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one host answering both asks, and one keeping neither, in order"
+    )]
+    fn search_and_changes_cross_the_door_as_the_host_answers_them() {
+        struct Held;
+        impl ResourceSearch for Held {
+            fn find(
+                &self,
+                _caller: &Caller,
+                needle: &str,
+            ) -> Pending<Result<Vec<Found>, ActionHostError>> {
+                Pending::ready(Ok(vec![Found {
+                    resource: needle.to_owned(),
+                    kind: "notes.Note".into(),
+                    label: "Gooseberry jam".into(),
+                    open: None,
+                    arguments: serde_json::Map::new(),
+                    app: Some("so.tilo.notes".into()),
+                }]))
+            }
+        }
+        impl ChangeFeed for Held {
+            fn since(
+                &self,
+                _caller: &Caller,
+                after: Option<&str>,
+            ) -> Pending<Result<ChangePage, ActionHostError>> {
+                Pending::ready(Ok(ChangePage {
+                    changes: vec![RecordChanged {
+                        app: "so.tilo.notes".into(),
+                        record: String::new(),
+                        entry: serde_json::json!({"change": "abc", "invocation": "i"}),
+                    }],
+                    cursor: format!("{}+1", after.unwrap_or("start")),
+                }))
+            }
+        }
+        #[derive(Clone)]
+        struct Holding(std::sync::Arc<TestHost>);
+        impl ActionHost for Holding {
+            fn query(
+                &self,
+                caller: &Caller,
+                query: CatalogueQuery,
+            ) -> Pending<Result<CataloguePage, ActionHostError>> {
+                self.0.query(caller, query)
+            }
+            fn invoke(
+                &self,
+                caller: &Caller,
+                request: InvokeRequest,
+            ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+                self.0.invoke(caller, request)
+            }
+            fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+                self.0.observe(caller, id)
+            }
+            fn cancel(
+                &self,
+                caller: &Caller,
+                id: &InvocationId,
+            ) -> Pending<Result<(), ActionHostError>> {
+                self.0.cancel(caller, id)
+            }
+            fn resource_search(&self) -> Option<std::sync::Arc<dyn ResourceSearch>> {
+                Some(std::sync::Arc::new(Held))
+            }
+            fn change_feed(&self) -> Option<std::sync::Arc<dyn ChangeFeed>> {
+                Some(std::sync::Arc::new(Held))
+            }
+        }
+        let holding = Holding(std::sync::Arc::new(TestHost::new()));
+        let search = RemoteActionMessage::SearchRequest {
+            correlation: 7,
+            needle: "note:1".into(),
+        };
+        let encoded = RemoteActionFrame::new(search).encode().unwrap();
+        let search = RemoteActionFrame::decode(&encoded).unwrap().message;
+        assert!(search.is_request());
+        let Some(RemoteActionMessage::SearchResponse {
+            correlation: 7,
+            result: Ok(found),
+        }) = serve(&holding, &alice(), search.clone()).map(now)
+        else {
+            panic!("a search is answered with what the host found");
+        };
+        assert_eq!(found[0].resource, "note:1");
+        let changes = RemoteActionMessage::ChangesRequest {
+            correlation: 8,
+            after: Some("c".into()),
+        };
+        let Some(RemoteActionMessage::ChangesResponse {
+            correlation: 8,
+            result: Ok(page),
+        }) = serve(&holding, &alice(), changes.clone()).map(now)
+        else {
+            panic!("a watch is answered with the host's changes");
+        };
+        assert_eq!((page.cursor.as_str(), page.changes.len()), ("c+1", 1));
+
+        // A host keeping neither refuses each, the feed in the words a
+        // watch tells from a failure.
+        let bare = std::sync::Arc::new(TestHost::new());
+        assert!(matches!(
+            serve(&bare, &alice(), search).map(now),
+            Some(RemoteActionMessage::SearchResponse {
+                result: Err(ActionHostError::Unavailable { .. }),
+                ..
+            })
+        ));
+        let Some(RemoteActionMessage::ChangesResponse {
+            result: Err(ActionHostError::Unavailable { reason }),
+            ..
+        }) = serve(&bare, &alice(), changes).map(now)
+        else {
+            panic!("a host with no feed refuses a watch of it");
+        };
+        assert_eq!(reason, CHANGE_FEED_UNAVAILABLE);
     }
 
     #[test]

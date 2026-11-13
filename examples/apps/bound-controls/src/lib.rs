@@ -66,7 +66,7 @@ impl Preferences {
 
 /// Every field is edited at its path; the one verb is what a field edit
 /// cannot say.
-#[resource(kind = "example.preferences", label = "Preferences")]
+#[resource(kind = "example.preferences")]
 impl Preferences {
     /// Restore every preference to its default.
     #[action]

@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use tilo_automerge::ApplyIncoming as _;
-use tilolang_runtime::ids::{AppId, DocId, TypeId};
+use tilolang_runtime::ids::{AppId, DocId};
 use tilolang_runtime::store::{ChangeSummary, FieldKey, ListingChange};
 
 use super::{
@@ -109,7 +109,6 @@ impl TiloStore {
         if inner.chunks.seen(chunk) == heads.as_slice() {
             return false;
         }
-        let before = inner.index.clone();
         let from = inner.chunks.heads();
         let old_snapshots = inner.answering();
         // What the splices below are measured from is the listing as those who read the mirror
@@ -133,9 +132,10 @@ impl TiloStore {
         inner.forget_sent();
         let mut items = taken.items;
         inner.rollback(chunk);
-        let (changed, ends, placed) = inner.apply_new_changes(chunk, &arrived, &before);
+        let (changed, ends, placed) = inner.apply_new_changes(chunk, &arrived);
         inner.chunks.set_seen(chunk, heads);
         let Some(changed) = changed else {
+            let before = inner.index.clone();
             // The mirror held a change of its own, which only a copy of the record removes.
             inner.versions.remove(&chunk);
             inner.nested.clear();
@@ -169,17 +169,19 @@ impl TiloStore {
         for doc in &changed.nested {
             inner.nested.forget(doc);
         }
+        // What the index held before the change, when every resource it held and holds now is
+        // derived again: a change that writes fields of resources leaves it uncopied.
+        let before = (changed.unplaced || changed.layout).then(|| inner.index.clone());
         if changed.structure || changed.unplaced {
             inner.rescan();
         }
-        let reached = if changed.unplaced || changed.layout {
-            everything(&before, &inner.index)
-        } else {
-            Reached {
+        let reached = before.map_or_else(
+            || Reached {
                 docs: changed.docs.clone(),
                 placed: changed.placed.clone(),
-            }
-        };
+            },
+            |before| everything(&before, &inner.index),
+        );
         let (moved, wholes, notified) = inner.derive_all(&reached, Some((&from, &ends, &placed)));
         // A write routed to a chunk above the record whose document this sync does not carry —
         // a record kept as one document that the store also routes by its manifest, or a caller
@@ -273,7 +275,6 @@ impl Inner {
         &mut self,
         chunk: ChunkNo,
         changes: &[automerge::Change],
-        before: &BTreeMap<DocId, (AppId, TypeId)>,
     ) -> (Option<Changed>, Ends, idx::reflect::Placed) {
         let seen = self.chunks.seen(chunk);
         let caught_up = self
@@ -294,14 +295,14 @@ impl Inner {
         if let (Some(versions), Some(mirror)) =
             (self.versions.get_mut(&chunk), self.chunks.mirror(chunk))
         {
-            note_versions(versions, changes, mirror, before);
+            note_versions(versions, changes, mirror, &self.index);
         }
         let what = match (applied, self.chunks.mirror(chunk)) {
-            (Some(Ok(())), Some(mirror)) => Some(changed_by(changes, mirror, before)),
+            (Some(Ok(())), Some(mirror)) => Some(changed_by(changes, mirror, &self.index)),
             _ => None,
         };
         let ends = match self.chunks.mirror(chunk) {
-            Some(mirror) => idx::reflect::ends_of(changes, mirror, before),
+            Some(mirror) => idx::reflect::ends_of(changes, mirror, &self.index),
             None => Ends::new(),
         };
         (what, ends, idx::reflect::placed_by(changes))

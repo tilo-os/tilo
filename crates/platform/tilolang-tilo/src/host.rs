@@ -184,6 +184,8 @@ pub(crate) struct HostInner {
     chunks: Rc<RefCell<crate::chunk::Chunks>>,
     /// Whether the store's chunk loader reads [`Self::chunks`].
     chunk_loader: Cell<bool>,
+    /// When the packages' triggers next have something to run.
+    triggers: crate::triggers::Schedule,
 }
 
 thread_local! {
@@ -977,6 +979,7 @@ impl Host {
         let runtime = Runtime::new(store.clone(), authority.clone())?;
         runtime.set_clock(system_time);
         let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+        let triggers = crate::triggers::Schedule::new(store.watch());
         let inner = Rc::new(HostInner {
             handle,
             runtime,
@@ -989,6 +992,7 @@ impl Host {
             returned: RefCell::default(),
             chunks,
             chunk_loader: Cell::new(can_load_chunks),
+            triggers,
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
         Ok(Self { inner })
@@ -1289,6 +1293,7 @@ impl Host {
             ids,
             wasm: std::sync::Arc::from(wasm),
         };
+        self.inner.triggers.forget();
         let mut packages = self.inner.packages.borrow_mut();
         match packages
             .iter_mut()
@@ -1564,14 +1569,14 @@ impl Host {
     /// (`Instance::sync`), so a trigger runs once across the workspace's devices; a run the
     /// devices missed while all were off runs once when one comes up. Returns how many ran.
     pub fn run_triggers(&self, now: i64) -> usize {
-        crate::triggers::run(self, now)
+        crate::triggers::run_due(self, &self.inner.triggers, now)
     }
 
     /// The next instant strictly after `now` at which a trigger has something to run: what the
     /// host waits for, so nothing polls for it. `None` when no trigger will come due again.
     #[must_use]
     pub fn next_trigger(&self, now: i64) -> Option<i64> {
-        crate::triggers::next(self, now)
+        crate::triggers::next_due(self, &self.inner.triggers, now)
     }
 
     /// Open the window of `app`'s root resource, through the default view of its type: its

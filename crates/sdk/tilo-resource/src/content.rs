@@ -9,46 +9,14 @@
 //! window's code; [`current`] answers the store of the scope entered now.
 //!
 //! That is how code no view reaches gets it: an action's arguments being
-//! built where it is invoked, the window's views and handlers. An action
-//! applying keeps nothing here: it stores the references its arguments
-//! carry. Work that leaves the
-//! window's thread captures the store when it starts, as it captures its
-//! wake handle.
+//! built where it is invoked, the window's views and handlers, and the large
+//! parts of a recorded action ([`tilo_actions::content`]), which are kept in
+//! the same store and read back from it. Work that leaves the window's thread
+//! captures the store when it starts, as it captures its wake handle.
 
-use std::cell::RefCell;
-
-use tilo_content::ContentStore;
-use tilo_wake::WakeHandle;
-
-thread_local! {
-    static STORES: RefCell<Vec<(WakeHandle, ContentStore)>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Keep `store` as the content store of the window whose wake scope
-/// `window` names, in place of any it had. Windows that closed are
-/// forgotten.
-pub fn register(window: &WakeHandle, store: ContentStore) {
-    STORES.with(|stores| {
-        let mut stores = stores.borrow_mut();
-        stores.retain(|(handle, _)| handle.is_active() && !handle.same_open_scope(window));
-        stores.push((window.clone(), store));
-    });
-}
-
-/// The content store of the window whose code is running: the one
-/// registered for the wake scope entered now. `None` outside a window, or
-/// for one whose host lent no store.
-#[must_use]
-pub fn current() -> Option<ContentStore> {
-    let here = WakeHandle::new();
-    STORES.with(|stores| {
-        stores
-            .borrow()
-            .iter()
-            .find(|(handle, _)| handle.same_open_scope(&here))
-            .map(|(_, store)| store.clone())
-    })
-}
+/// The one registry of window content stores: it lives beside the recorded
+/// actions that keep their parts in them.
+pub use tilo_actions::content::{current, register};
 
 /// Why a content reference an action was given does not resolve here.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -75,6 +43,23 @@ pub enum ContentRefusal {
 #[must_use]
 pub fn reference_hash(value: &str) -> Option<&str> {
     tilo_actions::content_hash(value.trim()).filter(|hash| tilo_content::valid_reference(hash))
+}
+
+/// The content reference `value` names, as a content store reads it: a
+/// `tilo.content:<reference>` address, the reference alone, or a kept
+/// value's stored form (`blake3:<hex>:<len>[:<reference>]`). Its address is
+/// lower case; a sealed reference keeps its key. `None` for anything else.
+#[must_use]
+pub fn named(value: &str) -> Option<String> {
+    let value = value.trim();
+    let reference = tilo_actions::named_reference(value)
+        .map(str::to_owned)
+        .or_else(|| {
+            <crate::Bytes as crate::model::Model>::from_json(&value.into())
+                .ok()?
+                .reference()
+        })?;
+    tilo_content::ContentRef::parse(&reference).map(|parsed| parsed.to_string())
 }
 
 /// The bytes the content reference `address` names, read from the store of
@@ -138,6 +123,7 @@ pub(crate) fn is_invoking() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_content::ContentStore;
 
     #[test]
     fn each_window_reads_its_own_store() {

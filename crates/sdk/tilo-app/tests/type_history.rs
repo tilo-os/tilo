@@ -39,7 +39,7 @@ fn read_blob(blob: &Blob, _item: Option<&Id>) -> Result<Value, String> {
     }))
 }
 
-#[resource(kind = "test.blob", label = "File", read_content = read_blob)]
+#[resource(kind = "test.blob", read_content = read_blob, catalogue = "tests/locales")]
 impl Blob {
     /// Keep the bytes a file holds.
     #[action]

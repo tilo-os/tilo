@@ -618,7 +618,7 @@ impl ToolbarRow {
         {
             return false;
         }
-        let measured = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        let measured = crate::text_render::with_layout_renderer(theme, |text| {
             let labels: Vec<&str> = key.labels.iter().map(String::as_str).collect();
             let tabs = SegmentedFace::tab_widths(&labels, VIEWS_SIZE, text, theme);
             // The notice's buttons as text buttons, each its label in it.

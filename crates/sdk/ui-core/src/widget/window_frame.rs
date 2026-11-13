@@ -486,7 +486,7 @@ impl WindowFrame {
         )]
         let budget = budget as f32;
         let style = theme.text(TextRole::Label);
-        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        crate::text_render::with_layout_renderer(theme, |text| {
             text.elide_to_width_style(name, budget, &style)
         })
     }

@@ -113,10 +113,14 @@ impl Session {
                         }
                         None => (lines::waiting(), None),
                     };
-                    // The colour of who its changes are by, as every window paints them.
-                    let (r, g, b) = seated.principal.as_deref().map_or_else(
-                        || collab_types::presence::agent_rgb(&seated.agent),
-                        |principal| ui::presence::participant_color(principal, true),
+                    // The colour the agent wears wherever it shows: the one its name gives it, never
+                    // the run it works in, and clear of the colour of the person it works for — the
+                    // one rule every surface asks, so its face here is the face its changes wear in
+                    // History, on its card and on its marks.
+                    let (r, g, b) = ui::presence::participant_color(
+                        &seated.name,
+                        true,
+                        Some(&self.shared.person),
                     );
                     let face = tilo_session_client::presence::view(
                         0,

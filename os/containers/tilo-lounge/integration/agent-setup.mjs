@@ -278,11 +278,11 @@ const clipboardNow = tab => tab.evaluate(`navigator.clipboard.readText().catch((
 // left there is not this one, so the read waits for the clipboard to change
 // from what it held before the click (`before`).
 const copied = (tab, what, before) => until(tab,
-  `navigator.clipboard.readText().then(text => text.includes('tilo login') && text !== ${JSON.stringify(before)} ? text : '', () => '')`,
+  `navigator.clipboard.readText().then(text => text.match(/(?:tilo|sh -s) login /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`,
   `${what} on the clipboard`);
 // The code and site a prompt names.
 const commandOf = prompt => {
-  const match = prompt.match(/tilo login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})(?: --site (\S+?))?(?:,|\s|$)/);
+  const match = prompt.match(/(?:tilo|sh -s) login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})(?: --site (\S+?))?(?:,|\s|$)/);
   if (!match) return null;
   return {code: match[1], site: match[2] ?? null};
 };
@@ -343,7 +343,7 @@ report.prompt = prompt;
 mark('the page copied its setup prompt');
 const setup = commandOf(prompt);
 if (!setup) await fail(`the prompt names no tilo login code: ${prompt}`);
-if (!/^Set up Tilo for me: run curl -fsSL \S+ \| sh && tilo login /.test(prompt) || prompt.length > 200) {
+if (!/^Set up Tilo for me: run curl -fsSL \S+ \| sh -s login /.test(prompt) || prompt.length > 200) {
   await fail(`the prompt is not the short one-line setup: ${prompt}`);
 }
 if (setup.site && new URL(setup.site).origin !== new URL(site).origin) await fail(`the prompt names another site: ${setup.site}`);

@@ -60,9 +60,9 @@
 #                  confirmation mail, the invitation the person who runs the
 #                  host sends from the workspace's own wait list and the mail it
 #                  carries, the workspace of their own they land in and the
-#                  agent set up there. It stops at the passkey: a browser that
-#                  forgot the site signs the person in, and the host refuses to
-#                  certify the tab as one of their devices
+#                  agent set up there; the passkey that brings them back on a
+#                  browser that forgot the site; a second workspace they make;
+#                  and a visitor with no invitation, still refused
 #                  (integration/onboarding.mjs)
 #   restart        the Lounge's relay starts again on its volume, and a person
 #                  who was not here reads the chat people-call wrote and
@@ -96,7 +96,7 @@ tilo_sh=$repo/os/containers/tilo-sh
 # hangs is stopped with everything it started.
 if [[ ${1:-} == --flow ]]; then
   flow=$2 out=$E2E_WORK/$2
-  site_origin=$E2E_SITE relay_origin=$E2E_RELAY room=$E2E_ROOM roles=$E2E_ROLES
+  site_origin=$E2E_SITE relay_origin=$E2E_RELAY room=$E2E_ROOM owner_socket=$E2E_OWNER_SOCKET
   case $flow in
     directory)
       page=$(curl -ksS --max-time 5 -X POST "$relay_origin/peer/v1/directory") \
@@ -125,7 +125,7 @@ print("ok: the directory lists the Lounge, joined at its door as an editor")
     boot) exec node "$integration/page-boot.mjs" "$site_origin" "$relay_origin" "$out" ;;
     people-call|people-desk|people-menus|people-invite)
       TILO_PEOPLE_CASE=${flow#people-} exec node "$integration/people.mjs" "$site_origin" "$relay_origin" \
-        "$relay_origin" "$out" "$roles" ;;
+        "$relay_origin" "$out" "$owner_socket" ;;
     share-link) exec node "$integration/share-link.mjs" "$site_origin" "$relay_origin" "$room" "$out" ;;
     reloads) exec node "$integration/reloads.mjs" "$site_origin" "$out" ;;
     agent-setup|setup-resume)
@@ -150,20 +150,17 @@ print("ok: the directory lists the Lounge, joined at its door as an editor")
       [[ $(cat "$TILO_SH_STATE/relay/lounge/room-id") == "$room" ]] \
         || { echo 'FAIL: a restart on the same volume served a different workspace'; exit 1; }
       echo "ok: the Lounge started again on its own volume ($room)"
-      exec node "$integration/people.mjs" "$site_origin" "$relay_origin" "$relay_origin" "$out" "$roles" "$earlier" ;;
+      exec node "$integration/people.mjs" "$site_origin" "$relay_origin" "$relay_origin" "$out" "$owner_socket" "$earlier" ;;
   esac
   exit 2
 fi
 bundle=${1:?$usage}
 work=${2:?$usage}
 shift 2
-all=(signin directory boot people-call people-desk people-menus people-invite share-link agent-setup setup-resume visa entry passkey wait-list restart)
+all=(signin directory boot people-call people-desk people-menus people-invite share-link agent-setup setup-resume visa entry passkey wait-list onboarding restart)
 # Run only when named: a person reloading their workspace page twenty times
-# in one browser, counting the reloads that crash or never come back; and a
-# stranger's whole onboarding, which brings up a whole tilo.sh of its own
-# rather than using the stack the other flows share, and which stops at the
-# passkey return (the host refuses to certify the tab).
-named_only=(reloads onboarding)
+# in one browser, counting the reloads that crash or never come back.
+named_only=(reloads)
 asked=("$@")
 [[ ${#asked[@]} -gt 0 ]] || read -r -a asked <<< "${E2E_FLOWS:-${all[*]}}"
 for flow in "${asked[@]}"; do
@@ -222,13 +219,13 @@ TILO_SH_ADMISSION=${TILO_SH_ADMISSION:-open} bash "$tilo_sh/stack.sh" up --fresh
 # shellcheck source=../tilo-sh/stack.sh
 . "$tilo_sh/stack.sh"
 room=$(cat "$state/relay/lounge/room-id")
-roles=$state/secrets/roles.json
+owner_socket=$state/relay/lounge/operator.sock
 log=$state/logs/relay.log
 bash "$tilo_sh/stack.sh" status || true
 timing 'phase=the stack up'
 
 export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_RELAY=$relay_origin E2E_ROOM=$room \
-  E2E_ROLES=$roles E2E_API_URL=$api_origin TILO_CLI_BIN=$tilo_bin
+  E2E_OWNER_SOCKET=$owner_socket E2E_API_URL=$api_origin TILO_CLI_BIN=$tilo_bin
 
 # What each of the stack's services complained about while it ran: each error
 # and warning it logged, without its time, with how often. A failing check
@@ -305,6 +302,10 @@ await_flow() {
     # and what it said last are said here.
     echo "--- $1's steps:"
     grep -E '^(TIMING|ok:)' "$work/$1.log" | sed "s/^/  [$1] /" || true
+    # Why, as the flow said it: a page's console after it can push the
+    # reason itself out of the last lines.
+    echo "--- $1 failed on:"
+    grep -E '^FAIL' "$work/$1.log" | sed "s/^/  [$1] /" || true
     echo "--- $1 said (its last 60 lines):"
     tail -60 "$work/$1.log" | sed "s/^/  [$1] /"
     failed+=("$1")

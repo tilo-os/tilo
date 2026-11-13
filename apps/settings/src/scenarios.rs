@@ -122,7 +122,7 @@ const NETWORK_SCENARIOS: [&str; 19] = [
 
 /// Billing for an account new to its provider: no card yet, nothing used.
 const BILLING_NEW: &str = "billing-new";
-/// Devices & sync with a device's row open, asking whether to remove it.
+/// Sync between devices with a device's row open, asking whether to remove it.
 /// Speakers' room layout step: the first speaker selected, a speaker
 /// chosen in the picker (open), and a speaker held mid drag on a guide.
 const SPEAKERS_LAYOUT: &str = "speakers-layout";

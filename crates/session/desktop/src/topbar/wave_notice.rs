@@ -58,16 +58,15 @@ impl TopBarChrome {
             .filter(|ends| now < *ends)
     }
 
-    /// The notice, ending at `right_x` and yielding to the centre band;
-    /// returns where the controls before it end.
-    pub(super) fn draw_wave_notice(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
+    /// Where the notice stands, ending at `right_x` and yielding to the centre band; returns
+    /// where the controls before it end.
+    pub(super) fn place_wave_notice(
+        &mut self,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         (center_y, right_x): (f64, f64),
     ) -> f64 {
+        self.placed.wave = None;
         let height = 24.0;
         let right = right_x - f64::from(theme.tokens.spacing.s2);
         // It yields to what the centre draws (the clock, or the activity pill across the whole
@@ -87,13 +86,26 @@ impl TopBarChrome {
             right,
             center_y + height / 2.0,
         );
-        ChipFace::new(rect, &text).lead(WAVE_NOTICE_LEAD).paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-        );
+        self.placed.wave = Some((text, rect));
         rect.x0
+    }
+
+    /// Paint the notice where [`Self::place_wave_notice`] stood it.
+    pub(super) fn paint_wave_notice(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        if let Some((text, rect)) = self.placed.wave.as_ref() {
+            ChipFace::new(*rect, text).lead(WAVE_NOTICE_LEAD).paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+            );
+        }
     }
 }
 

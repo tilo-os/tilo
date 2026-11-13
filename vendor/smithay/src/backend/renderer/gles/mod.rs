@@ -800,7 +800,7 @@ impl ImportMemWl for GlesRenderer {
 
             let has_alpha = has_alpha(fourcc);
             let (mut internal_format, read_format, type_) =
-                fourcc_to_gl_formats(fourcc).ok_or(GlesError::UnsupportedWlPixelFormat(data.format))?;
+                mem_upload_formats(fourcc).ok_or(GlesError::UnsupportedWlPixelFormat(data.format))?;
             if self.gl_version.major == 2 {
                 // es 2.0 doesn't define sized variants
                 internal_format = match internal_format {
@@ -827,7 +827,14 @@ impl ImportMemWl for GlesRenderer {
                 surface_lock
                     .as_ref()
                     .and_then(|cache| cache.get(&id).cloned())
-                    .filter(|texture| texture.size == (width, height).into())
+                    // A buffer of another format is a texture of its own: the cached one holds
+                    // samples of the old format, which an update in the new one cannot reach, and
+                    // its alpha decides how it is drawn.
+                    .filter(|texture| {
+                        texture.size == (width, height).into()
+                            && texture.format == Some(internal_format)
+                            && texture.has_alpha == has_alpha
+                    })
                     .unwrap_or_else(|| {
                         let mut tex = 0;
                         unsafe { self.gl.GenTextures(1, &mut tex) };
@@ -914,19 +921,35 @@ impl ImportMemWl for GlesRenderer {
     }
 }
 
-/// Reads DRM's `XRGB2101010` the way its bytes lie: blue in the low bits,
-/// where the `RGBA` upload format above finds red. Every other supported
-/// format already matches.
-fn swizzle_blue_first(gl: &ffi::Gles2, format: Fourcc) {
-    if format != Fourcc::Xrgb2101010 {
-        return;
+/// How memory of `format` is uploaded: [`fourcc_to_gl_formats`], and for the
+/// formats whose red lies where GL's reading finds blue, the reading of the
+/// format with red and blue swapped ([`swizzle_blue_first`] swaps them back).
+const fn mem_upload_formats(format: Fourcc) -> Option<(ffi::types::GLenum, ffi::types::GLenum, ffi::types::GLenum)> {
+    match format {
+        Fourcc::Argb2101010 => Some((ffi::RGB10_A2, ffi::RGBA, ffi::UNSIGNED_INT_2_10_10_10_REV)),
+        Fourcc::Argb16161616f | Fourcc::Xrgb16161616f => Some((ffi::RGBA16F, ffi::RGBA, ffi::HALF_FLOAT)),
+        other => fourcc_to_gl_formats(other),
     }
+}
+
+/// Reads the formats DRM keeps blue first in (`XRGB2101010`, `ARGB2101010`,
+/// `XRGB16161616F`, `ARGB16161616F`) the way their bytes lie: blue in the low
+/// bits or first half, where the `RGBA` upload format above finds red; an
+/// opaque one's unused bits are never alpha. Every other format reads as it
+/// is. Set on every upload, because a surface's texture is reused for its next
+/// buffer.
+fn swizzle_blue_first(gl: &ffi::Gles2, format: Fourcc) {
+    let (red, blue, alpha) = match format {
+        Fourcc::Xrgb2101010 | Fourcc::Xrgb16161616f => (ffi::BLUE, ffi::RED, ffi::ONE),
+        Fourcc::Argb2101010 | Fourcc::Argb16161616f => (ffi::BLUE, ffi::RED, ffi::ALPHA),
+        _ => (ffi::RED, ffi::BLUE, ffi::ALPHA),
+    };
     // SAFETY: the caller binds the texture it uploaded before calling, and
     // these parameters belong to whatever texture is bound.
     unsafe {
-        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_SWIZZLE_R, ffi::BLUE as i32);
-        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_SWIZZLE_B, ffi::RED as i32);
-        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_SWIZZLE_A, ffi::ONE as i32);
+        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_SWIZZLE_R, red as i32);
+        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_SWIZZLE_B, blue as i32);
+        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_SWIZZLE_A, alpha as i32);
     }
 }
 
@@ -943,9 +966,12 @@ const SUPPORTED_MEM_FORMATS_3: &[Fourcc] = &[
     Fourcc::Xrgb8888,
     Fourcc::Abgr2101010,
     Fourcc::Xbgr2101010,
+    Fourcc::Argb2101010,
     Fourcc::Xrgb2101010,
     Fourcc::Abgr16161616f,
     Fourcc::Xbgr16161616f,
+    Fourcc::Argb16161616f,
+    Fourcc::Xrgb16161616f,
 ];
 
 impl ImportMem for GlesRenderer {
@@ -976,7 +1002,7 @@ impl ImportMem for GlesRenderer {
         let has_alpha = has_alpha(format);
         let fourcc = format;
         let (mut internal, format, layout) =
-            fourcc_to_gl_formats(format).expect("We check the format before");
+            mem_upload_formats(format).expect("We check the format before");
         if self.gl_version.major == 2 {
             // es 2.0 doesn't define sized variants
             internal = match internal {

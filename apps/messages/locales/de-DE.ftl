@@ -202,3 +202,7 @@ tilo-messages-view-send = Nachricht senden
 
 ## What the app is called in a window and in the launcher
 messages-app-title = Nachrichten
+## What the records are called, and the actions on them
+messages-drafts = Nachrichtenentwürfe
+messages-drafts-keep-draft = Entwurf behalten
+messages-drafts-drop-draft = Entwurf verwerfen

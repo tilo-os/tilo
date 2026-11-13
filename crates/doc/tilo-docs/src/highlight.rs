@@ -370,7 +370,7 @@ mod tests {
             ),
             (
                 "typescript",
-                "import { Tilo } from \"@tilo/sdk\";\nconst ws = await tilo.workspaces.create(`Jane ${n}`); // ok\nif (a < b && c > d) {}\n",
+                "import { Tilo } from \"tilo-sdk\";\nconst ws = await tilo.workspaces.create(`Jane ${n}`); // ok\nif (a < b && c > d) {}\n",
             ),
             (
                 "sh",

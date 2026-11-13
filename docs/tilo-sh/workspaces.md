@@ -94,6 +94,22 @@ for (const member of await workspace.members.list()) {
 }
 ```
 
+```curl example=workspace-members
+api=$TILO_API_URL/v1
+auth="Authorization: Bearer $TILO_API_KEY"
+workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-Type: application/json" \
+  -d '{"name": "Hiring: Ada Lovelace"}' | jq -r .id)
+members=$api/workspaces/$workspace/members
+
+invitation=$(curl -sS --fail-with-body "$members/invitations" -H "$auth" \
+  -H "Content-Type: application/json" -d '{"role": "editor", "email": "reviewer@example.com"}')
+echo "invite link: $(jq -r .link <<<"$invitation")"
+echo "sent by mail: $(jq -r .sent <<<"$invitation")"
+
+curl -sS --fail-with-body "$members" -H "$auth" \
+  | jq -r '.members[] | "member: \(.name // .person) \(.role)"'
+```
+
 Only a key you created that reaches all your workspaces invites, and it invites into a workspace you
 administer, as an editor at most. A key minted for one workspace invites nobody. Listing the members also
 shows the invitations nobody has accepted yet. Once the person is in, your agent's record links open

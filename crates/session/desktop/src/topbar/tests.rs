@@ -2426,7 +2426,7 @@ fn an_agents_face_wears_the_colour_the_workspace_settled() {
         "the face wears the colour its own shell announced"
     );
     // Nothing announced: the colour its kind's id wears, as every app paints it.
-    let (r, g, b) = ui::presence::participant_color("agent:helper@host", true);
+    let (r, g, b) = ui::presence::participant_color("agent:helper@host", true, None);
     assert_eq!(
         faces(None).1,
         vec![Color::from_rgb8(r, g, b)],

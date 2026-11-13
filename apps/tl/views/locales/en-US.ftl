@@ -72,8 +72,22 @@ d-s4nfjmw3 = Phone
 d-rgftdohw = Answer
     .doc = Records the view an agent answered with, under the name of whoever asked.
 
+d-rgftdohw-title = Title
+
+d-rgftdohw-question = Question
+
+d-rgftdohw-definition = Definition
+
+d-rgftdohw-shows = Shows
+
 d-dif5k2ju = New view
     .doc = A view the person writes, kept among their own.
+
+d-dif5k2ju-title = Title
+
+d-dif5k2ju-definition = Definition
+
+d-dif5k2ju-shows = Shows
 
 d-eejphgeg = Keep
     .doc = Keeps a view among the person's own.
@@ -82,17 +96,27 @@ d-eejphgeg = Keep
 d-gawp3qw5 = Delete view
     .doc = Throws a view away, and with it how a type showed through it.
 
+d-gawp3qw5-v = V
+
 d-w2bt45l7 = Show this type with it
     .doc = Makes a view how the person shows its type on a kind of device.
     .w-this-view-shows-no-one-type = This view shows no one type
+
+d-w2bt45l7-v = V
+
+d-w2bt45l7-device = Device
 
 d-fwot2jcg = Add to my views
     .doc = Adds the view a message sent to the person's own views.
     .w-the-message-sends-no-view = The message sends no view
     .w-who-sent-the-message-is-not = Who sent the message is not known
 
+d-fwot2jcg-m = M
+
 d-ozj4btqo = Send
     .doc = Sends a view to a channel: anyone there can add it to their own views.
+
+d-ozj4btqo-to = To
 
 d-e2bdc4ge = Keep~present
 

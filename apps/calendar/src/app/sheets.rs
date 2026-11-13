@@ -185,7 +185,7 @@ impl QuickAdd {
             ModalAction::secondary(&self.cancel),
         ];
         let title = self.title.clone();
-        let (layout, line_h) = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+        let (layout, line_h) = ui::text_render::with_layout_renderer(theme, |text| {
             let line = f64::from(
                 text.measure_style("Ag", None, &theme.text(TextRole::Body))
                     .1,
@@ -352,14 +352,13 @@ impl ShortcutSheet {
         let title = self.title.clone();
         let gap = f64::from(theme.tokens.spacing.s1);
         let style = theme.text(TextRole::Body);
-        let (layout, row, keys_w) =
-            ui::text_render::with_layout_renderer(theme.text_scale, |text| {
-                let line = f64::from(text.measure_style("Ag", None, &style).1);
-                let row = line + gap;
-                let body_h = row * SHORTCUTS.len() as f64;
-                // The keys keep a column of their own, as wide as the widest
-                // of them, so they read down the card as one column.
-                let keys_w = SHORTCUTS
+        let (layout, row, keys_w) = ui::text_render::with_layout_renderer(theme, |text| {
+            let line = f64::from(text.measure_style("Ag", None, &style).1);
+            let row = line + gap;
+            let body_h = row * SHORTCUTS.len() as f64;
+            // The keys keep a column of their own, as wide as the widest
+            // of them, so they read down the card as one column.
+            let keys_w = SHORTCUTS
                     .iter()
                     .map(|row| {
                         f64::from(
@@ -371,17 +370,17 @@ impl ShortcutSheet {
                     // A gap on each side, so an elided label never runs into
                     // the keys it belongs to.
                     + 2.0 * gap;
-                (
-                    modal_dialog::layout(
-                        window,
-                        &ModalSpec::new(&title).body_height(body_h),
-                        text,
-                        theme,
-                    ),
-                    row,
-                    keys_w,
-                )
-            });
+            (
+                modal_dialog::layout(
+                    window,
+                    &ModalSpec::new(&title).body_height(body_h),
+                    text,
+                    theme,
+                ),
+                row,
+                keys_w,
+            )
+        });
         let body = layout.body;
         let keys_w = keys_w.min(body.width() * 0.7);
         // Rows keep the height of their line: a narrow window gives the sheet

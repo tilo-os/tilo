@@ -27,7 +27,7 @@ pub struct Code {
 
 /// The payload is edited at its path (`Code::paths().payload`); clearing it
 /// is a verb, so the palette and agents offer it by name.
-#[resource(kind = "example.qr-code", label = "QR code")]
+#[resource(kind = "example.qr-code")]
 impl Code {
     /// Clear the payload.
     #[action]

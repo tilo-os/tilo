@@ -35,7 +35,7 @@ pub struct Note {
     pub text: String,
 }
 
-#[resource(kind = "test.board", label = "Board")]
+#[resource(kind = "test.board", catalogue = "tests/locales")]
 impl Board {
     /// Pin a note.
     #[action]

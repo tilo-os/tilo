@@ -45,6 +45,7 @@ class BuildOsTests(unittest.TestCase):
             "bash os/dev/cache-github-assets.sh",
             f"bash tools/ci/publish/rpms-build.sh {ARCH} /target/publish/rpms/{ARCH}",
             f"bash os/image/assembler.sh {ARCH} /target/os/{ARCH}/assembler",
+            f"bash tools/ci/publish/rpm-snapshot-ref.sh {ARCH} /target/publish/rpm-snapshot/{ARCH}",
             f"bash os/image/build-layer.sh base {ARCH} /target/os/{ARCH}/base",
         ]
         commands += [
@@ -73,7 +74,6 @@ class BuildOsTests(unittest.TestCase):
         ).stdout.split()
         self.assert_in_order(output, self.os_image_commands() + [
             f"bash os/image/compile.sh --dev /target/os/{ARCH}/compiled-dev",
-            f"bash tools/ci/publish/rpm-snapshot-ref.sh {ARCH} /target/publish/rpm-snapshot/{ARCH}",
             f"bash tools/ci/publish/env-runtime.sh tree {ARCH} /target/publish/rpm-snapshot/{ARCH} "
             f"/target/publish/rpms/{ARCH} /target/publish/env-runtime/dev-trees",
             f"bash tools/ci/publish/env-runtime.sh dev {ARCH} /target/publish/env-runtime/dev-trees "

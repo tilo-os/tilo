@@ -44,7 +44,7 @@ impl ui::storage::SettingsSchema for DeviceVpnPrefs {
         ui::storage::Scope::Shared(settings_store::device_vpn::SECTION);
 }
 
-#[tilo_resource::resource(kind = "settings.device-vpn", label = "Your devices as a VPN")]
+#[tilo_resource::resource(kind = "settings.device-vpn")]
 impl DeviceVpnPrefs {
     /// Route this device's traffic through another of the person's devices,
     /// keeping how it routes, or stop routing through it.

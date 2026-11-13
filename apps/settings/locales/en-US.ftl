@@ -283,7 +283,7 @@ continuity-app-continuations-description = Pick up where you left off in an app 
 # Speakers pane
 speakers-overview-title = Speakers across your devices
 speakers-overview-empty = Use speakers on several of your devices together: a stereo pair, surround, or speakers around the room.
-speakers-media-off = Turn on Media in Devices & sync to play through speakers on several of your devices.
+speakers-media-off = Turn on Media in Sync between devices to play through speakers on several of your devices.
 speakers-begin = Set up speakers
 speakers-member-summary = { $device } ({ $role })
 speakers-ready-count = { $ready } of { $total } ready
@@ -307,7 +307,7 @@ speakers-arrangement-stereo-description = Two speakers play left and right
 speakers-arrangement-surround-description = Three to six speakers in named positions
 speakers-arrangement-room-description = Speakers placed anywhere around you
 speakers-choose-title = Choose speakers
-speakers-no-outputs = No speakers are available. Turn on Media in Devices & sync on each device you want to use.
+speakers-no-outputs = No speakers are available. Turn on Media in Sync between devices on each device you want to use.
 speakers-output-this-device = This device
 speakers-output-asks = Asks for approval on that device when you save
 speakers-output-use = Use { $label }
@@ -2957,6 +2957,7 @@ settings-effect-set-home-relay-hosting = Let the home relay host a workspace
 settings-effect-review-removal = Remove device
 settings-effect-cancel-removal = Cancel
 settings-effect-revoke-device = Revoke device
+settings-effect-revoke-browser = Remove browser
 settings-effect-revoke-agent = Revoke agent
 settings-effect-stop-run = Stop run
 settings-effect-answer-device = Answer device
@@ -3146,3 +3147,14 @@ settings-root = Settings
 
 ## What the app is called in a window and in the launcher
 settings-app-title = Settings
+## Actions bound to what the person is looking at
+
+settings-input-device-set-tablet-keep-aspect = Keep the tablet's aspect ratio, or stretch it
+settings-input-device-set-tablet-left-handed = Turn the tablet around for the left hand, or back
+settings-input-device-set-tablet-tip-feel = Set how firmly the pen must press
+settings-input-device-set-tablet-button = Set what one of the pen's buttons does
+settings-input-device-set-tablet-eraser = Set what the pen's eraser end does
+settings-input-device-set-pad-button = Set what a pad button does
+settings-input-device-set-pad-dial = Set what a ring or strip does in one mode
+settings-notifications-unmute-app-now = Unmute notifications
+settings-notifications-mute-app-hour = Mute notifications for an hour

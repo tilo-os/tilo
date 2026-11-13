@@ -147,6 +147,8 @@ mod controls;
 pub mod conversations;
 #[cfg(target_os = "linux")]
 mod desk;
+#[cfg(target_os = "linux")]
+mod desk_changes;
 pub mod desk_doc;
 #[cfg(target_os = "linux")]
 mod desk_migration;

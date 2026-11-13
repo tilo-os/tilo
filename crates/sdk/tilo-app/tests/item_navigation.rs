@@ -11,7 +11,7 @@ pub struct Pages {
     pub pages: Collection<Page>,
 }
 
-#[resource(kind = "test.navigation", label = "Pages")]
+#[resource(kind = "test.navigation", catalogue = "tests/locales")]
 impl Pages {
     /// Add a page.
     #[action]

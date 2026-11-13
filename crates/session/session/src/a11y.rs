@@ -309,7 +309,7 @@ impl Session {
     /// own chrome, and the controls the apps that draw the windows describe of their content
     /// ([`ui::window_targets`]).
     #[must_use]
-    pub fn controls(&self) -> Vec<(String, (f64, f64, f64, f64))> {
+    pub fn controls(&self) -> Vec<ui::window_targets::WindowControl> {
         self.shared.doors.controls()
     }
 

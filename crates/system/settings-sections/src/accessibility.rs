@@ -38,7 +38,6 @@ impl ui::storage::SettingsSchema for AccessibilitySettings {
 /// The section as a record the person edits by path.
 #[tilo_resource::resource(
     kind = "settings.accessibility",
-    label = "Accessibility",
     version = 2,
     migrate = crate::leaves_moved_out
 )]
@@ -100,10 +99,7 @@ impl ui::storage::SettingsSchema for AccessibilityDevicePrefs {
         ui::storage::Scope::Shared(settings_store::accessibility::DEVICE_SECTION);
 }
 
-#[tilo_resource::resource(
-    kind = "settings.accessibility-device",
-    label = "Accessibility on this device"
-)]
+#[tilo_resource::resource(kind = "settings.accessibility-device")]
 impl AccessibilityDevicePrefs {}
 
 #[cfg(test)]

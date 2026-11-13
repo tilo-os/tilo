@@ -387,12 +387,6 @@ impl Runtime {
         self.core.foreign.borrow().waiting(error)
     }
 
-    /// Forget the waiting errors gathered so far: a turn's tree is built afresh, and what it
-    /// gathers is what it failed for.
-    pub fn clear_waiting(&self) {
-        self.core.foreign.borrow().take_waiting();
-    }
-
     /// The reading of `target`, a resource of an app this runtime does not run, whole, with the
     /// generation it was read at: what a Rust app's view is handed of the resource it shows.
     ///

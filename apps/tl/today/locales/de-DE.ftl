@@ -15,3 +15,9 @@ d-4z4vz2pv = Morgenroutine
 
 d-a5wukhyd = Heute
     .w-show-all = Alle { $n } zeigen
+
+# What each argument is called where a person gives it.
+
+d-4z4vz2pv-list = Liste
+
+d-4z4vz2pv-nb = Nb

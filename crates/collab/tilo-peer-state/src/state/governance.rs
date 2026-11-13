@@ -101,6 +101,25 @@ impl PeerGovernance<'_> {
                 member_user_roots.push(cert.user_public_key);
             }
         }
+        // A person is a member by their root, whatever devices of theirs the
+        // workspace lists now: a page's certificate lasts an hour and its row
+        // goes with it, and a person whose last page expired, or whose browser
+        // forgot the site, is still a member when they come back on a device
+        // their root certifies anew.
+        member_user_roots.extend(
+            workspace_policy
+                .owner
+                .iter()
+                .chain(workspace_policy.members.keys())
+                .filter(|person| workspace_policy.active_role(person).is_some())
+                .filter_map(|person| {
+                    let mut root = [0; 32];
+                    // A person the policy names by anything but a root key
+                    // has no root a device could be certified by.
+                    // ignored-failure: no root key, so no one to admit by root
+                    hex::decode_to_slice(person, &mut root).ok().map(|()| root)
+                }),
+        );
         member_devices.sort_unstable();
         member_devices.dedup();
         member_user_roots.sort_unstable();

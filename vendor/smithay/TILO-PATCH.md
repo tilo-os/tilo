@@ -272,24 +272,40 @@ Remove these once upstream separates binding a display from spawning its
 server, with a backlog deep enough for the clients waiting on one, and ends
 its server when the Wayland connection does.
 
-## Shared memory in the opaque 10-bit format
+## Shared memory in every 10-bit and half-float format
 
-`Xrgb2101010` had no way in: its format table entry has no transparent
-counterpart to look up, so `fourcc_to_gl_formats` answered `None` and a GLES
-renderer refused the buffer, leaving a client that sent one with no window.
-Its bytes also lie the other way round from the formats the table maps: DRM
-keeps blue in the low bits where GL's `RGBA` reading of
-`UNSIGNED_INT_2_10_10_10_REV` finds red, so uploading it as `Abgr2101010`
-would paint it with two channels swapped.
+`Xrgb2101010`, `Argb2101010`, `Xrgb16161616f` and `Argb16161616f` had no way
+in: the format table has no entry for them (the opaque 10-bit one has no
+transparent counterpart to look up, the others are blue first), so a GLES
+renderer refused the buffer and a client that sent one had no window. Their
+bytes lie the other way round from the formats the table maps: DRM keeps blue
+in the low bits (or the first half float) where GL's `RGBA` reading finds red,
+so uploading them as their `Abgr` counterparts would paint them with two
+channels swapped. Mesa's software rasterizer hands its 10-bit GL configs'
+frames over as `Argb2101010` shared memory, and EGL offers those configs
+first, so a GL app in a session without a GPU drew nothing.
+
+A surface's texture was also reused for its next buffer whenever the size
+matched, whatever its format: after a 10-bit buffer an 8-bit one showed with
+red and blue swapped (the swizzle stayed on the texture), one of another
+internal format did not upload at all (an update cannot change it), and one
+with alpha after an opaque one (or the reverse) was drawn with the old one's
+alpha.
 
 - `src/backend/renderer/gles/format.rs`: `Xrgb2101010` maps to `RGB10_A2`,
   read as `RGBA` with `UNSIGNED_INT_2_10_10_10_REV`, and the shader's opaque
   variant supplies alpha 1, so the format's unused high bits are not read.
-- `src/backend/renderer/gles/mod.rs`: it joins the shared-memory formats a
-  GLES 3 renderer imports, and `swizzle_blue_first` swaps red and blue on the
-  texture that carries it, in both import paths.
+- `src/backend/renderer/gles/mod.rs`: `mem_upload_formats` reads
+  `Argb2101010` as `RGB10_A2` and the two blue-first half-float formats as
+  `RGBA16F`, for the memory import paths only (render targets and exports keep
+  the table); all four join the shared-memory formats a GLES 3 renderer
+  imports; `swizzle_blue_first` sets the texture's swizzle on every upload,
+  red and blue swapped for the four blue-first formats (alpha 1 for the opaque
+  ones) and as read for every other; and a cached shared-memory texture is
+  reused only for a buffer of the same size, internal format and alpha.
 
-Remove this once upstream maps the opaque 10-bit RGB formats.
+Remove this once upstream maps the blue-first 10-bit and half-float formats
+and keys its shared-memory texture cache by format.
 
 ## A copy made just before the keyboard left is kept (`wl_data_device`, primary selection)
 

@@ -34,7 +34,7 @@ use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::widget::DrawChild;
-use tilo_ui::{ActivityTimeline, AuthorDirectory, HistoryEntry, HistorySource, Theme, Widget};
+use tilo_ui::{ActivityTimeline, AuthorDirectory, HistoryEntry, HistorySource, Theme};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -259,14 +259,20 @@ fn shot_theme() -> (String, Theme) {
 }
 
 impl Shot {
-    fn paint<W: Widget>(&mut self, name: &str, w: u32, h: u32, widget: &mut W) {
+    fn paint(&mut self, name: &str, w: u32, h: u32, pane: &mut ActivityTimeline) {
         let theme = &self.theme;
         let presence = PresenceCtx::empty();
         let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
+        tr.apply_typography(&theme.tokens.typography);
         let mut scene = Scene::new();
         // The pane is placed by hand, the way both hosts place it: the compositor
         // reserves a sheet out of its chrome, the editor a band under its canvas.
-        widget.draw_child(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+        // Placing it is the layout's, so the controls the pane places — its author
+        // pill, its way out of a filter, its selection bar — stand where it draws
+        // them.
+        pane.place_in(Rect::new(0.0, 0.0, f64::from(w), f64::from(h)), theme);
+        pane.draw_child(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
         self.n = self.n.saturating_add(1);
         let path = self.dir.join(format!("{:02}-{name}.png", self.n));
         std::fs::create_dir_all(&self.dir).ok();

@@ -44,9 +44,13 @@ pub(crate) struct PageInviteConfig {
     /// How this person is named: the invitation says who made it.
     #[serde(default)]
     pub name: String,
-    /// This person's root key, hex: the one member a link is never made for.
+    /// This person's root key, hex: a member a link is never made for.
     #[serde(default)]
     pub user: String,
+    /// The workspace host's own key, hex: a member of the workspaces it holds,
+    /// and no person a link is made for either.
+    #[serde(default)]
+    pub host: String,
 }
 
 /// What the host answered, from its own thread.
@@ -290,6 +294,31 @@ impl Workspace for PageWorkspace {
 
     fn opened(&self, listed: Answer<()>) {
         self.pending.borrow_mut().clear();
+        // The people the sheet may make a link for, who are not here to say their names: the page
+        // asks their profiles once, and the sheet names them from those.
+        let unknown: Vec<String> = {
+            let here = self.here.borrow();
+            let own = self.person.map(hex::encode);
+            let host = self.config.as_ref().map(|config| config.host.as_str());
+            self.shared
+                .members
+                .borrow()
+                .iter()
+                .flatten()
+                .filter(|member| Some(*member) != own.as_ref() && Some(member.as_str()) != host)
+                .filter(|member| {
+                    here.person(member).is_none() && here.profile_name(member).is_none()
+                })
+                .cloned()
+                .collect()
+        };
+        if !unknown.is_empty() {
+            self.shared
+                .requests
+                .borrow_mut()
+                .push(HostRequest::Profiles(unknown));
+            self.shared.wake();
+        }
         let Some(workspace) = self.workspace() else {
             return;
         };
@@ -318,16 +347,24 @@ impl Workspace for PageWorkspace {
             return Vec::new();
         };
         let own = self.person.map(hex::encode);
+        let host = self.config.as_ref().map(|config| config.host.as_str());
         let here = self.here.borrow();
         members
             .into_iter()
-            .filter(|member| Some(member) != own.as_ref())
+            .filter(|member| Some(member) != own.as_ref() && Some(member.as_str()) != host)
             .map(|member| sheet::Person {
+                // Who they are as they say it here now, else as their profile keeps it (the page
+                // fetches it when the sheet opens, `HostRequest::Profiles`), else in plain words.
                 name: here
                     .person(&member)
                     .map(|(name, _)| name)
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or_else(|| member.chars().take(8).collect()),
+                    .filter(|name| !name.is_empty() && *name != tilo_desktop::here::guest_label())
+                    .or_else(|| {
+                        here.profile_name(&member)
+                            .filter(|name| !name.is_empty())
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_else(sheet::unnamed_person),
                 key: member,
             })
             .collect()
@@ -380,6 +417,7 @@ impl Workspace for PageWorkspace {
             .as_ref()
             .map(|config| config.name.trim().to_owned())
             .filter(|name| !name.is_empty());
+        let pending = Rc::clone(&self.pending);
         self.ask(
             move |_| WorkspacesRequest::Invite {
                 workspace,
@@ -395,11 +433,21 @@ impl Workspace for PageWorkspace {
                     Ok(WorkspacesReply::Invitation {
                         invite_id,
                         signed_invitation,
-                    }) => Ok(Issued {
-                        invite: hex::encode(invite_id),
-                        text: tilo_workspace_join::encode_invitation_text(&signed_invitation),
-                        expires_at_ns,
-                    }),
+                    }) => {
+                        // The link made is one of those that still work.
+                        pending.borrow_mut().push(PendingInvite {
+                            invite_id,
+                            role: asked,
+                            expires_at_ns,
+                            recipient,
+                            invitee_name: None,
+                        });
+                        Ok(Issued {
+                            invite: hex::encode(invite_id),
+                            text: tilo_workspace_join::encode_invitation_text(&signed_invitation),
+                            expires_at_ns,
+                        })
+                    }
                     other => Err(Refused::Because(refused(other))),
                 });
             },

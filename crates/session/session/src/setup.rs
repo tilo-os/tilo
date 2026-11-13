@@ -254,7 +254,7 @@ impl Published for Setup {
 
     /// Setup's controls by name, so a tool that goes through the first login — `tilo-vmd` 's
     /// `--identity device` — presses the page the person sees, never a guessed point.
-    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+    fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
         self.serve();
         Published::controls(self.widgets_mut())
     }

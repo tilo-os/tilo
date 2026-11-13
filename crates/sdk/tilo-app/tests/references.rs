@@ -23,7 +23,7 @@ pub struct Notes {
     pub title: String,
 }
 
-#[resource(kind = "test.reference-notes", label = "Notes")]
+#[resource(kind = "test.reference-notes", catalogue = "tests/locales")]
 impl Notes {}
 
 fn issue() -> ResourceRef {

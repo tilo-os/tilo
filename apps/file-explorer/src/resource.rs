@@ -1534,13 +1534,16 @@ impl FilesState {
                     .bind(file_explorer::RemoveBookmark::paths().place, place)
                     .declaration(
                         "remove-current-bookmark",
-                        "Remove this folder from Favorites",
+                        ui::tilo_resource::word!("files-folder-remove-current-bookmark"),
                     )
             } else {
                 NonBlank::parse(&place).and_then(|place| {
                     FileExplorer::ADD_BOOKMARK
                         .bind(file_explorer::AddBookmark::paths().place, place)
-                        .declaration("add-current-bookmark", "Add this folder to Favorites")
+                        .declaration(
+                            "add-current-bookmark",
+                            ui::tilo_resource::word!("files-folder-add-current-bookmark"),
+                        )
                 })
             });
         }

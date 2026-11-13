@@ -521,3 +521,66 @@ fn the_run_that_opened_a_window_stays_until_the_window_closes() {
         );
     }
 }
+
+/// Every member writes the record, a person's page or an agent arranging the workspace, and one
+/// that kept a window a sliver wide (a float or a canvas place two pixels across) left it a stray
+/// line on everyone's desk. Read back, each is a window again, at least a window's least size, and
+/// the next write keeps that.
+#[test]
+fn a_window_kept_a_sliver_wide_reads_back_a_window() {
+    use crate::arrangement::{WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH};
+    let mut doc = AutoCommit::new();
+    let mut written = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
+    // Written as an older build or an agent's command left them, past every constructor.
+    floating(
+        &mut written,
+        &[(
+            100,
+            FloatPlace {
+                corner: FloatCorner::TopLeft,
+                dx: 0,
+                dy: 0,
+                width: 2,
+                height: 712,
+            },
+        )],
+    );
+    on_canvas(
+        &mut written,
+        &[(
+            200,
+            CanvasPlace {
+                x: 32,
+                y: 0,
+                width: 2,
+                height: 3,
+            },
+        )],
+    );
+    assert!(write(&mut doc, &written).unwrap());
+    doc.commit();
+
+    let back = read(&doc, None).unwrap();
+    let arrangement = &back.tree.workspaces[0].arrangement;
+    let float = arrangement.float_of(100).unwrap();
+    assert_eq!(
+        (float.width, float.height),
+        (WINDOW_MIN_WIDTH, 712),
+        "a float two pixels wide reads back a window wide"
+    );
+    let place = arrangement.place_of(200).unwrap();
+    assert_eq!(
+        (place.x, place.y, place.width, place.height),
+        (32, 0, WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT),
+        "a canvas place two pixels wide reads back a window's size, from where it stood"
+    );
+
+    // The desk that read it writes the window back whole, for every member.
+    assert!(write(&mut doc, &back).unwrap(), "the sliver is mended");
+    doc.commit();
+    let again = read(&doc, None).unwrap();
+    assert_eq!(
+        again.tree.workspaces[0].arrangement.float_of(100),
+        Some(float)
+    );
+}

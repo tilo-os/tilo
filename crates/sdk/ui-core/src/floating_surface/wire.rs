@@ -710,8 +710,14 @@ pub enum FloatingSurfaceHostMessage {
     /// an assistive technology does on that control, through the same path; a
     /// control its window no longer shows presses nothing.
     PressTarget {
+        /// The control's name, in the person's language.
         name: String,
+        /// Its role as the listing named it (`Button`, `Document`).
         role: String,
+        /// What it does, when the shell names it by that instead of its name: the identity a
+        /// window's app publishes for a control that runs its action or edits its record.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        identity: Option<String>,
         action: crate::window_targets::TargetAction,
     },
 }

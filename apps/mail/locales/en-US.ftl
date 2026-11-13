@@ -288,3 +288,7 @@ mail-trusted-senders-distrust = Stop trusting this sender
 
 ## What the app is called in a window and in the launcher
 mail-app-title = Mail
+## What the records are called, and the actions on them
+mail-copies = Mail on your devices
+mail-copies-keep-copies = Keep fetched mail
+mail-copies-forget-copies = Forget fetched mail

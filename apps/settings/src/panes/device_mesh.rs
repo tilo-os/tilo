@@ -1,4 +1,4 @@
-//! Devices & Sync — configure seamless continuation and always-on sync.
+//! Sync between devices — configure seamless continuation and always-on sync.
 //!
 //! The pane reads and writes the same `RelayConfig` consumed by `tilo-relay`
 //! and reads the daemon's once-per-second metrics snapshot for live status.
@@ -462,7 +462,7 @@ pub(crate) fn answer(
     model.apply(&effect).map(|()| Effected::done())
 }
 
-/// What the Devices & Sync area keeps for the window: the model, read when
+/// What the Sync between devices area keeps for the window: the model, read when
 /// first needed.
 pub struct DeviceMeshArea {
     /// Whether it reads this device's relay and asks the host for the fleet.
@@ -1023,7 +1023,7 @@ fn command_error(stderr: &[u8], fallback: &str) -> String {
     }
 }
 
-/// What the Devices & Sync area reads of the device: the relay's
+/// What the Sync between devices area reads of the device: the relay's
 /// configuration and state, and the workspaces and home servers it knows.
 /// Read off the UI thread after the window's first frame; the model is
 /// built from it on the UI thread ([`DeviceMeshModel::from_read`]), which
@@ -2174,7 +2174,7 @@ impl DeviceMeshModel {
     }
 }
 
-/// The Devices & Sync page as view code over what the area reads: built
+/// The Sync between devices page as view code over what the area reads: built
 /// again whenever what it shows changes ([`DeviceMeshArea::poll`]), its
 /// continuity groups whenever the person's continuity choices do. The
 /// relay is followed while the page is shown.
@@ -2228,7 +2228,7 @@ mod tests {
 
     use crate::resource::SettingsShell;
 
-    /// A Settings window on Devices & Sync, whose area shows `model`.
+    /// A Settings window on Sync between devices, whose area shows `model`.
     fn window_on(model: DeviceMeshModel) -> TestApp<SettingsShell> {
         crate::area::replace_in_next_window(move |context| DeviceMeshArea::over(context, model));
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -2236,7 +2236,7 @@ mod tests {
         app
     }
 
-    /// The window's Devices & Sync model, changed by `change`; the page
+    /// The window's Sync between devices model, changed by `change`; the page
     /// shows the change once the window settles.
     fn change_model<T: 'static>(
         app: &mut TestApp<SettingsShell>,

@@ -1258,8 +1258,8 @@ impl crate::PlanModel for Briefed {
 fn a_look_step_then_continue_puts_its_picture_in_the_replans_first_turn() {
     use crate::planner::Planner as _;
     let canvas = "so.tilo.canvas";
-    let mut reads = crate::model::tests::Looks::new('a');
-    let earlier = reads.keep('9', crate::vision::tests::png(3, 3));
+    let mut reads = crate::model::tests::Looks::new();
+    let earlier = reads.keep(&crate::vision::tests::png(3, 3));
     let mut running = Running::new(
         "t1".into(),
         "draw, look, fix".into(),

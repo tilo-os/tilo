@@ -145,8 +145,9 @@ struct Opening {
     /// after: what an instance's launch spends in the host.
     received: std::time::Instant,
     reached: Vec<(&'static str, std::time::Duration)>,
-    /// The person's formats changed while it opened: its first frame writes its times again.
-    formats_changed: bool,
+    /// The person's environment changed while it opened — their formats, or the name the window
+    /// calls someone: its first frame shows what only the window knows again.
+    person_changed: bool,
     /// The language the person chose while it opened: its window reads in it from its first
     /// frame.
     language: Option<String>,
@@ -314,12 +315,12 @@ impl TilolangHost {
         }
         self.formats.set(formats);
         for running in &mut self.running {
-            running.hosted.formats_changed();
+            running.hosted.person_changed();
         }
         for opening in &mut self.opening {
             // An instance still opening reads them when it runs: what it already wrote is
             // written again on its first frame.
-            opening.formats_changed = true;
+            opening.person_changed = true;
         }
         true
     }
@@ -411,7 +412,7 @@ impl TilolangHost {
             origin: fds.origin,
             received: std::time::Instant::now(),
             reached: Vec::new(),
-            formats_changed: false,
+            person_changed: false,
             language: None,
             reveal,
         });
@@ -442,7 +443,7 @@ impl TilolangHost {
             origin: None,
             received: std::time::Instant::now(),
             reached: Vec::new(),
-            formats_changed: false,
+            person_changed: false,
             language: None,
             reveal: None,
         });
@@ -682,9 +683,9 @@ impl TilolangHost {
             &self.formats,
             Arc::clone(&self.wake),
         );
-        if opening.formats_changed {
-            hosted.formats_changed();
-            opening.formats_changed = false;
+        if opening.person_changed {
+            hosted.person_changed();
+            opening.person_changed = false;
         }
         if let Some(language) = opening.language.take() {
             hosted.speak(&language);

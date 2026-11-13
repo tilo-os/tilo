@@ -234,7 +234,9 @@ impl TaskDoor for Apps {
         if let Some(package) = replica.host.package(app)
             && let Some(declared) = package.meta.actions.iter().find(|a| a.id == action)
         {
-            let params: Vec<_> = tilolang_tilo::surface::arguments(&package.meta, &declared.params)
+            let params: Vec<_> = package
+                .meta
+                .arguments(&declared.params)
                 .iter()
                 .map(|param| tilolang_tilo::surface::published_param(&package.meta, param))
                 .collect();

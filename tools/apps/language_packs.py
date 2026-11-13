@@ -4,9 +4,11 @@
 An app's package carries only its source catalogue (`locales/en-US.ftl`), the
 fallback every message resolves to. Each other language ships once, for every
 app and system component, as a language pack: `<out>/<locale>/<crate>.ftl`
-for each crate whose catalogue (`ui::embedded_catalog!`) has that language
-(one pack per language: a crate's `de-DE.ftl` and another's `de.ftl` both go
-to `de`),
+for each crate whose catalogue has that language and is read on the device
+from the packs: one its window declares (`ui::embedded_catalog!`), or the one
+its actions and records are named from (`#[resource]`, `#[derive(Effect)]`,
+`word!`, `declared_catalogue!`; tilo_resource::label). One pack per language:
+a crate's `de-DE.ftl` and another's `de.ftl` both go to `de`,
 where `<crate>` is the crate's package name. The OS image carries them under
 `/usr/share/tilo/language-packs`; the registry offers each as a signed
 `kind = "language-pack"` package (`so.tilo.language-pack.<locale>`, data for
@@ -35,11 +37,20 @@ import tomllib
 SOURCE_LOCALE = "en-US"
 # An invocation of the macro, not its definition or its documentation.
 MACRO = re.compile(r"^\s*(?:ui::|crate::)?embedded_catalog!\(", re.MULTILINE)
+# A declaration whose words are keys of the crate's catalogue, read from the
+# packs where the person's language is not the source: an attribute or derive
+# on a line of its own, not its mention in documentation.
+LABELS = re.compile(
+    r"^\s*(?:#\[(?:[\w:]*::)?resource\(|#\[derive\([^)]*\bEffect\b"
+    r"|.*\bword!\(\s*\"|(?:[\w:]*::)?declared_catalogue!\()",
+    re.MULTILINE,
+)
 
 
 def catalogues(repo: pathlib.Path) -> list[tuple[str, str, pathlib.Path]]:
     """`(locale, crate, path)` for every translated catalogue of a crate
-    that declares its catalogue with the macro, sorted."""
+    that declares its catalogue with the macro or names its declarations'
+    words from it, sorted."""
     found = []
     for manifest in sorted(repo.glob("**/Cargo.toml")):
         crate_dir = manifest.parent
@@ -54,8 +65,9 @@ def catalogues(repo: pathlib.Path) -> list[tuple[str, str, pathlib.Path]]:
             continue
         sources = crate_dir / "src"
         if not sources.is_dir() or not any(
-            MACRO.search(path.read_text(encoding="utf-8", errors="replace"))
-            for path in sources.rglob("*.rs")
+            MACRO.search(text) or LABELS.search(text)
+            for text in (path.read_text(encoding="utf-8", errors="replace")
+                         for path in sources.rglob("*.rs"))
         ):
             continue
         for ftl in sorted(locales.glob("*.ftl")):

@@ -531,10 +531,43 @@ fn probe(
         for line in actions.lines().take(5) {
             said.push(format!("  {line}"));
         }
+        let agent = crate::mcp::Agent {
+            bin,
+            runtime: Path::new(&runtime),
+            key: &options.state.join(session::AGENT_KEY_FILE),
+            inside: sandboxed(child.id()),
+        };
+        said.extend(agent.prove()?);
     }
     // Long enough for the services the session starts after its first frame to reach for a bus.
     std::thread::sleep(Duration::from_secs(5));
     Ok(said)
+}
+
+/// A process the session's sandbox runs (`bwrap`'s namespaces), below `leader`: what a client of its
+/// agent door joins, since the door serves only programs in its own namespaces. `None` when the
+/// session runs in this process's namespaces.
+fn sandboxed(leader: u32) -> Option<u32> {
+    let ours = std::fs::read_link("/proc/self/ns/mnt").ok()?;
+    let mut seen = vec![leader];
+    let mut next = 0;
+    while let Some(&pid) = seen.get(next) {
+        next = next.saturating_add(1);
+        if std::fs::read_link(format!("/proc/{pid}/ns/mnt")).is_ok_and(|mnt| mnt != ours) {
+            return Some(pid);
+        }
+        let children =
+            std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).unwrap_or_default();
+        seen.extend(
+            children
+                .split_whitespace()
+                .filter_map(|child| child.parse::<u32>().ok()),
+        );
+        if seen.len() > 4096 {
+            break;
+        }
+    }
+    None
 }
 
 /// The stand-in host desktop, stopped however the check ends.

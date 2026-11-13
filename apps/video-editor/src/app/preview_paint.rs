@@ -148,9 +148,9 @@ impl VideoEditorApp {
         // from metadata, not the user's footage.
         if let Some(clip) = self.project.top_video_clip_at(self.playhead) {
             let unusable = if self.media_is_unreadable(clip.media) {
-                Some(MEDIA_UNREADABLE)
+                Some(crate::resource::CATALOG.t(MEDIA_UNREADABLE))
             } else if self.media_is_projected(clip.media) {
-                Some(MEDIA_NOT_LOCAL)
+                Some(crate::resource::CATALOG.t(MEDIA_NOT_LOCAL))
             } else {
                 None
             };
@@ -159,7 +159,7 @@ impl VideoEditorApp {
                 // a bright frame as well as a dark one.
                 let hud = theme.on_ground(ui::chrome::panel_ground(theme));
                 let style = theme.text(TextRole::Label);
-                let mw = text_width(tr, msg, &style);
+                let mw = text_width(tr, &msg, &style);
                 let mh = line_height(tr, &style);
                 let chip = Rect::new(
                     canvas.x0 + S2,
@@ -173,7 +173,7 @@ impl VideoEditorApp {
                     scene,
                     tr,
                     tf,
-                    msg,
+                    &msg,
                     &style,
                     hud.text_primary,
                     chip.x0 + S2,
@@ -236,7 +236,8 @@ impl VideoEditorApp {
         let cursor = self.shows_focus_cursor(Pane::Transport);
         for (i, (action, rect)) in self.transport_buttons(r).into_iter().enumerate() {
             let hovered = rect.contains(self.last_mouse);
-            let (icon, name) = self.transport_icon(action);
+            let (icon, message) = self.transport_icon(action);
+            let name = crate::resource::CATALOG.t(message);
             // Play is the one main action of the strip; the rest are plain
             // glyph buttons beside it.
             let role = if action == TransportAction::PlayPause {
@@ -248,7 +249,7 @@ impl VideoEditorApp {
             // `focus.transport` indexes `TRANSPORT_NAMES`, which is this
             // array's order, so the ring lands on the button a reader is told
             // it is on.
-            let face = ButtonFace::icon_only(rect, icon, name)
+            let face = ButtonFace::icon_only(rect, icon, &name)
                 .role(role)
                 .hovered(hovered)
                 .focused(cursor && self.focus.transport == i);
@@ -262,7 +263,8 @@ impl VideoEditorApp {
                 ui::UndoRequest::Undo => Icon::Undo2,
                 ui::UndoRequest::Redo => Icon::Redo2,
             };
-            let face = ButtonFace::icon_only(rect, icon, which.title())
+            let (name, _) = self.history_words(which);
+            let face = ButtonFace::icon_only(rect, icon, &name)
                 // A control that cannot act must not light up under the
                 // pointer — a hover state on a dead button reads as one
                 // that is about to work.
@@ -375,7 +377,7 @@ impl VideoEditorApp {
         scene.pop_layer();
     }
 
-    /// The icon a transport button wears and the name a reader hears for it.
+    /// The icon a transport button wears and the catalogue message naming it.
     /// Step-by-frame is a chevron with no bar; jump-to-end is the skip glyph
     /// against a bar, so the two never read as the same button twice.
     pub(super) fn transport_icon(&self, action: TransportAction) -> (Icon, &'static str) {
@@ -383,12 +385,12 @@ impl VideoEditorApp {
             // Pause whenever the playhead is running, shuttle included: a play
             // triangle over a moving playhead offers to start something that
             // is already going.
-            TransportAction::PlayPause if self.is_moving() => (Icon::Pause, "Pause"),
-            TransportAction::PlayPause => (Icon::Play, "Play"),
-            TransportAction::StepBack => (Icon::ChevronLeft, "Step back one frame"),
-            TransportAction::StepFwd => (Icon::ChevronRight, "Step forward one frame"),
-            TransportAction::ToStart => (Icon::SkipBack, "Jump to start"),
-            TransportAction::ToEnd => (Icon::SkipForward, "Jump to end"),
+            TransportAction::PlayPause if self.is_moving() => (Icon::Pause, "video-editor-pause"),
+            TransportAction::PlayPause => (Icon::Play, "video-editor-transport-play"),
+            TransportAction::StepBack => (Icon::ChevronLeft, "video-editor-transport-step-back"),
+            TransportAction::StepFwd => (Icon::ChevronRight, "video-editor-transport-step-forward"),
+            TransportAction::ToStart => (Icon::SkipBack, "video-editor-transport-jump-start"),
+            TransportAction::ToEnd => (Icon::SkipForward, "video-editor-transport-jump-end"),
         }
     }
 }
