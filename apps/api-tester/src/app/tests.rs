@@ -631,11 +631,16 @@ fn every_scenario_stages_and_renders_an_accessible_frame() {
         "the default gallery capture settles its populated navigation; requesting frames: {:?}",
         default.harness().frame_requesters()
     );
+    // Making a renderer costs more than drawing a frame with it, so the frames of the common
+    // size are drawn by one: the renderer `render_rgba` would make for each, over the same
+    // ground.
+    let wide = (1280, 800);
+    let mut renderer = ui::offscreen::OffscreenRenderer::new(wide.0, wide.1);
     for scenario in ApiTesterApp::SCENARIOS {
         let size = if scenario.contains("drawer") {
             (520, 800)
         } else {
-            (1280, 800)
+            wide
         };
         let mut app = TestApp::<ApiTesterShell>::capture_at(Some(scenario), size).unwrap();
         let d = app.harness();
@@ -644,10 +649,13 @@ fn every_scenario_stages_and_renders_an_accessible_frame() {
             "{scenario}: the actual capture settles its navigation headings and rows; requesting frames: {:?}",
             d.frame_requesters()
         );
-        assert!(
-            d.render_rgba().iter().any(|byte| *byte != 0),
-            "{scenario} renders"
-        );
+        let frame = if size == wide {
+            let ground = d.theme().tokens.colors.surfaces.content;
+            d.render_rgba_with(&mut renderer, ground)
+        } else {
+            d.render_rgba()
+        };
+        assert!(frame.iter().any(|byte| *byte != 0), "{scenario} renders");
         let audit = d.native_app_audit();
         assert!(
             audit.accessibility.is_clean(),
