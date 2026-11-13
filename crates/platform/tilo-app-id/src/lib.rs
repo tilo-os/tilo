@@ -5,14 +5,13 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-/// The longest id accepted.
 pub const MAX_APP_ID_BYTES: usize = 255;
 
-/// What a person installs and runs, named: `so.tilo.chat`. Always the full id; the dot keeps it
+/// What a person installs and runs, named: its reverse-DNS id, which the dot keeps
 /// apart from a label or a scope token.
 ///
-/// [`Self::parse`] is the one check of the grammar. An id a launcher, a manifest or a package
-/// produced is already that: [`Self::new`] takes it as it is.
+/// [`Self::parse`] is the one check of the grammar; [`Self::new`] takes an id a
+/// launcher, a manifest or a package produced as it is.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AppId(String);
@@ -23,10 +22,6 @@ impl AppId {
         Self(id.into())
     }
 
-    /// # Errors
-    ///
-    /// [`InvalidAppId`] unless the id is dot-separated, non-empty parts of ASCII letters, digits,
-    /// `-` and `_`.
     pub fn parse(text: &str) -> Result<Self, InvalidAppId> {
         let parts_ok = text.split('.').all(|part| {
             !part.is_empty()
@@ -117,7 +112,6 @@ impl From<AppId> for String {
     }
 }
 
-/// Text that is not an app id, kept as it came so the message can show it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InvalidAppId(String);
 
