@@ -278,13 +278,8 @@ impl Shared {
             let catalog = std::rc::Rc::clone(&catalog);
             std::rc::Rc::new(move |resource| catalog.borrow().get(resource).is_some())
         };
-        self.session_doors.answer(
-            &self.doors,
-            &self.services,
-            &self.search,
-            std::rc::Rc::clone(&shows),
-            look,
-        );
+        self.session_doors
+            .answer(&self.doors, &self.services, &self.search, &shows, look);
         // The finds the door asked on an earlier pass whose sources answered since: answered here,
         // where the catalogue a place reads is, and never by the pass that asked them.
         self.search.poll_finds();
