@@ -1357,9 +1357,6 @@ mod tests {
     #[cfg(feature = "gst")]
     #[serial_test::serial(video_editor_gst)]
     fn real_renders_report_progress_cancel_and_mux_audio() {
-        // Case `a_render_reports_progress_and_finishes_where_it_was_told`:
-        // The progress bar used to be dead code: nothing ever constructed
-        // `Rendering`, so the dialog showed a bar that could not move.
         'case: {
             if !generated_clip::media_stack() {
                 break 'case;
@@ -1401,9 +1398,6 @@ mod tests {
             }
             std::fs::remove_file(&out).ok();
         }
-        // Case `cancelling_a_render_stops_it_and_leaves_no_file`:
-        // Cancel has to actually stop the encode and not leave a stub file
-        // sitting there looking like a finished render.
         'case: {
             if !generated_clip::media_stack() {
                 break 'case;
@@ -1453,11 +1447,6 @@ mod tests {
                 "cancel was noticed only after all {total} frames: it is not checked between frames",
             );
         }
-        // Case `the_export_muxes_the_timelines_audio`:
-        // Audio was discarded entirely: the graph had one `appsrc` and no audio
-        // pad, so every audio track in a project went missing without a word.
-        // Prove a real stream now reaches the file, and that what is in it is
-        // the mixed timeline rather than silence.
         'case: {
             if !generated_clip::media_stack() {
                 break 'case;
@@ -1511,9 +1500,6 @@ mod tests {
                 .unwrap_or_default();
             assert!(message.contains("no readable audio stream"), "{message}");
         }
-        // Case `volume_and_mute_reach_the_encoded_audio`:
-        // Per-clip volume and track mute exist in the CRDT and the inspector but
-        // reached no audio path at all. Prove both now change the encoded file.
         'case: {
             if !generated_clip::media_stack() {
                 break 'case;
@@ -2282,12 +2268,6 @@ mod tests {
             }
             std::fs::remove_file(&out).ok();
         }
-        // Case `the_export_encodes_the_source_footage`:
-        // The bug this whole path exists to kill: the export used to encode a
-        // synthesized gradient built from a palette table, under *every*
-        // feature combination. Prove the encoded pictures are the source
-        // footage — structurally, frame by frame — and that they are nothing
-        // like the representative fill the palette would have produced.
         'case: {
             if !generated_clip::media_stack() {
                 break 'case;
@@ -2347,9 +2327,6 @@ mod tests {
             );
             std::fs::remove_file(&out).ok();
         }
-        // Case `the_grade_changes_the_encoded_footage`:
-        // The grade used to be computed on the palette colour, so it never
-        // touched a decoded pixel. Prove it reaches the encoded footage.
         'case: {
             if !generated_clip::media_stack() {
                 break 'case;
@@ -2421,8 +2398,6 @@ mod tests {
                 std::fs::remove_file(f).ok();
             }
         }
-        // Case `transitions_reach_the_encoded_file_as_distinct_pictures`:
-        // Every transition must reach the encoded file as its own picture.
         'case: {
             use crate::model::Transition;
             if !generated_clip::media_stack() {

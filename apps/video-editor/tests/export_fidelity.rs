@@ -616,7 +616,6 @@ fn exported_files_carry_the_real_source_footage_and_grade() {
 
         tidy(&out);
     }
-    // Case `the_exported_file_carries_the_source_footage`.
     'case: {
         if !generated_clip::media_stack() {
             break 'case;
@@ -657,7 +656,6 @@ fn exported_files_carry_the_real_source_footage_and_grade() {
 
         tidy(&out);
     }
-    // Case `the_colour_grade_reaches_the_encoded_pixels`.
     'case: {
         if !generated_clip::media_stack() {
             break 'case;
@@ -852,7 +850,6 @@ fn exported_geometry_titles_transforms_and_speed_reach_the_file() {
         tidy(&wipe);
         tidy(&dissolve);
     }
-    // Case `a_title_reaches_the_encoded_file_as_real_glyphs`.
     'case: {
         if !generated_clip::media_stack() {
             break 'case;
@@ -884,7 +881,6 @@ fn exported_geometry_titles_transforms_and_speed_reach_the_file() {
         );
         tidy(&path);
     }
-    // Case `a_transform_moves_the_picture_in_the_encoded_file`.
     'case: {
         if !generated_clip::media_stack() {
             break 'case;
@@ -909,7 +905,6 @@ fn exported_geometry_titles_transforms_and_speed_reach_the_file() {
         assert!(cy > GRID_H as f64 * 0.6, "and down, got y={cy:.1}",);
         tidy(&path);
     }
-    // Case `a_keyframed_move_is_at_a_different_place_in_each_encoded_second`.
     'case: {
         if !generated_clip::media_stack() {
             break 'case;
@@ -951,7 +946,6 @@ fn exported_geometry_titles_transforms_and_speed_reach_the_file() {
         );
         tidy(&path);
     }
-    // Case `speed_shortens_the_encoded_file`.
     'case: {
         if !generated_clip::media_stack() {
             break 'case;
@@ -1385,7 +1379,6 @@ fn exported_audio_is_real_audible_and_placed() {
             peak(&f.pcm),
         );
     }
-    // Case `an_mp4_export_carries_the_timelines_real_audio`.
     'case: {
         if !generated_clip::media_stack() {
             break 'case;
@@ -1892,12 +1885,6 @@ fn exported_keys_masks_and_curves_reach_the_encoded_file() {
         tidy(&plain);
         tidy(&keyed);
     }
-    // Case `a_mask_reaches_the_encoded_file_as_geometry`:
-    // A mask has to reach the encoded file as geometry: inside the shape the
-    // upper layer, outside it the layer beneath.
-    //
-    // Read against the same stack exported with no mask, so a frame that simply
-    // failed to composite cannot pass.
     'case: {
         if !generated_clip::media_stack() {
             break 'case;
@@ -1951,10 +1938,6 @@ fn exported_keys_masks_and_curves_reach_the_encoded_file() {
         tidy(&plain);
         tidy(&masked);
     }
-    // Case `a_keyframed_mask_moves_across_the_encoded_file`:
-    // A keyframed mask has to be in a different place in each encoded second.
-    // A mask baked once at the head of the export would pass the geometry test
-    // above and still be motionless in the file.
     'case: {
         if !generated_clip::media_stack() {
             break 'case;
@@ -2005,14 +1988,6 @@ fn exported_keys_masks_and_curves_reach_the_encoded_file() {
         );
         tidy(&path);
     }
-    // Case `a_tone_curve_reaches_the_encoded_file_as_a_table`:
-    // The curve has to reach the encoded file **as a table**: every band of the
-    // wedge lands where `Curve::apply` says it should, and the two ends — which
-    // the curve pins — do not move.
-    //
-    // That last part is what tells a curve from a brightness slider. A slider
-    // lifting the midtones lifts the shadows and the highlights with them; the
-    // whole reason to have curves is that this one does not.
     'case: {
         if !generated_clip::media_stack() {
             break 'case;
@@ -2082,9 +2057,6 @@ fn exported_keys_masks_and_curves_reach_the_encoded_file() {
         tidy(&plain);
         tidy(&shaped);
     }
-    // Case `a_per_channel_curve_reaches_the_encoded_file`:
-    // A per-channel curve reaches the file as a colour cast on a neutral wedge —
-    // something the three grade axes cannot produce at all.
     'case: {
         if !generated_clip::media_stack() {
             break 'case;
@@ -2116,9 +2088,6 @@ fn exported_keys_masks_and_curves_reach_the_encoded_file() {
 
         tidy(&path);
     }
-    // Case `an_animated_curve_amount_grades_each_encoded_second_differently`:
-    // An animated curve amount reaches the file as a grade that ramps: the same
-    // footage is graded differently in different seconds.
     'case: {
         if !generated_clip::media_stack() {
             break 'case;

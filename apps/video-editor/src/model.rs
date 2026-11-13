@@ -2752,11 +2752,6 @@ mod key_and_mask_tests {
                 assert_eq!(k.coverage(keep), 1.0, "{keep:?} is nothing like the key");
             }
         }
-        // Case `brightness_does_not_change_whether_a_colour_keys`:
-        // The reason the key measures chroma and not RGB distance: one green
-        // screen is never one green. A lit patch and a shadowed patch of the
-        // same cloth are far apart in RGB and close together in hue, and both
-        // have to key.
         {
             let k = keyer();
             for gain in [0.2_f64, 0.35, 0.6, 1.0, 1.35] {
@@ -2786,10 +2781,6 @@ mod key_and_mask_tests {
                 "the two shades are {rgb_gap:.2} apart in RGB"
             );
         }
-        // Case `near_black_falls_out_of_the_key_instead_of_keying_on_noise`:
-        // The one place brightness *does* decide the matte: near black there
-        // is no reliable hue left, so those pixels are kept rather than having
-        // their noise amplified into the key.
         {
             let k = keyer();
             assert_eq!(
@@ -2914,10 +2905,6 @@ mod key_and_mask_tests {
             );
             assert_eq!(m.coverage(0.98, 0.5, 1.0), 0.0, "so is the far edge");
         }
-        // Case `a_rect_keeps_the_corners_an_ellipse_of_the_same_size_drops`:
-        // A rect and an ellipse of the same extent must not be the same mask —
-        // they differ exactly at the corners of the box, which is the only
-        // place the shape choice shows.
         {
             let base = Mask {
                 w: 0.8,
@@ -3001,10 +2988,6 @@ mod key_and_mask_tests {
                 "but the point it moved to is"
             );
         }
-        // Case `a_rotated_rect_turns_rather_than_shearing`:
-        // A rotated rect has to actually rotate. On a wide frame that only
-        // works if the rotation happens in aspect-corrected space — otherwise
-        // the shape shears and a 90° turn is not the same rect stood on end.
         {
             let fa = 16.0 / 9.0;
             let tall = Mask {
@@ -3049,10 +3032,6 @@ mod key_and_mask_tests {
             assert!(m.coverage(0.5 + m.x, 0.5 + m.y, 16.0 / 9.0) > 0.9);
             assert_eq!(m.coverage(0.5, 0.5, 16.0 / 9.0), 0.0);
         }
-        // Case `fitting_over_a_narrow_source_follows_the_aspect_fit`:
-        // A source narrower than the frame is letterboxed at the identity
-        // transform, so a mask fitted over it must be narrower than the frame
-        // too — not the full width the frame would suggest.
         {
             let m = Mask::over(MaskShape::Rect, &Transform::default(), 1.0, 16.0 / 9.0);
             assert!(
@@ -3096,10 +3075,6 @@ mod key_and_mask_tests {
             assert_eq!(c.key_at(3.0), c.key);
             assert_eq!(c.mask_at(3.0), c.mask);
         }
-        // Case `keying_a_mask_makes_it_travel_with_the_playhead`:
-        // The whole reason these are parameters: a mask that cannot move
-        // cannot follow a subject, and a key that cannot ramp cannot be
-        // eased in over a shot.
         {
             let mut c = keyed_clip();
             // Clip-local 0 and 4 — the clip starts at timeline 2.0.

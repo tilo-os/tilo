@@ -1885,10 +1885,6 @@ mod tests {
                 quiet[0],
             );
         }
-        // Case `unlinking_a_split_shot_does_not_double_it`:
-        // Unlinking is explicit and reversible, and it must not make the shot
-        // louder. The picture stopped carrying its own sound when the sound was
-        // split off, not when the two happened to be linked.
         {
             use crate::model::{MediaItem, MediaKind, Project, Track, TrackKind};
 

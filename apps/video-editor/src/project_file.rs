@@ -522,9 +522,6 @@ mod tests {
             );
             std::fs::remove_file(&here).ok();
         }
-        // Case `media_beside_the_file_is_found_there`: a relative path that
-        // only resolves beside the file it came from is pointed there, and
-        // one found nowhere is left as the workspace reference it is.
         {
             let dir = std::env::temp_dir().join(format!("tilo-ve-beside-{}", std::process::id()));
             std::fs::create_dir_all(dir.join("footage")).unwrap();

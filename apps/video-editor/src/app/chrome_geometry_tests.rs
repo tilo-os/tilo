@@ -31,7 +31,6 @@ fn assert_close(actual: f64, expected: f64, what: &str) {
     reason = "merged scenario: each former test is a labelled case block with its own fixture"
 )]
 fn transport_and_go_to_field_share_centre_lines_and_steps() {
-    // Case `the_transport_cluster_shares_one_centre_line`.
     {
         let app = app_sized(1280.0, 800.0);
         let r = app.regions();
@@ -72,7 +71,6 @@ fn transport_and_go_to_field_share_centre_lines_and_steps() {
             );
         }
     }
-    // Case `a_tall_readout_is_held_inside_the_strip_rather_than_pushed_above_it`.
     {
         // Line boxes at a 2× text scale: taller than the strip's upper half.
         let transport = Rect::new(0.0, 100.0, 700.0, 100.0 + TRANSPORT_H);
@@ -132,7 +130,6 @@ fn transport_and_go_to_field_share_centre_lines_and_steps() {
 
 #[test]
 fn bin_track_heads_and_captions_keep_token_clearances() {
-    // Case `the_bin_heading_chip_sits_on_the_heading_band_and_clear_of_the_list`.
     {
         let app = app_sized(1280.0, 800.0);
         let r = app.regions();
@@ -147,7 +144,6 @@ fn bin_track_heads_and_captions_keep_token_clearances() {
             "the heading row ends before the first bin row starts"
         );
     }
-    // Case `the_transition_caption_keeps_the_clearance_every_other_row_has`.
     {
         let app = app_sized(1280.0, 800.0);
         let r = app.regions();
@@ -162,7 +158,6 @@ fn bin_track_heads_and_captions_keep_token_clearances() {
             "transition caption clearance vs an ordinary slider row",
         );
     }
-    // Case `every_track_head_clears_its_lane_and_its_neighbours_by_a_token_step`.
     {
         let app = app_sized(1280.0, 800.0);
         let r = app.regions();
@@ -193,7 +188,6 @@ fn bin_track_heads_and_captions_keep_token_clearances() {
         assert_close(buttons[0].1.y0 - last.y1, S2, "last lane ↔ add-track row");
         assert_close(x_gap(buttons[0].1, buttons[1].1), S2, "+ Video ↔ + Audio");
     }
-    // Case `the_bin_rows_and_the_row_controls_keep_token_gaps`.
     {
         let app = app_sized(1280.0, 800.0);
         let r = app.regions();

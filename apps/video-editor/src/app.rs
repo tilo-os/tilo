@@ -781,9 +781,6 @@ const BIN_DOUBLE_CLICK_MS: u128 = 400;
 /// this bound a bin item, once clicked, could never be dragged again.
 const BIN_RENAME_WINDOW_MS: u128 = 2_000;
 
-/// A scrollable pane of the editor. Each owns an offset, a shared
-/// [`ui::widget::Scrollbar`] interaction model and a track rect; naming them
-/// lets one press / drag / wheel arm serve all three.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ScrollPane {
     Timeline,
@@ -860,9 +857,6 @@ struct ProjectSyncState {
 
 pub struct VideoEditorApp {
     project: Project,
-    /// The project as last presented by the host, with the tracks, sources, markers
-    /// and clips submitted since: what the next edit is the difference from, and
-    /// what the optimistic `project` returns to once a drag lets go.
     stored: std::rc::Rc<Project>,
     live: Option<ui::framework::Live<Project>>,
     presented: Option<(u64, u64)>,
@@ -964,9 +958,6 @@ pub struct VideoEditorApp {
     /// change, and treating it as one would throw away a report staged before
     /// the project finished loading.
     mix_sig: Option<u64>,
-    /// The frame clock the meter's fall is driven from. Separate from
-    /// `last_tick`, which the playhead owns: a meter has to keep falling
-    /// while the transport is stopped.
     meter_tick: Instant,
     /// The GPU compositor that produces the preview picture — the *same*
     /// renderer the export runs, so what you see is byte-for-byte what you
@@ -1067,9 +1058,6 @@ pub struct VideoEditorApp {
     /// In-flight inline rename of a bin item: the shared `EditableLabel` gives
     /// the edit real caret / selection / clipboard / a11y for free.
     bin_rename: Option<(MediaId, EditableLabel)>,
-    /// A bin item being dragged toward the timeline. Armed on a bin press and
-    /// promoted to a live drag once the pointer passes the threshold; on release
-    /// over a lane it places a clip at the drop position.
     bin_drag: Option<BinDrag>,
     /// `true` while the OS is hovering a file over the window (an external
     /// drag-and-drop), so the bin can invite the drop. Dropping imports it.
@@ -1080,9 +1068,6 @@ pub struct VideoEditorApp {
     /// more sources than fit the pane drew the rest outside it, unreachable by
     /// any means.
     bin_scroll: f64,
-    /// Representative (or, under decode, real) thumbnail frames per source.
-    /// Which pane the keyboard is in, and where inside each one. Drives both
-    /// arrow navigation and the accessibility tree's active descendant.
     focus: PaneCursor,
     /// The pane to return to after the narrow media-bin overlay closes. The
     /// overlay owns input while its scrim is visible, but closing it must not
@@ -1110,9 +1095,6 @@ pub struct VideoEditorApp {
     /// Where a render run a step at a time will be saved, being chosen
     /// before it starts ([`crate::export::renders_by_steps`]).
     export_save_rx: Option<ui::portal::DestinationChannel>,
-    /// A destination-picker round-trip in flight, drained each frame exactly
-    /// like the import one. The user chooses where the file lands (and, under
-    /// a strict sandbox, that grant is what earns the write).
     export_dest_rx: Option<portal::ExportDestChannel>,
     /// A short, honest line about the export flow itself — choosing a
     /// destination, or why the round-trip failed. Distinct from
@@ -1579,9 +1561,6 @@ impl VideoEditorApp {
         self.clamp_scroll(r);
     }
 
-    /// Pan the timeline by one readable page. Page Up/Down provide a
-    /// keyboard equivalent to the horizontal scrollbar and Shift-wheel path
-    /// without stealing Left/Right from frame stepping and clip nudging.
     fn scroll_timeline_page(&mut self, later: bool, r: &Regions) -> bool {
         let page = self.visible_seconds(r) * 0.9;
         if page <= 0.0 {
@@ -1887,9 +1866,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Media for the bin in a stable, meaningful order: visual media
-    /// first, then audio, each alphabetised. (The CRDT key iteration order
-    /// is otherwise arbitrary.)
     fn bin_order(&self) -> Vec<MediaId> {
         let mut v: Vec<&crate::model::MediaItem> = self.project.media.iter().collect();
         v.sort_by(|a, b| {
@@ -2336,9 +2312,6 @@ impl VideoEditorApp {
         self.bin_layout() == SplitLayout::Overlay && self.bin_flap.is_open(SplitLayout::Overlay)
     }
 
-    /// Toggle the inspector flap (the window bar's toggle / `Tab`). On a wide
-    /// window the inspector is docked and this collapses it away, which is
-    /// the same affordance the bin's hamburger offers there.
     fn toggle_inspector(&mut self) {
         self.reconcile_flaps();
         self.inspector_flap.toggle(self.inspector_split());
@@ -2412,9 +2385,6 @@ impl VideoEditorApp {
         self.playback.chase_playhead = true;
     }
 
-    /// J/K/L shuttle. Pressing in the *same* direction doubles the rate
-    /// (1→2→4…); pressing the opposite direction resets to ±1×; the rate is
-    /// advanced each frame in [`Self::advance_playback`].
     fn shuttle_key(&mut self, dir: f64) {
         // Same direction speeds up; reversal restarts at 1×.
         if self.shuttle.signum() == dir.signum() && self.shuttle != 0.0 {
@@ -3136,9 +3106,6 @@ impl VideoEditorApp {
         self.selected_clip().map(|c| c.track)
     }
 
-    /// The live half of a fader drag, committed once on release as a clip drag is. A
-    /// locked lane refuses, matching every other edit: the hatch across it says
-    /// nothing here will take.
     fn preview_track_edit(&mut self, edit: impl FnOnce(&mut crate::model::Track)) {
         let Some(tid) = self.selected_track_id() else {
             return;
@@ -4149,9 +4116,6 @@ impl VideoEditorApp {
             .find(|(_, _, lane)| p.y >= lane.y0 && p.y <= lane.y1)
     }
 
-    /// The timeline time a drop at `x` means. Inside the lanes it is the time
-    /// under the pointer; over the gutter it clamps to the lane area's left
-    /// edge, i.e. the earliest visible time (0 on an unscrolled timeline).
     fn drop_time(&self, x: f64, r: &Regions) -> f64 {
         self.x_to_time(x.max(r.lanes.x0), &r.lanes)
     }
@@ -4494,9 +4458,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Toggle a track's solo, dispatched as an action. Wired exactly like
-    /// mute: the flag lives on the track, replicates, and undoes the same way.
-    /// [`Project::track_audible`] is where the two combine.
     fn toggle_track_solo(&mut self, tid: TrackId) {
         if let Some(t) = self.project.track(tid) {
             let mut next = t.clone();
@@ -4582,9 +4543,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Open the host file picker to import media through the shared XDG portal
-    /// (`ui::portal`). The picker is a pure-Rust round-trip compiled into every
-    /// build; the chosen files are drained each frame in [`Self::drain_import`].
     fn trigger_import(&mut self) {
         self.import_notice
             .show_progress(Notice::ok("Choose media to import…"));
@@ -4595,9 +4553,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Import the files a contents chooser delivered: probed from their
-    /// bytes, which are kept in the editor's cache location, and named in
-    /// the project by that copy.
     fn drain_import_contents(&mut self) {
         let Some(rx) = self.import_contents_rx.as_ref() else {
             return;
@@ -6675,9 +6630,6 @@ impl Widget for VideoEditorApp {
         self.presentation.keyboard_focus
     }
 
-    /// Tab walks the editor's panes (`focus_pane`); without claiming it the
-    /// host would take Tab for its own focus moves and the panes would be
-    /// unreachable from the keyboard.
     fn wants_tab_input(&self) -> bool {
         true
     }
@@ -6736,9 +6688,6 @@ impl Widget for VideoEditorApp {
         v
     }
 
-    /// Every pane, track, clip, control and toggle is described here. The element the
-    /// pane cursor is on carries `focused`, which the export layer turns into the
-    /// tree's active descendant.
     fn accessibility(&self) -> Option<AccessNode> {
         let mut kids = if self.bin_overlay_is_open() {
             // The scrim says the bin owns input, so the semantic tree must
@@ -7096,9 +7045,6 @@ fn help_group_h(rows: usize, m: HelpMetrics) -> f64 {
     m.header_h + rows as f64 * m.row_h + m.group_gap
 }
 
-/// How wide one row's keys draw: its alternatives side by side, the shared
-/// sibling gap between them, the caps of one alternative touching as a chord
-/// does.
 fn shortcut_keys_width(keys: &[&str], tr: &mut TextRenderer, theme: &Theme) -> f64 {
     let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
     let mut width = 0.0;
