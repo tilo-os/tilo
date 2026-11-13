@@ -316,167 +316,171 @@ mod tests {
         changes.iter().map(automerge::Change::len).sum()
     }
 
-    #[test]
-    fn edits_change_the_bytes_and_rewrite_only_the_pages_they_touch() {
-        let file: Vec<u8> = (0..3 * PAGE + 10).map(|i| (i % 251) as u8).collect();
-        let mut replica = Replica::<HexEditor>::new();
-        load(&mut replica, &file);
-        assert_eq!(state(&replica).bytes, file);
-        assert_eq!(state(&replica).name(), Some("buf.bin"));
-        assert_eq!(state(&replica).opened, 1);
-        assert_eq!(pages(&replica), [PAGE, PAGE, PAGE, 10]);
+    tilo_test_env::scenario! {
+        fn the_record_pages_its_bytes_refuses_bad_offsets_and_merges;
 
-        let mut expected = file;
-        edit(&mut replica, &overwrite(PAGE - 1, &[0xAA, 0xBB])).unwrap();
-        expected[PAGE - 1] = 0xAA;
-        expected[PAGE] = 0xBB;
-        assert_eq!(state(&replica).bytes, expected);
+        phase edits_change_the_bytes_and_rewrite_only_the_pages_they_touch;
+        {
+            let file: Vec<u8> = (0..3 * PAGE + 10).map(|i| (i % 251) as u8).collect();
+            let mut replica = Replica::<HexEditor>::new();
+            load(&mut replica, &file);
+            assert_eq!(state(&replica).bytes, file);
+            assert_eq!(state(&replica).name(), Some("buf.bin"));
+            assert_eq!(state(&replica).opened, 1);
+            assert_eq!(pages(&replica), [PAGE, PAGE, PAGE, 10]);
 
-        let before = replica.heads();
-        edit(&mut replica, &insert(5, &[1, 2, 3])).unwrap();
-        expected.splice(5..5, [1, 2, 3]);
-        assert_eq!(state(&replica).bytes, expected);
-        assert_eq!(pages(&replica), [PAGE + 3, PAGE, PAGE, 10]);
-        assert_eq!(
-            ops_since(&mut replica, &before),
-            1,
-            "an insert rewrites the one page it lands in"
-        );
+            let mut expected = file;
+            edit(&mut replica, &overwrite(PAGE - 1, &[0xAA, 0xBB])).unwrap();
+            expected[PAGE - 1] = 0xAA;
+            expected[PAGE] = 0xBB;
+            assert_eq!(state(&replica).bytes, expected);
 
-        edit(
-            &mut replica,
-            &BufferEdit::Delete {
-                offset: PAGE,
-                len: PAGE + 10,
-            },
-        )
-        .unwrap();
-        expected.drain(PAGE..2 * PAGE + 10);
-        assert_eq!(state(&replica).bytes, expected);
+            let before = replica.heads();
+            edit(&mut replica, &insert(5, &[1, 2, 3])).unwrap();
+            expected.splice(5..5, [1, 2, 3]);
+            assert_eq!(state(&replica).bytes, expected);
+            assert_eq!(pages(&replica), [PAGE + 3, PAGE, PAGE, 10]);
+            assert_eq!(
+                ops_since(&mut replica, &before),
+                1,
+                "an insert rewrites the one page it lands in"
+            );
 
-        let end = expected.len();
-        let tail = vec![7; MAX_PAGE];
-        edit(&mut replica, &insert(end, &tail)).unwrap();
-        expected.extend(&tail);
-        assert_eq!(state(&replica).bytes, expected);
-        assert!(
-            pages(&replica).iter().all(|len| *len <= MAX_PAGE),
-            "{:?}",
-            pages(&replica)
-        );
-    }
-
-    #[test]
-    fn verbs_make_the_same_edits_and_write_only_the_pages_they_change() {
-        let file: Vec<u8> = (0..3 * PAGE).map(|i| (i % 251) as u8).collect();
-        let mut replica = Replica::<HexEditor>::new();
-        load(&mut replica, &file);
-        let before = replica.heads();
-        replica
-            .apply(HexEditor::OVERWRITE_BYTES.with(hex_editor::OverwriteBytes {
-                offset: PAGE + 1,
-                bytes: Hex(vec![0xEE]),
-            }))
+            edit(
+                &mut replica,
+                &BufferEdit::Delete {
+                    offset: PAGE,
+                    len: PAGE + 10,
+                },
+            )
             .unwrap();
-        assert_eq!(
-            ops_since(&mut replica, &before),
-            1,
-            "a verb that changes one byte writes one page"
-        );
-        replica
-            .apply(HexEditor::INSERT_BYTES.with(hex_editor::InsertBytes {
-                offset: 0,
-                bytes: Hex(vec![1, 2]),
-            }))
-            .unwrap();
-        let mut expected = file;
-        expected[PAGE + 1] = 0xEE;
-        expected.splice(0..0, [1, 2]);
-        assert_eq!(state(&replica).bytes, expected);
-        assert_eq!(pages(&replica), [PAGE + 2, PAGE, PAGE]);
-        assert!(
-            replica
-                .apply_confirmed(HexEditor::DELETE_BYTES.with(hex_editor::DeleteBytes {
-                    offset: expected.len(),
-                    len: 1,
-                }))
-                .is_err(),
-            "an offset past the end is refused"
-        );
-    }
+            expected.drain(PAGE..2 * PAGE + 10);
+            assert_eq!(state(&replica).bytes, expected);
 
-    #[test]
-    fn offsets_beyond_the_buffer_are_refused_and_empty_edits_change_nothing() {
-        let mut replica = Replica::<HexEditor>::new();
-        load(&mut replica, &[1, 2, 3]);
-        for action in [
-            insert(4, &[9]),
-            overwrite(3, &[9]),
-            BufferEdit::Delete { offset: 3, len: 1 },
-        ] {
-            assert!(edit(&mut replica, &action).is_err(), "{action:?}");
+            let end = expected.len();
+            let tail = vec![7; MAX_PAGE];
+            edit(&mut replica, &insert(end, &tail)).unwrap();
+            expected.extend(&tail);
+            assert_eq!(state(&replica).bytes, expected);
+            assert!(
+                pages(&replica).iter().all(|len| *len <= MAX_PAGE),
+                "{:?}",
+                pages(&replica)
+            );
         }
-        // Overwriting across the end keeps the length; deleting past it stops at the
-        // end; appending at the end is allowed.
-        edit(&mut replica, &overwrite(2, &[8, 9])).unwrap();
-        assert_eq!(state(&replica).bytes, [1, 2, 8]);
-        edit(&mut replica, &BufferEdit::Delete { offset: 1, len: 9 }).unwrap();
-        assert_eq!(state(&replica).bytes, [1]);
-        edit(&mut replica, &insert(1, &[5])).unwrap();
-        assert_eq!(state(&replica).bytes, [1, 5]);
 
-        let heads = replica.heads();
-        edit(&mut replica, &BufferEdit::Delete { offset: 0, len: 0 }).unwrap();
-        load(&mut replica, &[1, 5]);
-        assert_eq!(
-            replica.heads(),
-            heads,
-            "reloading unchanged bytes and an empty delete write nothing"
-        );
-        assert_eq!(state(&replica).opened, 1);
-    }
+        phase verbs_make_the_same_edits_and_write_only_the_pages_they_change;
+        {
+            let file: Vec<u8> = (0..3 * PAGE).map(|i| (i % 251) as u8).collect();
+            let mut replica = Replica::<HexEditor>::new();
+            load(&mut replica, &file);
+            let before = replica.heads();
+            replica
+                .apply(HexEditor::OVERWRITE_BYTES.with(hex_editor::OverwriteBytes {
+                    offset: PAGE + 1,
+                    bytes: Hex(vec![0xEE]),
+                }))
+                .unwrap();
+            assert_eq!(
+                ops_since(&mut replica, &before),
+                1,
+                "a verb that changes one byte writes one page"
+            );
+            replica
+                .apply(HexEditor::INSERT_BYTES.with(hex_editor::InsertBytes {
+                    offset: 0,
+                    bytes: Hex(vec![1, 2]),
+                }))
+                .unwrap();
+            let mut expected = file;
+            expected[PAGE + 1] = 0xEE;
+            expected.splice(0..0, [1, 2]);
+            assert_eq!(state(&replica).bytes, expected);
+            assert_eq!(pages(&replica), [PAGE + 2, PAGE, PAGE]);
+            assert!(
+                replica
+                    .apply_confirmed(HexEditor::DELETE_BYTES.with(hex_editor::DeleteBytes {
+                        offset: expected.len(),
+                        len: 1,
+                    }))
+                    .is_err(),
+                "an offset past the end is refused"
+            );
+        }
 
-    #[test]
-    fn an_empty_record_has_no_file_and_typing_starts_its_first_page() {
-        let mut replica = Replica::<HexEditor>::new();
-        assert!(!state(&replica).has_file());
-        load(&mut replica, &[]);
-        assert!(state(&replica).has_file());
-        assert!(state(&replica).bytes.is_empty());
-        edit(&mut replica, &insert(0, &[0xAB])).unwrap();
-        assert_eq!(state(&replica).bytes, [0xAB]);
-    }
+        phase offsets_beyond_the_buffer_are_refused_and_empty_edits_change_nothing;
+        {
+            let mut replica = Replica::<HexEditor>::new();
+            load(&mut replica, &[1, 2, 3]);
+            for action in [
+                insert(4, &[9]),
+                overwrite(3, &[9]),
+                BufferEdit::Delete { offset: 3, len: 1 },
+            ] {
+                assert!(edit(&mut replica, &action).is_err(), "{action:?}");
+            }
+            // Overwriting across the end keeps the length; deleting past it stops at the
+            // end; appending at the end is allowed.
+            edit(&mut replica, &overwrite(2, &[8, 9])).unwrap();
+            assert_eq!(state(&replica).bytes, [1, 2, 8]);
+            edit(&mut replica, &BufferEdit::Delete { offset: 1, len: 9 }).unwrap();
+            assert_eq!(state(&replica).bytes, [1]);
+            edit(&mut replica, &insert(1, &[5])).unwrap();
+            assert_eq!(state(&replica).bytes, [1, 5]);
 
-    #[test]
-    fn collaborators_editing_different_pages_merge() {
-        let file = vec![0u8; 2 * PAGE];
-        let mut ours = Replica::<HexEditor>::new();
-        load(&mut ours, &file);
-        let mut theirs = ours.fork();
-        edit(&mut ours, &overwrite(1, &[1])).unwrap();
-        edit(&mut theirs, &insert(PAGE + 1, &[2])).unwrap();
-        ours.sync_with(&mut theirs).unwrap();
-        let bytes = state(&ours).bytes.to_vec();
-        assert_eq!(bytes.len(), 2 * PAGE + 1);
-        assert_eq!(bytes[1], 1);
-        assert_eq!(bytes[PAGE + 1], 2);
-        assert_eq!(state(&theirs).bytes, bytes);
-    }
+            let heads = replica.heads();
+            edit(&mut replica, &BufferEdit::Delete { offset: 0, len: 0 }).unwrap();
+            load(&mut replica, &[1, 5]);
+            assert_eq!(
+                replica.heads(),
+                heads,
+                "reloading unchanged bytes and an empty delete write nothing"
+            );
+            assert_eq!(state(&replica).opened, 1);
+        }
 
-    #[test]
-    fn a_refreshed_state_matches_a_fresh_read() {
-        let file: Vec<u8> = (0..3 * PAGE).map(|i| (i % 7) as u8).collect();
-        let mut replica = Replica::<HexEditor>::new();
-        load(&mut replica, &file);
-        let mut reader = ui::tilo_resource::Reader::<HexEditor>::read(replica.doc()).unwrap();
-        edit(&mut replica, &insert(PAGE + 3, &vec![4; MAX_PAGE])).unwrap();
-        edit(&mut replica, &BufferEdit::Delete { offset: 2, len: 3 }).unwrap();
-        assert!(reader.sync(replica.doc()).unwrap());
-        assert!(
-            !reader.last_delta().is_everything(),
-            "the change is read in part"
-        );
-        assert_eq!(reader.state().bytes, state(&replica).bytes);
+        phase an_empty_record_has_no_file_and_typing_starts_its_first_page;
+        {
+            let mut replica = Replica::<HexEditor>::new();
+            assert!(!state(&replica).has_file());
+            load(&mut replica, &[]);
+            assert!(state(&replica).has_file());
+            assert!(state(&replica).bytes.is_empty());
+            edit(&mut replica, &insert(0, &[0xAB])).unwrap();
+            assert_eq!(state(&replica).bytes, [0xAB]);
+        }
+
+        phase collaborators_editing_different_pages_merge;
+        {
+            let file = vec![0u8; 2 * PAGE];
+            let mut ours = Replica::<HexEditor>::new();
+            load(&mut ours, &file);
+            let mut theirs = ours.fork();
+            edit(&mut ours, &overwrite(1, &[1])).unwrap();
+            edit(&mut theirs, &insert(PAGE + 1, &[2])).unwrap();
+            ours.sync_with(&mut theirs).unwrap();
+            let bytes = state(&ours).bytes.to_vec();
+            assert_eq!(bytes.len(), 2 * PAGE + 1);
+            assert_eq!(bytes[1], 1);
+            assert_eq!(bytes[PAGE + 1], 2);
+            assert_eq!(state(&theirs).bytes, bytes);
+        }
+
+        phase a_refreshed_state_matches_a_fresh_read;
+        {
+            let file: Vec<u8> = (0..3 * PAGE).map(|i| (i % 7) as u8).collect();
+            let mut replica = Replica::<HexEditor>::new();
+            load(&mut replica, &file);
+            let mut reader = ui::tilo_resource::Reader::<HexEditor>::read(replica.doc()).unwrap();
+            edit(&mut replica, &insert(PAGE + 3, &vec![4; MAX_PAGE])).unwrap();
+            edit(&mut replica, &BufferEdit::Delete { offset: 2, len: 3 }).unwrap();
+            assert!(reader.sync(replica.doc()).unwrap());
+            assert!(
+                !reader.last_delta().is_everything(),
+                "the change is read in part"
+            );
+            assert_eq!(reader.state().bytes, state(&replica).bytes);
+        }
     }
 }
 

@@ -744,223 +744,227 @@ mod tests {
         HexModel::new((0u8..=63).collect())
     }
 
-    #[test]
-    fn insert_navigation_reaches_append_cell_and_records_an_append() {
-        let mut m = HexModel::new(vec![0xaa; 16]);
-        m.toggle_mode();
-        m.move_doc_end(false);
-        assert_eq!(m.cursor(), 16);
-        assert_eq!(m.row_count(), 2);
-        m.move_left(false);
-        m.move_right(false);
-        assert_eq!(m.cursor(), 16);
-        m.show_bytes(&[0xbb; 16], &[0xaa; 16]);
-        assert_eq!(m.cursor(), 16, "presentation keeps the append cursor");
-        m.input_hex_digit(0xc);
-        m.input_hex_digit(0xd);
-        assert_eq!(m.bytes().last(), Some(&0xcd));
-        assert_eq!(m.len(), 17);
-        assert_eq!(
-            m.take_edits(),
-            vec![
-                BufferEdit::Insert {
-                    offset: 16,
-                    bytes: Hex(vec![0xc0])
-                },
-                BufferEdit::Overwrite {
-                    offset: 16,
-                    bytes: Hex(vec![0xcd])
-                },
-            ]
-        );
-        m.toggle_mode();
-        assert_eq!(m.cursor(), 16, "overwrite stays on an existing byte");
-    }
+    tilo_test_env::scenario! {
+        fn the_hex_model_moves_edits_scrolls_and_replaces;
 
-    #[test]
-    fn cursor_movement_clamps_and_selection_is_inclusive() {
-        let mut m = model();
-        m.move_left(false);
-        assert_eq!(m.cursor(), 0);
-        m.move_doc_end(false);
-        assert_eq!(m.cursor(), 63);
-        m.move_right(false);
-        assert_eq!(m.cursor(), 63);
+        phase insert_navigation_reaches_append_cell_and_records_an_append;
+        {
+            let mut m = HexModel::new(vec![0xaa; 16]);
+            m.toggle_mode();
+            m.move_doc_end(false);
+            assert_eq!(m.cursor(), 16);
+            assert_eq!(m.row_count(), 2);
+            m.move_left(false);
+            m.move_right(false);
+            assert_eq!(m.cursor(), 16);
+            m.show_bytes(&[0xbb; 16], &[0xaa; 16]);
+            assert_eq!(m.cursor(), 16, "presentation keeps the append cursor");
+            m.input_hex_digit(0xc);
+            m.input_hex_digit(0xd);
+            assert_eq!(m.bytes().last(), Some(&0xcd));
+            assert_eq!(m.len(), 17);
+            assert_eq!(
+                m.take_edits(),
+                vec![
+                    BufferEdit::Insert {
+                        offset: 16,
+                        bytes: Hex(vec![0xc0])
+                    },
+                    BufferEdit::Overwrite {
+                        offset: 16,
+                        bytes: Hex(vec![0xcd])
+                    },
+                ]
+            );
+            m.toggle_mode();
+            assert_eq!(m.cursor(), 16, "overwrite stays on an existing byte");
+        }
 
-        let mut m = model();
-        m.set_bytes_per_row(16);
-        m.move_down(false);
-        assert_eq!(m.cursor(), 16);
-        m.move_up(false);
-        assert_eq!(m.cursor(), 0);
+        phase cursor_movement_clamps_and_selection_is_inclusive;
+        {
+            let mut m = model();
+            m.move_left(false);
+            assert_eq!(m.cursor(), 0);
+            m.move_doc_end(false);
+            assert_eq!(m.cursor(), 63);
+            m.move_right(false);
+            assert_eq!(m.cursor(), 63);
 
-        let mut m = model();
-        m.move_to(10, false);
-        m.move_to(5, true);
-        assert_eq!(m.selection(), Some((5, 10)));
-        assert_eq!(m.selection_len(), 6);
+            let mut m = model();
+            m.set_bytes_per_row(16);
+            m.move_down(false);
+            assert_eq!(m.cursor(), 16);
+            m.move_up(false);
+            assert_eq!(m.cursor(), 0);
 
-        let mut m = model();
-        m.select_all();
-        assert_eq!(m.selection(), Some((0, 63)));
-        assert_eq!(m.selection_len(), 64);
-    }
+            let mut m = model();
+            m.move_to(10, false);
+            m.move_to(5, true);
+            assert_eq!(m.selection(), Some((5, 10)));
+            assert_eq!(m.selection_len(), 6);
 
-    #[test]
-    fn byte_edits_overwrite_insert_delete_and_track_dirty_and_history() {
-        let mut m = HexModel::new(vec![0x00, 0x00]);
-        // Type "ff" over the first byte.
-        assert!(m.input_hex_digit(0xF));
-        assert_eq!(m.bytes()[0], 0xF0); // high nibble first
-        assert!(m.input_hex_digit(0xF));
-        assert_eq!(m.bytes()[0], 0xFF);
-        assert_eq!(m.cursor(), 1); // advanced after completing the byte
-        assert!(m.is_dirty(0));
+            let mut m = model();
+            m.select_all();
+            assert_eq!(m.selection(), Some((0, 63)));
+            assert_eq!(m.selection_len(), 64);
+        }
 
-        let mut edited = HexModel::new(vec![0x10, 0x20]);
-        assert!(edited.set_byte(1, 0xAB));
-        assert!(
-            edited.set_byte(1, 0xAB),
-            "an unchanged byte records nothing"
-        );
-        edited.move_to(0, false);
-        edited.move_to(1, true);
-        edited.delete_at_cursor();
-        assert_eq!(
-            edited.take_edits(),
-            [
-                BufferEdit::Overwrite {
-                    offset: 1,
-                    bytes: Hex(vec![0xAB])
-                },
-                BufferEdit::Delete { offset: 0, len: 2 },
-            ]
-        );
-        assert!(edited.take_edits().is_empty());
+        phase byte_edits_overwrite_insert_delete_and_track_dirty_and_history;
+        {
+            let mut m = HexModel::new(vec![0x00, 0x00]);
+            // Type "ff" over the first byte.
+            assert!(m.input_hex_digit(0xF));
+            assert_eq!(m.bytes()[0], 0xF0); // high nibble first
+            assert!(m.input_hex_digit(0xF));
+            assert_eq!(m.bytes()[0], 0xFF);
+            assert_eq!(m.cursor(), 1); // advanced after completing the byte
+            assert!(m.is_dirty(0));
 
-        let mut m = HexModel::new(vec![0xAA]);
-        m.toggle_mode(); // -> Insert
-        m.move_to(0, false);
-        m.input_hex_digit(0x1);
-        m.input_hex_digit(0x2);
-        assert_eq!(m.bytes(), &[0x12, 0xAA]);
+            let mut edited = HexModel::new(vec![0x10, 0x20]);
+            assert!(edited.set_byte(1, 0xAB));
+            assert!(
+                edited.set_byte(1, 0xAB),
+                "an unchanged byte records nothing"
+            );
+            edited.move_to(0, false);
+            edited.move_to(1, true);
+            edited.delete_at_cursor();
+            assert_eq!(
+                edited.take_edits(),
+                [
+                    BufferEdit::Overwrite {
+                        offset: 1,
+                        bytes: Hex(vec![0xAB])
+                    },
+                    BufferEdit::Delete { offset: 0, len: 2 },
+                ]
+            );
+            assert!(edited.take_edits().is_empty());
 
-        let mut m = HexModel::new(vec![0x00, 0x00]);
-        m.set_column(Column::Ascii);
-        assert!(m.input_ascii_char('A'));
-        assert_eq!(m.bytes()[0], b'A');
-        assert_eq!(m.cursor(), 1);
+            let mut m = HexModel::new(vec![0xAA]);
+            m.toggle_mode(); // -> Insert
+            m.move_to(0, false);
+            m.input_hex_digit(0x1);
+            m.input_hex_digit(0x2);
+            assert_eq!(m.bytes(), &[0x12, 0xAA]);
 
-        let mut m = model();
-        m.move_to(2, false);
-        m.move_to(5, true);
-        m.delete_at_cursor();
-        assert_eq!(m.len(), 60);
-        // The byte originally at offset 6 is now at offset 2.
-        assert_eq!(m.bytes()[2], 6);
+            let mut m = HexModel::new(vec![0x00, 0x00]);
+            m.set_column(Column::Ascii);
+            assert!(m.input_ascii_char('A'));
+            assert_eq!(m.bytes()[0], b'A');
+            assert_eq!(m.cursor(), 1);
 
-        let mut m = HexModel::new(vec![0x10, 0x20, 0x30]);
-        m.set_byte(2, 0x31); // dirty at 2
-        assert!(m.is_dirty(2));
-        m.insert_byte(0, 0xFF); // everything shifts up
-        assert!(m.is_dirty(0)); // the inserted byte
-        assert!(m.is_dirty(3)); // 0x31 moved from 2 -> 3
-        assert!(!m.is_dirty(2));
-    }
+            let mut m = model();
+            m.move_to(2, false);
+            m.move_to(5, true);
+            m.delete_at_cursor();
+            assert_eq!(m.len(), 60);
+            // The byte originally at offset 6 is now at offset 2.
+            assert_eq!(m.bytes()[2], 6);
 
-    #[test]
-    fn shown_bytes_keep_the_cursor_and_mark_what_differs_from_the_saved_file() {
-        let saved = vec![0x10, 0x20, 0x30, 0x40];
-        let mut m = HexModel::new(saved.clone());
-        m.move_to(3, false);
-        // An edit from elsewhere marks its byte; undoing it clears the mark.
-        m.show_bytes(&[0x10, 0xFF, 0x30, 0x40], &saved);
-        assert!(m.is_dirty(1));
-        assert_eq!(m.cursor(), 3);
-        m.show_bytes(&saved, &saved);
-        assert_eq!(m.dirty_count(), 0);
-        m.show_bytes(&[0x10, 0x40], &saved);
-        assert_eq!(m.cursor(), 1);
-        assert_eq!(m.dirty_count(), 0, "a pure removal changes no byte left");
-        m.show_bytes(&[0x10, 0x99, 0x40], &saved);
-        assert!(m.is_dirty(1));
-        assert!(!m.is_dirty(2));
-        m.load(vec![1, 2, 3]);
-        assert_eq!(m.dirty_count(), 0);
-        assert_eq!(m.cursor(), 0);
-    }
+            let mut m = HexModel::new(vec![0x10, 0x20, 0x30]);
+            m.set_byte(2, 0x31); // dirty at 2
+            assert!(m.is_dirty(2));
+            m.insert_byte(0, 0xFF); // everything shifts up
+            assert!(m.is_dirty(0)); // the inserted byte
+            assert!(m.is_dirty(3)); // 0x31 moved from 2 -> 3
+            assert!(!m.is_dirty(2));
+        }
 
-    #[test]
-    fn viewport_scrolls_minimally_and_cycles_row_width() {
-        // scroll_into_view scrolls the minimum.
-        let mut m = HexModel::new((0u8..=255).collect());
-        m.set_bytes_per_row(16); // 16 rows total
-        m.scroll_into_view(10, 4);
-        assert_eq!(m.top_row(), 7); // 10 + 1 - 4
-        m.scroll_into_view(2, 4);
-        assert_eq!(m.top_row(), 2);
-    }
+        phase shown_bytes_keep_the_cursor_and_mark_what_differs_from_the_saved_file;
+        {
+            let saved = vec![0x10, 0x20, 0x30, 0x40];
+            let mut m = HexModel::new(saved.clone());
+            m.move_to(3, false);
+            // An edit from elsewhere marks its byte; undoing it clears the mark.
+            m.show_bytes(&[0x10, 0xFF, 0x30, 0x40], &saved);
+            assert!(m.is_dirty(1));
+            assert_eq!(m.cursor(), 3);
+            m.show_bytes(&saved, &saved);
+            assert_eq!(m.dirty_count(), 0);
+            m.show_bytes(&[0x10, 0x40], &saved);
+            assert_eq!(m.cursor(), 1);
+            assert_eq!(m.dirty_count(), 0, "a pure removal changes no byte left");
+            m.show_bytes(&[0x10, 0x99, 0x40], &saved);
+            assert!(m.is_dirty(1));
+            assert!(!m.is_dirty(2));
+            m.load(vec![1, 2, 3]);
+            assert_eq!(m.dirty_count(), 0);
+            assert_eq!(m.cursor(), 0);
+        }
 
-    #[test]
-    fn overwrite_mode_replaces_spans_of_the_same_length_and_refuses_another_length() {
-        let mut m = HexModel::new(vec![0xde, 0xad, 0x00, 0xde, 0xad]);
-        assert_eq!(m.mode(), EditMode::Overwrite);
-        assert_eq!(
-            m.replace_spans(&[(0, 2), (3, 5)], &[0xbe]),
-            Err(ChangesLength),
-            "overwrite never changes the length"
-        );
-        assert_eq!(m.bytes(), &[0xde, 0xad, 0x00, 0xde, 0xad]);
-        assert!(
-            m.take_edits().is_empty(),
-            "a refused replacement edits nothing"
-        );
+        phase viewport_scrolls_minimally_and_cycles_row_width;
+        {
+            // scroll_into_view scrolls the minimum.
+            let mut m = HexModel::new((0u8..=255).collect());
+            m.set_bytes_per_row(16); // 16 rows total
+            m.scroll_into_view(10, 4);
+            assert_eq!(m.top_row(), 7); // 10 + 1 - 4
+            m.scroll_into_view(2, 4);
+            assert_eq!(m.top_row(), 2);
+        }
 
-        assert_eq!(m.replace_spans(&[(0, 2), (3, 5)], &[0xbe, 0xef]), Ok(2));
-        assert_eq!(m.bytes(), &[0xbe, 0xef, 0x00, 0xbe, 0xef]);
-        assert_eq!(m.dirty_count(), 4);
-        assert_eq!(m.cursor(), 0, "the cursor lands on the first replacement");
-        assert_eq!(
-            m.take_edits(),
-            vec![
-                BufferEdit::Overwrite {
-                    offset: 3,
-                    bytes: Hex(vec![0xbe, 0xef])
-                },
-                BufferEdit::Overwrite {
-                    offset: 0,
-                    bytes: Hex(vec![0xbe, 0xef])
-                },
-            ]
-        );
-    }
+        phase overwrite_mode_replaces_spans_of_the_same_length_and_refuses_another_length;
+        {
+            let mut m = HexModel::new(vec![0xde, 0xad, 0x00, 0xde, 0xad]);
+            assert_eq!(m.mode(), EditMode::Overwrite);
+            assert_eq!(
+                m.replace_spans(&[(0, 2), (3, 5)], &[0xbe]),
+                Err(ChangesLength),
+                "overwrite never changes the length"
+            );
+            assert_eq!(m.bytes(), &[0xde, 0xad, 0x00, 0xde, 0xad]);
+            assert!(
+                m.take_edits().is_empty(),
+                "a refused replacement edits nothing"
+            );
 
-    #[test]
-    fn insert_mode_replaces_spans_with_bytes_of_another_length() {
-        let mut m = HexModel::new(b"aaXaa".to_vec());
-        m.toggle_mode();
-        // Overlapping spans (as find returns for "aa" in "aaa") keep the first.
-        assert_eq!(m.replace_spans(&[(0, 2), (1, 3), (3, 5)], b"bbb"), Ok(2));
-        assert_eq!(m.bytes(), b"bbbXbbb");
-        assert_eq!(m.replace_spans(&[(3, 4)], b""), Ok(1));
-        assert_eq!(m.bytes(), b"bbbbbb");
-        let mut replayed = b"aaXaa".to_vec();
-        for edit in m.take_edits() {
-            match edit {
-                BufferEdit::Insert { offset, bytes } => {
-                    replayed.splice(offset..offset, bytes.0);
-                }
-                BufferEdit::Delete { offset, len } => {
-                    replayed.drain(offset..offset + len);
-                }
-                BufferEdit::Overwrite { offset, bytes } => {
-                    replayed[offset..offset + bytes.0.len()].copy_from_slice(&bytes.0);
+            assert_eq!(m.replace_spans(&[(0, 2), (3, 5)], &[0xbe, 0xef]), Ok(2));
+            assert_eq!(m.bytes(), &[0xbe, 0xef, 0x00, 0xbe, 0xef]);
+            assert_eq!(m.dirty_count(), 4);
+            assert_eq!(m.cursor(), 0, "the cursor lands on the first replacement");
+            assert_eq!(
+                m.take_edits(),
+                vec![
+                    BufferEdit::Overwrite {
+                        offset: 3,
+                        bytes: Hex(vec![0xbe, 0xef])
+                    },
+                    BufferEdit::Overwrite {
+                        offset: 0,
+                        bytes: Hex(vec![0xbe, 0xef])
+                    },
+                ]
+            );
+        }
+
+        phase insert_mode_replaces_spans_with_bytes_of_another_length;
+        {
+            let mut m = HexModel::new(b"aaXaa".to_vec());
+            m.toggle_mode();
+            // Overlapping spans (as find returns for "aa" in "aaa") keep the first.
+            assert_eq!(m.replace_spans(&[(0, 2), (1, 3), (3, 5)], b"bbb"), Ok(2));
+            assert_eq!(m.bytes(), b"bbbXbbb");
+            assert_eq!(m.replace_spans(&[(3, 4)], b""), Ok(1));
+            assert_eq!(m.bytes(), b"bbbbbb");
+            let mut replayed = b"aaXaa".to_vec();
+            for edit in m.take_edits() {
+                match edit {
+                    BufferEdit::Insert { offset, bytes } => {
+                        replayed.splice(offset..offset, bytes.0);
+                    }
+                    BufferEdit::Delete { offset, len } => {
+                        replayed.drain(offset..offset + len);
+                    }
+                    BufferEdit::Overwrite { offset, bytes } => {
+                        replayed[offset..offset + bytes.0.len()].copy_from_slice(&bytes.0);
+                    }
                 }
             }
+            assert_eq!(
+                replayed, b"bbbbbb",
+                "the recorded edits make the same bytes"
+            );
         }
-        assert_eq!(
-            replayed, b"bbbbbb",
-            "the recorded edits make the same bytes"
-        );
     }
 }

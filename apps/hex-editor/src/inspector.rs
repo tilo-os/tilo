@@ -259,96 +259,100 @@ mod tests {
         Option<usize>,
     );
 
-    #[test]
-    fn inspect_rows_decode_values_and_consumed_width() {
-        let one_le = 1.0f32.to_le_bytes();
-        let cases: &[InspectCase<'_>] = &[
-            (
-                "u16 little",
-                &[0x34, 0x12],
-                Endian::Little,
-                "u16",
-                Some("4660"),
-                None,
-            ), // 0x1234
-            (
-                "u16 big",
-                &[0x34, 0x12],
-                Endian::Big,
-                "u16",
-                Some("13330"),
-                None,
-            ), // 0x3412
-            (
-                "i8 of 0xFF",
-                &[0xFF],
-                Endian::Little,
-                "i8",
-                Some("-1"),
-                None,
-            ),
-            (
-                "u8 of 0xFF",
-                &[0xFF],
-                Endian::Little,
-                "u8",
-                Some("255"),
-                None,
-            ),
-            (
-                "bin",
-                &[0b1010_0101],
-                Endian::Little,
-                "bin",
-                Some("10100101"),
-                None,
-            ),
-            (
-                "oct",
-                &[0b1010_0101],
-                Endian::Little,
-                "oct",
-                Some("0o245"),
-                None,
-            ),
-            ("f32 one", &one_le, Endian::Little, "f32", Some("1"), None),
-            (
-                "short u32",
-                &[0x01],
-                Endian::Little,
-                "u32",
-                Some("—"),
-                Some(0),
-            ),
-            ("short u8", &[0x01], Endian::Little, "u8", Some("1"), None),
-            ("u64 width", &[0; 8], Endian::Little, "u64", None, Some(8)),
-            ("u16 width", &[0; 8], Endian::Little, "u16", None, Some(2)),
-        ];
-        for (name, bytes, endian, label, value, width) in cases {
-            let rows = inspect(bytes, 0, *endian);
-            let row = rows
-                .iter()
-                .find(|r| r.label == *label)
-                .unwrap_or_else(|| panic!("case {name}: no {label} row"));
-            if let Some(value) = value {
-                assert_eq!(row.value, *value, "case {name}");
-            }
-            if let Some(width) = width {
-                assert_eq!(row.width, *width, "case {name}");
+    tilo_test_env::scenario! {
+        fn the_inspector_decodes_fixed_width_and_leb128_values;
+
+        phase inspect_rows_decode_values_and_consumed_width;
+        {
+            let one_le = 1.0f32.to_le_bytes();
+            let cases: &[InspectCase<'_>] = &[
+                (
+                    "u16 little",
+                    &[0x34, 0x12],
+                    Endian::Little,
+                    "u16",
+                    Some("4660"),
+                    None,
+                ), // 0x1234
+                (
+                    "u16 big",
+                    &[0x34, 0x12],
+                    Endian::Big,
+                    "u16",
+                    Some("13330"),
+                    None,
+                ), // 0x3412
+                (
+                    "i8 of 0xFF",
+                    &[0xFF],
+                    Endian::Little,
+                    "i8",
+                    Some("-1"),
+                    None,
+                ),
+                (
+                    "u8 of 0xFF",
+                    &[0xFF],
+                    Endian::Little,
+                    "u8",
+                    Some("255"),
+                    None,
+                ),
+                (
+                    "bin",
+                    &[0b1010_0101],
+                    Endian::Little,
+                    "bin",
+                    Some("10100101"),
+                    None,
+                ),
+                (
+                    "oct",
+                    &[0b1010_0101],
+                    Endian::Little,
+                    "oct",
+                    Some("0o245"),
+                    None,
+                ),
+                ("f32 one", &one_le, Endian::Little, "f32", Some("1"), None),
+                (
+                    "short u32",
+                    &[0x01],
+                    Endian::Little,
+                    "u32",
+                    Some("—"),
+                    Some(0),
+                ),
+                ("short u8", &[0x01], Endian::Little, "u8", Some("1"), None),
+                ("u64 width", &[0; 8], Endian::Little, "u64", None, Some(8)),
+                ("u16 width", &[0; 8], Endian::Little, "u16", None, Some(2)),
+            ];
+            for (name, bytes, endian, label, value, width) in cases {
+                let rows = inspect(bytes, 0, *endian);
+                let row = rows
+                    .iter()
+                    .find(|r| r.label == *label)
+                    .unwrap_or_else(|| panic!("case {name}: no {label} row"));
+                if let Some(value) = value {
+                    assert_eq!(row.value, *value, "case {name}");
+                }
+                if let Some(width) = width {
+                    assert_eq!(row.width, *width, "case {name}");
+                }
             }
         }
-    }
 
-    #[test]
-    fn leb128_decodes_multi_byte_and_negative_and_rejects_truncation() {
-        let (v, n) = decode_uleb128(&[0xE5, 0x8E, 0x26], 0).unwrap();
-        assert_eq!(v, 624_485);
-        assert_eq!(n, 3);
+        phase leb128_decodes_multi_byte_and_negative_and_rejects_truncation;
+        {
+            let (v, n) = decode_uleb128(&[0xE5, 0x8E, 0x26], 0).unwrap();
+            assert_eq!(v, 624_485);
+            assert_eq!(n, 3);
 
-        let (v, n) = decode_sleb128(&[0xC0, 0xBB, 0x78], 0).unwrap();
-        assert_eq!(v, -123_456);
-        assert_eq!(n, 3);
+            let (v, n) = decode_sleb128(&[0xC0, 0xBB, 0x78], 0).unwrap();
+            assert_eq!(v, -123_456);
+            assert_eq!(n, 3);
 
-        assert!(decode_uleb128(&[0x80], 0).is_none());
+            assert!(decode_uleb128(&[0x80], 0).is_none());
+        }
     }
 }

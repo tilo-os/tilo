@@ -103,51 +103,55 @@ pub fn find_matches(
 mod tests {
     use super::*;
 
-    #[test]
-    fn parse_hex_query_accepts_separators_and_rejects_odd_or_garbage() {
-        let cases: &[(&str, Option<Vec<u8>>)] = &[
-            ("de ad be ef", Some(vec![0xDE, 0xAD, 0xBE, 0xEF])),
-            ("DEAD", Some(vec![0xDE, 0xAD])),
-            ("de-ad:be", Some(vec![0xDE, 0xAD, 0xBE])),
-            ("abc", None), // odd digit count
-            ("zz", None),  // not hex
-            ("", None),
-        ];
-        for (query, want) in cases {
-            assert_eq!(&parse_hex_query(query), want, "case {query:?}");
+    tilo_test_env::scenario! {
+        fn search_parses_hex_finds_matches_and_encodes_needles;
+
+        phase parse_hex_query_accepts_separators_and_rejects_odd_or_garbage;
+        {
+            let cases: &[(&str, Option<Vec<u8>>)] = &[
+                ("de ad be ef", Some(vec![0xDE, 0xAD, 0xBE, 0xEF])),
+                ("DEAD", Some(vec![0xDE, 0xAD])),
+                ("de-ad:be", Some(vec![0xDE, 0xAD, 0xBE])),
+                ("abc", None), // odd digit count
+                ("zz", None),  // not hex
+                ("", None),
+            ];
+            for (query, want) in cases {
+                assert_eq!(&parse_hex_query(query), want, "case {query:?}");
+            }
         }
-    }
 
-    #[test]
-    fn find_matches_honours_case_and_word_boundaries() {
-        let hay = b"IHDR ihdr IHDRx _IHDR";
-        let any = MatchRules {
-            match_case: false,
-            whole_word: false,
-        };
-        assert_eq!(find_matches(hay, b"ihdr", any, 10).0, vec![0, 5, 10, 17]);
-        let exact = MatchRules {
-            match_case: true,
-            whole_word: false,
-        };
-        assert_eq!(find_matches(hay, b"ihdr", exact, 10).0, vec![5]);
-        let word = MatchRules {
-            match_case: false,
-            whole_word: true,
-        };
-        assert_eq!(find_matches(hay, b"ihdr", word, 10).0, vec![0, 5]);
-        assert_eq!(find_matches(hay, b"IHDR", word, 1), (vec![0], true));
-    }
+        phase find_matches_honours_case_and_word_boundaries;
+        {
+            let hay = b"IHDR ihdr IHDRx _IHDR";
+            let any = MatchRules {
+                match_case: false,
+                whole_word: false,
+            };
+            assert_eq!(find_matches(hay, b"ihdr", any, 10).0, vec![0, 5, 10, 17]);
+            let exact = MatchRules {
+                match_case: true,
+                whole_word: false,
+            };
+            assert_eq!(find_matches(hay, b"ihdr", exact, 10).0, vec![5]);
+            let word = MatchRules {
+                match_case: false,
+                whole_word: true,
+            };
+            assert_eq!(find_matches(hay, b"ihdr", word, 10).0, vec![0, 5]);
+            assert_eq!(find_matches(hay, b"IHDR", word, 1), (vec![0], true));
+        }
 
-    #[test]
-    fn needle_encodes_text_as_utf8_and_hex_as_bytes() {
-        assert_eq!(
-            needle("PNG", SearchKind::Text),
-            Some(vec![0x50, 0x4E, 0x47])
-        );
-        assert_eq!(
-            needle("50 4e 47", SearchKind::Hex),
-            Some(vec![0x50, 0x4E, 0x47])
-        );
+        phase needle_encodes_text_as_utf8_and_hex_as_bytes;
+        {
+            assert_eq!(
+                needle("PNG", SearchKind::Text),
+                Some(vec![0x50, 0x4E, 0x47])
+            );
+            assert_eq!(
+                needle("50 4e 47", SearchKind::Hex),
+                Some(vec![0x50, 0x4E, 0x47])
+            );
+        }
     }
 }

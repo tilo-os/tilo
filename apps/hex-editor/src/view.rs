@@ -1462,59 +1462,6 @@ mod tests {
         view
     }
 
-    /// An open loads fresh; a later change keeps the cursor and marks what differs
-    /// from the opened bytes.
-    #[test]
-    fn presented_state_loads_an_open_and_shows_later_changes_in_place() {
-        let mut view = Editor::empty();
-        assert!(!view.has_file);
-        let state = |bytes: &[u8], opened| {
-            Rc::new(HexEditor {
-                name: Some(ui::tilo_resource::Atom("bytes.bin".into())),
-                bytes: crate::buffer::ByteBuffer::of(bytes),
-                opened,
-            })
-        };
-        view.present(&state(&[1, 2, 3, 4], 1));
-        assert!(view.has_file);
-        assert_eq!(view.model.bytes(), &[1, 2, 3, 4]);
-        view.model.move_to(3, false);
-        view.present(&state(&[1, 9, 3, 4], 1));
-        assert_eq!(view.model.cursor(), 3, "a change keeps the cursor");
-        assert_eq!(view.model.dirty_count(), 1);
-        view.present(&state(&[5, 6], 2));
-        assert_eq!(view.model.cursor(), 0, "a new open starts at the top");
-        assert_eq!(view.model.dirty_count(), 0);
-    }
-
-    #[test]
-    fn presented_local_edits_clear_highlights_when_saved_bytes_are_restored() {
-        let mut view = Editor::empty();
-        let state = |bytes: &[u8]| {
-            Rc::new(HexEditor {
-                name: Some(ui::tilo_resource::Atom("bytes.bin".into())),
-                bytes: crate::buffer::ByteBuffer::of(bytes),
-                opened: 1,
-            })
-        };
-        view.present(&state(&[0x12, 0x34]));
-        view.model.input_hex_digit(0xa);
-        view.model.input_hex_digit(0xb);
-        view.present(&state(&[0xab, 0x34]));
-        assert!(view.model.is_dirty(0));
-        view.model.move_to(0, false);
-        view.model.input_hex_digit(1);
-        view.model.input_hex_digit(2);
-        view.present(&state(&[0x12, 0x34]));
-        assert_eq!(view.model.dirty_count(), 0);
-        assert_eq!(
-            view.model.cursor(),
-            1,
-            "reconciliation preserves typing state"
-        );
-        assert_eq!(view.model.bytes(), &[0x12, 0x34]);
-    }
-
     /// A view on `bytes`, in the hex column or the ASCII one.
     fn editing(bytes: &[u8], ascii: bool) -> Editor {
         let mut view = Editor::empty();
@@ -1534,86 +1481,143 @@ mod tests {
         ui::host::enter(&services)
     }
 
-    #[test]
-    fn copy_carries_the_selection_in_the_focus_mode() {
-        let _clipboard = own_clipboard();
-        let mut view = editing(b"PNGDATA", false);
-        view.model.move_to(0, false);
-        view.model.move_to(3, true);
-        assert!(view.copy_selection());
-        assert_eq!(ui::clipboard_paste().as_deref(), Some("50 4e 47 44"));
-        view.model.toggle_column();
-        assert!(view.copy_selection(), "the same bytes as text");
-        assert_eq!(ui::clipboard_paste().as_deref(), Some("PNGD"));
-    }
+    tilo_test_env::scenario! {
+        fn the_editor_presents_copies_finds_and_goes_to_bytes;
 
-    #[test]
-    fn copying_with_nothing_selected_refuses_and_leaves_the_clipboard_alone() {
-        let _clipboard = own_clipboard();
-        ui::clipboard_copy("untouched");
-        let mut view = editing(b"PNGDATA", false);
-        assert!(!view.copy_selection());
-        assert_eq!(ui::clipboard_paste().as_deref(), Some("untouched"));
-    }
+        phase presented_state_loads_an_open_and_shows_later_changes_in_place;
+        // An open loads fresh; a later change keeps the cursor and marks what differs
+        // from the opened bytes.
+        {
+            let mut view = Editor::empty();
+            assert!(!view.has_file);
+            let state = |bytes: &[u8], opened| {
+                Rc::new(HexEditor {
+                    name: Some(ui::tilo_resource::Atom("bytes.bin".into())),
+                    bytes: crate::buffer::ByteBuffer::of(bytes),
+                    opened,
+                })
+            };
+            view.present(&state(&[1, 2, 3, 4], 1));
+            assert!(view.has_file);
+            assert_eq!(view.model.bytes(), &[1, 2, 3, 4]);
+            view.model.move_to(3, false);
+            view.present(&state(&[1, 9, 3, 4], 1));
+            assert_eq!(view.model.cursor(), 3, "a change keeps the cursor");
+            assert_eq!(view.model.dirty_count(), 1);
+            view.present(&state(&[5, 6], 2));
+            assert_eq!(view.model.cursor(), 0, "a new open starts at the top");
+            assert_eq!(view.model.dirty_count(), 0);
+        }
 
-    #[test]
-    fn find_matches_bytes_in_hex_and_text_modes() {
-        use ui::widget::{FindMatch, FindMode, FindOptions, Findable};
+        phase presented_local_edits_clear_highlights_when_saved_bytes_are_restored;
+        {
+            let mut view = Editor::empty();
+            let state = |bytes: &[u8]| {
+                Rc::new(HexEditor {
+                    name: Some(ui::tilo_resource::Atom("bytes.bin".into())),
+                    bytes: crate::buffer::ByteBuffer::of(bytes),
+                    opened: 1,
+                })
+            };
+            view.present(&state(&[0x12, 0x34]));
+            view.model.input_hex_digit(0xa);
+            view.model.input_hex_digit(0xb);
+            view.present(&state(&[0xab, 0x34]));
+            assert!(view.model.is_dirty(0));
+            view.model.move_to(0, false);
+            view.model.input_hex_digit(1);
+            view.model.input_hex_digit(2);
+            view.present(&state(&[0x12, 0x34]));
+            assert_eq!(view.model.dirty_count(), 0);
+            assert_eq!(
+                view.model.cursor(),
+                1,
+                "reconciliation preserves typing state"
+            );
+            assert_eq!(view.model.bytes(), &[0x12, 0x34]);
+        }
 
-        let mut view = Editor::new(vec![0xde, 0xad, 0x00, 0xde, 0xad], "bytes.bin");
-        let hex = FindOptions {
-            mode: FindMode::Hex,
-            ..FindOptions::default()
-        };
-        let found = Findable::find(&mut view, "de ad", hex);
-        assert_eq!(found, vec![FindMatch::new(0, 2), FindMatch::new(3, 5)]);
-        Findable::reveal(&mut view, 1);
-        assert_eq!(view.model.cursor(), 3);
-        assert_eq!(view.match_idx, Some(1));
+        phase copy_carries_the_selection_in_the_focus_mode;
+        {
+            let _clipboard = own_clipboard();
+            let mut view = editing(b"PNGDATA", false);
+            view.model.move_to(0, false);
+            view.model.move_to(3, true);
+            assert!(view.copy_selection());
+            assert_eq!(ui::clipboard_paste().as_deref(), Some("50 4e 47 44"));
+            view.model.toggle_column();
+            assert!(view.copy_selection(), "the same bytes as text");
+            assert_eq!(ui::clipboard_paste().as_deref(), Some("PNGD"));
+        }
 
-        assert!(Findable::find(&mut view, "Þ", FindOptions::default()).is_empty());
+        phase copying_with_nothing_selected_refuses_and_leaves_the_clipboard_alone;
+        {
+            let _clipboard = own_clipboard();
+            ui::clipboard_copy("untouched");
+            let mut view = editing(b"PNGDATA", false);
+            assert!(!view.copy_selection());
+            assert_eq!(ui::clipboard_paste().as_deref(), Some("untouched"));
+        }
 
-        let mut view = Editor::new(b"IHDR ihdr IHDRx".to_vec(), "text.bin");
-        let any = FindOptions::default();
-        assert_eq!(Findable::find(&mut view, "ihdr", any).len(), 3);
-        let exact = FindOptions {
-            match_case: true,
-            ..any
-        };
-        assert_eq!(Findable::find(&mut view, "ihdr", exact).len(), 1);
-        let word = FindOptions {
-            whole_word: true,
-            ..any
-        };
-        assert_eq!(Findable::find(&mut view, "ihdr", word).len(), 2);
+        phase find_matches_bytes_in_hex_and_text_modes;
+        {
+            use ui::widget::{FindMatch, FindMode, FindOptions, Findable};
 
-        let mut view = Editor::new(vec![0; search::MAX_RETAINED_MATCHES + 50], "large.bin");
-        let found = Findable::find(&mut view, "00", hex);
-        assert_eq!(found.len(), search::MAX_RETAINED_MATCHES);
+            let mut view = Editor::new(vec![0xde, 0xad, 0x00, 0xde, 0xad], "bytes.bin");
+            let hex = FindOptions {
+                mode: FindMode::Hex,
+                ..FindOptions::default()
+            };
+            let found = Findable::find(&mut view, "de ad", hex);
+            assert_eq!(found, vec![FindMatch::new(0, 2), FindMatch::new(3, 5)]);
+            Findable::reveal(&mut view, 1);
+            assert_eq!(view.model.cursor(), 3);
+            assert_eq!(view.match_idx, Some(1));
 
-        Findable::clear_find(&mut view);
-        assert!(view.matches.is_empty() && view.match_idx.is_none());
-    }
+            assert!(Findable::find(&mut view, "Þ", FindOptions::default()).is_empty());
 
-    #[test]
-    fn goto_accepts_hex_and_decimal_offsets() {
-        let mut view = Editor::new(vec![0; 64], "bytes.bin");
-        view.commit_goto("0x1f");
-        assert_eq!(view.model.cursor(), 31);
-        view.commit_goto(" 12 ");
-        assert_eq!(view.model.cursor(), 12);
-        view.commit_goto("ff");
-        assert_eq!(
-            view.model.cursor(),
-            63,
-            "bare hex with a letter is hex, clamped"
-        );
-        view.commit_goto("not an offset");
-        assert_eq!(
-            view.model.cursor(),
-            63,
-            "an unparsable query leaves the cursor"
-        );
+            let mut view = Editor::new(b"IHDR ihdr IHDRx".to_vec(), "text.bin");
+            let any = FindOptions::default();
+            assert_eq!(Findable::find(&mut view, "ihdr", any).len(), 3);
+            let exact = FindOptions {
+                match_case: true,
+                ..any
+            };
+            assert_eq!(Findable::find(&mut view, "ihdr", exact).len(), 1);
+            let word = FindOptions {
+                whole_word: true,
+                ..any
+            };
+            assert_eq!(Findable::find(&mut view, "ihdr", word).len(), 2);
+
+            let mut view = Editor::new(vec![0; search::MAX_RETAINED_MATCHES + 50], "large.bin");
+            let found = Findable::find(&mut view, "00", hex);
+            assert_eq!(found.len(), search::MAX_RETAINED_MATCHES);
+
+            Findable::clear_find(&mut view);
+            assert!(view.matches.is_empty() && view.match_idx.is_none());
+        }
+
+        phase goto_accepts_hex_and_decimal_offsets;
+        {
+            let mut view = Editor::new(vec![0; 64], "bytes.bin");
+            view.commit_goto("0x1f");
+            assert_eq!(view.model.cursor(), 31);
+            view.commit_goto(" 12 ");
+            assert_eq!(view.model.cursor(), 12);
+            view.commit_goto("ff");
+            assert_eq!(
+                view.model.cursor(),
+                63,
+                "bare hex with a letter is hex, clamped"
+            );
+            view.commit_goto("not an offset");
+            assert_eq!(
+                view.model.cursor(),
+                63,
+                "an unparsable query leaves the cursor"
+            );
+        }
     }
 
     fn paint_frame(view: &mut HexView, tr: &mut TextRenderer, theme: &Theme) {
